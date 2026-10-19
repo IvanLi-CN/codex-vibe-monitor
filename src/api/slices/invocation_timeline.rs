@@ -1,4 +1,5 @@
 use super::*;
+use crate::observability::contention::{StatsQuery, observe_query};
 use anyhow::{Context, anyhow};
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -336,6 +337,47 @@ async fn pause_after_timeline_materialization(
 
 #[cfg(not(test))]
 async fn pause_after_timeline_materialization(_: &str, _: &str, _: &str, _: Option<i64>, _: bool) {}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TimelineSourcePagePause {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE: once_cell::sync::Lazy<
+    StdMutex<Option<TimelineSourcePagePause>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+pub(crate) fn install_timeline_source_page_pause_for_test()
+-> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let pause = TimelineSourcePagePause {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let handles = (pause.entered.clone(), pause.release.clone());
+    *INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause);
+    handles
+}
+
+#[cfg(test)]
+async fn pause_after_timeline_source_page() {
+    let pause = INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(pause) = pause {
+        pause.entered.notify_one();
+        pause.release.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_after_timeline_source_page() {}
 
 struct TimelineSnapshotCleanupGuard {
     token: String,
@@ -1216,13 +1258,18 @@ async fn materialize_timeline_snapshot(
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
     let (cache_row_base, cache_byte_base) = timeline_snapshot_cache_usage(snapshot_token);
-    let mut source_transaction = state.pool.begin().await?;
     let mut materialized_records = Vec::new();
     let mut materialized_sources = Vec::new();
     let mut materialized_row_count = 0;
     let mut materialized_byte_count = 0;
+    let mut runtime_records = if include_live {
+        runtime_overlay_snapshot(state)
+    } else {
+        Vec::new()
+    };
     let mut cursor = None;
-    loop {
+    while let Some((page, has_more, next_cursor)) = {
+        let mut source_transaction = state.pool.begin().await?;
         let mut query = build_invocation_select_query();
         append_timeline_db_predicates(
             &mut query,
@@ -1238,63 +1285,71 @@ async fn materialize_timeline_snapshot(
             cursor.as_ref(),
         );
         query
-            .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
-            .push_bind(snapshot_id)
-            .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
-            .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
-        let mut page = query
-            .build_query_as::<ApiInvocation>()
-            .fetch_all(&mut *source_transaction)
-            .await?;
-        let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
-        page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-        let Some(last) = page.last() else {
-            break;
-        };
-        let next_cursor = TimelineCursor {
-            as_of: snapshot_token.to_string(),
-            occurred_at: Some(last.occurred_at.clone()),
-            invoke_id: Some(last.invoke_id.clone()),
-        };
-        for record in &mut page {
-            hydrate_api_invocation_blocked_binding(record);
-        }
-        hydrate_timeline_accounts_on_connection(
-            &mut source_transaction,
-            &mut page,
-            source_scope,
-            snapshot_id,
-            attempt_snapshot_id,
-            false,
+                .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+                .push_bind(snapshot_id)
+                .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+                .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
+        let mut page = observe_query(
+            StatsQuery::InvocationTimeline,
+            query
+                .build_query_as::<ApiInvocation>()
+                .fetch_all(&mut *source_transaction),
         )
         .await?;
-        for record in page
-            .iter()
-            .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
-        {
-            let timeline_record = timeline_record_from_api(record, false);
-            reserve_timeline_snapshot_budget(
-                &mut materialized_row_count,
-                &mut materialized_byte_count,
-                cache_row_base,
-                cache_byte_base,
-                &timeline_record,
-                None,
-            )?;
+        if page.is_empty() {
+            source_transaction.commit().await?;
+            None
+        } else {
+            let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
+            page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
+            let next_cursor = page.last().cloned().map(|last| TimelineCursor {
+                as_of: snapshot_token.to_string(),
+                occurred_at: Some(last.occurred_at),
+                invoke_id: Some(last.invoke_id),
+            });
+            for record in &mut page {
+                hydrate_api_invocation_blocked_binding(record);
+            }
+            hydrate_timeline_accounts_on_connection(
+                &mut source_transaction,
+                &mut page,
+                source_scope,
+                snapshot_id,
+                attempt_snapshot_id,
+                false,
+            )
+            .await?;
+            let mut materialized_page = Vec::new();
+            for record in page
+                .iter()
+                .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
+            {
+                let timeline_record = timeline_record_from_api(record, false);
+                reserve_timeline_snapshot_budget(
+                    &mut materialized_row_count,
+                    &mut materialized_byte_count,
+                    cache_row_base,
+                    cache_byte_base,
+                    &timeline_record,
+                    None,
+                )?;
+                materialized_page.push(timeline_record);
+            }
+            source_transaction.commit().await?;
+            next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
+        }
+    } {
+        for timeline_record in page {
             materialized_records.push(timeline_record);
             materialized_sources.push(false);
         }
         if !has_more {
             break;
         }
+        pause_after_timeline_source_page().await;
         cursor = Some(next_cursor);
     }
 
-    let mut runtime_records = if include_live {
-        runtime_overlay_snapshot(state)
-    } else {
-        Vec::new()
-    };
     let mut runtime_filters = filters.clone();
     runtime_filters.upstream_account_id = None;
     runtime_records.retain(|record| {
@@ -1310,15 +1365,19 @@ async fn materialize_timeline_snapshot(
                 || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
             && runtime_record_matches_filters(record, &runtime_filters, source_scope)
     });
-    hydrate_timeline_accounts_on_connection(
-        &mut source_transaction,
-        &mut runtime_records,
-        source_scope,
-        snapshot_id,
-        attempt_snapshot_id,
-        true,
-    )
-    .await?;
+    if !runtime_records.is_empty() {
+        let mut runtime_transaction = state.pool.begin().await?;
+        hydrate_timeline_accounts_on_connection(
+            &mut runtime_transaction,
+            &mut runtime_records,
+            source_scope,
+            snapshot_id,
+            attempt_snapshot_id,
+            true,
+        )
+        .await?;
+        runtime_transaction.commit().await?;
+    }
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
     let mut record_indexes = materialized_records
         .iter()
@@ -1370,8 +1429,6 @@ async fn materialize_timeline_snapshot(
             materialized_sources.push(true);
         }
     }
-    source_transaction.commit().await?;
-
     let mut published_records = materialized_records
         .into_iter()
         .zip(materialized_sources)
