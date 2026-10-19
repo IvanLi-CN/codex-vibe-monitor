@@ -1125,11 +1125,11 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
             .all(|detail| !detail.contains("SCAN batches"))
     );
     assert!(
-        !SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
+        SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
             .contains("summary_archive_snapshot_v2_proof")
     );
     assert!(
-        !SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
+        SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
             .contains("summary_archive_snapshot_backfill_outcome")
     );
     let alias = "snapshot";

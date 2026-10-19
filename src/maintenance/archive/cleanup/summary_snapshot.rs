@@ -131,8 +131,10 @@ const SUMMARY_ARCHIVE_SNAPSHOT_PROMOTION_ELIGIBILITY_SQL: &str = r#"
           )
     )
 "#;
-// Phase one is intentionally limited to archive identity and the existing seek index. Proof,
-// obligation, and outcome checks run in one bounded second-phase query below.
+// Phase one starts from the archive seek index and applies the durable eligibility predicates
+// before the fixed limit. The second phase repeats them against the bounded identity set so a
+// concurrent proof or outcome commit cannot promote an identity that became ineligible between
+// the two reads.
 pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL: &str = r#"
     SELECT batches.id, batches.sha256
     FROM archive_batches AS batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek
@@ -147,6 +149,28 @@ pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL: &str = r#
             WHERE snapshot.archive_batch_id = batches.id
               AND snapshot.manifest_sha256 = batches.sha256
               AND snapshot.format_version = ?1
+      )
+      AND NOT EXISTS (
+            SELECT 1
+            FROM summary_archive_snapshot_v2_proof AS proof
+            WHERE proof.archive_batch_id = batches.id
+              AND proof.manifest_sha256 = batches.sha256
+      )
+      AND NOT EXISTS (
+            SELECT 1
+            FROM summary_archive_snapshot_backfill_outcome AS outcome
+            WHERE outcome.archive_batch_id = batches.id
+              AND outcome.manifest_sha256 = batches.sha256
+              AND (
+                  outcome.disposition = 'complete'
+                  OR (
+                      outcome.disposition = 'unavailable'
+                      AND outcome.failure_kind IN (
+                          'verification_failed', 'manifest_sha_mismatch',
+                          'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                      )
+                  )
+              )
       )
     ORDER BY batches.id ASC
     LIMIT ?2
