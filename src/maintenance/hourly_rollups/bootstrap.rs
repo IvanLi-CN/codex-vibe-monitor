@@ -285,23 +285,3 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
         }
     }
 }
-
-pub(crate) async fn delete_rows_by_ids(
-    tx: &mut sqlx::SqliteConnection,
-    table: &str,
-    ids: &[i64],
-) -> Result<()> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new(format!("DELETE FROM {table} WHERE id IN ("));
-    {
-        let mut separated = query.separated(", ");
-        for id in ids {
-            separated.push_bind(id);
-        }
-    }
-    query.push(")");
-    query.build().execute(&mut *tx).await?;
-    Ok(())
-}
