@@ -836,6 +836,18 @@ pub(crate) async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Resul
     ))
     .execute(pool)
     .await?;
+    let published_column_exists: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{INVOCATION_TIMELINE_SNAPSHOT_TABLE}') WHERE name = 'published')"
+    ))
+    .fetch_one(pool)
+    .await?;
+    if !published_column_exists {
+        sqlx::query(&format!(
+            "ALTER TABLE {INVOCATION_TIMELINE_SNAPSHOT_TABLE} ADD COLUMN published INTEGER NOT NULL DEFAULT 0"
+        ))
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 
