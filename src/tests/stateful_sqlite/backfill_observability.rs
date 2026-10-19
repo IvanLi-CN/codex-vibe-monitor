@@ -64,6 +64,55 @@ async fn maintenance_store_writes_record_results_duration_and_cancellation() {
 }
 
 #[tokio::test]
+async fn managed_dispatcher_noop_writes_record_noop_outcomes() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect maintenance store test pool");
+    let store = MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance store schema");
+    let runtime = ObservabilityRuntime::new(true);
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        assert_eq!(
+            store
+                .enqueue_due_runs()
+                .await
+                .expect("probe scheduled runs"),
+            0
+        );
+        assert!(
+            store
+                .claim_requested_run()
+                .await
+                .expect("claim requested run")
+                .is_none()
+        );
+    })
+    .await;
+
+    let text = runtime.render();
+    assert!(
+        text.contains("cvm_maintenance_store_writes_total{operation=\"wake\",outcome=\"noop\"} 1")
+    );
+    assert!(
+        text.contains("cvm_maintenance_store_writes_total{operation=\"run\",outcome=\"noop\"} 1")
+    );
+    assert!(
+        !text.contains(
+            "cvm_maintenance_store_writes_total{operation=\"wake\",outcome=\"committed\"}"
+        )
+    );
+    assert!(
+        !text.contains(
+            "cvm_maintenance_store_writes_total{operation=\"run\",outcome=\"committed\"}"
+        )
+    );
+}
+
+#[tokio::test]
 async fn cached_prompt_cache_control_initialization_does_not_record_store_write() {
     let pool = sqlx::SqlitePool::connect("sqlite::memory:")
         .await
