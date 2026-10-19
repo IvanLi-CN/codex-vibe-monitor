@@ -25,6 +25,7 @@ const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
 const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
+const MANAGED_TASK_ENQUEUE_BATCH_SIZE: i64 = 32;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
@@ -3976,11 +3977,13 @@ impl MaintenanceStore {
                    WHERE active.task_key=managed_tasks.task_key
                      AND active.status IN ('running','requested')
                )
-             ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key",
+             ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key
+             LIMIT ?",
         )
         .bind(&now_text)
         .bind(&now_text)
         .bind(&now_text)
+        .bind(MANAGED_TASK_ENQUEUE_BATCH_SIZE)
         .fetch_all(&self.pool)
         .await?;
         if due_tasks.is_empty() {

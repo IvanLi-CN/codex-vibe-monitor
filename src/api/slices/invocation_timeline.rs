@@ -1453,6 +1453,9 @@ async fn materialize_timeline_snapshot(
         .map(|(record, is_runtime)| encode_timeline_snapshot_insert_row(record, *is_runtime))
         .collect::<Result<Vec<_>, _>>()?;
     for batch in published_rows.chunks(INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE) {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+            .await;
         let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
         insert_timeline_snapshot_records_on_connection(
             &mut publish_transaction,
