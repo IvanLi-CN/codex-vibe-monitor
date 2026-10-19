@@ -14,6 +14,48 @@ const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION: i64 = 2;
 pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION: i64 = 1;
 pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM: &str = "sha256-0.11";
 const SUMMARY_ARCHIVE_SNAPSHOT_HASH_BUFFER_BYTES: usize = 64 * 1024;
+// Keep the literal archive predicates aligned with the existing partial seek index. Dynamic
+// values are limited to the snapshot format and candidate page size.
+pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL: &str = r#"
+    SELECT batches.id, batches.sha256
+    FROM archive_batches AS batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek
+    WHERE batches.dataset = 'codex_invocations'
+      AND batches.status = 'completed'
+      AND batches.sha256 IS NOT NULL
+      AND TRIM(batches.sha256) <> ''
+      AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+      AND EXISTS (
+            SELECT 1
+            FROM summary_archive_snapshot AS snapshot
+            WHERE snapshot.archive_batch_id = batches.id
+              AND snapshot.manifest_sha256 = batches.sha256
+              AND snapshot.format_version = ?1
+      )
+      AND NOT EXISTS (
+            SELECT 1
+            FROM summary_archive_snapshot_v2_proof AS proof
+            WHERE proof.archive_batch_id = batches.id
+              AND proof.manifest_sha256 = batches.sha256
+      )
+      AND NOT EXISTS (
+            SELECT 1
+            FROM summary_archive_snapshot_backfill_outcome AS outcome
+            WHERE outcome.archive_batch_id = batches.id
+              AND outcome.manifest_sha256 = batches.sha256
+              AND (
+                    outcome.disposition = 'complete'
+                    OR (
+                        outcome.disposition = 'unavailable'
+                        AND outcome.failure_kind IN (
+                            'verification_failed', 'manifest_sha_mismatch',
+                            'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                        )
+                    )
+              )
+      )
+    ORDER BY batches.id ASC
+    LIMIT ?2
+    "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SummaryArchiveSnapshotBackfillDisposition {
@@ -254,34 +296,13 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
     pool: &Pool<Sqlite>,
     limit: i64,
 ) -> Result<Vec<(i64, String)>> {
-    sqlx::query_as::<_, (i64, String)>(
-        "SELECT snapshot.archive_batch_id, snapshot.manifest_sha256 \
-         FROM summary_archive_snapshot AS snapshot \
-         LEFT JOIN summary_archive_snapshot_v2_proof AS proof \
-           ON proof.archive_batch_id = snapshot.archive_batch_id \
-          AND proof.manifest_sha256 = snapshot.manifest_sha256 \
-         LEFT JOIN summary_archive_snapshot_backfill_outcome AS outcome \
-           ON outcome.archive_batch_id = snapshot.archive_batch_id \
-          AND outcome.manifest_sha256 = snapshot.manifest_sha256 \
-         WHERE snapshot.format_version = ?1 \
-           AND proof.archive_batch_id IS NULL \
-           AND (outcome.archive_batch_id IS NULL OR (
-               outcome.disposition <> 'complete'
-               AND NOT (
-                   outcome.disposition = 'unavailable'
-                   AND outcome.failure_kind IN (
-                       'verification_failed', 'manifest_sha_mismatch',
-                       'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
-                   )
-               )
-           )) \
-         GROUP BY snapshot.archive_batch_id, snapshot.manifest_sha256 \
-         ORDER BY snapshot.archive_batch_id ASC \
-         LIMIT ?2",
+    crate::observability::contention::observe_query(
+        crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
+        sqlx::query_as::<_, (i64, String)>(SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL)
+            .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+            .bind(limit.max(1))
+            .fetch_all(pool),
     )
-    .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
-    .bind(limit.max(1))
-    .fetch_all(pool)
     .await
     .context("load unpromoted Summary Snapshot V2 page sets")
 }
