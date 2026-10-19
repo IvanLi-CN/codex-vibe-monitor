@@ -1268,7 +1268,7 @@ async fn materialize_timeline_snapshot(
         Vec::new()
     };
     let mut cursor = None;
-    while let Some((page, has_more, next_cursor)) = ({
+    while let Some((page, has_more, next_cursor)) = {
         let mut source_transaction = state.pool.begin().await?;
         let mut query = build_invocation_select_query();
         append_timeline_db_predicates(
@@ -1338,7 +1338,7 @@ async fn materialize_timeline_snapshot(
             source_transaction.commit().await?;
             next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
         }
-    }) {
+    } {
         for timeline_record in page {
             materialized_records.push(timeline_record);
             materialized_sources.push(false);
