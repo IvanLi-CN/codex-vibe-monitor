@@ -155,6 +155,14 @@ class ContainerMountTests(unittest.TestCase):
         namespace = self.execute_mounted("client.py")
         self.assertTrue(callable(namespace["seed"]))
 
+    def test_client_expands_all_custom_variables_used_by_sqlite_dashboard(self):
+        namespace = self.execute_mounted("client.py")
+        expression = 'increase(cvm_retention_phase_duration_seconds_sum{operation=~"$operation"}[$__range] offset $compare_offset)'
+        expanded = namespace["expand_dashboard_expression"](expression)
+        self.assertNotIn("$", expanded)
+        self.assertIn('operation=~".*"', expanded)
+        self.assertIn("[30m] offset 1d", expanded)
+
     def test_tempo_trace_ids_restore_omitted_leading_zero(self):
         namespace = self.execute_mounted("client.py")
         for length in range(1, 33):

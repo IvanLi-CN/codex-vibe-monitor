@@ -20,9 +20,11 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
         .sqlite_batch_writer
         .set_auto_flush_terminal_for_test(false);
     let account = insert_test_pool_api_key_account(&state, "Visibility", "fixture-token").await;
+    let occurred_at = shanghai_now_string();
+    let finished_at = shanghai_now_string();
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: "terminal-visibility".to_string(),
-        occurred_at: "2026-10-13 12:00:00".to_string(),
+        occurred_at: occurred_at.clone(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: None,
         requester_ip: None,
@@ -50,7 +52,7 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
     finalize_pool_upstream_request_attempt_in_memory(
         &state,
         &attempt,
-        "2026-10-13 12:00:01",
+        &finished_at,
         "success",
         Some(StatusCode::OK),
         Some(StatusCode::OK),
@@ -119,10 +121,7 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
             .clone()
             .expect("stable attempt id")
     );
-    assert_eq!(
-        before[0].finished_at.as_deref(),
-        Some("2026-10-13 12:00:01")
-    );
+    assert_eq!(before[0].finished_at.as_deref(), Some(finished_at.as_str()));
     let pause = state
         .proxy_runtime_attempts
         .pause_queries_after_sql_for_test()
