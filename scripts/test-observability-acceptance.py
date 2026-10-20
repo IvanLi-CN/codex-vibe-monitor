@@ -393,7 +393,7 @@ class AdmissionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.sha = "a" * 40
-        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_TEMP": str(self.root), "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_ID": "runner-123", "RUNNER_TEMP": str(self.root), "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
 
     def context(self, root=None):
         with patch.object(environment.subprocess, "check_output", return_value=self.sha + "\n"), patch.object(Path, "read_text", return_value="model name: Fixture CPU\n"), patch.object(os, "sched_getaffinity", return_value={0, 1, 2, 3}, create=True):
@@ -421,6 +421,12 @@ class AdmissionTests(unittest.TestCase):
             context = self.context()
         self.assertEqual(context["evidenceLocator"], "https://github.com/owner/repo/actions/runs/123/attempts/2")
         self.assertEqual(context["candidate"], self.sha)
+        self.assertEqual(context["runnerIdentity"], "runner-123")
+
+    def test_missing_runner_identity_cannot_certify_isolation(self):
+        with patch.dict(os.environ, {**self.env, "RUNNER_ID": ""}, clear=True):
+            with self.assertRaisesRegex(ValueError, "runner identity"):
+                self.context()
 
     def test_paired_suite_rejects_testbox_before_creating_state(self):
         args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="shared-testbox", suite="pair-0")

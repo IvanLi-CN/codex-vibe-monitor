@@ -26,6 +26,9 @@ def actions_context(source, run, candidate):
     head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if head != candidate:
         raise ValueError("checked-out source does not match performance Candidate SHA")
+    runner_id = os.environ.get("RUNNER_ID", "").strip()
+    if not runner_id:
+        raise ValueError("missing GitHub runner identity")
     models = [line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")]
     return {
         "candidate": candidate,
@@ -33,7 +36,8 @@ def actions_context(source, run, candidate):
         "runId": run_id,
         "attempt": attempt,
         "runnerEnvironment": "github-hosted",
-        "runnerIdentity": platform.node(),
+        "runnerIdentity": runner_id,
+        "runnerNode": platform.node(),
         "runnerImage": os.environ.get("ImageOS"),
         "runnerImageVersion": os.environ.get("ImageVersion"),
         "kernel": platform.release(),
