@@ -653,8 +653,10 @@ class AggregationTests(unittest.TestCase):
         self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))
         self.assertFalse(self.aggregate())
 
-    def test_hardware_or_runner_reuse_cannot_be_hidden_by_good_cv(self):
+    def test_heterogeneous_runners_are_valid_but_runner_reuse_is_rejected(self):
         self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.assertTrue(self.aggregate())
+        self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
         self.assertFalse(self.aggregate())
 
     def test_restarted_clock_or_exceeded_budget_cannot_pass(self):
