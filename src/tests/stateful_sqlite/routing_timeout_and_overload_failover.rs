@@ -1569,7 +1569,10 @@ fn pool_responses_classify_server_error_overload_with_narrow_message_boundary() 
 async fn pool_openai_v1_responses_retries_server_error_overload_same_account_before_forwarding() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
         distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
         status: String,
     }
 
@@ -1628,7 +1631,8 @@ async fn pool_openai_v1_responses_retries_server_error_overload_same_account_bef
     wait_for_pool_attempt_row_count(&state.pool, 4).await;
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
-        SELECT distinct_account_index, status
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
@@ -1637,10 +1641,29 @@ async fn pool_openai_v1_responses_retries_server_error_overload_same_account_bef
     .await
     .expect("load server_error overload retry attempt rows");
     assert_eq!(attempt_rows.len(), 4);
-    assert!(
+    assert_eq!(
         attempt_rows
             .iter()
-            .all(|row| row.distinct_account_index == 1)
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
     );
     assert_eq!(
         attempt_rows
@@ -1668,7 +1691,10 @@ async fn pool_openai_v1_responses_retries_server_error_overload_same_account_bef
 async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_budget_exhaustion() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
         distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
         status: String,
     }
 
@@ -1786,7 +1812,8 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
     );
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
-        SELECT distinct_account_index, status
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
@@ -1795,10 +1822,29 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
     .await
     .expect("load exhausted server_error overload attempt rows");
     assert_eq!(attempt_rows.len(), 4);
-    assert!(
+    assert_eq!(
         attempt_rows
             .iter()
-            .all(|row| row.distinct_account_index == 1)
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
     );
     assert!(
         attempt_rows
@@ -1834,7 +1880,10 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
 async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_budget() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
         distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
         status: String,
     }
 
@@ -1925,7 +1974,8 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
     wait_for_pool_attempt_row_count(&state.pool, 4).await;
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
-        SELECT distinct_account_index, status
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
@@ -1934,10 +1984,29 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
     .await
     .expect("load mixed overload attempt rows");
     assert_eq!(attempt_rows.len(), 4);
-    assert!(
+    assert_eq!(
         attempt_rows
             .iter()
-            .all(|row| row.distinct_account_index == 1)
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
     );
     assert!(
         attempt_rows
@@ -2576,7 +2645,10 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
 async fn pool_openai_v1_compact_retries_server_error_overload_same_account_before_forwarding() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
         distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
         status: String,
     }
 
@@ -2635,7 +2707,8 @@ async fn pool_openai_v1_compact_retries_server_error_overload_same_account_befor
     wait_for_pool_attempt_row_count(&state.pool, 4).await;
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
-        SELECT distinct_account_index, status
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
@@ -2644,10 +2717,29 @@ async fn pool_openai_v1_compact_retries_server_error_overload_same_account_befor
     .await
     .expect("load compact server_error overload retry attempt rows");
     assert_eq!(attempt_rows.len(), 4);
-    assert!(
+    assert_eq!(
         attempt_rows
             .iter()
-            .all(|row| row.distinct_account_index == 1)
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
     );
     assert_eq!(
         attempt_rows
