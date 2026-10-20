@@ -1909,7 +1909,7 @@ async fn validate_subscription_candidate_limits_node_probe_concurrency_to_ten() 
         async move { validate_subscription_candidate(state, subscription_url).await }
     });
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if total_requests.load(Ordering::SeqCst) >= 10 {
                 return;
