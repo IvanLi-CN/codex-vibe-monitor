@@ -1630,6 +1630,7 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
     {
         let manager = state.forward_proxy.lock().await;
         for proxy_key in extra_keys {
+            let public_key = public_forward_proxy_key(&proxy_key);
             let maybe_current_key = manager
                 .resolve_current_or_historical_bound_proxy_key(
                     &proxy_key,
@@ -1638,9 +1639,9 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
                 .filter(|candidate| current_node_keys.contains(candidate));
             if let Some(current_key) = maybe_current_key {
                 if let Some(node) = nodes.iter_mut().find(|node| node.key == current_key)
-                    && node.key != proxy_key
+                    && node.key != public_key
                 {
-                    node.alias_keys.push(proxy_key.clone());
+                    node.alias_keys.push(public_key.clone());
                     node.alias_keys.sort();
                     node.alias_keys.dedup();
                 }
@@ -1648,13 +1649,13 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
             }
             let metadata = metadata_map.get(&proxy_key);
             nodes.push(ForwardProxyBindingNodeResponse {
-                key: proxy_key.clone(),
+                key: public_key.clone(),
                 alias_keys: Vec::new(),
                 source: "missing".to_string(),
-                display_name: metadata
-                    .map(|item| item.display_name.clone())
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| proxy_key.clone()),
+                display_name: public_forward_proxy_display_name(
+                    metadata.map(|item| item.display_name.as_str()),
+                    &public_key,
+                ),
                 protocol_label: "UNKNOWN".to_string(),
                 egress_ip: metadata.and_then(|item| item.egress_ip.clone()),
                 egress_ip_checked_at: metadata.and_then(|item| item.egress_ip_checked_at.clone()),
@@ -1669,6 +1670,53 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
     }
 
     Ok((nodes, current_node_keys))
+}
+
+fn public_forward_proxy_key(raw: &str) -> String {
+    let normalized = raw.trim();
+    if normalized == FORWARD_PROXY_DIRECT_KEY || is_safe_forward_proxy_key(normalized) {
+        return normalized.to_string();
+    }
+    normalize_bound_proxy_key(normalized).unwrap_or_else(|| stable_forward_proxy_key(normalized))
+}
+
+fn is_safe_forward_proxy_key(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 128
+        && !looks_like_uuid(raw)
+        && raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn looks_like_uuid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
+}
+
+fn public_forward_proxy_display_name(metadata_name: Option<&str>, fallback: &str) -> String {
+    metadata_name
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && !value.contains("://")
+                && !value.contains('@')
+                && !value.contains('?')
+                && !value.contains('{')
+                && !value.contains('}')
+                && !value.chars().any(char::is_control)
+                && !looks_like_uuid(value)
+        })
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 pub(crate) fn apply_forward_proxy_binding_hourly_buckets(

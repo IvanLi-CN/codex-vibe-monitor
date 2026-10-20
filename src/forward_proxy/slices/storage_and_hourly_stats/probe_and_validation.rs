@@ -325,6 +325,7 @@ pub(crate) async fn timed_forward_proxy_egress_ip_probe(
 pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
     client: &Client,
     request_timeout: Duration,
+    strict_status: bool,
 ) -> ForwardProxyLatencyProbeTargetResult {
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("models") {
@@ -344,7 +345,7 @@ pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
     match result {
         Ok(Ok(response)) => {
             let status = response.status();
-            let ok = is_manual_latency_probe_reachable_status(status);
+            let ok = is_forward_proxy_latency_probe_reachable_status(status, strict_status);
             ForwardProxyLatencyProbeTargetResult {
                 ok,
                 latency_ms: ok.then(|| elapsed_ms(started)),
@@ -390,6 +391,7 @@ pub(crate) fn oauth_codex_latency_probe_target(path_segment: &str) -> Result<Url
 pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     client: &Client,
     request_timeout: Duration,
+    strict_status: bool,
 ) -> ForwardProxyLatencyProbeTargetResult {
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("responses") {
@@ -409,7 +411,7 @@ pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     match result {
         Ok(Ok(response)) => {
             let status = response.status();
-            let ok = is_manual_latency_probe_reachable_status(status);
+            let ok = is_forward_proxy_latency_probe_reachable_status(status, strict_status);
             ForwardProxyLatencyProbeTargetResult {
                 ok,
                 latency_ms: ok.then(|| elapsed_ms(started)),
@@ -473,6 +475,34 @@ pub(crate) fn is_manual_latency_probe_reachable_status(status: StatusCode) -> bo
     status.as_u16() < 500
 }
 
+pub(crate) fn is_forward_proxy_latency_probe_reachable_status(
+    status: StatusCode,
+    strict_status: bool,
+) -> bool {
+    if strict_status {
+        is_validation_probe_reachable_status(status)
+    } else {
+        is_manual_latency_probe_reachable_status(status)
+    }
+}
+
+fn endpoint_uses_xhttp_transport(endpoint: &ForwardProxyEndpoint) -> bool {
+    if endpoint.protocol != ForwardProxyProtocol::Vless {
+        return false;
+    }
+    let Some(raw_url) = endpoint.raw_url.as_deref() else {
+        return false;
+    };
+    let Ok(url) = Url::parse(raw_url) else {
+        return false;
+    };
+    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    query
+        .get("type")
+        .or_else(|| query.get("net"))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("xhttp"))
+}
+
 pub(crate) async fn run_forward_proxy_latency_test_round(
     state: Arc<AppState>,
     endpoint: &ForwardProxyEndpoint,
@@ -482,6 +512,7 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
     is_single_node_test: bool,
 ) -> ForwardProxyLatencyTestNodeProgress {
     let selected_proxy = SelectedForwardProxy::from_endpoint(endpoint);
+    let strict_status = endpoint_uses_xhttp_transport(endpoint);
     let total_timeout = if is_single_node_test {
         forward_proxy_manual_latency_single_timeout()
     } else {
@@ -531,7 +562,12 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                                 .filter(|remaining| !remaining.is_zero());
                         oauth_upstream = match remaining_round {
                             Some(remaining) => {
-                                timed_forward_proxy_oauth_upstream_probe(&client, remaining).await
+                                timed_forward_proxy_oauth_upstream_probe(
+                                    &client,
+                                    remaining,
+                                    strict_status,
+                                )
+                                .await
                             }
                             None => ForwardProxyLatencyProbeTargetResult {
                                 ok: false,
@@ -548,7 +584,12 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                                 .filter(|remaining| !remaining.is_zero());
                         codex_responses = match remaining_round {
                             Some(remaining) => {
-                                timed_forward_proxy_codex_responses_probe(&client, remaining).await
+                                timed_forward_proxy_codex_responses_probe(
+                                    &client,
+                                    remaining,
+                                    strict_status,
+                                )
+                                .await
                             }
                             None => ForwardProxyLatencyProbeTargetResult {
                                 ok: false,

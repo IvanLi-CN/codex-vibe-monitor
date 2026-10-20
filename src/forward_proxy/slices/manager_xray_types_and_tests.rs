@@ -206,6 +206,28 @@ impl XraySupervisor {
             )
         })?;
 
+        // Ask Xray to validate the generated file before starting the long-lived route. A
+        // missing or unlaunchable binary is still a startup failure; a launched binary that
+        // rejects the configuration is a configuration failure.
+        if let Ok(status) = Command::new(&self.binary)
+            .arg("run")
+            .arg("-test")
+            .arg("-c")
+            .arg(&config_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            && !status.success()
+        {
+            let _ = fs::remove_file(&config_path);
+            return Err(anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "xray rejected proxy configuration",
+            )));
+        }
+
         let mut child = match Command::new(&self.binary)
             .arg("run")
             .arg("-c")
@@ -1873,6 +1895,22 @@ mod tests {
         ));
         assert!(!is_manual_latency_probe_reachable_status(
             StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(is_forward_proxy_latency_probe_reachable_status(
+            StatusCode::METHOD_NOT_ALLOWED,
+            false
+        ));
+        assert!(is_forward_proxy_latency_probe_reachable_status(
+            StatusCode::NOT_FOUND,
+            true
+        ));
+        assert!(!is_forward_proxy_latency_probe_reachable_status(
+            StatusCode::METHOD_NOT_ALLOWED,
+            true
+        ));
+        assert!(!is_forward_proxy_latency_probe_reachable_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            true
         ));
     }
 

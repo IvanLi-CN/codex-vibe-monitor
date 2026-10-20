@@ -14,6 +14,7 @@ import { AppIcon } from "../features/shared/AppIcon";
 import { useSettings } from "../hooks/useSettings";
 import { useTranslation } from "../i18n";
 import {
+  ApiRequestError,
   type AvailableModelsMode,
   createForwardProxyNodeLatencyTestEventSource,
   createForwardProxyNodesLatencyTestEventSource,
@@ -1262,6 +1263,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
           round,
           ok: false,
           timedOut: isForwardProxyValidationTimeout(message),
+          code: err instanceof ApiRequestError ? err.code : undefined,
           message: message || t("settings.forwardProxy.modal.validateFailed"),
         };
       }
@@ -1348,6 +1350,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       } catch (err) {
         setForwardProxyValidation({
           status: "failed",
+          code: err instanceof ApiRequestError ? err.code : undefined,
           message: resolveForwardProxyValidationErrorMessage(err),
         });
       }
@@ -3137,11 +3140,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                               {forwardProxyValidation.message ||
                                 t("settings.forwardProxy.modal.validateSuccess")}
                             </div>
-                            {forwardProxyValidation.normalizedValues.slice(0, 2).map((value) => (
-                              <div key={value} className="font-mono text-xs opacity-80">
-                                {t("settings.forwardProxy.modal.normalizedValue", { value })}
-                              </div>
-                            ))}
                             {(forwardProxyValidation.discoveredNodes != null ||
                               forwardProxyValidation.latencyMs != null) && (
                               <div className="text-xs opacity-80">

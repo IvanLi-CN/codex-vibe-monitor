@@ -18,6 +18,7 @@
 - Manual imports, subscriptions, saved nodes, single validation, batch validation, and latency probes continue through the shared outbound builder and preserve the existing success-status and batch-round contracts.
 - Canonical identity now consumes the effective XHTTP configuration with recursive object-key ordering, while existing non-XHTTP transport and binding aliases remain unchanged.
 - Validation responses retain their existing fields and add stable failure codes with bounded, redacted messages; Settings preserves those codes, and binding-node aliases expose only opaque keys while internal URL aliases remain available for compatibility; test fixtures contain no user-provided node credentials.
+- Xray now preflights generated configuration before starting a route, and the owner-facing Settings success state keeps normalized links internal for persistence without rendering credentials; XHTTP latency status handling is strict while legacy protocol latency behavior remains compatible.
 - Local Rust and web verification passed; a controlled Xray smoke accepted the redacted XHTTP/Reality route and returned an allowed upstream 404; release delivery still requires the final review and PR gates.
 
 ## Related Changes

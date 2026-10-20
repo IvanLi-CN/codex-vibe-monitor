@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
-import type { PoolRoutingSettings, SettingsPayload } from "../lib/api";
+import { ApiRequestError, type PoolRoutingSettings, type SettingsPayload } from "../lib/api";
 import SettingsPage from "./Settings";
 
 const hookMocks = vi.hoisted(() => ({
@@ -210,11 +210,9 @@ describe("Settings forward proxy table", () => {
   });
 
   it("keeps validation error codes at the Settings state boundary", async () => {
-    apiMocks.validateForwardProxyCandidate.mockResolvedValue({
-      ok: false,
-      message: "XHTTP validation failed",
-      code: "invalid_xhttp_extra",
-    });
+    apiMocks.validateForwardProxyCandidate.mockRejectedValue(
+      new ApiRequestError(422, "validation failed", { code: "invalid_xhttp_extra" }),
+    );
 
     renderSettingsPage();
 
@@ -260,6 +258,57 @@ describe("Settings forward proxy table", () => {
     expect(
       document.body.querySelector("tr[data-validation-code='invalid_xhttp_extra']"),
     ).not.toBeNull();
+  });
+
+  it("does not render a validated share link in the success message", async () => {
+    const normalizedValue =
+      "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?extra=opaque";
+    apiMocks.validateForwardProxyCandidate.mockResolvedValue({
+      ok: true,
+      message: "XHTTP validation succeeded",
+      normalizedValue,
+      discoveredNodes: 1,
+      latencyMs: 101,
+    });
+
+    renderSettingsPage();
+
+    const addButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("批量导入节点"),
+    );
+    if (!(addButton instanceof HTMLButtonElement)) {
+      throw new Error("Missing batch proxy button");
+    }
+    act(() => {
+      addButton.click();
+    });
+
+    const input = document.body.querySelector("#forward-proxy-modal-input");
+    if (!(input instanceof HTMLTextAreaElement)) {
+      throw new Error("Missing batch proxy input");
+    }
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(input, normalizedValue);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const modal = input.closest("div.fixed");
+    const validateButton = Array.from(modal?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "验证可用性",
+    );
+    if (!(validateButton instanceof HTMLButtonElement)) {
+      throw new Error("Missing validation button");
+    }
+    await act(async () => {
+      validateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).not.toContain(normalizedValue);
+    expect(document.body.textContent).toContain("可用 1 条，不可用 0 条");
   });
 
   it("renders independent request/response body logging switches", () => {

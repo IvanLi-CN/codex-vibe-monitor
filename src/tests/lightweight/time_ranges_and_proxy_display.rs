@@ -1019,6 +1019,30 @@ async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys
 }
 
 #[tokio::test]
+async fn forward_proxy_binding_nodes_redact_raw_extra_proxy_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let raw_url = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&security=reality&type=xhttp&path=%2Fprobe";
+    let expected_key = normalize_single_proxy_key(raw_url).expect("normalize fixture proxy key");
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[raw_url.to_string()])
+        .await
+        .expect("build binding nodes response");
+    let missing_node = nodes
+        .iter()
+        .find(|node| node.source == "missing")
+        .expect("raw extra proxy key should produce a missing node");
+    assert_eq!(missing_node.key, expected_key);
+
+    let serialized = serde_json::to_string(missing_node).expect("serialize public node response");
+    assert!(!serialized.contains("vless://"));
+    assert!(!serialized.contains("@edge.example.com"));
+    assert!(!serialized.contains("11111111-1111-1111-1111-111111111111"));
+}
+
+#[tokio::test]
 async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys() {
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
@@ -2128,6 +2152,73 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     assert!(
         !expected_config_path.exists(),
         "spawn failure should clean temporary xray config file"
+    );
+
+    let _ = fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn xray_supervisor_classifies_rejected_configuration_before_startup() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = make_temp_test_dir("xray-config-validation");
+    let runtime_dir = temp_root.join("runtime");
+    let fake_binary = temp_root.join("fake-xray.sh");
+    fs::write(
+        &fake_binary,
+        "#!/bin/sh
+if [ \"$2\" = \"-test\" ]; then
+  exit 23
+fi
+sleep 30
+",
+    )
+    .expect("write fake xray binary");
+    let mut permissions = fs::metadata(&fake_binary)
+        .expect("read fake xray binary metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&fake_binary, permissions).expect("make fake xray binary executable");
+
+    let mut supervisor =
+        XraySupervisor::new(fake_binary.display().to_string(), runtime_dir.clone());
+    let endpoint = ForwardProxyEndpoint {
+        key: "xray-config-validation-test".to_string(),
+        source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+        display_name: "xray-config-validation-test".to_string(),
+        protocol: ForwardProxyProtocol::Vless,
+        endpoint_url: None,
+        raw_url: Some(
+            "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                .to_string(),
+        ),
+    };
+
+    let err = supervisor
+        .ensure_instance_with_ready_timeout(
+            &endpoint,
+            Duration::from_millis(50),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("rejected xray configuration should fail before startup");
+    let failure = err
+        .downcast_ref::<ForwardProxyValidationError>()
+        .expect("configuration rejection should keep its typed error");
+    assert_eq!(
+        failure.code,
+        ForwardProxyValidationErrorCode::XrayConfigError
+    );
+    assert_eq!(failure.message, "xray rejected proxy configuration");
+    assert!(
+        !runtime_dir
+            .join(format!(
+                "forward-proxy-{:016x}.json",
+                stable_hash_u64(&endpoint.key)
+            ))
+            .exists(),
+        "configuration rejection should clean the temporary config file"
     );
 
     let _ = fs::remove_dir_all(&temp_root);
