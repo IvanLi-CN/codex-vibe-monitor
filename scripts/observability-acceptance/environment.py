@@ -12,7 +12,7 @@ import threading
 import time
 
 
-def actions_context(source, run, candidate):
+def actions_context(source, run, candidate, *, require_runner_identity=True):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         raise ValueError("performance acceptance requires a GitHub-hosted Actions runner")
     temporary = os.environ.get("RUNNER_TEMP", "")
@@ -27,8 +27,10 @@ def actions_context(source, run, candidate):
     if head != candidate:
         raise ValueError("checked-out source does not match performance Candidate SHA")
     runner_id = os.environ.get("RUNNER_ID", "").strip()
-    if not runner_id:
+    if require_runner_identity and not runner_id:
         raise ValueError("missing GitHub runner identity")
+    if not runner_id:
+        runner_id = f"aggregate:{run_id}:{attempt}"
     models = [line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")]
     return {
         "candidate": candidate,

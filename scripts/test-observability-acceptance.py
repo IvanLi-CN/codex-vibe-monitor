@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -567,6 +568,46 @@ class BoundedAcceptanceTests(unittest.TestCase):
         run.results = {}
         with self.assertRaises(execution_deadline.AcceptanceDeadlineExceeded):
             run.checkpoint("deadline", execution_deadline.ExecutionDeadline().expired)
+
+
+class ActionsContextTests(unittest.TestCase):
+    def test_aggregate_context_does_not_require_measurement_runner_identity(self):
+        candidate = subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip()
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory).resolve()
+            run = (runner_temp / "run").resolve()
+            run.mkdir()
+            env = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_REPOSITORY": "IvanLi-CN/codex-vibe-monitor",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                with patch.object(Path, "read_text", return_value="model name : synthetic CPU\n"):
+                    with patch.object(os, "sched_getaffinity", return_value={0, 1, 2, 3}, create=True):
+                        context = environment.actions_context(SOURCE, run, candidate, require_runner_identity=False)
+            self.assertEqual(context["runnerIdentity"], "aggregate:123:1")
+
+    def test_measurement_context_still_requires_runner_identity(self):
+        candidate = subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip()
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory).resolve()
+            run = (runner_temp / "run").resolve()
+            run.mkdir()
+            env = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_REPOSITORY": "IvanLi-CN/codex-vibe-monitor",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(ValueError, "missing GitHub runner identity"):
+                    environment.actions_context(SOURCE, run, candidate)
 
 
 class AggregationTests(unittest.TestCase):

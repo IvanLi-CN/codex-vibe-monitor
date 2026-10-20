@@ -44,7 +44,9 @@ def verify_part(root, lane, expected):
 
 def aggregate(source, candidate_source, root, parts, candidate):
     root.mkdir(parents=True, exist_ok=True)
-    context = actions_context(candidate_source, root, candidate)
+    # The result job verifies runner identities from each measurement part; it
+    # is not itself a measurement runner and may not expose RUNNER_ID.
+    context = actions_context(candidate_source, root, candidate, require_runner_identity=False)
     expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three isolated same-runner paired experiments; each test job is bounded to 15 minutes.")
     scenarios = {name: {"status": "unavailable", "error": "required part evidence missing or invalid"}
                  for name in RUNTIME_SCENARIOS | {"default-observability-ab"}}
