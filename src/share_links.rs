@@ -676,6 +676,13 @@ pub(crate) fn canonical_stream_query_pairs(
             query_pairs.push(("host".to_string(), host.clone()));
             query_pairs.push(("path".to_string(), path.clone()));
         }
+        "xhttp" => {
+            consumed_keys.extend(["host", "path", "mode", "extra"]);
+            query_pairs.push((
+                "xhttpSettings".to_string(),
+                canonical_xhttp_settings(&query, &host, &path),
+            ));
+        }
         _ => {}
     }
 
@@ -754,6 +761,93 @@ pub(crate) fn canonical_stream_query_pairs(
     );
     query_pairs.sort();
     query_pairs
+}
+
+fn canonical_xhttp_settings(query: &HashMap<String, String>, host: &str, path: &str) -> String {
+    let mut extra = match query.get("extra") {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(object)) => object,
+            Ok(_) | Err(_) => serde_json::Map::from_iter([(
+                "__invalid_xhttp_extra".to_string(),
+                Value::Bool(true),
+            )]),
+        },
+        None => serde_json::Map::new(),
+    };
+
+    let mut settings = serde_json::Map::new();
+    if !host.is_empty() {
+        extra.remove("host");
+        settings.insert("host".to_string(), Value::String(host.to_string()));
+    } else if let Some(value) = extra.remove("host") {
+        if value.is_string() {
+            settings.insert("host".to_string(), value);
+        } else {
+            settings.insert("__invalid_xhttp_host".to_string(), Value::Bool(true));
+        }
+    }
+    if !path.is_empty() {
+        extra.remove("path");
+        settings.insert("path".to_string(), Value::String(path.to_string()));
+    } else if let Some(value) = extra.remove("path") {
+        if value.is_string() {
+            settings.insert("path".to_string(), value);
+        } else {
+            settings.insert("__invalid_xhttp_path".to_string(), Value::Bool(true));
+        }
+    }
+    if let Some(mode) = normalized_query_value(query, &["mode"])
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    {
+        extra.remove("mode");
+        settings.insert("mode".to_string(), Value::String(mode));
+    } else if let Some(value) = extra.remove("mode") {
+        if let Some(mode) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            settings.insert("mode".to_string(), Value::String(mode.to_ascii_lowercase()));
+        } else {
+            settings.insert("__invalid_xhttp_mode".to_string(), Value::Bool(true));
+        }
+    }
+    if !extra.is_empty() {
+        settings.insert("extra".to_string(), Value::Object(extra));
+    }
+
+    canonical_json_value(&Value::Object(settings))
+}
+
+fn canonical_json_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).expect("JSON strings serialize"),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_json_value)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let pairs = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).expect("JSON object keys serialize");
+                    format!("{encoded_key}:{}", canonical_json_value(&values[key]))
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", pairs.join(","))
+        }
+    }
 }
 
 pub(crate) fn canonical_stream_identity_from_url(

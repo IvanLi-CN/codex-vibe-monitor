@@ -825,6 +825,7 @@ pub(crate) struct ForwardProxyCandidateValidationRequest {
 pub(crate) struct ForwardProxyCandidateValidationResponse {
     pub(crate) ok: bool,
     pub(crate) message: String,
+    pub(crate) code: Option<ForwardProxyValidationErrorCode>,
     pub(crate) normalized_value: Option<String>,
     pub(crate) discovered_nodes: Option<usize>,
     pub(crate) latency_ms: Option<f64>,
@@ -840,16 +841,21 @@ impl ForwardProxyCandidateValidationResponse {
         Self {
             ok: true,
             message: message.into(),
+            code: None,
             normalized_value,
             discovered_nodes,
             latency_ms,
         }
     }
 
-    pub(crate) fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(
+        code: ForwardProxyValidationErrorCode,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             ok: false,
             message: message.into(),
+            code: Some(code),
             normalized_value: None,
             discovered_nodes: None,
             latency_ms: None,

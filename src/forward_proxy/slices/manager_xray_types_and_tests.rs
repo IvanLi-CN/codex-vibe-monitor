@@ -165,12 +165,25 @@ impl XraySupervisor {
         ready_timeout: Duration,
         shutdown: &CancellationToken,
     ) -> Result<Url> {
-        let outbound = build_xray_outbound_for_endpoint(endpoint)?;
-        let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
-        fs::create_dir_all(&self.runtime_dir).with_context(|| {
-            format!(
-                "failed to create xray runtime directory: {}",
-                self.runtime_dir.display()
+        let outbound = build_xray_outbound_for_endpoint(endpoint).map_err(|err| {
+            wrap_xray_error(
+                err,
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "failed to build xray proxy configuration",
+            )
+        })?;
+        let local_port = pick_unused_local_port().map_err(|err| {
+            wrap_xray_error(
+                err,
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "failed to allocate xray local proxy port",
+            )
+        })?;
+        fs::create_dir_all(&self.runtime_dir).map_err(|err| {
+            wrap_xray_error(
+                anyhow!(err),
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "failed to prepare xray runtime directory",
             )
         })?;
         let config_path = self.runtime_dir.join(format!(
@@ -178,10 +191,20 @@ impl XraySupervisor {
             stable_hash_u64(&endpoint.key)
         ));
         let config = build_xray_instance_config(local_port, outbound);
-        let serialized =
-            serde_json::to_vec_pretty(&config).context("failed to serialize xray config")?;
-        fs::write(&config_path, serialized)
-            .with_context(|| format!("failed to write xray config: {}", config_path.display()))?;
+        let serialized = serde_json::to_vec_pretty(&config).map_err(|err| {
+            wrap_xray_error(
+                anyhow!(err),
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "failed to serialize xray configuration",
+            )
+        })?;
+        fs::write(&config_path, serialized).map_err(|err| {
+            wrap_xray_error(
+                anyhow!(err),
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "failed to write xray configuration",
+            )
+        })?;
 
         let mut child = match Command::new(&self.binary)
             .arg("run")
@@ -193,10 +216,12 @@ impl XraySupervisor {
             .spawn()
         {
             Ok(child) => child,
-            Err(err) => {
+            Err(_) => {
                 let _ = fs::remove_file(&config_path);
-                return Err(err)
-                    .with_context(|| format!("failed to start xray binary: {}", self.binary));
+                return Err(anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::XrayStartupError,
+                    "failed to start xray binary",
+                )));
             }
         };
 
@@ -210,11 +235,21 @@ impl XraySupervisor {
             )
             .await;
             let _ = fs::remove_file(&config_path);
-            return Err(err);
+            return Err(wrap_xray_error(
+                err,
+                ForwardProxyValidationErrorCode::XrayStartupError,
+                "xray process failed to become ready",
+            ));
         }
 
-        let local_proxy_url = Url::parse(&format!("socks5h://127.0.0.1:{local_port}"))
-            .context("failed to build local xray socks endpoint")?;
+        let local_proxy_url =
+            Url::parse(&format!("socks5h://127.0.0.1:{local_port}")).map_err(|err| {
+                wrap_xray_error(
+                    anyhow!(err),
+                    ForwardProxyValidationErrorCode::XrayStartupError,
+                    "failed to build local xray proxy endpoint",
+                )
+            })?;
         self.instances.insert(
             endpoint.key.clone(),
             XrayInstance {
@@ -263,6 +298,18 @@ pub(crate) fn forward_proxy_log_ref(raw: &str) -> String {
 pub(crate) fn forward_proxy_log_ref_option(raw: Option<&str>) -> String {
     raw.map(forward_proxy_log_ref)
         .unwrap_or_else(|| "direct".to_string())
+}
+
+fn wrap_xray_error(
+    err: anyhow::Error,
+    code: ForwardProxyValidationErrorCode,
+    message: &'static str,
+) -> anyhow::Error {
+    if err.downcast_ref::<ForwardProxyValidationError>().is_some() {
+        err
+    } else {
+        anyhow!(ForwardProxyValidationError::new(code, message))
+    }
 }
 
 pub(crate) fn pick_unused_local_port() -> Result<u16> {
@@ -466,6 +513,12 @@ pub(crate) fn build_xray_outbound_for_endpoint(endpoint: &ForwardProxyEndpoint) 
 
 pub(crate) fn build_vmess_xray_outbound(raw: &str) -> Result<Value> {
     let link = parse_vmess_share_link(raw)?;
+    if matches!(link.network.as_str(), "xhttp" | "splithttp") {
+        return Err(anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::UnsupportedTransport,
+            "xhttp transport is only supported for vless nodes",
+        )));
+    }
     let mut outbound = json!({
         "tag": "proxy",
         "protocol": "vmess",
@@ -657,7 +710,7 @@ pub(crate) fn build_vless_xray_outbound(raw: &str) -> Result<Value> {
             ]
         }
     });
-    if let Some(stream_settings) = build_stream_settings_from_url(&url, None)
+    if let Some(stream_settings) = build_stream_settings_from_url_with_xhttp(&url, None, true)?
         && let Some(object) = outbound.as_object_mut()
     {
         object.insert("streamSettings".to_string(), stream_settings);
@@ -691,7 +744,8 @@ pub(crate) fn build_trojan_xray_outbound(raw: &str) -> Result<Value> {
             ]
         }
     });
-    if let Some(stream_settings) = build_stream_settings_from_url(&url, Some("tls"))
+    if let Some(stream_settings) =
+        build_stream_settings_from_url_with_xhttp(&url, Some("tls"), false)?
         && let Some(object) = outbound.as_object_mut()
     {
         object.insert("streamSettings".to_string(), stream_settings);
@@ -720,7 +774,15 @@ pub(crate) fn build_shadowsocks_xray_outbound(raw: &str) -> Result<Value> {
 pub(crate) fn build_stream_settings_from_url(
     url: &Url,
     default_security: Option<&str>,
-) -> Option<Value> {
+) -> Result<Option<Value>> {
+    build_stream_settings_from_url_with_xhttp(url, default_security, false)
+}
+
+pub(crate) fn build_stream_settings_from_url_with_xhttp(
+    url: &Url,
+    default_security: Option<&str>,
+    allow_xhttp: bool,
+) -> Result<Option<Value>> {
     let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
     let network = query
         .get("type")
@@ -795,6 +857,19 @@ pub(crate) fn build_stream_settings_from_url(
                 stream.insert("httpupgradeSettings".to_string(), Value::Object(settings));
                 has_non_default_options = true;
             }
+        }
+        "xhttp" => {
+            if !allow_xhttp {
+                return Err(anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::UnsupportedTransport,
+                    "xhttp transport is only supported for vless nodes",
+                )));
+            }
+            stream.insert(
+                "xhttpSettings".to_string(),
+                build_xhttp_settings(&query, host.as_deref(), path.as_deref())?,
+            );
+            has_non_default_options = true;
         }
         _ => {}
     }
@@ -882,10 +957,115 @@ pub(crate) fn build_stream_settings_from_url(
     }
 
     if has_non_default_options {
-        Some(Value::Object(stream))
+        Ok(Some(Value::Object(stream)))
     } else {
-        None
+        Ok(None)
     }
+}
+
+const SUPPORTED_XHTTP_MODES: &[&str] = &["auto", "packet-up", "stream-up", "stream-one"];
+
+fn build_xhttp_settings(
+    query: &HashMap<String, String>,
+    host: Option<&str>,
+    path: Option<&str>,
+) -> Result<Value> {
+    let mut extra = match query.get("extra") {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(object)) => object,
+            Ok(_) => {
+                return Err(anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+                    "xhttp extra must be a JSON object",
+                )));
+            }
+            Err(_) => {
+                return Err(anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+                    "xhttp extra contains invalid JSON",
+                )));
+            }
+        },
+        None => serde_json::Map::new(),
+    };
+
+    let effective_host = take_xhttp_string_setting(&mut extra, "host", host)?;
+    let effective_path = take_xhttp_string_setting(&mut extra, "path", path)?;
+    let explicit_mode = query
+        .get("mode")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let effective_mode = take_xhttp_mode_setting(&mut extra, explicit_mode.as_deref())?;
+
+    let mut settings = serde_json::Map::new();
+    if let Some(host) = effective_host {
+        settings.insert("host".to_string(), Value::String(host));
+    }
+    if let Some(path) = effective_path {
+        settings.insert("path".to_string(), Value::String(path));
+    }
+    if let Some(mode) = effective_mode {
+        settings.insert("mode".to_string(), Value::String(mode));
+    }
+
+    if !extra.is_empty() {
+        settings.insert("extra".to_string(), Value::Object(extra));
+    }
+
+    Ok(Value::Object(settings))
+}
+
+fn take_xhttp_string_setting(
+    extra: &mut serde_json::Map<String, Value>,
+    key: &str,
+    explicit: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(explicit) = explicit {
+        extra.remove(key);
+        return Ok(Some(explicit.to_string()));
+    }
+    let Some(value) = extra.remove(key) else {
+        return Ok(None);
+    };
+    value.as_str().map(str::to_string).map(Some).ok_or_else(|| {
+        anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+            format!("xhttp extra {key} must be a string"),
+        ))
+    })
+}
+
+fn take_xhttp_mode_setting(
+    extra: &mut serde_json::Map<String, Value>,
+    explicit: Option<&str>,
+) -> Result<Option<String>> {
+    let value = if let Some(explicit) = explicit {
+        extra.remove("mode");
+        explicit.to_string()
+    } else if let Some(value) = extra.remove("mode") {
+        value.as_str().map(str::to_string).ok_or_else(|| {
+            anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+                "xhttp extra mode must be a non-empty string",
+            ))
+        })?
+    } else {
+        return Ok(None);
+    };
+    let mode = value.trim().to_ascii_lowercase();
+    if mode.is_empty() {
+        return Err(anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+            "xhttp extra mode must be a non-empty string",
+        )));
+    }
+    if !SUPPORTED_XHTTP_MODES.contains(&mode.as_str()) {
+        return Err(anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::UnsupportedXhttpMode,
+            "xhttp mode must be one of auto, packet-up, stream-up, or stream-one",
+        )));
+    }
+    Ok(Some(mode))
 }
 
 pub(crate) fn query_flag_true(query: &HashMap<String, String>, key: &str) -> bool {
@@ -1079,6 +1259,145 @@ mod tests {
             .into_iter()
             .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
             .expect("missing non-direct binding node")
+    }
+
+    fn xhttp_test_link(security: &str, network_key: &str) -> String {
+        format!(
+            "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&security={security}&{network_key}=xhttp&host=top.example.com&path=%2Ftop&mode=stream-one&extra=%7B%22host%22%3A%22extra.example.com%22%2C%22path%22%3A%22%2Fextra%22%2C%22mode%22%3A%22auto%22%2C%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D&sni=edge.example.com&alpn=h2&fp=chrome&pbk=public-key&sid=01234567"
+        )
+    }
+
+    #[test]
+    fn vless_xhttp_builder_emits_effective_settings_for_all_security_modes() {
+        for mode in ["auto", "packet-up", "stream-up", "stream-one"] {
+            for security in ["none", "tls", "reality"] {
+                let raw = xhttp_test_link(security, "net")
+                    .replace("mode=stream-one", &format!("mode={mode}"));
+                let outbound =
+                    build_vless_xray_outbound(&raw).expect("xhttp vless outbound should build");
+                let stream = &outbound["streamSettings"];
+                assert_eq!(stream["network"], "xhttp");
+                assert_eq!(stream["xhttpSettings"]["host"], "top.example.com");
+                assert_eq!(stream["xhttpSettings"]["path"], "/top");
+                assert_eq!(stream["xhttpSettings"]["mode"], mode);
+                assert_eq!(
+                    stream["xhttpSettings"]["extra"]["xmux"]["maxConnections"],
+                    "1"
+                );
+
+                match security {
+                    "none" => {
+                        assert!(stream.get("security").is_none());
+                        assert!(stream.get("tlsSettings").is_none());
+                        assert!(stream.get("realitySettings").is_none());
+                    }
+                    "tls" => {
+                        assert_eq!(stream["security"], "tls");
+                        assert_eq!(stream["tlsSettings"]["alpn"], json!(["h2"]));
+                        assert!(stream.get("realitySettings").is_none());
+                    }
+                    "reality" => {
+                        assert_eq!(stream["security"], "reality");
+                        assert_eq!(stream["realitySettings"]["serverName"], "edge.example.com");
+                        assert!(stream["realitySettings"].get("alpn").is_none());
+                        assert!(stream.get("tlsSettings").is_none());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vless_xhttp_builder_promotes_extra_transport_fields() {
+        let raw = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%7B%22host%22%3A%22extra.example.com%22%2C%22path%22%3A%22%2Fextra%22%2C%22mode%22%3A%22stream-up%22%2C%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D";
+        let outbound = build_vless_xray_outbound(raw).expect("extra transport fields should build");
+        let settings = &outbound["streamSettings"]["xhttpSettings"];
+
+        assert_eq!(settings["host"], "extra.example.com");
+        assert_eq!(settings["path"], "/extra");
+        assert_eq!(settings["mode"], "stream-up");
+        assert_eq!(settings["extra"]["xmux"]["maxConnections"], "1");
+    }
+
+    #[test]
+    fn vless_xhttp_builder_rejects_invalid_settings_without_protocol_fallback() {
+        let invalid_extra = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%5B%5D";
+        let error = build_vless_xray_outbound(invalid_extra).expect_err("array extra must fail");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed xhttp error")
+                .code,
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        );
+
+        let malformed_extra = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%7B";
+        let error =
+            build_vless_xray_outbound(malformed_extra).expect_err("malformed extra must fail");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed xhttp error")
+                .code,
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        );
+
+        let invalid_extra_mode = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%7B%22mode%22%3A1%7D";
+        let error = build_vless_xray_outbound(invalid_extra_mode).expect_err("invalid extra mode");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed xhttp error")
+                .code,
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        );
+
+        let invalid_mode = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&mode=legacy";
+        let error =
+            build_vless_xray_outbound(invalid_mode).expect_err("unsupported mode must fail");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed xhttp error")
+                .code,
+            ForwardProxyValidationErrorCode::UnsupportedXhttpMode
+        );
+
+        let trojan_xhttp =
+            "trojan://password@edge.example.com:443?security=tls&type=xhttp&path=%2Ftop";
+        let error = build_trojan_xray_outbound(trojan_xhttp)
+            .expect_err("trojan must not inherit vless xhttp support");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed transport error")
+                .code,
+            ForwardProxyValidationErrorCode::UnsupportedTransport
+        );
+
+        let vmess_payload = json!({
+            "add": "edge.example.com",
+            "port": 443,
+            "id": "11111111-1111-1111-1111-111111111111",
+            "net": "xhttp",
+            "type": "none",
+            "tls": "none"
+        })
+        .to_string();
+        let vmess_xhttp = format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload)
+        );
+        let error = build_vmess_xray_outbound(&vmess_xhttp)
+            .expect_err("vmess must not inherit vless xhttp support");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed transport error")
+                .code,
+            ForwardProxyValidationErrorCode::UnsupportedTransport
+        );
     }
 
     #[test]

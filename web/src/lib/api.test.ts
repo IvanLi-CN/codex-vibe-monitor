@@ -101,6 +101,40 @@ describe("validateForwardProxyCandidate timeout split", () => {
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves validation codes and compatible result fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              message: "xhttp extra contains invalid JSON",
+              code: "invalid_xhttp_extra",
+              normalizedValue: undefined,
+              discoveredNodes: 1,
+              latencyMs: 42,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    );
+
+    await expect(
+      validateForwardProxyCandidate({
+        kind: "proxyUrl",
+        value: "vless://redacted@example.invalid:443?type=xhttp",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      message: "xhttp extra contains invalid JSON",
+      code: "invalid_xhttp_extra",
+      normalizedValue: undefined,
+      discoveredNodes: 1,
+      latencyMs: 42,
+    });
+  });
 });
 
 describe("fetchForwardProxyLiveStats", () => {

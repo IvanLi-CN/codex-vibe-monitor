@@ -882,8 +882,12 @@ pub(crate) async fn post_forward_proxy_candidate_validation(
     let response = match result {
         Ok(response) => response,
         Err(err) => {
-            warn!(error = %err, "forward proxy candidate validation failed");
-            ForwardProxyCandidateValidationResponse::failed(err.to_string())
+            let (code, message) = classify_forward_proxy_validation_error(&err);
+            warn!(
+                code = code.as_str(),
+                "forward proxy candidate validation failed"
+            );
+            ForwardProxyCandidateValidationResponse::failed(code, message)
         }
     };
 
@@ -894,8 +898,12 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
     state: &AppState,
     value: String,
 ) -> Result<ForwardProxyCandidateValidationResponse> {
-    let parsed = parse_forward_proxy_entry(value.trim())
-        .ok_or_else(|| anyhow!("unsupported proxy url or unsupported scheme"))?;
+    let parsed = parse_forward_proxy_entry(value.trim()).ok_or_else(|| {
+        anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::UnsupportedTransport,
+            "unsupported proxy url or unsupported scheme",
+        ))
+    })?;
     let endpoint = ForwardProxyEndpoint {
         key: format!(
             "__validate_proxy__{:016x}",
@@ -921,6 +929,53 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
         Some(1),
         Some(latency_ms),
     ))
+}
+
+pub(crate) fn classify_forward_proxy_validation_error(
+    err: &anyhow::Error,
+) -> (ForwardProxyValidationErrorCode, String) {
+    if let Some(failure) = err.downcast_ref::<ForwardProxyValidationError>() {
+        return (failure.code, failure.message.clone());
+    }
+
+    let detail = format!("{err:#}");
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return (
+            ForwardProxyValidationErrorCode::ProxyTimeout,
+            "proxy validation timed out".to_string(),
+        );
+    }
+    if lower.contains("validation probe returned status") {
+        let status = detail
+            .split("validation probe returned status")
+            .nth(1)
+            .and_then(|suffix| suffix.split_whitespace().next())
+            .filter(|status| status.bytes().all(|byte| byte.is_ascii_digit()))
+            .map(|status| format!("validation probe returned status {status}"));
+        let message = status
+            .unwrap_or_else(|| "validation probe returned a rejected upstream status".to_string());
+        return (
+            ForwardProxyValidationErrorCode::UpstreamStatusRejected,
+            message,
+        );
+    }
+    if lower.contains("xray") {
+        return (
+            ForwardProxyValidationErrorCode::XrayStartupError,
+            "xray proxy route failed to start".to_string(),
+        );
+    }
+    if lower.contains("proxy") || lower.contains("validation request failed") {
+        return (
+            ForwardProxyValidationErrorCode::ProxyConnectError,
+            "proxy connection failed during validation".to_string(),
+        );
+    }
+    (
+        ForwardProxyValidationErrorCode::ValidationFailed,
+        "proxy validation failed".to_string(),
+    )
 }
 
 pub(crate) async fn validate_subscription_candidate(
@@ -981,7 +1036,9 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
     let cancellation = CancellationToken::new();
     let _cancel_on_drop = ProbeCancellationGuard(cancellation.clone());
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let (tx, mut rx) = mpsc::channel::<Result<f64, String>>(endpoint_count.max(1));
+    let (tx, mut rx) = mpsc::channel::<Result<f64, (ForwardProxyValidationErrorCode, String)>>(
+        endpoint_count.max(1),
+    );
 
     for endpoint in endpoints {
         let state = state.clone();
@@ -991,10 +1048,11 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
         tokio::spawn(async move {
             let _permit = match semaphore.acquire_owned().await {
                 Ok(permit) => permit,
-                Err(err) => {
+                Err(_) => {
                     let _ = tx
-                        .send(Err(format!(
-                            "subscription validation concurrency limiter closed: {err}"
+                        .send(Err((
+                            ForwardProxyValidationErrorCode::ValidationFailed,
+                            "subscription validation concurrency limiter closed".to_string(),
                         )))
                         .await;
                     return;
@@ -1018,11 +1076,9 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
                     cancellation.cancel();
                     let _ = tx.send(Ok(latency_ms)).await;
                 }
-                Err(err) if cancellation.is_cancelled() => {
-                    let _ = tx.send(Err(format!("{err:#}"))).await;
-                }
                 Err(err) => {
-                    let _ = tx.send(Err(format!("{err:#}"))).await;
+                    let (code, message) = classify_forward_proxy_validation_error(&err);
+                    let _ = tx.send(Err((code, message))).await;
                 }
             }
         });
@@ -1030,7 +1086,7 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
     drop(tx);
 
     let mut completed = 0usize;
-    let mut last_error: Option<String> = None;
+    let mut last_error: Option<(ForwardProxyValidationErrorCode, String)> = None;
     loop {
         let Some(remaining_timeout) =
             remaining_timeout_budget(validation_timeout, validation_started.elapsed())
@@ -1058,7 +1114,12 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
                 cancellation.cancel();
                 return Ok(latency_ms);
             }
-            Err(err) => last_error = Some(err),
+            Err(err) => {
+                last_error = Some(select_more_specific_validation_failure(
+                    last_error.take(),
+                    err,
+                ));
+            }
         }
         if completed >= endpoint_count {
             break;
@@ -1070,9 +1131,51 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
         timeout_seconds_for_message(attempt_timeout)
     );
     if let Some(err) = last_error {
-        message.push_str(&format!("; last error: {err}"));
+        message.push_str(&format!("; last error: {}", err.1));
+        return Err(anyhow!(ForwardProxyValidationError::new(err.0, message)));
     }
-    bail!(message)
+    Err(anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::ValidationFailed,
+        message,
+    )))
+}
+
+fn select_more_specific_validation_failure(
+    current: Option<(ForwardProxyValidationErrorCode, String)>,
+    candidate: (ForwardProxyValidationErrorCode, String),
+) -> (ForwardProxyValidationErrorCode, String) {
+    let Some(current) = current else {
+        return candidate;
+    };
+    let current_rank = (
+        validation_error_priority(current.0),
+        current.0.as_str(),
+        current.1.as_str(),
+    );
+    let candidate_rank = (
+        validation_error_priority(candidate.0),
+        candidate.0.as_str(),
+        candidate.1.as_str(),
+    );
+    if candidate_rank > current_rank {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn validation_error_priority(code: ForwardProxyValidationErrorCode) -> u8 {
+    match code {
+        ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        | ForwardProxyValidationErrorCode::UnsupportedXhttpMode
+        | ForwardProxyValidationErrorCode::UnsupportedTransport => 5,
+        ForwardProxyValidationErrorCode::XrayConfigError => 4,
+        ForwardProxyValidationErrorCode::XrayStartupError => 3,
+        ForwardProxyValidationErrorCode::ProxyConnectError => 2,
+        ForwardProxyValidationErrorCode::ProxyTimeout => 1,
+        ForwardProxyValidationErrorCode::UpstreamStatusRejected => 1,
+        ForwardProxyValidationErrorCode::ValidationFailed => 0,
+    }
 }
 
 pub(crate) struct ProbeCancellationGuard(CancellationToken);
@@ -1173,7 +1276,13 @@ pub(crate) async fn probe_forward_proxy_endpoint(
             .ok_or_else(|| timeout_error_for_duration(validation_timeout))?;
         let client = state
             .http_clients
-            .client_for_forward_proxy(endpoint_url.as_ref())?;
+            .client_for_forward_proxy(endpoint_url.as_ref())
+            .map_err(|_| {
+                anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::ProxyConnectError,
+                    "proxy connection failed during validation",
+                ))
+            })?;
         let response = match shutdown {
             Some(shutdown) => {
                 tokio::select! {
@@ -1183,19 +1292,22 @@ pub(crate) async fn probe_forward_proxy_endpoint(
                     response = timeout(send_timeout, client.get(probe_target).send()) => {
                         response
                             .map_err(|_| timeout_error_for_duration(validation_timeout))?
-                            .context("validation request failed")?
+                            .map_err(proxy_connection_error)?
                     }
                 }
             }
             None => timeout(send_timeout, client.get(probe_target).send())
                 .await
                 .map_err(|_| timeout_error_for_duration(validation_timeout))?
-                .context("validation request failed")?,
+                .map_err(proxy_connection_error)?,
         };
         let status = response.status();
         // Validation only needs to prove the route is reachable; auth/404 still count as reachable.
         if !is_validation_probe_reachable_status(status) {
-            bail!("validation probe returned status {}", status);
+            return Err(anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::UpstreamStatusRejected,
+                format!("validation probe returned status {status}"),
+            )));
         }
         if shutdown.is_some_and(CancellationToken::is_cancelled) {
             return Ok(None);
@@ -1245,10 +1357,20 @@ pub(crate) fn timeout_budget_exhausted(total_timeout: Duration, elapsed: Duratio
 }
 
 pub(crate) fn timeout_error_for_duration(timeout: Duration) -> anyhow::Error {
-    anyhow!(
-        "validation request timed out after {}s",
-        timeout_seconds_for_message(timeout)
-    )
+    anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::ProxyTimeout,
+        format!(
+            "validation request timed out after {}s",
+            timeout_seconds_for_message(timeout)
+        ),
+    ))
+}
+
+fn proxy_connection_error(_error: reqwest::Error) -> anyhow::Error {
+    anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::ProxyConnectError,
+        "proxy connection failed during validation",
+    ))
 }
 
 pub(crate) fn timeout_seconds_for_message(timeout: Duration) -> u64 {

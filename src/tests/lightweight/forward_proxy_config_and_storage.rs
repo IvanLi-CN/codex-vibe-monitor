@@ -1,5 +1,106 @@
 use super::*;
 
+#[test]
+fn vless_xhttp_identity_normalizes_aliases_encoding_and_extra_key_order() {
+    let first = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=reality&type=xhttp&host=cdn.example.com&path=%2Fxp-xhttp&mode=stream-one&extra=%7B%22mode%22%3A%22auto%22%2C%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%2C%22cMaxReuseTimes%22%3A%220%22%7D%7D&sni=edge.example.com&alpn=h2&fp=chrome&pbk=public-key&sid=01234567";
+    let equivalent = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?sid=01234567&alpn=h2&pbk=public-key&fp=chrome&sni=edge.example.com&extra=%7B%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A%220%22%2C%22maxConnections%22%3A%221%22%7D%2C%22mode%22%3A%22auto%22%7D&mode=stream-one&path=/xp-xhttp&host=cdn.example.com&net=xhttp&security=reality";
+
+    assert_eq!(
+        normalize_single_proxy_key(first),
+        normalize_single_proxy_key(equivalent),
+        "xhttp aliases, query order, encoding, and JSON key order should be equivalent"
+    );
+}
+
+#[test]
+fn vless_xhttp_identity_changes_when_effective_settings_change() {
+    let base = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=reality&type=xhttp&host=cdn.example.com&path=%2Fxp-xhttp&mode=stream-one&extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D&sni=edge.example.com&alpn=h2&fp=chrome&pbk=public-key&sid=01234567";
+    let host_changed = base.replace("cdn.example.com", "other.example.com");
+    let path_changed = base.replace("%2Fxp-xhttp", "%2Fother");
+    let mode_changed = base.replace("stream-one", "stream-up");
+    let extra_changed = base.replace(
+        "%22maxConnections%22%3A%221%22",
+        "%22maxConnections%22%3A%222%22",
+    );
+    let alpn_changed = base.replace("alpn=h2", "alpn=h3");
+
+    for changed in [
+        host_changed,
+        path_changed,
+        mode_changed,
+        extra_changed,
+        alpn_changed,
+    ] {
+        assert_ne!(
+            normalize_single_proxy_key(base),
+            normalize_single_proxy_key(&changed),
+            "effective XHTTP or Reality identity fields must affect the stable key"
+        );
+    }
+}
+
+#[test]
+fn vless_xhttp_invalid_extra_identity_does_not_retain_raw_value() {
+    let raw = Url::parse(
+        "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%7B%22secret%22%3A%22do-not-retain",
+    )
+    .expect("invalid extra fixture should still be a valid URL");
+    let identity = canonical_vless_share_link_identity(&raw);
+
+    assert!(identity.contains("__invalid_xhttp_extra"));
+    assert!(!identity.contains("do-not-retain"));
+    assert!(!identity.contains("secret"));
+}
+
+#[test]
+fn vless_xhttp_identity_keeps_legacy_saved_node_alias() {
+    let raw = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=reality&type=xhttp&host=cdn.example.com&path=%2Fxp-xhttp&mode=stream-one&extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D&sni=edge.example.com&fp=chrome&pbk=public-key&sid=01234567";
+    let parsed = Url::parse(raw).expect("xhttp fixture should parse");
+    let legacy_key = stable_forward_proxy_key(&canonical_share_link_identity(&parsed));
+    let current_key = normalize_single_proxy_key(raw).expect("xhttp fixture should normalize");
+    let aliases = legacy_bound_proxy_key_aliases(raw, ForwardProxyProtocol::Vless);
+
+    assert_ne!(legacy_key, current_key);
+    assert!(
+        aliases.contains(&legacy_key),
+        "saved XHTTP nodes should retain their historical key as a migration alias"
+    );
+}
+
+#[test]
+fn forward_proxy_validation_failure_codes_are_stable_and_safe() {
+    let error = anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+        "xhttp extra contains invalid JSON",
+    ));
+    let (code, message) = classify_forward_proxy_validation_error(&error);
+    assert_eq!(code, ForwardProxyValidationErrorCode::InvalidXhttpExtra);
+    assert_eq!(message, "xhttp extra contains invalid JSON");
+
+    let response = ForwardProxyCandidateValidationResponse::failed(code, message);
+    let payload = serde_json::to_value(response).expect("validation response should serialize");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["code"], "invalid_xhttp_extra");
+    assert!(
+        payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid JSON")
+    );
+    assert!(payload["normalizedValue"].is_null());
+    assert!(payload["discoveredNodes"].is_null());
+    assert!(payload["latencyMs"].is_null());
+
+    let rejected = anyhow!("attempt 1 failed: validation probe returned status 502 Bad Gateway");
+    assert_eq!(
+        classify_forward_proxy_validation_error(&rejected),
+        (
+            ForwardProxyValidationErrorCode::UpstreamStatusRejected,
+            "validation probe returned status 502".to_string()
+        )
+    );
+}
+
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
