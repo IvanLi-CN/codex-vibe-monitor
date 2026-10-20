@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.9.12",
+  "base_stable_version": "4.9.11",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-20T01:42:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.9.12",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "26bd1da5eb97876469860ecb00c6f1d84004a3e3",
+  "pr_number": 1145,
+  "pr_title": "refactor(maintenance): split startup backfill modules",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.9.12",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.9.12",
+  "target_sha": "b3bb06e269e8676b10c749861a47703a21b3e071",
+  "type_label": "type:patch"
+}
