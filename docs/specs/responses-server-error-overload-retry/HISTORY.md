@@ -11,6 +11,7 @@
 - 2026-10-20: 修复批次此前在 Agent VM 完成 `routing_timeout_and_overload_failover` 37/37、`stateful-sqlite` 1508/1508、`cargo check --locked --all-targets --all-features` 和 `cargo clippy --locked --all-targets --all-features -- -D warnings`；随后 review 发现并修复了混合失败与累计 timeout 边界。
 - 2026-10-21: 修复最终 review 发现的混合失败边界：canonical `server_error` signal 激活后持续锁定同账号策略，429/413、transport、handshake 和首 chunk 重试共享 4 次预算及累计 timeout；专项路由桶 38/38 通过，完整 stateful profile 首轮的 11 个既有时序敏感失败逐项复跑 11/11 通过，check 和 Clippy 通过。
 - 2026-10-21: 补齐同账号重试的 forward-proxy channel 固定回归和 canonical + 413 + 429 混合失败回归；最终 `routing_timeout_and_overload_failover` 资源桶以单线程方式 38/38 通过，check 和 Clippy 继续通过。
+- 2026-10-21: 修复前置 429 扩展 Responses retry loop 的预算边界；Responses family 的 429/413 与 canonical `server_error` 共享 4 次总 attempt 预算，并新增前置 429 回归。补充内部标点/空白归一化分类样例后，专项资源桶以单线程方式 39/39 通过。
 - 2026-10-21: 按主人确认将本地单元/集成测试作为本次逻辑验收依据；线上 empirical observation 不再作为发布前置 gate。
 - 既有 `server_is_overloaded` 与 concurrency `rate_limit_exceeded` overload 行为继续由历史 Responses overload specs 拥有，本主题不替代其账号/route 切换语义。
 

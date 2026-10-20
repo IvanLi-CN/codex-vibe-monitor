@@ -1539,6 +1539,14 @@ fn pool_responses_classify_server_error_overload_with_narrow_message_boundary() 
         classify_pool_responses_overload(
             StatusCode::OK,
             Some("server_error"),
+            Some("Our.servers\tare\ncurrently overloaded. Please try again later."),
+        ),
+        Some(PoolResponsesOverloadRetryPolicy::SameAccountOnly),
+    );
+    assert_eq!(
+        classify_pool_responses_overload(
+            StatusCode::OK,
+            Some("server_error"),
             Some("Our servers are overloaded. Please try again later."),
         ),
         None,
@@ -2263,6 +2271,90 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_413_and_429_a
         attempt_rows
             .iter()
             .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_caps_preceding_429_attempts() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer preceding-429-budget",
+            &[
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Preceding 429 Budget",
+        "preceding-429-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 5 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable preceding 429 account retry settings");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-preceding-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read preceding 429 budget failure body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 preceding 429 budget body");
+    assert!(body_text.contains("server_error"));
+
+    let attempts = attempts.lock().expect("lock preceding 429 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer preceding-429-budget").copied(),
+        Some(4)
+    );
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_statuses = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load preceding 429 budget attempt statuses");
+    assert_eq!(attempt_statuses.len(), 4);
+    assert!(
+        attempt_statuses
+            .iter()
+            .all(|status| status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
     );
 
     upstream_handle.abort();
