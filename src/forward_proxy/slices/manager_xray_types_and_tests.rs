@@ -1451,6 +1451,9 @@ mod tests {
 
         assert!(node.alias_keys.contains(&runtime_key));
         assert!(node.alias_keys.contains(&legacy_alias));
+        assert!(node.alias_keys.iter().all(|alias| {
+            is_stable_forward_proxy_key(alias) || is_stable_forward_proxy_binding_key(alias)
+        }));
     }
 
     #[test]

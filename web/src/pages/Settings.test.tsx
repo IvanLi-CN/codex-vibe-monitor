@@ -10,9 +10,21 @@ const hookMocks = vi.hoisted(() => ({
   useSettings: vi.fn(),
 }));
 
+const apiMocks = vi.hoisted(() => ({
+  validateForwardProxyCandidate: vi.fn(),
+}));
+
 vi.mock("../hooks/useSettings", () => ({
   useSettings: hookMocks.useSettings,
 }));
+
+vi.mock("../lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return {
+    ...actual,
+    validateForwardProxyCandidate: apiMocks.validateForwardProxyCandidate,
+  };
+});
 
 vi.mock("../features/settings/ExternalApiKeysSettingsCard", () => ({
   ExternalApiKeysSettingsCard: () => <section data-testid="external-api-keys-settings-card" />,
@@ -195,6 +207,59 @@ describe("Settings forward proxy table", () => {
       "11.0%",
       "101 ms",
     ]);
+  });
+
+  it("keeps validation error codes at the Settings state boundary", async () => {
+    apiMocks.validateForwardProxyCandidate.mockResolvedValue({
+      ok: false,
+      message: "XHTTP validation failed",
+      code: "invalid_xhttp_extra",
+    });
+
+    renderSettingsPage();
+
+    const addButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("批量导入节点"),
+    );
+    if (!(addButton instanceof HTMLButtonElement)) {
+      throw new Error("Missing batch proxy button");
+    }
+    act(() => {
+      addButton.click();
+    });
+
+    const input = document.body.querySelector("#forward-proxy-modal-input");
+    if (!(input instanceof HTMLTextAreaElement)) {
+      throw new Error("Missing batch proxy input");
+    }
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(input, "vless://redacted@example.com:443");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const modal = input.closest("div.fixed");
+    const validateButton = Array.from(modal?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "验证可用性",
+    );
+    if (!(validateButton instanceof HTMLButtonElement)) {
+      throw new Error("Missing validation button");
+    }
+    await act(async () => {
+      validateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(apiMocks.validateForwardProxyCandidate).toHaveBeenCalledWith({
+      kind: "proxyUrl",
+      value: "vless://redacted@example.com:443",
+    });
+    expect(apiMocks.validateForwardProxyCandidate).toHaveBeenCalledTimes(12);
+    expect(
+      document.body.querySelector("tr[data-validation-code='invalid_xhttp_extra']"),
+    ).not.toBeNull();
   });
 
   it("renders independent request/response body logging switches", () => {

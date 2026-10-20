@@ -72,10 +72,11 @@ type RoutingDraft = {
 type ForwardProxyValidationState =
   | { status: "idle" }
   | { status: "validating"; message?: string }
-  | { status: "failed"; message: string }
+  | { status: "failed"; message: string; code?: string }
   | {
       status: "passed";
       message: string;
+      code?: string;
       normalizedValues: string[];
       discoveredNodes?: number;
       latencyMs?: number;
@@ -90,6 +91,7 @@ type ForwardProxyBatchRoundResult = {
   ok: boolean;
   timedOut: boolean;
   latencyMs?: number;
+  code?: string;
   message: string;
 };
 
@@ -102,6 +104,7 @@ type ForwardProxyBatchValidationItem = {
   protocolName: string;
   status: ForwardProxyBatchValidationStatus;
   latencyMs?: number;
+  code?: string;
   message: string;
   rounds: ForwardProxyBatchRoundResult[];
   completedRounds: number;
@@ -1201,6 +1204,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       }
       setForwardProxyValidation({
         status: "passed",
+        code: results.find((item) => item.status === "unavailable" && item.code)?.code,
         message: t("settings.forwardProxy.modal.batchValidateSummary", {
           available: availableCount,
           unavailable: unavailableCount,
@@ -1249,6 +1253,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
           ok: result.ok,
           timedOut: !result.ok && isForwardProxyValidationTimeout(message),
           latencyMs: result.latencyMs,
+          code: result.code,
           message,
         };
       } catch (err) {
@@ -1290,6 +1295,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
             protocolName: normalizedProtocolName || item.protocolName || unknownProtocolName,
             status: nextStatus,
             latencyMs: roundResult.ok ? roundResult.latencyMs : undefined,
+            code: roundResult.code,
             message: roundResult.message,
             rounds,
             completedRounds,
@@ -1326,6 +1332,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         if (!result.ok) {
           setForwardProxyValidation({
             status: "failed",
+            code: result.code,
             message: result.message || t("settings.forwardProxy.modal.validateFailed"),
           });
           return;
@@ -1333,6 +1340,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         setForwardProxyValidation({
           status: "passed",
           message: result.message || t("settings.forwardProxy.modal.validateSuccess"),
+          code: result.code,
           normalizedValues: [result.normalizedValue?.trim() || candidate],
           discoveredNodes: result.discoveredNodes,
           latencyMs: result.latencyMs,
@@ -1449,6 +1457,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 ...item,
                 status: "validating" as const,
                 latencyMs: undefined,
+                code: undefined,
                 message: t("settings.forwardProxy.modal.rowValidating"),
                 rounds: [] as ForwardProxyBatchRoundResult[],
                 completedRounds: 0,
@@ -2960,6 +2969,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                                   <tr
                                     key={item.key}
                                     className={item.status === "unavailable" ? "bg-warning/10" : ""}
+                                    data-validation-code={item.code}
                                   >
                                     <td className="px-3 py-2 text-base-content/60">{index + 1}</td>
                                     <td className="px-3 py-2">
@@ -3116,7 +3126,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           </Alert>
                         )}
                       {forwardProxyValidation.status === "failed" && (
-                        <Alert variant="error">{forwardProxyValidation.message}</Alert>
+                        <Alert variant="error" data-validation-code={forwardProxyValidation.code}>
+                          {forwardProxyValidation.message}
+                        </Alert>
                       )}
                       {!forwardProxyModalIsBatch && forwardProxyValidation.status === "passed" && (
                         <Alert variant="success">

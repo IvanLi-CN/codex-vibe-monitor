@@ -1346,6 +1346,11 @@ impl ForwardProxyManager {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|alias| alias != &descriptor.key)
+                .filter(|alias| {
+                    alias == FORWARD_PROXY_DIRECT_KEY
+                        || is_stable_forward_proxy_key(alias)
+                        || is_stable_forward_proxy_binding_key(alias)
+                })
                 .collect::<Vec<_>>();
             alias_keys.sort();
             alias_keys.dedup();
