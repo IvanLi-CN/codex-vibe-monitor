@@ -1,3 +1,4 @@
+use super::maintenance_loop::wake_startup_backfill_coverage_repair_inner;
 use super::*;
 
 #[tokio::test]

@@ -1,3 +1,7 @@
+use super::maintenance_loop::startup_backfill_hourly_rollup_refresh_scope;
+use super::task_runner::{
+    startup_backfill_observation_task_key, startup_backfill_run_is_actionable,
+};
 use super::*;
 use sqlx::SqlitePool;
 
