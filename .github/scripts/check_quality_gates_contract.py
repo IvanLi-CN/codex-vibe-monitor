@@ -217,7 +217,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     upload = step_config(performance_job, "Upload performance acceptance evidence", "ci-pr.yml.jobs.observability-performance")
     require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
     evidence = str(upload.get("with", {}).get("path", "")).splitlines()
-    expected_evidence = {"runtime-card.json", "part-outcome.json", "scenarios.json", "ab-samples.json",
+    expected_evidence = {"runtime-card.json", "part-outcome.json", "scenarios.json", "client-failures.json", "ab-samples.json",
                          "run-config.json", "image-identity.json", "runner-context.json",
                          "environment-admission.jsonl", "resource-observer.jsonl", "measurement-windows.json",
                          "cpu-verified/*.manifest.json", "cpu-verified/*.json.gz", "cpu-verified/*.syms.json"}

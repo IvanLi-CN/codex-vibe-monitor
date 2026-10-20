@@ -198,6 +198,7 @@ jobs:
             ${{ runner.temp }}/observability-acceptance/runtime-card.json
             ${{ runner.temp }}/observability-acceptance/part-outcome.json
             ${{ runner.temp }}/observability-acceptance/scenarios.json
+            ${{ runner.temp }}/observability-acceptance/client-failures.json
             ${{ runner.temp }}/observability-acceptance/ab-samples.json
             ${{ runner.temp }}/observability-acceptance/run-config.json
             ${{ runner.temp }}/observability-acceptance/image-identity.json
