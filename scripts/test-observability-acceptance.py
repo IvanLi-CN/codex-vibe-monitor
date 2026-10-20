@@ -394,7 +394,7 @@ class AdmissionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.sha = "a" * 40
-        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_ID": "runner-123", "RUNNER_TEMP": str(self.root), "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_NAME": "Hosted Agent", "GITHUB_JOB": "observability-performance", "OBSERVABILITY_LANE": "pair-0", "RUNNER_TEMP": str(self.root), "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
 
     def context(self, root=None):
         with patch.object(environment.subprocess, "check_output", return_value=self.sha + "\n"), patch.object(Path, "read_text", return_value="model name: Fixture CPU\n"), patch.object(os, "sched_getaffinity", return_value={0, 1, 2, 3}, create=True):
@@ -422,10 +422,23 @@ class AdmissionTests(unittest.TestCase):
             context = self.context()
         self.assertEqual(context["evidenceLocator"], "https://github.com/owner/repo/actions/runs/123/attempts/2")
         self.assertEqual(context["candidate"], self.sha)
-        self.assertEqual(context["runnerIdentity"], "runner-123")
+        self.assertEqual(context["runnerIdentity"], "job:owner/repo:123:2:observability-performance:pair-0")
+        self.assertEqual(context["runnerJob"], "observability-performance")
+        self.assertEqual(context["runnerLane"], "pair-0")
+        self.assertEqual(context["runnerName"], "Hosted Agent")
 
     def test_missing_runner_identity_cannot_certify_isolation(self):
+        with patch.dict(os.environ, {**self.env, "GITHUB_JOB": ""}, clear=True):
+            with self.assertRaisesRegex(ValueError, "runner identity"):
+                self.context()
+
+    def test_undocumented_runner_id_is_not_required(self):
         with patch.dict(os.environ, {**self.env, "RUNNER_ID": ""}, clear=True):
+            context = self.context()
+        self.assertEqual(context["runnerIdentity"], "job:owner/repo:123:2:observability-performance:pair-0")
+
+    def test_matrix_lane_is_required_for_measurement_identity(self):
+        with patch.dict(os.environ, {**self.env, "OBSERVABILITY_LANE": ""}, clear=True):
             with self.assertRaisesRegex(ValueError, "runner identity"):
                 self.context()
 

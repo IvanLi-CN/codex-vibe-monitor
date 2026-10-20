@@ -167,6 +167,7 @@ jobs:
         continue-on-error: true
         env:
           CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+          OBSERVABILITY_LANE: ${{ matrix.lane }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 trusted/scripts/observability-acceptance/run.py \
