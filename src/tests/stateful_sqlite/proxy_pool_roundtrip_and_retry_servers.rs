@@ -298,6 +298,7 @@ struct PoolResponseFailedSequenceUpstreamState {
 #[derive(Clone, Copy)]
 pub(crate) enum PoolResponsesRetrySequenceStep {
     CanonicalOverload,
+    PayloadTooLarge,
     RateLimited,
 }
 
@@ -949,6 +950,17 @@ async fn pool_responses_retry_sequence_upstream(
                 "error": {
                     "code": "rate_limit_exceeded",
                     "message": format!("rate limited for {authorization}"),
+                },
+                "attempt": attempt,
+            })),
+        )
+            .into_response(),
+        Some(PoolResponsesRetrySequenceStep::PayloadTooLarge) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "error": {
+                    "code": "payload_too_large",
+                    "message": format!("payload too large for {authorization}"),
                 },
                 "attempt": attempt,
             })),
@@ -2037,6 +2049,74 @@ pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream_
             .expect("custom response.failed retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
+}
+
+pub(crate) async fn spawn_test_http_connect_proxy(
+    target_base: &str,
+) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    let target_url = Url::parse(target_base).expect("valid CONNECT proxy target url");
+    let target_host = target_url
+        .host_str()
+        .expect("CONNECT proxy target should have a host")
+        .parse::<IpAddr>()
+        .expect("CONNECT proxy target should use an IP address");
+    let target_port = target_url
+        .port_or_known_default()
+        .expect("CONNECT proxy target should have a port");
+    let target_addr = SocketAddr::new(target_host, target_port);
+    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP CONNECT test proxy");
+    let addr = listener.local_addr().expect("HTTP CONNECT test proxy addr");
+    let handle = tokio::spawn({
+        let connect_attempts = connect_attempts.clone();
+        async move {
+            loop {
+                let Ok((mut client, _)) = listener.accept().await else {
+                    break;
+                };
+                let connect_attempts = connect_attempts.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::with_capacity(256);
+                    let mut buffer = [0_u8; 1024];
+                    loop {
+                        let read = client
+                            .read(&mut buffer)
+                            .await
+                            .expect("read HTTP CONNECT request");
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                        assert!(
+                            request.len() <= 16 * 1024,
+                            "HTTP CONNECT request headers exceeded test limit"
+                        );
+                    }
+
+                    assert!(
+                        String::from_utf8_lossy(&request).starts_with("CONNECT "),
+                        "test proxy should receive an HTTP CONNECT request"
+                    );
+                    let mut target = TcpStream::connect(target_addr)
+                        .await
+                        .expect("connect HTTP CONNECT test proxy target");
+                    client
+                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .await
+                        .expect("write HTTP CONNECT success response");
+                    connect_attempts.fetch_add(1, Ordering::SeqCst);
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
+                });
+            }
+        }
+    });
+
+    (format!("http://{addr}"), connect_attempts, handle)
 }
 
 pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_sequence_upstream(

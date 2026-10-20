@@ -1969,6 +1969,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         });
         let mut first_response_attempt_started_at = None;
         let mut same_account_only_retry_active = false;
+        let mut same_account_only_forward_proxy: Option<(
+            ForwardProxyRouteScope,
+            SelectedForwardProxy,
+            reqwest::Client,
+        )> = None;
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
             if same_account_only_retry_active
@@ -2137,7 +2142,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 prepared_request_body.request_body_for_capture.clone();
             let attempted_codex_imagegen_rewrite =
                 prepared_request_body.codex_imagegen_rewrite.clone();
-            let (forward_proxy_scope, selected_proxy, _client) =
+            let (forward_proxy_scope, selected_proxy, _client) = if same_account_only_retry_active {
+                same_account_only_forward_proxy
+                    .clone()
+                    .expect("same-account-only retry should retain forward proxy selection")
+            } else {
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
@@ -2200,7 +2209,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         }
                         continue 'account_loop;
                     }
-                };
+                }
+            };
+            let same_account_only_forward_proxy_candidate = (
+                forward_proxy_scope.clone(),
+                selected_proxy.clone(),
+                _client.clone(),
+            );
             let (
                 response,
                 oauth_responses_debug,
@@ -4551,6 +4566,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }) => {
                         if retry_policy == PoolResponsesOverloadRetryPolicy::SameAccountOnly {
                             same_account_only_retry_active = true;
+                            same_account_only_forward_proxy =
+                                Some(same_account_only_forward_proxy_candidate);
                         }
                         let finished_at = shanghai_now_string();
                         if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
@@ -4608,6 +4625,43 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to broadcast retryable response.failed snapshot"
                             );
                         }
+
+                        let retryable_response_failed_proxy_binding_key =
+                            if let Some((_, selected_proxy)) = forward_proxy_selection.as_ref() {
+                                canonical_pool_attempt_proxy_binding_key(
+                                    state.as_ref(),
+                                    selected_proxy.key.as_str(),
+                                )
+                                .await
+                            } else {
+                                None
+                            };
+                        store_pool_failover_error(
+                            &mut last_error,
+                            &mut preserve_sticky_owner_terminal_error,
+                            PoolUpstreamError {
+                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                                account: Some(account.clone()),
+                                status,
+                                message: message.clone(),
+                                canonical_error_message: None,
+                                failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                                blocked_binding: None,
+                                connect_latency_ms,
+                                upstream_error_code: upstream_error_code.clone(),
+                                upstream_error_message: upstream_error_message.clone(),
+                                downstream_error_message: None,
+                                upstream_request_id: upstream_request_id.clone(),
+                                proxy_binding_key_snapshot:
+                                    retryable_response_failed_proxy_binding_key,
+                                oauth_responses_debug: oauth_responses_debug.clone(),
+                                attempt_summary: PoolAttemptSummary::default(),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture: attempted_request_body_for_capture
+                                    .clone(),
+                            },
+                            attempted_codex_imagegen_rewrite.as_ref(),
+                        );
 
                         let has_retry_budget =
                             same_account_attempt + 1 < overload_same_account_attempt_budget;

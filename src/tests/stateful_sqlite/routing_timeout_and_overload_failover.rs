@@ -1754,6 +1754,10 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
             "Our servers are currently overloaded. Please try again later.",
         )
         .await;
+    let (same_route_proxy_base, same_route_proxy_connects, same_route_proxy_handle) =
+        spawn_test_http_connect_proxy(&same_route_base).await;
+    let (alternate_proxy_base, alternate_proxy_connects, alternate_proxy_handle) =
+        spawn_test_http_connect_proxy(&same_route_base).await;
     let (alternate_base, alternate_attempts, alternate_handle) =
         spawn_pool_retry_upstream(&[]).await;
     let base_state =
@@ -1762,6 +1766,14 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
     let state =
         clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
     seed_pool_routing_api_key(&state, "pool-live-key").await;
+    apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
+            proxy_urls: vec![same_route_proxy_base.clone(), alternate_proxy_base.clone()],
+            ..ForwardProxySettings::default()
+        },
+    )
+    .await;
     let primary_id = insert_test_pool_api_key_account_with_options(
         &state,
         "Server Error Primary",
@@ -1771,6 +1783,19 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
         Some(same_route_base.as_str()),
     )
     .await;
+    let bound_proxy_keys = [
+        same_route_proxy_base.as_str(),
+        alternate_proxy_base.as_str(),
+    ]
+    .into_iter()
+    .map(|proxy_url| normalize_single_proxy_key(proxy_url).expect("normalize proxy key"))
+    .collect::<Vec<_>>();
+    sqlx::query("UPDATE pool_upstream_accounts SET bound_proxy_keys_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&bound_proxy_keys).expect("serialize bound proxy keys"))
+        .bind(primary_id)
+        .execute(&state.pool)
+        .await
+        .expect("bind two forward proxy nodes to primary account");
     insert_test_pool_api_key_account_with_options(
         &state,
         "Server Error Secondary",
@@ -1921,9 +1946,12 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
     let same_route_attempts = same_route_attempts
         .lock()
         .expect("lock exhausted server_error overload attempts");
-    assert_eq!(
-        same_route_attempts.get("Bearer route-one-primary").copied(),
-        Some(4)
+    let same_route_proxy_connects = same_route_proxy_connects.load(Ordering::SeqCst);
+    let alternate_proxy_connects = alternate_proxy_connects.load(Ordering::SeqCst);
+    assert_eq!(same_route_proxy_connects + alternate_proxy_connects, 4);
+    assert!(
+        same_route_proxy_connects == 4 || alternate_proxy_connects == 4,
+        "same-account retries must stay on one forward-proxy channel: primary={same_route_proxy_connects}, alternate={alternate_proxy_connects}"
     );
     assert!(
         same_route_attempts
@@ -1939,6 +1967,8 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
     drop(alternate_attempts);
 
     same_route_handle.abort();
+    same_route_proxy_handle.abort();
+    alternate_proxy_handle.abort();
     alternate_handle.abort();
 }
 
@@ -2114,7 +2144,7 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
 }
 
 #[tokio::test]
-async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts() {
+async fn pool_openai_v1_responses_server_error_overload_caps_mixed_413_and_429_attempts() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRow {
         distinct_account_index: i64,
@@ -2125,10 +2155,10 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
 
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_responses_retry_sequence_upstream(&[(
-            "Bearer mixed-429-budget",
+            "Bearer mixed-413-and-429-budget",
             &[
                 PoolResponsesRetrySequenceStep::CanonicalOverload,
-                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::PayloadTooLarge,
                 PoolResponsesRetrySequenceStep::RateLimited,
                 PoolResponsesRetrySequenceStep::RateLimited,
             ],
@@ -2142,8 +2172,8 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_api_key_account_with_options(
         &state,
-        "Mixed 429 Budget",
-        "mixed-429-budget",
+        "Mixed 413 and 429 Budget",
+        "mixed-413-and-429-budget",
         None,
         None,
         Some(upstream_base.as_str()),
@@ -2155,10 +2185,10 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
     .bind(account_id)
     .execute(&state.pool)
     .await
-    .expect("enable mixed 429 account retry settings");
+    .expect("enable mixed 413 and 429 account retry settings");
     let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
         .await
-        .expect("load mixed 429 account retry settings");
+        .expect("load mixed 413 and 429 account retry settings");
     assert!(effective_rule.upstream_429_retry_enabled);
     assert_eq!(effective_rule.upstream_429_max_retries, 3);
 
@@ -2171,7 +2201,7 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
             HeaderValue::from_static("Bearer pool-live-key"),
         )]),
         Body::from(
-            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-mixed-429-budget"}"#
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-mixed-413-and-429-budget"}"#
                 .as_bytes()
                 .to_vec(),
         ),
@@ -2181,9 +2211,14 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     let _body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read mixed 429 budget failure body");
-    let attempts = attempts.lock().expect("lock mixed 429 budget attempts");
-    assert_eq!(attempts.get("Bearer mixed-429-budget").copied(), Some(4));
+        .expect("read mixed 413 and 429 budget failure body");
+    let attempts = attempts
+        .lock()
+        .expect("lock mixed 413 and 429 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer mixed-413-and-429-budget").copied(),
+        Some(4)
+    );
     drop(attempts);
 
     wait_for_codex_invocations(&state.pool, 1).await;
@@ -2198,7 +2233,7 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
     )
     .fetch_all(&state.pool)
     .await
-    .expect("load mixed 429 budget attempts");
+    .expect("load mixed 413 and 429 budget attempts");
     assert_eq!(attempt_rows.len(), 4);
     assert_eq!(
         attempt_rows
@@ -2215,13 +2250,14 @@ async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts(
         vec![1, 2, 3, 4]
     );
     assert_eq!(attempt_rows[0].http_status, Some(200));
+    assert_eq!(attempt_rows[1].http_status, Some(413));
     assert_eq!(
         attempt_rows
             .iter()
-            .skip(1)
+            .skip(2)
             .map(|row| row.http_status)
             .collect::<Vec<_>>(),
-        vec![Some(429), Some(429), Some(429)]
+        vec![Some(429), Some(429)]
     );
     assert!(
         attempt_rows
