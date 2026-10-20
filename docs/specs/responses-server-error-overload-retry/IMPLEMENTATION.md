@@ -6,7 +6,7 @@
 
 - Implementation: 已在当前工作树实现
 - Lifecycle: active
-- Catalog note: 代码与回归测试已完成；线上候选版本验收尚未完成，不能用此前 dashboard 观察替代。
+- Catalog note: 代码与本地回归测试已完成；本次交付以本地测试验证逻辑正确性，线上候选版本观察不作为前置 gate。
 
 ## Implementation Coverage
 
@@ -25,18 +25,18 @@
 - `cargo check --locked --all-targets --all-features`: passed in the Agent VM with Rust 1.96.0.
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed in the Agent VM.
 - `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；`bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 已实际执行。第一次完整运行是 1505 passed、1 failed，失败项 `invocation_ranges_protected_cache_saturation_has_bounded_admission` 单独复跑通过；第二次完整运行是 1504 passed、2 failed，失败项 `pool_route_uses_ungrouped_transit_when_grouped_alternate_exists` 与 `startup_summary_hydration_retries_after_an_in_flight_refresh` 单独复跑均通过。新增 Responses overload 相关测试在完整运行中通过。
+- Delivery acceptance: 主人已明确将本次计划的 `empirical_acceptance` 修正为 `not_required`；分类、gate、预算和路由行为以本地单元/集成测试作为逻辑正确性证据。
 - Direct macOS test execution remained blocked by the known `libsqlx_macros` dynamic-library `mis-aligned LINKEDIT string pool` loader error; the passing assertions above came from the Agent VM.
 
 ## Rollout Facts
 
 - The earlier dashboard observation of deployed `v4.9.9` is baseline evidence only; it is not evidence for this implementation.
-- The current candidate has not been deployed from this task, so empirical online acceptance is still pending.
+- The current candidate has not been deployed from this task; this is not a delivery blocker after the explicit local-test acceptance decision.
 - No database migration, public API compatibility change, configuration change or UI visual evidence is expected for this topic.
 
 ## Remaining Gaps
 
 - `stateful-sqlite` 全量套件在当前 VM 上存在既有时序敏感失败，不能宣称全量无条件通过；失败项的隔离复跑均通过，代码相关资源桶与新增 Responses overload 测试通过。
-- Re-check an invocation after the candidate rollout and confirm multiple attempts with unchanged account and route; record the candidate version and scenario.
 
 ## References
 
