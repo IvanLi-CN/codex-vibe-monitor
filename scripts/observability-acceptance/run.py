@@ -19,9 +19,36 @@ from deadline import AcceptanceDeadlineExceeded, ExecutionDeadline, EXECUTION_SE
 FIXTURE_INTERNAL_INGEST_TOKEN = "cvm-fixture-internal-ingest"
 FIXTURE_METRICS_TOKEN = "cvm-fixture-metrics-token"
 FIXTURE_READ_TOKEN = "cvm-fixture-read-token"
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)(authorization|bearer|basic|token|secret|password|api[_-]?key|cookie|payload|body)"
+    r"(\s*[:=]\s*|\s+)(?:(?:bearer|basic)\s+)?[^\s,;)]+"
+)
+_SAFE_FAILURE_LINE = re.compile(r"(?i)(assertionerror|error|exception|traceback|failed)")
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
+
+def sanitize_client_failure(mode, stderr):
+    """Return bounded, non-sensitive client failure evidence for CI artifacts."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    text = _ANSI_ESCAPE.sub("", stderr or "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    selected = [line for line in lines if _SAFE_FAILURE_LINE.search(line)]
+    message = selected[-1] if selected else (lines[-1] if lines else "client exited without diagnostic output")
+    message = _SENSITIVE_VALUE.sub(lambda match: match.group(1) + "=[redacted]", message)
+    message = re.sub(r"https?://[^\s]+", "[url-redacted]", message)
+    return {
+        "mode": mode if mode in {"functional", "trace_cases", "trace_stats", "load"} else "unknown",
+        "exceptionType": next(
+            (name for name in ("AssertionError", "TimeoutExpired", "CalledProcessError", "RuntimeError", "ValueError") if name in message),
+            "ClientFailure",
+        ),
+        "message": message[:512],
+        "stderrLineCount": len(lines),
+    }
+
 def digest(paths):
     result=hashlib.sha256()
     for path in paths: result.update(path.read_bytes())
@@ -70,6 +97,7 @@ class Run:
             self.cpu_layout=None
         self.project="testbox-"+args.agent+"-"+hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
         self.compose_file=self.root/"compose.json";self.results={}
+        self.client_failures=[]
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)
         self.execution_started_utc=float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))
@@ -94,9 +122,19 @@ class Run:
         remaining=self.execution_deadline_utc-time.time()-5
         if remaining<=0:
             raise AcceptanceDeadlineExceeded("acceptance client deadline exhausted")
-        with (self.root/"client.log").open("a") as log:
-            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=min(600,remaining),stderr=log)
+        try:
+            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=min(600,remaining),stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as error:
+            self.client_failures.append(sanitize_client_failure(args[-1] if args else "unknown", error.stderr))
+            self._write_client_failures()
+            raise
+        except subprocess.TimeoutExpired as error:
+            self.client_failures.append(sanitize_client_failure(args[-1] if args else "unknown", error.stderr))
+            self._write_client_failures()
+            raise
         return json.loads(result)
+    def _write_client_failures(self):
+        (self.root/"client-failures.json").write_text(json.dumps({"failures":self.client_failures},indent=2)+"\n")
     def checkpoint(self,name,operation):
         try:
             self.results[name]={"status":"passed","result":operation()}
@@ -105,6 +143,7 @@ class Run:
         except Exception as error:
             self.results[name]={"status":"unavailable" if isinstance(error,(OSError,subprocess.TimeoutExpired)) else "failed","error":str(error)}
             print(name+" error: "+str(error), flush=True)
+            self._write_client_failures()
         (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
         # A/B recreates the application; preserve each scenario's diagnostics first.
         with (self.root/(name+"-compose.log")).open("w") as log:

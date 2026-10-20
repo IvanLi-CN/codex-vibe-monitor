@@ -33,6 +33,19 @@ def psi(cpu=0, io=0, memory=0):
 
 
 class ContainerMountTests(unittest.TestCase):
+    def test_client_failure_evidence_is_bounded_and_redacted(self):
+        result = acceptance.sanitize_client_failure(
+            "functional",
+            "Traceback (most recent call last):\n"
+            "AssertionError: ('scrape', 9091, 200)\n"
+            "Authorization: Bearer fixture-secret\n",
+        )
+        self.assertEqual(result["mode"], "functional")
+        self.assertEqual(result["exceptionType"], "AssertionError")
+        self.assertIn("9091", result["message"])
+        self.assertNotIn("fixture-secret", json.dumps(result))
+        self.assertLessEqual(len(result["message"]), 512)
+
     def test_candidate_does_not_receive_shared_tempo_ingest_credential(self):
         source = (SOURCE / "scripts/observability-acceptance/run.py").read_text()
         self.assertIn("tempo-runtime-token", source)
@@ -693,6 +706,8 @@ class WorkflowGateTests(unittest.TestCase):
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+        self.assertIn("client-failures.json", step["with"]["path"])
+        self.assertNotIn("client.log", step["with"]["path"])
         step.pop("if")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
