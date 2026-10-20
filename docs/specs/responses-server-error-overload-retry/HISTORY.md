@@ -6,6 +6,7 @@
 
 - 2026-10-20: 创建 active canonical topic Spec，定义 `server_error` overload message 的窄范围识别和同账号重试合同。
 - 2026-10-20: 在 `request_entry`、`stream_gate` 和 `failover` 实现 canonical `server_error` overload 的 same-account retry policy，并补充 Responses SSE/compact、预算耗尽、分类边界和 legacy overload 回归；Agent VM 中资源桶、check 和 Clippy 通过，stateful-sqlite profile 因缺少 `cargo-nextest` 未执行，线上验收待候选版本部署后完成。
+- 2026-10-20: 在 Agent VM 安装 `cargo-nextest 0.9.148` 并执行 stateful-sqlite profile；两次完整运行分别为 1505/1506 与 1504/1506 通过，失败项均为既有时序敏感用例且隔离复跑通过；本主题新增 Responses overload 测试通过，线上验收仍待候选版本部署。
 - 既有 `server_is_overloaded` 与 concurrency `rate_limit_exceeded` overload 行为继续由历史 Responses overload specs 拥有，本主题不替代其账号/route 切换语义。
 
 ## Replacements / Background

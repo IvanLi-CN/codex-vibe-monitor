@@ -24,7 +24,7 @@
 - The resource bucket covers classifier boundaries, Responses SSE and compact same-account success, budget exhaustion without upstream switch, late-failure boundary, mixed legacy/new overload sequences, and legacy route ladder regressions.
 - `cargo check --locked --all-targets --all-features`: passed in the Agent VM with Rust 1.96.0.
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed in the Agent VM.
-- `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`: blocked before execution because `cargo-nextest` is not installed in the validation VM.
+- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；`bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 已实际执行。第一次完整运行是 1505 passed、1 failed，失败项 `invocation_ranges_protected_cache_saturation_has_bounded_admission` 单独复跑通过；第二次完整运行是 1504 passed、2 failed，失败项 `pool_route_uses_ungrouped_transit_when_grouped_alternate_exists` 与 `startup_summary_hydration_retries_after_an_in_flight_refresh` 单独复跑均通过。新增 Responses overload 相关测试在完整运行中通过。
 - Direct macOS test execution remained blocked by the known `libsqlx_macros` dynamic-library `mis-aligned LINKEDIT string pool` loader error; the passing assertions above came from the Agent VM.
 
 ## Rollout Facts
@@ -35,7 +35,7 @@
 
 ## Remaining Gaps
 
-- Install or otherwise provide `cargo-nextest` before claiming the stateful-sqlite profile complete.
+- `stateful-sqlite` 全量套件在当前 VM 上存在既有时序敏感失败，不能宣称全量无条件通过；失败项的隔离复跑均通过，代码相关资源桶与新增 Responses overload 测试通过。
 - Re-check an invocation after the candidate rollout and confirm multiple attempts with unchanged account and route; record the candidate version and scenario.
 
 ## References
