@@ -654,7 +654,13 @@ class AggregationTests(unittest.TestCase):
         self.assertFalse(self.aggregate())
 
     def test_heterogeneous_runners_are_valid_but_runner_reuse_is_rejected(self):
-        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.change("pair-2", "runner-context.json", lambda row: row.update(
+            cpuModel=["different CPU"],
+            cpuCount=64,
+            runnerImage="ubuntu24-different",
+            runnerImageVersion="different",
+            kernel="different-kernel",
+        ))
         self.assertTrue(self.aggregate())
         self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
         self.assertFalse(self.aggregate())
