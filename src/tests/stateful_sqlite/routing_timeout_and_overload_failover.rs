@@ -1958,10 +1958,6 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
             "Bearer mixed-overload",
             &[
                 (
-                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
-                    "Our servers are currently overloaded. Please try again later.",
-                ),
-                (
                     "server_error",
                     "Our servers are currently overloaded. Please try again later.",
                 ),
@@ -1970,7 +1966,11 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
                     "Our servers are currently overloaded. Please try again later.",
                 ),
                 (
-                    "server_error",
+                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+                (
+                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
                     "Our servers are currently overloaded. Please try again later.",
                 ),
             ],
@@ -2034,7 +2034,7 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
         .expect("read mixed overload response");
     let body_text = String::from_utf8(body.to_vec()).expect("utf8 mixed overload response");
     assert!(body_text.contains("upstream_response_failed"));
-    assert!(body_text.contains("server_error"));
+    assert!(body_text.contains("server_is_overloaded"));
 
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_attempt_row_count(&state.pool, 4).await;
@@ -2111,6 +2111,125 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
 
     same_route_handle.abort();
     alternate_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_caps_mixed_429_attempts() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        http_status: Option<i64>,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer mixed-429-budget",
+            &[
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Mixed 429 Budget",
+        "mixed-429-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 3 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable mixed 429 account retry settings");
+    let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+        .await
+        .expect("load mixed 429 account retry settings");
+    assert!(effective_rule.upstream_429_retry_enabled);
+    assert_eq!(effective_rule.upstream_429_max_retries, 3);
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-mixed-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let _body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read mixed 429 budget failure body");
+    let attempts = attempts.lock().expect("lock mixed 429 budget attempts");
+    assert_eq!(attempts.get("Bearer mixed-429-budget").copied(), Some(4));
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT distinct_account_index, same_account_retry_index,
+               http_status, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load mixed 429 budget attempts");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert_eq!(attempt_rows[0].http_status, Some(200));
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .skip(1)
+            .map(|row| row.http_status)
+            .collect::<Vec<_>>(),
+        vec![Some(429), Some(429), Some(429)]
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    upstream_handle.abort();
 }
 
 #[test]

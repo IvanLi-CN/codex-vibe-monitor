@@ -295,6 +295,18 @@ struct PoolResponseFailedSequenceUpstreamState {
     failures_by_attempt: Arc<HashMap<String, Vec<(String, String)>>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum PoolResponsesRetrySequenceStep {
+    CanonicalOverload,
+    RateLimited,
+}
+
+#[derive(Clone)]
+struct PoolResponsesRetrySequenceUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    steps_by_attempt: Arc<HashMap<String, Vec<PoolResponsesRetrySequenceStep>>>,
+}
+
 #[derive(Clone)]
 struct PoolLateResponseFailedUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
@@ -875,6 +887,83 @@ async fn pool_metadata_prefixed_response_failed_sequence_upstream(
         })),
     )
         .into_response()
+}
+
+async fn pool_responses_retry_sequence_upstream(
+    State(state): State<PoolResponsesRetrySequenceUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock Responses retry sequence attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    match state
+        .steps_by_attempt
+        .get(&authorization)
+        .and_then(|steps| steps.get(attempt.saturating_sub(1)))
+        .copied()
+    {
+        Some(PoolResponsesRetrySequenceStep::CanonicalOverload) => {
+            let failed_event = serde_json::to_string(&json!({
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_retry_sequence",
+                    "model": "gpt-5.4",
+                    "status": "failed",
+                    "error": {
+                        "code": "server_error",
+                        "message": "Our servers are currently overloaded. Please try again later.",
+                    },
+                },
+            }))
+            .expect("serialize canonical overload retry sequence event");
+            let payload = format!(
+                "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_retry_sequence\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}}}\n\n\\
+                 event: response.failed\ndata: {failed_event}\n\n"
+            );
+            (
+                StatusCode::OK,
+                [(
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/event-stream"),
+                )],
+                Body::from(payload),
+            )
+                .into_response()
+        }
+        Some(PoolResponsesRetrySequenceStep::RateLimited) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": format!("rate limited for {authorization}"),
+                },
+                "attempt": attempt,
+            })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "authorization": authorization,
+                "attempt": attempt,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn pool_large_metadata_prefixed_response_failed_retry_upstream(
@@ -1991,6 +2080,43 @@ pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_sequence_upstre
         axum::serve(listener, app)
             .await
             .expect("metadata-prefixed response.failed sequence upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+pub(crate) async fn spawn_pool_responses_retry_sequence_upstream(
+    steps_by_attempt: &[(&str, &[PoolResponsesRetrySequenceStep])],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let steps_by_attempt = Arc::new(
+        steps_by_attempt
+            .iter()
+            .map(|(authorization, steps)| ((*authorization).to_string(), steps.to_vec()))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post(pool_responses_retry_sequence_upstream),
+        )
+        .with_state(PoolResponsesRetrySequenceUpstreamState {
+            attempts: attempts.clone(),
+            steps_by_attempt,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Responses retry sequence upstream");
+    let addr = listener
+        .local_addr()
+        .expect("Responses retry sequence upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("Responses retry sequence upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }

@@ -20,11 +20,11 @@
 ## Verification Commands
 
 - `cargo fmt --all -- --check`: passed locally after the final edits.
-- `RUST_MIN_STACK=33554432 cargo test routing_timeout_and_overload_failover -- --nocapture`: passed in the Agent VM, 37 passed, 0 failed.
-- The resource bucket covers classifier boundaries, Responses SSE and compact same-account success, budget exhaustion without upstream switch, late-failure boundary, mixed legacy/new overload sequences, and legacy route ladder regressions.
+- The `routing_timeout_and_overload_failover` resource bucket passed in the Agent VM with 38 passed and 0 failed.
+- The resource bucket covers classifier boundaries, Responses SSE and compact same-account success, budget exhaustion without upstream switch, late-failure boundary, mixed legacy/new overload sequences, mixed 429 budget caps, and legacy route ladder regressions.
 - `cargo check --locked --all-targets --all-features`: passed in the Agent VM with Rust 1.96.0.
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed in the Agent VM.
-- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；`bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 已按共享 runner 执行并通过，最终结果为 1508 passed、1918 skipped、0 failed。新增 Responses overload 相关测试也包含在该 profile 中并通过。
+- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；`bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 已按共享 runner 执行，首轮为 1498 passed、11 failed、1918 skipped，失败集中在既有 SQLite/cache/通用 failover 的时序敏感测试；随后按完整失败清单重跑 11/11 passed。新增 Responses overload 相关测试在首轮和定向复跑中均通过。
 - Delivery acceptance: 主人已明确将本次计划的 `empirical_acceptance` 修正为 `not_required`；分类、gate、预算和路由行为以本地单元/集成测试作为逻辑正确性证据。
 - Direct macOS test execution remained blocked by the known `libsqlx_macros` dynamic-library `mis-aligned LINKEDIT string pool` loader error; the passing assertions above came from the Agent VM.
 
