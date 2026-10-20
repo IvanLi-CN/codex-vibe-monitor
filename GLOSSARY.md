@@ -35,3 +35,17 @@ _Avoid_: notification, because the frame carries data and does not require a fol
 **Browser Performance Baseline**:
 A fixed warm-up and measurement window that records browser workload, live-data volume, main-thread stalls, rendering cadence, and memory for comparison before and after a change.
 _Avoid_: one-off performance impression.
+
+## Proxy Routing Language
+
+**Same-account retry**:
+Repeating the current request on the already selected upstream account without selecting another account, route, or channel.
+_Avoid_: upstream switch, account failover.
+
+**Upstream switch**:
+Selecting a different upstream account or route/channel after the current upstream attempt is no longer used for the request.
+_Avoid_: same-account retry.
+
+**Responses overload signal**:
+A structured Responses failure that matches a recognized upstream overload code or a narrowly defined overload message under the relevant error code.
+_Avoid_: every `server_error`, generic overload text.

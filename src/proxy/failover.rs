@@ -4393,6 +4393,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         replayed_bytes_received_at,
                     ),
                     Ok(PoolInitialResponseGateOutcome::RetrySameAccount {
+                        retry_policy,
                         message,
                         upstream_error_code,
                         upstream_error_message,
@@ -4538,6 +4539,26 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
                         exhausted_accounts_all_rate_limited = false;
+                        if retry_policy == PoolResponsesOverloadRetryPolicy::SameAccountOnly {
+                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            if let Some(final_error) = take_priority_handoff_terminal_error(
+                                &account,
+                                &mut last_error,
+                                attempt_count,
+                                distinct_account_count,
+                            ) {
+                                return Err(final_error);
+                            }
+                            let mut final_error = last_error
+                                .take()
+                                .expect("same-account-only overload stores a terminal error");
+                            final_error.attempt_summary = pool_attempt_summary(
+                                attempt_count,
+                                distinct_account_count,
+                                Some(final_error.failure_kind.to_string()),
+                            );
+                            return Err(final_error);
+                        }
                         overload_required_upstream_route_key = Some(upstream_route_key.clone());
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                         if let Some(final_error) = take_priority_handoff_terminal_error(

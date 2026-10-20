@@ -290,6 +290,12 @@ struct PoolResponseFailedRetryUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolResponseFailedSequenceUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    failures_by_attempt: Arc<HashMap<String, Vec<(String, String)>>>,
+}
+
+#[derive(Clone)]
 struct PoolLateResponseFailedUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
 }
@@ -783,6 +789,70 @@ async fn pool_metadata_prefixed_response_failed_retry_upstream(
         .expect("serialize metadata-prefixed response.failed retry event");
         let payload = format!(
             "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_overloaded_retry\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}}}\n\n\
+             event: response.failed\ndata: {failed_event}\n\n"
+        );
+        return (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from(payload),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_metadata_prefixed_response_failed_sequence_upstream(
+    State(state): State<PoolResponseFailedSequenceUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock metadata-prefixed response.failed sequence attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if let Some((failure_code, failure_message)) = state
+        .failures_by_attempt
+        .get(&authorization)
+        .and_then(|failures| failures.get(attempt.saturating_sub(1)))
+    {
+        let failed_event = serde_json::to_string(&json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_mixed_overload_retry",
+                "model": "gpt-5.4",
+                "status": "failed",
+                "error": {
+                    "code": failure_code,
+                    "message": failure_message,
+                },
+            },
+        }))
+        .expect("serialize metadata-prefixed response.failed sequence event");
+        let payload = format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_mixed_overload_retry\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}}}\n\n\
              event: response.failed\ndata: {failed_event}\n\n"
         );
         return (
@@ -1880,6 +1950,51 @@ pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream_
     (format!("http://{addr}"), attempts, handle)
 }
 
+pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_sequence_upstream(
+    failures_by_attempt: &[(&str, &[(&str, &str)])],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let failures_by_attempt = Arc::new(
+        failures_by_attempt
+            .iter()
+            .map(|(authorization, failures)| {
+                (
+                    (*authorization).to_string(),
+                    failures
+                        .iter()
+                        .map(|(code, message)| ((*code).to_string(), (*message).to_string()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post(pool_metadata_prefixed_response_failed_sequence_upstream),
+        )
+        .with_state(PoolResponseFailedSequenceUpstreamState {
+            attempts: attempts.clone(),
+            failures_by_attempt,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind metadata-prefixed response.failed sequence upstream");
+    let addr = listener
+        .local_addr()
+        .expect("metadata-prefixed response.failed sequence upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("metadata-prefixed response.failed sequence upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
 pub(crate) async fn spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
@@ -1954,6 +2069,47 @@ pub(crate) async fn spawn_pool_compact_overloaded_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("compact overloaded retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+pub(crate) async fn spawn_pool_compact_response_failed_retry_upstream_with_error(
+    fail_before_success: &[(&str, usize)],
+    failure_code: &'static str,
+    failure_message: &'static str,
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses/compact",
+            post(pool_compact_overloaded_retry_upstream),
+        )
+        .with_state(PoolResponseFailedRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+            failure_code,
+            failure_message,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind custom compact response.failed retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("custom compact response.failed retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("custom compact response.failed retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
