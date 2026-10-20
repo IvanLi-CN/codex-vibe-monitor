@@ -7346,17 +7346,26 @@ mod tests {
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
         let store = MaintenanceStore::from_pool(pool);
-        sqlx::query(
-            "UPDATE managed_tasks SET enabled=0 WHERE task_key='startup_backfill.proxy_usage'",
-        )
-        .execute(&store.pool)
-        .await
-        .expect("disable task before seeding requested runs");
         for index in 0..=CLAIM_BATCH_SIZE {
+            let task_key = format!("test.disabled.requested.{index}");
+            sqlx::query(
+                "INSERT INTO managed_tasks
+                 (task_key,title,description,trigger_mode,enabled,is_manual,updated_at)
+                 VALUES (?,?,?,?,0,0,?)",
+            )
+            .bind(&task_key)
+            .bind("Disabled requested test task")
+            .bind("Disabled requested test task")
+            .bind("event")
+            .bind("2026-01-01T00:00:00.000Z")
+            .execute(&store.pool)
+            .await
+            .expect("seed disabled test task");
             sqlx::query(
                 "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status)
-                 VALUES ('startup_backfill.proxy_usage','schedule',?,'requested')",
+                 VALUES (?,'schedule',?,'requested')",
             )
+            .bind(&task_key)
             .bind(format!("2026-01-01T00:00:{index:02}.000Z"))
             .execute(&store.pool)
             .await
@@ -7369,7 +7378,7 @@ mod tests {
                  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
                  SUM(CASE WHEN status='requested' THEN 1 ELSE 0 END)
              FROM managed_task_runs
-             WHERE task_key='startup_backfill.proxy_usage'",
+             WHERE task_key LIKE 'test.disabled.requested.%'",
         )
         .fetch_one(&store.pool)
         .await
@@ -7379,7 +7388,7 @@ mod tests {
         assert!(store.claim_requested_run().await.unwrap().is_none());
         let second_pass = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM managed_task_runs
-             WHERE task_key='startup_backfill.proxy_usage' AND status='requested'",
+             WHERE task_key LIKE 'test.disabled.requested.%' AND status='requested'",
         )
         .fetch_one(&store.pool)
         .await
