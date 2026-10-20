@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-20T23:53:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "50baae85d66dde8cbe1f5e660f26c5ea09a9bf86",
+  "pr_number": 1151,
+  "pr_title": "fix(ci): identify observability matrix jobs",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "",
+  "target_sha": "96867759bf3b3ad2079a85bcc1a9616ba6238d42",
+  "type_label": "type:skip"
+}
