@@ -924,15 +924,6 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             });
         }
     };
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let Some(_write_permit) = coordinator
-        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-    else {
-        return Ok(TimelineSnapshotCleanupResult {
-            skipped: Some("sqlite_writer_busy".to_string()),
-            ..Default::default()
-        });
-    };
     let materialization_guard = match INVOCATION_TIMELINE_MATERIALIZATION_LOCK.try_lock() {
         Ok(guard) => guard,
         Err(_) => {
@@ -981,16 +972,11 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         .fetch_all(pool)
         .await?
     };
-    if scan_limit > 0 {
-        let next_cursor = if scanned_tokens.len() == scan_limit {
-            scanned_tokens.last().cloned()
-        } else {
-            None
-        };
-        *INVOCATION_TIMELINE_CLEANUP_CURSOR
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_cursor;
-    }
+    let next_cursor = if scan_limit > 0 && scanned_tokens.len() == scan_limit {
+        scanned_tokens.last().cloned()
+    } else {
+        None
+    };
     let mut unique_tokens = tokens.iter().cloned().collect::<HashSet<_>>();
     for token in scanned_tokens {
         if unique_tokens.insert(token.clone()) {
@@ -1024,10 +1010,17 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         ..Default::default()
     };
     crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 0);
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     for token in tokens {
         if active_tokens.contains(&token) {
             continue;
         }
+        let Some(_write_permit) = coordinator
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        else {
+            result.skipped = Some("sqlite_writer_busy".to_string());
+            return Ok(result);
+        };
         let delete_result = sqlx::query(&format!(
             "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
         ))
@@ -1042,6 +1035,11 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 1);
         }
         acknowledge_timeline_snapshot_release(&token);
+    }
+    if scan_limit > 0 {
+        *INVOCATION_TIMELINE_CLEANUP_CURSOR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_cursor;
     }
     Ok(result)
 }
