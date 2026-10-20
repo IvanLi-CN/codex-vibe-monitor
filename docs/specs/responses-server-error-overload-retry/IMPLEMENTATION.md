@@ -20,11 +20,11 @@
 ## Verification Commands
 
 - `cargo fmt --all -- --check`: passed locally after the final edits.
-- `RUST_MIN_STACK=33554432 cargo test routing_timeout_and_overload_failover -- --nocapture`: passed in the Agent VM, 35 passed, 0 failed.
+- `RUST_MIN_STACK=33554432 cargo test routing_timeout_and_overload_failover -- --nocapture`: passed in the Agent VM, 37 passed, 0 failed.
 - The resource bucket covers classifier boundaries, Responses SSE and compact same-account success, budget exhaustion without upstream switch, late-failure boundary, mixed legacy/new overload sequences, and legacy route ladder regressions.
 - `cargo check --locked --all-targets --all-features`: passed in the Agent VM with Rust 1.96.0.
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed in the Agent VM.
-- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；`bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 已实际执行。第一次完整运行是 1505 passed、1 failed，失败项 `invocation_ranges_protected_cache_saturation_has_bounded_admission` 单独复跑通过；第二次完整运行是 1504 passed、2 failed，失败项 `pool_route_uses_ungrouped_transit_when_grouped_alternate_exists` 与 `startup_summary_hydration_retries_after_an_in_flight_refresh` 单独复跑均通过。新增 Responses overload 相关测试在完整运行中通过。
+- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；`bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 已按共享 runner 执行并通过，最终结果为 1508 passed、1918 skipped、0 failed。新增 Responses overload 相关测试也包含在该 profile 中并通过。
 - Delivery acceptance: 主人已明确将本次计划的 `empirical_acceptance` 修正为 `not_required`；分类、gate、预算和路由行为以本地单元/集成测试作为逻辑正确性证据。
 - Direct macOS test execution remained blocked by the known `libsqlx_macros` dynamic-library `mis-aligned LINKEDIT string pool` loader error; the passing assertions above came from the Agent VM.
 
@@ -36,7 +36,7 @@
 
 ## Remaining Gaps
 
-- `stateful-sqlite` 全量套件在当前 VM 上存在既有时序敏感失败，不能宣称全量无条件通过；失败项的隔离复跑均通过，代码相关资源桶与新增 Responses overload 测试通过。
+- 当前没有因本主题逻辑或验证结果产生的交付阻塞；本机 macOS 的 Rust 动态库加载问题由 Agent VM 验证环境承接，线上 empirical acceptance 按主人确认不作为本次交付 gate。
 
 ## References
 

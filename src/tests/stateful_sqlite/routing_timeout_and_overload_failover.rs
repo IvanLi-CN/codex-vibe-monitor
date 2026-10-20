@@ -1565,6 +1565,27 @@ fn pool_responses_classify_server_error_overload_with_narrow_message_boundary() 
     );
 }
 
+#[test]
+fn pool_responses_same_account_retry_backoff_is_capped_by_total_timeout() {
+    let started_at = Instant::now() - Duration::from_millis(50);
+    let capped = pool_retry_delay_with_total_timeout(
+        Duration::from_secs(5),
+        true,
+        Some(Duration::from_millis(100)),
+        Some(started_at),
+    );
+    assert!(capped <= Duration::from_millis(50));
+    assert_eq!(
+        pool_retry_delay_with_total_timeout(
+            Duration::from_secs(5),
+            false,
+            Some(Duration::from_millis(1)),
+            Some(started_at),
+        ),
+        Duration::from_secs(5)
+    );
+}
+
 #[tokio::test]
 async fn pool_openai_v1_responses_retries_server_error_overload_same_account_before_forwarding() {
     #[derive(Debug, sqlx::FromRow)]
@@ -1655,6 +1676,16 @@ async fn pool_openai_v1_responses_retries_server_error_overload_same_account_bef
             .collect::<Vec<_>>(),
         vec![1, 2, 3, 4]
     );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
     assert!(
         attempt_rows
             .windows(2)
@@ -1704,6 +1735,13 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
         failure_kind: Option<String>,
         failure_class: Option<String>,
         error_message: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct ModelRouteFailureRow {
+        state: String,
+        last_failure_kind: Option<String>,
+        cooldown_until: Option<String>,
     }
 
     let (same_route_base, same_route_attempts, same_route_handle) =
@@ -1810,6 +1848,24 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
             .as_deref()
             .is_some_and(|message| message.contains("server_error"))
     );
+    let model_route = sqlx::query_as::<_, ModelRouteFailureRow>(
+        r#"
+        SELECT state, last_failure_kind, cooldown_until
+        FROM pool_upstream_account_model_routes
+        WHERE account_id = ?1 AND model = ?2
+        "#,
+    )
+    .bind(primary_id)
+    .bind("gpt-5.4")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load exhausted server_error overload model route");
+    assert_eq!(model_route.state, "degraded");
+    assert_eq!(
+        model_route.last_failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    );
+    assert!(model_route.cooldown_until.is_none());
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
         SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
@@ -1836,6 +1892,16 @@ async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_bu
             .collect::<Vec<_>>(),
         vec![1, 2, 3, 4]
     );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
     assert!(
         attempt_rows
             .windows(2)
@@ -1998,6 +2064,16 @@ async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_bud
             .collect::<Vec<_>>(),
         vec![1, 2, 3, 4]
     );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
     assert!(
         attempt_rows
             .windows(2)
@@ -2731,6 +2807,16 @@ async fn pool_openai_v1_compact_retries_server_error_overload_same_account_befor
             .collect::<Vec<_>>(),
         vec![1, 2, 3, 4]
     );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
     assert!(
         attempt_rows
             .windows(2)
@@ -2946,6 +3032,57 @@ async fn gate_pool_initial_response_stream_keeps_non_overload_response_failed_on
     assert!(body_text.contains("response.created"));
     assert!(body_text.contains("server_error"));
     assert!(!body_text.contains("server_is_overloaded"));
+}
+
+#[tokio::test]
+async fn gate_pool_initial_response_stream_keeps_canonical_server_error_after_forward_event() {
+    let payload = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_gate_canonical_late_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+        "event: response.output_text.delta\n",
+        r#"data: {"type":"response.output_text.delta","delta":"answer"}"#,
+        "\n\n",
+        "event: response.failed\n",
+        r#"data: {"type":"response.failed","response":{"id":"resp_gate_canonical_late_test","model":"gpt-5.4","status":"failed","error":{"code":"server_error","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+        "\n\n",
+    ]
+    .concat();
+    let response = ProxyUpstreamResponseBody::Axum(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(payload))
+            .expect("build canonical late gate response"),
+    );
+
+    let outcome =
+        gate_pool_initial_response_stream(response, None, Duration::from_secs(1), Instant::now())
+            .await
+            .expect("gate canonical late response stream");
+
+    let PoolInitialResponseGateOutcome::Forward {
+        response,
+        prefetched_bytes,
+        ..
+    } = outcome
+    else {
+        panic!("canonical response.failed after a business event must stay on the stream");
+    };
+
+    let mut full_body = prefetched_bytes
+        .expect("canonical late stream should keep prefetched event")
+        .to_vec();
+    full_body.extend_from_slice(
+        response
+            .into_bytes()
+            .await
+            .expect("read canonical late gate response")
+            .as_ref(),
+    );
+    let body_text = String::from_utf8(full_body).expect("utf8 canonical late gate body");
+    assert!(body_text.contains("response.output_text.delta"));
+    assert!(body_text.contains("Our servers are currently overloaded"));
 }
 
 #[tokio::test]
