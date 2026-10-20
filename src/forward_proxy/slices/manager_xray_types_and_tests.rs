@@ -28,6 +28,14 @@ pub(crate) struct XrayInstance {
     pub(crate) local_proxy_url: Url,
     pub(crate) config_path: PathBuf,
     pub(crate) child: Child,
+    pub(crate) diagnostic_task: Option<JoinHandle<Vec<u8>>>,
+}
+
+const XRAY_PREFLIGHT_DIAGNOSTIC_BYTES: usize = 4096;
+
+struct XrayPreflightResult {
+    status: std::process::ExitStatus,
+    diagnostic: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -85,7 +93,7 @@ impl XraySupervisor {
                     warn!(
                         proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
                         proxy_source = endpoint.source,
-                        proxy_label = endpoint.display_name,
+                        proxy_label_ref = %forward_proxy_log_ref(&endpoint.display_name),
                         proxy_url_ref = %forward_proxy_log_ref_option(endpoint.raw_url.as_deref()),
                         error = %err,
                         "failed to prepare xray forward proxy route"
@@ -186,6 +194,13 @@ impl XraySupervisor {
                 "failed to prepare xray runtime directory",
             )
         })?;
+        set_xray_runtime_permissions(&self.runtime_dir, 0o700).map_err(|err| {
+            wrap_xray_error(
+                anyhow!(err),
+                ForwardProxyValidationErrorCode::XrayConfigError,
+                "failed to protect xray runtime directory",
+            )
+        })?;
         let config_path = self.runtime_dir.join(format!(
             "forward-proxy-{:016x}.json",
             stable_hash_u64(&endpoint.key)
@@ -198,29 +213,36 @@ impl XraySupervisor {
                 "failed to serialize xray configuration",
             )
         })?;
-        fs::write(&config_path, serialized).map_err(|err| {
-            wrap_xray_error(
+        if let Err(err) = write_xray_config_file(&config_path, &serialized) {
+            let _ = fs::remove_file(&config_path);
+            return Err(wrap_xray_error(
                 anyhow!(err),
                 ForwardProxyValidationErrorCode::XrayConfigError,
                 "failed to write xray configuration",
-            )
-        })?;
+            ));
+        }
 
         // Ask Xray to validate the generated file before starting the long-lived route. A
         // missing or unlaunchable binary is still a startup failure; a launched binary that
-        // rejects the configuration is a configuration failure.
-        if let Ok(status) = Command::new(&self.binary)
-            .arg("run")
-            .arg("-test")
-            .arg("-c")
-            .arg(&config_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            && !status.success()
-        {
+        // rejects the configuration is a configuration failure. The preflight is bounded by
+        // the same deadline as route startup so a broken binary cannot hold validation open.
+        let preflight =
+            match run_xray_config_preflight(&self.binary, &config_path, ready_timeout, shutdown)
+                .await
+            {
+                Ok(preflight) => preflight,
+                Err(err) => {
+                    let _ = fs::remove_file(&config_path);
+                    return Err(err);
+                }
+            };
+        if !preflight.status.success() {
+            warn!(
+                proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
+                status = %preflight.status,
+                diagnostic = summarize_xray_diagnostic(&preflight.diagnostic),
+                "xray rejected proxy configuration during preflight"
+            );
             let _ = fs::remove_file(&config_path);
             return Err(anyhow!(ForwardProxyValidationError::new(
                 ForwardProxyValidationErrorCode::XrayConfigError,
@@ -234,7 +256,8 @@ impl XraySupervisor {
             .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
         {
             Ok(child) => child,
@@ -246,6 +269,10 @@ impl XraySupervisor {
                 )));
             }
         };
+        let mut diagnostic_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(read_bounded_xray_diagnostic(stderr)));
 
         if let Err(err) =
             wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout, shutdown).await
@@ -256,6 +283,10 @@ impl XraySupervisor {
                 &forward_proxy_log_ref(&endpoint.key),
             )
             .await;
+            if let Some(task) = diagnostic_task.take() {
+                finish_xray_diagnostic_task(task, &forward_proxy_log_ref(&endpoint.key), "startup")
+                    .await;
+            }
             let _ = fs::remove_file(&config_path);
             return Err(wrap_xray_error(
                 err,
@@ -264,20 +295,30 @@ impl XraySupervisor {
             ));
         }
 
-        let local_proxy_url =
-            Url::parse(&format!("socks5h://127.0.0.1:{local_port}")).map_err(|err| {
-                wrap_xray_error(
+        let local_proxy_url = match Url::parse(&format!("socks5h://127.0.0.1:{local_port}")) {
+            Ok(url) => url,
+            Err(err) => {
+                let proxy_key_ref = forward_proxy_log_ref(&endpoint.key);
+                let _ = terminate_child_process(&mut child, Duration::from_secs(2), &proxy_key_ref)
+                    .await;
+                if let Some(task) = diagnostic_task.take() {
+                    finish_xray_diagnostic_task(task, &proxy_key_ref, "startup").await;
+                }
+                let _ = fs::remove_file(&config_path);
+                return Err(wrap_xray_error(
                     anyhow!(err),
                     ForwardProxyValidationErrorCode::XrayStartupError,
                     "failed to build local xray proxy endpoint",
-                )
-            })?;
+                ));
+            }
+        };
         self.instances.insert(
             endpoint.key.clone(),
             XrayInstance {
                 local_proxy_url: local_proxy_url.clone(),
                 config_path,
                 child,
+                diagnostic_task,
             },
         );
 
@@ -287,12 +328,16 @@ impl XraySupervisor {
     pub(crate) async fn remove_instance(&mut self, key: &str) {
         if let Some(mut instance) = self.instances.remove(key) {
             let proxy_key_ref = forward_proxy_log_ref(key);
+            let diagnostic_task = instance.diagnostic_task.take();
             let _ = terminate_child_process(
                 &mut instance.child,
                 Duration::from_secs(2),
                 &proxy_key_ref,
             )
             .await;
+            if let Some(task) = diagnostic_task {
+                finish_xray_diagnostic_task(task, &proxy_key_ref, "shutdown").await;
+            }
             if let Err(err) = fs::remove_file(&instance.config_path)
                 && err.kind() != io::ErrorKind::NotFound
             {
@@ -305,6 +350,164 @@ impl XraySupervisor {
             }
         }
     }
+}
+
+async fn run_xray_config_preflight(
+    binary: &str,
+    config_path: &Path,
+    timeout_duration: Duration,
+    shutdown: &CancellationToken,
+) -> Result<XrayPreflightResult> {
+    let mut child = Command::new(binary)
+        .arg("run")
+        .arg("-test")
+        .arg("-c")
+        .arg(config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| {
+            anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::XrayStartupError,
+                "failed to start xray binary",
+            ))
+        })?;
+    let mut diagnostic_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_bounded_xray_diagnostic(stderr)));
+
+    let wait_result = tokio::select! {
+        _ = shutdown.cancelled() => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            if let Some(task) = diagnostic_task.take() {
+                task.abort();
+            }
+            return Err(anyhow!("xray configuration preflight cancelled because shutdown is in progress"));
+        }
+        result = tokio::time::timeout(timeout_duration, child.wait()) => result,
+    };
+    let status = match wait_result {
+        Ok(Ok(status)) => status,
+        Ok(Err(_)) => {
+            if let Some(task) = diagnostic_task.take() {
+                task.abort();
+            }
+            return Err(anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::XrayStartupError,
+                "failed to wait for xray configuration preflight",
+            )));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            if let Some(task) = diagnostic_task.take() {
+                task.abort();
+            }
+            return Err(anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::XrayStartupError,
+                "xray configuration preflight timed out",
+            )));
+        }
+    };
+    let diagnostic = match diagnostic_task.take() {
+        Some(task) => task.await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok(XrayPreflightResult { status, diagnostic })
+}
+
+async fn read_bounded_xray_diagnostic(mut stderr: tokio::process::ChildStderr) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+
+    let mut retained = Vec::with_capacity(XRAY_PREFLIGHT_DIAGNOSTIC_BYTES);
+    let mut buffer = [0u8; 1024];
+    while let Ok(read) = stderr.read(&mut buffer).await {
+        if read == 0 {
+            break;
+        }
+        let remaining = XRAY_PREFLIGHT_DIAGNOSTIC_BYTES.saturating_sub(retained.len());
+        if remaining > 0 {
+            retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+    }
+    retained
+}
+
+fn summarize_xray_diagnostic(diagnostic: &[u8]) -> &'static str {
+    let lower = String::from_utf8_lossy(diagnostic).to_ascii_lowercase();
+    if lower.contains("unknown field") || lower.contains("unknown key") {
+        "xray rejected an unknown configuration field"
+    } else if lower.contains("invalid") || lower.contains("parse") {
+        "xray rejected an invalid configuration value"
+    } else if diagnostic.is_empty() {
+        "xray rejected proxy configuration without diagnostics"
+    } else {
+        "xray rejected proxy configuration"
+    }
+}
+
+async fn finish_xray_diagnostic_task(
+    mut task: JoinHandle<Vec<u8>>,
+    proxy_key_ref: &str,
+    phase: &'static str,
+) {
+    match timeout(Duration::from_secs(1), &mut task).await {
+        Ok(Ok(diagnostic)) if !diagnostic.is_empty() => {
+            warn!(
+                proxy_key_ref,
+                phase,
+                diagnostic = summarize_xray_runtime_diagnostic(&diagnostic),
+                "xray process emitted a bounded diagnostic"
+            );
+        }
+        Ok(Ok(_)) | Ok(Err(_)) => {}
+        Err(_) => task.abort(),
+    }
+}
+
+fn summarize_xray_runtime_diagnostic(diagnostic: &[u8]) -> &'static str {
+    let lower = String::from_utf8_lossy(diagnostic).to_ascii_lowercase();
+    if lower.contains("address already in use") || lower.contains("listen") {
+        "xray failed to bind a local listener"
+    } else if lower.contains("reality") {
+        "xray reported a Reality transport diagnostic"
+    } else if lower.contains("xhttp") || lower.contains("splithttp") {
+        "xray reported an XHTTP transport diagnostic"
+    } else if lower.contains("unknown") || lower.contains("invalid") || lower.contains("parse") {
+        "xray reported an invalid runtime configuration"
+    } else {
+        "xray reported a bounded runtime diagnostic"
+    }
+}
+
+#[cfg(unix)]
+fn set_xray_runtime_permissions(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_xray_runtime_permissions(_path: &Path, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
+fn write_xray_config_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()
 }
 
 pub(crate) fn stable_hash_u64(raw: &str) -> u64 {
@@ -805,7 +1008,14 @@ pub(crate) fn build_stream_settings_from_url_with_xhttp(
     default_security: Option<&str>,
     allow_xhttp: bool,
 ) -> Result<Option<Value>> {
-    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    let query_pairs = url.query_pairs().into_owned().collect::<Vec<_>>();
+    if xhttp_query_has_ambiguous_duplicates(&query_pairs) {
+        return Err(anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+            "xhttp query parameters must be unique and non-conflicting",
+        )));
+    }
+    let query = query_pairs.into_iter().collect::<HashMap<_, _>>();
     let network = query
         .get("type")
         .or_else(|| query.get("net"))
@@ -819,6 +1029,13 @@ pub(crate) fn build_stream_settings_from_url_with_xhttp(
         .or_else(|| default_security.map(str::to_string))
         .unwrap_or_else(|| "none".to_string());
 
+    if network == "splithttp" {
+        return Err(anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::UnsupportedTransport,
+            "splithttp transport is unsupported; use vless xhttp instead",
+        )));
+    }
+
     let host = query
         .get("host")
         .map(|value| value.trim().to_string())
@@ -827,6 +1044,8 @@ pub(crate) fn build_stream_settings_from_url_with_xhttp(
         .get("path")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let xhttp_host = query.get("host").map(|value| value.trim());
+    let xhttp_path = query.get("path").map(|value| value.trim());
     let service_name = query
         .get("serviceName")
         .or_else(|| query.get("service_name"))
@@ -889,7 +1108,7 @@ pub(crate) fn build_stream_settings_from_url_with_xhttp(
             }
             stream.insert(
                 "xhttpSettings".to_string(),
-                build_xhttp_settings(&query, host.as_deref(), path.as_deref())?,
+                build_xhttp_settings(&query, xhttp_host, xhttp_path)?,
             );
             has_non_default_options = true;
         }
@@ -1013,11 +1232,8 @@ fn build_xhttp_settings(
 
     let effective_host = take_xhttp_string_setting(&mut extra, "host", host)?;
     let effective_path = take_xhttp_string_setting(&mut extra, "path", path)?;
-    let explicit_mode = query
-        .get("mode")
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty());
-    let effective_mode = take_xhttp_mode_setting(&mut extra, explicit_mode.as_deref())?;
+    let explicit_mode = query.get("mode").map(|value| value.trim());
+    let effective_mode = take_xhttp_mode_setting(&mut extra, explicit_mode)?;
 
     let mut settings = serde_json::Map::new();
     if let Some(host) = effective_host {
@@ -1343,6 +1559,18 @@ mod tests {
     }
 
     #[test]
+    fn vless_xhttp_builder_honors_explicit_empty_top_level_fields() {
+        let raw = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&host=&path=&extra=%7B%22host%22%3A%22extra.example.com%22%2C%22path%22%3A%22%2Fextra%22%7D";
+        let outbound =
+            build_vless_xray_outbound(raw).expect("explicit empty xhttp fields should build");
+        let settings = &outbound["streamSettings"]["xhttpSettings"];
+
+        assert_eq!(settings["host"], "");
+        assert_eq!(settings["path"], "");
+        assert!(settings.get("extra").is_none());
+    }
+
+    #[test]
     fn vless_xhttp_builder_rejects_invalid_settings_without_protocol_fallback() {
         let invalid_extra = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%5B%5D";
         let error = build_vless_xray_outbound(invalid_extra).expect_err("array extra must fail");
@@ -1386,6 +1614,39 @@ mod tests {
             ForwardProxyValidationErrorCode::UnsupportedXhttpMode
         );
 
+        let duplicate_query = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&type=tcp";
+        let error = build_vless_xray_outbound(duplicate_query)
+            .expect_err("ambiguous xhttp query fields must fail");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed duplicate query error")
+                .code,
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        );
+
+        let duplicate_alpn = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=tls&type=xhttp&alpn=h2&alpn=h3";
+        let error = build_vless_xray_outbound(duplicate_alpn)
+            .expect_err("duplicate alpn must not drift identity from runtime configuration");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed duplicate alpn error")
+                .code,
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        );
+
+        let vless_splithttp = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=splithttp";
+        let error = build_vless_xray_outbound(vless_splithttp)
+            .expect_err("vless splithttp must not be treated as supported xhttp");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed splithttp error")
+                .code,
+            ForwardProxyValidationErrorCode::UnsupportedTransport
+        );
+
         let trojan_xhttp =
             "trojan://password@edge.example.com:443?security=tls&type=xhttp&path=%2Ftop";
         let error = build_trojan_xray_outbound(trojan_xhttp)
@@ -1394,6 +1655,17 @@ mod tests {
             error
                 .downcast_ref::<ForwardProxyValidationError>()
                 .expect("typed transport error")
+                .code,
+            ForwardProxyValidationErrorCode::UnsupportedTransport
+        );
+
+        let trojan_splithttp = "trojan://password@edge.example.com:443?security=tls&type=splithttp";
+        let error = build_trojan_xray_outbound(trojan_splithttp)
+            .expect_err("trojan splithttp must not be treated as supported xhttp");
+        assert_eq!(
+            error
+                .downcast_ref::<ForwardProxyValidationError>()
+                .expect("typed splithttp error")
                 .code,
             ForwardProxyValidationErrorCode::UnsupportedTransport
         );

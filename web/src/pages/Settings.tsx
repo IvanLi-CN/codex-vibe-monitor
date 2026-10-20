@@ -143,6 +143,20 @@ const pricingTableHeaderCellClass =
   "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65";
 const pricingTableBodyCellClass = "align-middle px-4 py-3";
 
+function safeProxyEndpointKey(raw: string): string | null {
+  try {
+    const parsed = new URL(raw);
+    const protocol = parsed.protocol.toLowerCase();
+    const defaultPort =
+      protocol === "http:" || protocol === "socks5:" ? "80" : protocol === "https:" ? "443" : "";
+    const port = parsed.port || defaultPort;
+    if (!parsed.hostname || !port) return null;
+    return `${protocol}//${parsed.hostname.toLowerCase()}:${port}`;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeDraftEntry(entry: PricingDraftEntry): PricingDraftEntry {
   return {
     ...entry,
@@ -631,16 +645,29 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       stats: node.stats,
     }));
 
-    const endpointUrlSet = new Set(
-      persistedNodes
-        .map((node) => node.endpointUrl?.trim())
-        .filter((candidate): candidate is string => Boolean(candidate)),
-    );
+    const endpointUrlSet = new Set<string>();
+    const safeEndpointKeySet = new Set<string>();
+    for (const node of persistedNodes) {
+      const endpointUrl = node.endpointUrl?.trim();
+      if (endpointUrl) {
+        endpointUrlSet.add(endpointUrl);
+        const safeKey = safeProxyEndpointKey(endpointUrl);
+        if (safeKey) safeEndpointKeySet.add(safeKey);
+      }
+    }
 
     for (const rawUrl of forwardProxyUrls) {
       const candidate = rawUrl.trim();
-      if (!candidate || endpointUrlSet.has(candidate)) continue;
+      const safeKey = safeProxyEndpointKey(candidate);
+      if (
+        !candidate ||
+        endpointUrlSet.has(candidate) ||
+        (safeKey && safeEndpointKeySet.has(safeKey))
+      ) {
+        continue;
+      }
       endpointUrlSet.add(candidate);
+      if (safeKey) safeEndpointKeySet.add(safeKey);
       tableNodes.push({
         key: `__draft__${candidate}`,
         displayName:

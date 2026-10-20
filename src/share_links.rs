@@ -41,7 +41,7 @@ pub(crate) fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<Strin
     for entry in raw_entries {
         for token in split_proxy_entry_tokens(&entry) {
             if let Some(parsed) = parse_forward_proxy_entry(token)
-                && seen.insert(parsed.normalized.clone())
+                && seen.insert(parsed.stable_key.clone())
             {
                 normalized.push(parsed.normalized);
             }
@@ -445,14 +445,44 @@ pub(crate) fn forward_proxy_binding_key_candidates(
 }
 
 pub(crate) fn proxy_display_name_from_url(url: &Url) -> Option<String> {
-    if let Some(fragment) = url.fragment()
-        && !fragment.trim().is_empty()
-    {
-        return Some(percent_decode_once_lossy(fragment));
+    if let Some(fragment) = url.fragment() {
+        let decoded = percent_decode_once_lossy(fragment);
+        if let Some(display_name) = safe_proxy_display_name(&decoded) {
+            return Some(display_name);
+        }
     }
     let host = url.host_str()?;
     let port = url.port_or_known_default()?;
     Some(format!("{host}:{port}"))
+}
+
+fn safe_proxy_display_name(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value.len() > 128
+        || value.contains("://")
+        || value.contains('@')
+        || value.contains('?')
+        || value.contains('{')
+        || value.contains('}')
+        || value.chars().any(char::is_control)
+        || looks_like_uuid(value)
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn looks_like_uuid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
 }
 
 pub(crate) fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> {
@@ -680,7 +710,12 @@ pub(crate) fn canonical_stream_query_pairs(
             consumed_keys.extend(["host", "path", "mode", "extra"]);
             query_pairs.push((
                 "xhttpSettings".to_string(),
-                canonical_xhttp_settings(&query, &host, &path),
+                canonical_xhttp_settings(
+                    &query,
+                    &host,
+                    &path,
+                    xhttp_query_has_ambiguous_duplicates(&original_query_pairs),
+                ),
             ));
         }
         _ => {}
@@ -763,7 +798,74 @@ pub(crate) fn canonical_stream_query_pairs(
     query_pairs
 }
 
-fn canonical_xhttp_settings(query: &HashMap<String, String>, host: &str, path: &str) -> String {
+pub(crate) fn xhttp_query_has_ambiguous_duplicates(pairs: &[(String, String)]) -> bool {
+    let has_xhttp = pairs.iter().any(|(key, value)| {
+        matches!(key.as_str(), "type" | "net") && value.trim().eq_ignore_ascii_case("xhttp")
+    });
+    if !has_xhttp {
+        return false;
+    }
+
+    for key in [
+        "type",
+        "net",
+        "security",
+        "host",
+        "path",
+        "mode",
+        "extra",
+        "sni",
+        "serverName",
+        "fp",
+        "fingerprint",
+        "pbk",
+        "sid",
+        "spx",
+        "allowInsecure",
+        "insecure",
+        "alpn",
+        "flow",
+        "encryption",
+    ] {
+        if pairs
+            .iter()
+            .filter(|(candidate, _)| candidate == key)
+            .count()
+            > 1
+        {
+            return true;
+        }
+    }
+
+    let type_value = pairs
+        .iter()
+        .find(|(key, _)| key == "type")
+        .map(|(_, value)| value.trim().to_ascii_lowercase());
+    let net_value = pairs
+        .iter()
+        .find(|(key, _)| key == "net")
+        .map(|(_, value)| value.trim().to_ascii_lowercase());
+    matches!((type_value, net_value), (Some(type_value), Some(net_value)) if type_value != net_value)
+}
+
+pub(crate) fn safe_forward_proxy_endpoint_url(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    let parsed = Url::parse(raw).ok()?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    Some(format!(
+        "{scheme}://{}",
+        canonical_host_port_string(host, port)
+    ))
+}
+
+fn canonical_xhttp_settings(
+    query: &HashMap<String, String>,
+    host: &str,
+    path: &str,
+    invalid_query_shape: bool,
+) -> String {
     let mut extra = match query.get("extra") {
         Some(raw) => match serde_json::from_str::<Value>(raw) {
             Ok(Value::Object(object)) => object,
@@ -776,7 +878,7 @@ fn canonical_xhttp_settings(query: &HashMap<String, String>, host: &str, path: &
     };
 
     let mut settings = serde_json::Map::new();
-    if !host.is_empty() {
+    if query.contains_key("host") {
         extra.remove("host");
         settings.insert("host".to_string(), Value::String(host.to_string()));
     } else if let Some(value) = extra.remove("host") {
@@ -786,7 +888,7 @@ fn canonical_xhttp_settings(query: &HashMap<String, String>, host: &str, path: &
             settings.insert("__invalid_xhttp_host".to_string(), Value::Bool(true));
         }
     }
-    if !path.is_empty() {
+    if query.contains_key("path") {
         extra.remove("path");
         settings.insert("path".to_string(), Value::String(path.to_string()));
     } else if let Some(value) = extra.remove("path") {
@@ -796,25 +898,36 @@ fn canonical_xhttp_settings(query: &HashMap<String, String>, host: &str, path: &
             settings.insert("__invalid_xhttp_path".to_string(), Value::Bool(true));
         }
     }
-    if let Some(mode) = normalized_query_value(query, &["mode"])
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-    {
+    let mut effective_mode = Some("auto".to_string());
+    if let Some(mode) = query.get("mode") {
         extra.remove("mode");
-        settings.insert("mode".to_string(), Value::String(mode));
+        let mode = mode.trim().to_ascii_lowercase();
+        if mode.is_empty() {
+            effective_mode = None;
+            settings.insert("__invalid_xhttp_mode".to_string(), Value::Bool(true));
+        } else {
+            effective_mode = Some(mode);
+        }
     } else if let Some(value) = extra.remove("mode") {
         if let Some(mode) = value
             .as_str()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            settings.insert("mode".to_string(), Value::String(mode.to_ascii_lowercase()));
+            effective_mode = Some(mode.to_ascii_lowercase());
         } else {
+            effective_mode = None;
             settings.insert("__invalid_xhttp_mode".to_string(), Value::Bool(true));
         }
     }
+    if let Some(mode) = effective_mode {
+        settings.insert("mode".to_string(), Value::String(mode));
+    }
     if !extra.is_empty() {
         settings.insert("extra".to_string(), Value::Object(extra));
+    }
+    if invalid_query_shape {
+        settings.insert("__invalid_xhttp_query".to_string(), Value::Bool(true));
     }
 
     canonical_json_value(&Value::Object(settings))
@@ -1160,9 +1273,7 @@ pub(crate) fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
     let display_name = value
         .get("ps")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .and_then(safe_proxy_display_name)
         .unwrap_or_else(|| format!("{address}:{port}"));
 
     Ok(VmessShareLink {
@@ -1236,7 +1347,7 @@ pub(crate) fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShare
     let (main, _) = split_once_first(main, '?');
     let display_name = fragment
         .map(percent_decode_once_lossy)
-        .filter(|value| !value.trim().is_empty());
+        .and_then(|value| safe_proxy_display_name(&value));
 
     if let Ok(url) = Url::parse(raw)
         && let Some(host) = url.host_str()

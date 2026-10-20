@@ -296,12 +296,13 @@ pub(crate) async fn timed_forward_proxy_egress_ip_probe(
                 error: None,
             }
         }
-        Err(err) => {
+        Err(_err) => {
+            let safe_error = "egress IP probe failed";
             if let Err(persist_err) = persist_forward_proxy_egress_ip_result(
                 &state.pool,
                 selected_proxy,
                 None,
-                Some(&err.to_string()),
+                Some(safe_error),
             )
             .await
             {
@@ -316,7 +317,7 @@ pub(crate) async fn timed_forward_proxy_egress_ip_probe(
                 latency_ms: None,
                 ip: None,
                 http_status: None,
-                error: Some(err.to_string()),
+                error: Some(safe_error.to_string()),
             }
         }
     }
@@ -330,13 +331,13 @@ pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("models") {
         Ok(target) => target,
-        Err(err) => {
+        Err(_err) => {
             return ForwardProxyLatencyProbeTargetResult {
                 ok: false,
                 latency_ms: None,
                 ip: None,
                 http_status: None,
-                error: Some(err.to_string()),
+                error: Some("upstream target unavailable".to_string()),
             };
         }
     };
@@ -358,12 +359,12 @@ pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
                 },
             }
         }
-        Ok(Err(err)) => ForwardProxyLatencyProbeTargetResult {
+        Ok(Err(_err)) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
             latency_ms: None,
             ip: None,
             http_status: None,
-            error: Some(err.to_string()),
+            error: Some("upstream request failed".to_string()),
         },
         Err(_) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
@@ -396,13 +397,13 @@ pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("responses") {
         Ok(target) => target,
-        Err(err) => {
+        Err(_err) => {
             return ForwardProxyLatencyProbeTargetResult {
                 ok: false,
                 latency_ms: None,
                 ip: None,
                 http_status: None,
-                error: Some(err.to_string()),
+                error: Some("upstream target unavailable".to_string()),
             };
         }
     };
@@ -424,12 +425,12 @@ pub(crate) async fn timed_forward_proxy_codex_responses_probe(
                 },
             }
         }
-        Ok(Err(err)) => ForwardProxyLatencyProbeTargetResult {
+        Ok(Err(_err)) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
             latency_ms: None,
             ip: None,
             http_status: None,
-            error: Some(err.to_string()),
+            error: Some("upstream request failed".to_string()),
         },
         Err(_) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
@@ -532,24 +533,30 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
     };
     let mut oauth_upstream = egress_ip.clone();
     let mut codex_responses = egress_ip.clone();
-    let mut round_started = Instant::now();
+    let round_started = Instant::now();
 
     if !round_timeout.is_zero() {
-        match resolve_forward_proxy_probe_endpoint_url(
-            state.as_ref(),
-            endpoint,
-            round_timeout,
-            Some(&state.shutdown),
-        )
-        .await
+        let route_result = match remaining_timeout_budget(round_timeout, round_started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
         {
+            Some(route_timeout) => {
+                resolve_forward_proxy_probe_endpoint_url(
+                    state.as_ref(),
+                    endpoint,
+                    route_timeout,
+                    Some(&state.shutdown),
+                )
+                .await
+            }
+            None => Err(anyhow!("manual latency test round budget exhausted")),
+        };
+        match route_result {
             Ok((endpoint_url, temporary_xray_key)) => {
                 let client_result = state
                     .http_clients
                     .client_for_forward_proxy(endpoint_url.as_ref());
                 match client_result {
                     Ok(client) => {
-                        round_started = Instant::now();
                         egress_ip = timed_forward_proxy_egress_ip_probe(
                             state.as_ref(),
                             &selected_proxy,
@@ -603,9 +610,10 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                         };
                     }
                     Err(err) => {
-                        egress_ip.error = Some(err.to_string());
-                        oauth_upstream.error = Some(err.to_string());
-                        codex_responses.error = Some(err.to_string());
+                        let safe_error = super::sanitize_forward_proxy_error_detail(&err);
+                        egress_ip.error = Some(safe_error.clone());
+                        oauth_upstream.error = Some(safe_error.clone());
+                        codex_responses.error = Some(safe_error);
                     }
                 }
                 if let Some(temp_key) = temporary_xray_key {
@@ -614,9 +622,10 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                 }
             }
             Err(err) => {
-                egress_ip.error = Some(err.to_string());
-                oauth_upstream.error = Some(err.to_string());
-                codex_responses.error = Some(err.to_string());
+                let safe_error = super::sanitize_forward_proxy_error_detail(&err);
+                egress_ip.error = Some(safe_error.clone());
+                oauth_upstream.error = Some(safe_error.clone());
+                codex_responses.error = Some(safe_error);
             }
         }
     }
@@ -1250,14 +1259,23 @@ pub(crate) async fn probe_subscription_endpoint_with_retries(
             return Err(timeout_error_for_duration(validation_timeout));
         }
 
+        let probe =
+            probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation));
+        tokio::pin!(probe);
         let probe_result = tokio::select! {
             _ = cancellation.cancelled() => {
+                // The probe owns a temporary Xray route. Let its cancellation-aware cleanup
+                // finish before dropping the future, otherwise a successful sibling can leave
+                // an orphaned process and config file behind.
+                let _ = probe.await;
                 return Err(shutdown_cancelled_forward_proxy_probe());
             }
             _ = tokio::time::sleep(remaining_timeout) => {
+                cancellation.cancel();
+                let _ = probe.await;
                 return Err(timeout_error_for_duration(validation_timeout));
             }
-            result = probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation)) => {
+            result = &mut probe => {
                 result
             }
         };
@@ -1296,20 +1314,19 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         .join("v1/models")
         .context("failed to build validation probe target")?;
     let started = Instant::now();
-    let (endpoint_url, temporary_xray_key) = match resolve_forward_proxy_probe_endpoint_url(
-        state,
-        endpoint,
-        validation_timeout,
-        shutdown,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
-            return Ok(None);
-        }
-        Err(err) => return Err(err),
-    };
+    let route_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| timeout_error_for_duration(validation_timeout))?;
+    let (endpoint_url, temporary_xray_key) =
+        match resolve_forward_proxy_probe_endpoint_url(state, endpoint, route_timeout, shutdown)
+            .await
+        {
+            Ok(result) => result,
+            Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        };
 
     let probe_result = async {
         let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
@@ -1584,7 +1601,7 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
                         trigger,
                         proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
                         proxy_source = endpoint.source,
-                        proxy_label = endpoint.display_name,
+                        proxy_label_ref = %forward_proxy_log_ref(&endpoint.display_name),
                         proxy_url_ref = %forward_proxy_log_ref_option(endpoint.raw_url.as_deref()),
                         failure_kind,
                         error = %err,

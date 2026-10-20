@@ -967,6 +967,19 @@ fn proxy_display_name_from_url_decodes_non_ascii_fragment() {
     );
 }
 
+#[test]
+fn proxy_display_name_from_url_rejects_credential_shaped_fragment() {
+    let url = Url::parse(
+        "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#vless%3A%2F%2Fsecret%40edge.example.com%3Fextra%3Dopaque",
+    )
+    .expect("valid vless share link");
+
+    assert_eq!(
+        proxy_display_name_from_url(&url).as_deref(),
+        Some("vless.example.com:443")
+    );
+}
+
 #[tokio::test]
 async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys() {
     let state = test_state_with_openai_base(
@@ -1230,10 +1243,7 @@ fn forward_proxy_manager_reuses_legacy_vless_hash_runtime_state() {
         .get(&stable_proxy_key)
         .expect("stable runtime should be preserved");
     assert_eq!(runtime.weight, 0.37);
-    assert_eq!(
-        runtime.endpoint_url.as_deref(),
-        Some(normalized_proxy.as_str())
-    );
+    assert!(runtime.endpoint_url.is_none());
     assert!(!manager.runtime.contains_key(&legacy_proxy_key));
 }
 
@@ -1899,7 +1909,7 @@ async fn validate_subscription_candidate_limits_node_probe_concurrency_to_ten() 
         async move { validate_subscription_candidate(state, subscription_url).await }
     });
 
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if total_requests.load(Ordering::SeqCst) >= 10 {
                 return;
@@ -2061,6 +2071,7 @@ time.sleep(30)
             local_proxy_url: Url::parse("socks5://127.0.0.1:1080").expect("valid local proxy url"),
             config_path: config_path.clone(),
             child,
+            diagnostic_task: None,
         },
     );
     let shutdown = CancellationToken::new();
@@ -2131,7 +2142,7 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     let err = supervisor
         .ensure_instance_with_ready_timeout(
             &endpoint,
-            Duration::from_millis(50),
+            Duration::from_secs(2),
             &CancellationToken::new(),
         )
         .await
@@ -2198,7 +2209,7 @@ sleep 30
     let err = supervisor
         .ensure_instance_with_ready_timeout(
             &endpoint,
-            Duration::from_millis(50),
+            Duration::from_secs(2),
             &CancellationToken::new(),
         )
         .await

@@ -135,6 +135,34 @@ describe("validateForwardProxyCandidate timeout split", () => {
       latencyMs: 42,
     });
   });
+
+  it("preserves validation codes from non-2xx responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              message: "proxy validation timed out",
+              code: "proxy_timeout",
+            }),
+            { status: 504, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    );
+
+    await expect(
+      validateForwardProxyCandidate({
+        kind: "proxyUrl",
+        value: "vless://redacted@example.invalid:443?type=xhttp",
+      }),
+    ).rejects.toMatchObject({
+      name: "ApiRequestError",
+      status: 504,
+      code: "proxy_timeout",
+    });
+  });
 });
 
 describe("fetchForwardProxyLiveStats", () => {

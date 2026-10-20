@@ -13,6 +13,57 @@ fn vless_xhttp_identity_normalizes_aliases_encoding_and_extra_key_order() {
 }
 
 #[test]
+fn vless_xhttp_identity_normalizes_missing_mode_to_xray_default() {
+    let omitted = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&path=%2Fprobe";
+    let explicit_auto = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&path=%2Fprobe&mode=auto";
+
+    assert_eq!(
+        normalize_single_proxy_key(omitted),
+        normalize_single_proxy_key(explicit_auto),
+        "omitted XHTTP mode should share identity with Xray's explicit auto mode"
+    );
+}
+
+#[test]
+fn normalize_proxy_url_entries_deduplicates_equivalent_xhttp_links() {
+    let first = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&path=%2Fprobe&mode=auto&extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D";
+    let equivalent = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D&mode=auto&path=/probe&net=xhttp&security=none";
+
+    let normalized = normalize_proxy_url_entries(vec![first.to_string(), equivalent.to_string()]);
+
+    assert_eq!(normalized.len(), 1);
+    assert_eq!(
+        normalize_single_proxy_key(&normalized[0]),
+        normalize_single_proxy_key(first)
+    );
+}
+
+#[test]
+fn safe_forward_proxy_endpoint_url_hides_share_link_credentials() {
+    let xhttp = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&extra=%7B%22secret%22%3A%22hidden%22%7D";
+
+    assert_eq!(
+        safe_forward_proxy_endpoint_url(Some(xhttp)),
+        Some("vless://edge.example.com:443".to_string())
+    );
+    assert_eq!(
+        safe_forward_proxy_endpoint_url(Some("http://user:password@proxy.example.com:8080")),
+        Some("http://proxy.example.com:8080".to_string())
+    );
+}
+
+#[test]
+fn vless_xhttp_identity_marks_ambiguous_duplicate_query_fields() {
+    let raw = Url::parse(
+        "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=none&type=xhttp&type=tcp",
+    )
+    .expect("duplicate xhttp fixture should parse");
+    let identity = canonical_vless_share_link_identity(&raw);
+
+    assert!(identity.contains("__invalid_xhttp_query"));
+}
+
+#[test]
 fn vless_xhttp_identity_changes_when_effective_settings_change() {
     let base = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?security=reality&type=xhttp&host=cdn.example.com&path=%2Fxp-xhttp&mode=stream-one&extra=%7B%22xmux%22%3A%7B%22maxConnections%22%3A%221%22%7D%7D&sni=edge.example.com&alpn=h2&fp=chrome&pbk=public-key&sid=01234567";
     let host_changed = base.replace("cdn.example.com", "other.example.com");
@@ -99,6 +150,67 @@ fn forward_proxy_validation_failure_codes_are_stable_and_safe() {
             "validation probe returned status 502".to_string()
         )
     );
+}
+
+#[test]
+fn forward_proxy_validation_phase_codes_are_preserved_without_sensitive_details() {
+    let cases = [
+        (
+            ForwardProxyValidationErrorCode::UnsupportedTransport,
+            "unsupported proxy transport",
+        ),
+        (
+            ForwardProxyValidationErrorCode::InvalidXhttpExtra,
+            "xhttp extra contains invalid JSON",
+        ),
+        (
+            ForwardProxyValidationErrorCode::UnsupportedXhttpMode,
+            "xhttp mode is unsupported",
+        ),
+        (
+            ForwardProxyValidationErrorCode::XrayConfigError,
+            "xray rejected proxy configuration",
+        ),
+        (
+            ForwardProxyValidationErrorCode::XrayStartupError,
+            "xray proxy route failed to start",
+        ),
+        (
+            ForwardProxyValidationErrorCode::ProxyConnectError,
+            "proxy connection failed during validation",
+        ),
+        (
+            ForwardProxyValidationErrorCode::ProxyTimeout,
+            "proxy validation timed out",
+        ),
+        (
+            ForwardProxyValidationErrorCode::UpstreamStatusRejected,
+            "validation probe returned status 502",
+        ),
+        (
+            ForwardProxyValidationErrorCode::ValidationFailed,
+            "proxy validation failed",
+        ),
+    ];
+
+    for (code, message) in cases {
+        let error = anyhow!(ForwardProxyValidationError::new(code, message));
+        assert_eq!(
+            classify_forward_proxy_validation_error(&error),
+            (code, message.to_string())
+        );
+        let payload = serde_json::to_value(ForwardProxyCandidateValidationResponse::failed(
+            code, message,
+        ))
+        .expect("validation failure response should serialize");
+        assert_eq!(payload["code"], code.as_str());
+        assert_eq!(payload["ok"], false);
+        assert!(payload["message"].as_str().is_some_and(|value| {
+            !value.contains("11111111-1111-1111-1111-111111111111")
+                && !value.contains("vless://")
+                && !value.contains("extra-secret")
+        }));
+    }
 }
 
 #[tokio::test]

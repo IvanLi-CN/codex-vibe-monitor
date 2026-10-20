@@ -366,12 +366,12 @@ pub(crate) async fn persist_forward_proxy_egress_ip_result(
     .bind(&selected_proxy.key)
     .bind(&selected_proxy.display_name)
     .bind(&selected_proxy.source)
-    .bind(
+    .bind(safe_forward_proxy_endpoint_url(
         selected_proxy
             .endpoint_url_raw
             .as_deref()
             .or_else(|| selected_proxy.endpoint_url.as_ref().map(|url| url.as_str())),
-    )
+    ))
     .bind(egress_ip)
     .bind(FORWARD_PROXY_EGRESS_IP_PROVIDER)
     .bind(&now_iso)
@@ -1491,7 +1491,7 @@ pub(crate) async fn build_forward_proxy_settings_response(
     )
     .await?;
 
-    let (settings, runtime_rows, runtime_health_key_by_proxy_key) = {
+    let (settings, runtime_rows, runtime_health_key_by_proxy_key, safe_endpoint_url_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
         let mut runtime_rows = manager.snapshot_runtime().into_iter().collect::<Vec<_>>();
         ensure_owner_facing_direct_runtime_row(
@@ -1508,10 +1508,22 @@ pub(crate) async fn build_forward_proxy_settings_response(
                 (runtime.proxy_key.clone(), health_key)
             })
             .collect::<HashMap<_, _>>();
+        let safe_endpoint_url_by_proxy_key = manager
+            .endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                endpoint
+                    .raw_url
+                    .as_deref()
+                    .and_then(|raw| safe_forward_proxy_endpoint_url(Some(raw)))
+                    .map(|safe| (endpoint.key.clone(), safe))
+            })
+            .collect::<HashMap<_, _>>();
         (
             manager.settings.clone(),
             runtime_rows,
             runtime_health_key_by_proxy_key,
+            safe_endpoint_url_by_proxy_key,
         )
     };
     let runtime_health_keys = runtime_health_key_by_proxy_key
@@ -1565,7 +1577,12 @@ pub(crate) async fn build_forward_proxy_settings_response(
                 key: runtime.proxy_key.clone(),
                 source: runtime.source.clone(),
                 display_name: runtime.display_name.clone(),
-                endpoint_url: runtime.endpoint_url.clone(),
+                endpoint_url: safe_forward_proxy_endpoint_url(runtime.endpoint_url.as_deref())
+                    .or_else(|| {
+                        safe_endpoint_url_by_proxy_key
+                            .get(&runtime.proxy_key)
+                            .cloned()
+                    }),
                 weight: runtime.weight,
                 penalized: runtime.is_penalized(),
                 stats: ForwardProxyStatsResponse {
@@ -2022,7 +2039,7 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
                 key: proxy_key,
                 source: runtime.source,
                 display_name: runtime.display_name,
-                endpoint_url: runtime.endpoint_url,
+                endpoint_url: safe_forward_proxy_endpoint_url(runtime.endpoint_url.as_deref()),
                 weight: runtime_weight,
                 penalized,
                 stats: ForwardProxyStatsResponse {
@@ -2257,8 +2274,12 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
                         }
                     }),
                 endpoint_url: runtime
-                    .and_then(|item| item.endpoint_url.clone())
-                    .or_else(|| metadata.and_then(|item| item.endpoint_url.clone())),
+                    .and_then(|item| safe_forward_proxy_endpoint_url(item.endpoint_url.as_deref()))
+                    .or_else(|| {
+                        metadata.and_then(|item| {
+                            safe_forward_proxy_endpoint_url(item.endpoint_url.as_deref())
+                        })
+                    }),
                 weight: runtime.map(|item| item.weight).unwrap_or(fallback_weight),
                 penalized: runtime.map(|item| item.is_penalized()).unwrap_or(false),
                 buckets,
@@ -2412,22 +2433,23 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         refresh_forward_proxy_subscriptions(state.clone(), true, None),
     )
     .await;
-    observation.finish_from_result(&refresh_result);
 
     if let Err(err) = refresh_result {
-        let detail = err.to_string();
+        let detail = sanitize_forward_proxy_error_detail(&err);
+        observation.finish_with_status_and_reason("failed", Some(&detail));
         if let Some(run) = task_run.as_ref() {
             finish_system_task_run_batched(
                 state.as_ref(),
                 run,
                 SystemTaskStatus::Failed,
                 Some("forward proxy manual refresh failed".to_string()),
-                Some(detail),
+                Some(detail.clone()),
             )
             .await;
         }
-        return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+        return Err((StatusCode::BAD_GATEWAY, detail));
     }
+    observation.finish_with_status("success");
 
     let after_subscription_keys = {
         let manager = state.forward_proxy.lock().await;
@@ -2463,4 +2485,9 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         added_node_count,
         refreshed_at: format_utc_iso(Utc::now()),
     }))
+}
+
+fn sanitize_forward_proxy_error_detail(err: &anyhow::Error) -> String {
+    let (code, message) = classify_forward_proxy_validation_error(err);
+    format!("{}: {message}", code.as_str())
 }
