@@ -204,6 +204,7 @@ jobs:
             ${{ runner.temp }}/observability-acceptance/run-config.json
             ${{ runner.temp }}/observability-acceptance/image-identity.json
             ${{ runner.temp }}/observability-acceptance/runner-context.json
+            ${{ runner.temp }}/observability-acceptance/cpu-attribution.json
             ${{ runner.temp }}/observability-acceptance/environment-admission.jsonl
             ${{ runner.temp }}/observability-acceptance/resource-observer.jsonl
             ${{ runner.temp }}/observability-acceptance/measurement-windows.json

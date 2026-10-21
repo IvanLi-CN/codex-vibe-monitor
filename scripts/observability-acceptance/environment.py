@@ -11,6 +11,15 @@ import subprocess
 import threading
 import time
 
+from cpu_attribution import (
+    APP_COUNTER_FIELDS,
+    HOST_COUNTER_FIELDS,
+    CpuAttributionError,
+    PreparedCpuAttribution,
+    SAMPLE_INTERVAL_SECONDS,
+    container_cgroup_matches,
+)
+
 
 def actions_context(source, run, candidate, *, require_runner_identity=True):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
@@ -66,6 +75,120 @@ def pressure():
 PRESSURE_LIMITS = {"cpu": 2.0, "io": 5.0, "memory": 0.1}
 MAX_CUMULATIVE_ADMISSION_SECONDS = 900.0
 PAIR_ADMISSION_SECONDS = 450.0
+BASE_ATTRIBUTION_SERVICES = frozenset({"app", "mock-upstream", "client"})
+PAIRED_ATTRIBUTION_SERVICES = {
+    "off": BASE_ATTRIBUTION_SERVICES,
+    "metrics": BASE_ATTRIBUTION_SERVICES | {"prometheus"},
+    "full": BASE_ATTRIBUTION_SERVICES | {"prometheus", "tempo", "entry"},
+}
+
+
+def _valid_counter_map(value, required_fields):
+    return (
+        isinstance(value, dict)
+        and set(required_fields).issubset(value)
+        and all(type(value[field]) is int and value[field] >= 0 for field in required_fields)
+    )
+
+
+def _valid_cpu_pressure(value):
+    fields = {"avg10", "avg60", "avg300", "total"}
+    if not isinstance(value, dict) or set(value) != {"some", "full"}:
+        return False
+    for stats in value.values():
+        if not isinstance(stats, dict) or set(stats) != fields:
+            return False
+        for name in ("avg10", "avg60", "avg300"):
+            if type(stats[name]) not in (int, float) or not math.isfinite(stats[name]) or not 0 <= stats[name] <= 100:
+                return False
+        if type(stats["total"]) is not int or stats["total"] < 0:
+            return False
+    return True
+
+
+def _host_counter_delta(before, after):
+    if not _valid_counter_map(before, HOST_COUNTER_FIELDS) or not _valid_counter_map(after, HOST_COUNTER_FIELDS):
+        raise ValueError("invalid host CPU counter sample")
+    delta = {}
+    for field in HOST_COUNTER_FIELDS:
+        value = after[field] - before[field]
+        if value < 0:
+            raise ValueError("host CPU counter reset")
+        delta[field] = value
+    return delta
+
+
+def _app_counter_delta(before, after):
+    if not _valid_counter_map(before, APP_COUNTER_FIELDS) or not _valid_counter_map(after, APP_COUNTER_FIELDS):
+        raise ValueError("invalid app CPU counter sample")
+    if set(before) != set(after):
+        raise ValueError("app CPU counter fields changed")
+    delta = {}
+    for field in sorted(before):
+        if type(before[field]) is not int or type(after[field]) is not int:
+            raise ValueError("invalid app CPU counter value")
+        value = after[field] - before[field]
+        if value < 0:
+            raise ValueError("app CPU counter reset")
+        delta[field] = value
+    return delta
+
+
+def _validate_attribution_sample(value, allowed_cpus):
+    if not isinstance(value, dict):
+        raise ValueError("missing CPU attribution sample")
+    host = value.get("hostCpu")
+    if not isinstance(host, dict) or set(host) != {str(cpu) for cpu in allowed_cpus}:
+        raise ValueError("invalid host CPU attribution shape")
+    if any(not _valid_counter_map(counters, HOST_COUNTER_FIELDS) for counters in host.values()):
+        raise ValueError("invalid host CPU attribution counters")
+    app = value.get("app")
+    if (
+        not isinstance(app, dict)
+        or not _valid_counter_map(app.get("cpuStat"), APP_COUNTER_FIELDS)
+        or not _valid_cpu_pressure(app.get("cpuPressure"))
+    ):
+        raise ValueError("invalid app CPU attribution counters")
+
+
+def _attribution_delta(before, after, allowed_cpus):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise ValueError("missing CPU attribution sample")
+    before_host = before.get("hostCpu")
+    after_host = after.get("hostCpu")
+    if not isinstance(before_host, dict) or not isinstance(after_host, dict):
+        raise ValueError("missing host CPU attribution")
+    expected_cpus = {str(cpu) for cpu in allowed_cpus}
+    if set(before_host) != expected_cpus or set(after_host) != expected_cpus:
+        raise ValueError("host CPU attribution set changed")
+    return {
+        "hostCpu": {
+            str(cpu): _host_counter_delta(before_host[str(cpu)], after_host[str(cpu)])
+            for cpu in allowed_cpus
+        },
+        "appCpuStat": _app_counter_delta(
+            before.get("app", {}).get("cpuStat"),
+            after.get("app", {}).get("cpuStat"),
+        ),
+    }
+
+
+def _validate_counter_delta_shape(value, expected, allowed_cpus):
+    if not isinstance(value, dict) or set(value) != {"hostCpu", "appCpuStat"}:
+        raise ValueError("invalid CPU counter delta shape")
+    host = value["hostCpu"]
+    if not isinstance(host, dict) or set(host) != {str(cpu) for cpu in allowed_cpus}:
+        raise ValueError("invalid host CPU counter delta shape")
+    for counters in host.values():
+        if not isinstance(counters, dict) or set(counters) != set(HOST_COUNTER_FIELDS):
+            raise ValueError("invalid host CPU counter delta fields")
+        if any(type(counter) is not int or counter < 0 for counter in counters.values()):
+            raise ValueError("invalid host CPU counter delta value")
+    app = value["appCpuStat"]
+    if not isinstance(app, dict) or set(app) != set(expected["appCpuStat"]):
+        raise ValueError("invalid app CPU counter delta fields")
+    if any(type(counter) is not int or counter < 0 for counter in app.values()):
+        raise ValueError("invalid app CPU counter delta value")
 
 
 def measurement_cpu_layout(affinity, selected=None):
@@ -184,9 +307,10 @@ class MeasurementObserver:
     interval_seconds = 10
     maximum_gap_seconds = 20
 
-    def __init__(self, root, window):
+    def __init__(self, root, window, attribution=None):
         self.root = root
         self.identity = {**window, "phase": "measurement"}
+        self.attribution = attribution
         self.stop = threading.Event()
         self.errors = set()
         self.pressure_exceeded_samples = 0
@@ -198,8 +322,26 @@ class MeasurementObserver:
         self.output = None
         self.worker = None
 
+    def _record_attribution_preparation(self):
+        if self.attribution is None:
+            return
+        path = self.root / "cpu-attribution.json"
+        try:
+            preparations = json.loads(path.read_text()) if path.exists() else []
+        except (OSError, ValueError, UnicodeError) as error:
+            raise OSError("invalid CPU attribution preparation evidence") from error
+        if not isinstance(preparations, list) or any(
+            not isinstance(row, dict) or row.get("windowId") == self.identity["windowId"] for row in preparations
+        ) or len(preparations) >= 9:
+            raise OSError("invalid CPU attribution preparation evidence")
+        preparation = {"windowId": self.identity["windowId"], **self.attribution.metadata()}
+        preparations.append(preparation)
+        path.write_text(json.dumps(preparations, indent=2) + "\n")
+
     def sample(self):
         row = pressure_sample(self.identity)
+        if self.attribution is not None:
+            row["cpuAttribution"] = self.attribution.sample()
         now = row["monotonicSeconds"]
         if self.previous_time is not None:
             gap = now - self.previous_time
@@ -219,9 +361,14 @@ class MeasurementObserver:
             self.pressure_exceeded_samples += 1
             if self.samples == 1:
                 self.errors.add("pressure_exceeded")
+        if self.attribution is not None:
+            self.errors.update(row["cpuAttribution"].get("errorCodes", []))
 
     def start(self):
         self.output = (self.root / "resource-observer.jsonl").open("a")
+        if self.attribution is not None:
+            self.attribution.begin_window()
+        self._record_attribution_preparation()
         self.sample()
         if self.errors:
             raise OSError("measurement began without valid quiet resource evidence")
@@ -262,6 +409,13 @@ class MeasurementObserver:
                    "maximumGapSeconds": self.maximum_gap, "pressureLimits": PRESSURE_LIMITS,
                    "pressureExceededSamples": self.pressure_exceeded_samples,
                    "status": "unavailable" if self.errors else "passed", "reasonCodes": sorted(self.errors)}
+        if self.attribution is not None:
+            attribution_summary = self.attribution.window_summary()
+            attribution_summary["sampleCount"] = self.samples
+            summary["cpuAttribution"] = attribution_summary
+            self.errors.update(attribution_summary.get("errorCodes", []))
+            summary["status"] = "unavailable" if self.errors else "passed"
+            summary["reasonCodes"] = sorted(self.errors)
         path = self.root / "measurement-windows.json"
         try:
             windows = json.loads(path.read_text()) if path.exists() else []
@@ -275,9 +429,19 @@ class MeasurementObserver:
             raise OSError("measured resource environment unavailable: " + ",".join(sorted(self.errors)))
 
 
+    def cpu_usage_usec(self):
+        if self.attribution is None:
+            raise OSError("CPU attribution is not prepared")
+        try:
+            return self.attribution.cpu_usage_usec()
+        except CpuAttributionError as error:
+            self.errors.add(error.code)
+            raise OSError("CPU attribution unavailable: " + error.code) from error
+
+
 @contextmanager
-def observe_resources(root, window):
-    observer = MeasurementObserver(root, window)
+def observe_resources(root, window, attribution: PreparedCpuAttribution | None = None):
+    observer = MeasurementObserver(root, window, attribution)
     try:
         observer.start()
         yield observer
@@ -294,8 +458,10 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
         raw = [json.loads(line) for line in (root / "resource-observer.jsonl").read_text().splitlines()]
         admissions = [json.loads(line) for line in (root / "environment-admission.jsonl").read_text().splitlines()]
         loads = json.loads((root / "ab-samples.json").read_text())
+        preparations = json.loads((root / "cpu-attribution.json").read_text())
         selected_cpu = runner_context.get("measurementCpu", run_config["appCpuSet"])
         cpu_layout = measurement_cpu_layout(runner_context["cpuAffinity"], selected=selected_cpu)
+        allowed_cpus = sorted(runner_context["cpuAffinity"])
         assert run_config["appCpuQuota"] == 1
         assert run_config["appCpuSet"] == cpu_layout["app"]
         assert run_config["auxiliaryCpuSet"] == cpu_layout["auxiliary"]
@@ -303,6 +469,9 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
         expected = {f"{index}-{mode}" for index in indices for mode in modes}
         assert len(windows) == len(indices) * len(modes) and {row["windowId"] for row in windows} == expected
         assert {row["windowId"] for row in raw} == expected
+        assert isinstance(preparations, list) and {row["windowId"] for row in preparations} == expected
+        assert len(preparations) == len(expected)
+        preparations_by_id = {row["windowId"]: row for row in preparations}
         assert set(loads) == set(modes) and all(len(rows) == len(indices) for rows in loads.values())
         if pair_index is not None:
             assert pair_index in range(3) and run_config["pairIndex"] == pair_index
@@ -324,6 +493,27 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             window_id = window["windowId"]
             assert window_id == f"{window['pairIndex']}-{window['enabled']}"
             assert window["status"] == "passed" and not window["reasonCodes"]
+            attribution_summary = window["cpuAttribution"]
+            preparation = preparations_by_id[window_id]
+            preparation_containers = {row["service"]: row for row in preparation["containers"]}
+            prepared_app = preparation_containers["app"]
+            prepared_cpu_max = prepared_app["cgroup"]["cpuMax"]
+            expected_services = (
+                BASE_ATTRIBUTION_SERVICES
+                if pair_index is None
+                else PAIRED_ATTRIBUTION_SERVICES.get(window["enabled"])
+            )
+            assert (
+                attribution_summary["schemaVersion"] == 1
+                and attribution_summary["status"] == "passed"
+                and attribution_summary["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
+                and attribution_summary["measurementCpu"] == str(run_config.get("appCpuSet"))
+                and attribution_summary["allowedCpus"] == allowed_cpus
+                and attribution_summary["sampleCount"] == window["sampleCount"]
+                and not attribution_summary["errorCodes"]
+                and expected_services is not None
+                and set(preparation_containers) == expected_services
+            )
             maximum_wait = 180 if pair_index is not None else 300
             assert window["pressureLimits"] == PRESSURE_LIMITS and 0 <= window["admissionWaitSeconds"] <= maximum_wait
             start, end = window["startedMonotonicSeconds"], window["endedMonotonicSeconds"]
@@ -333,6 +523,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             assert len(rows) == window["sampleCount"] and len(rows) >= 2
             exceeded = 0
             times = [start]
+            previous_attribution = None
             for index, row in enumerate(rows):
                 assert row["pairIndex"] == window["pairIndex"] and row["enabled"] == window["enabled"]
                 assert row["phase"] == "measurement" and isinstance(row["eligible"], bool) and "errorClass" not in row
@@ -343,10 +534,52 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 if index == 0:
                     assert row["eligible"] is True
                 assert math.isfinite(row["monotonicSeconds"]) and math.isfinite(row["utcSeconds"])
+                attribution = row["cpuAttribution"]
+                observed_containers = attribution["containers"]
+                counter_delta = attribution.get("counterDelta")
+                counter_delta_status = attribution.get("counterDeltaStatus")
+                _validate_attribution_sample(attribution, allowed_cpus)
+                assert (
+                    attribution["schemaVersion"] == 1
+                    and attribution["status"] == "passed"
+                    and attribution["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
+                    and attribution["measurementCpu"] == str(run_config.get("appCpuSet"))
+                    and attribution["allowedCpus"] == allowed_cpus
+                    and not attribution["errorCodes"]
+                    and attribution["app"]["pid"] > 0
+                    and attribution["app"]["effectiveAffinity"] == [int(run_config["appCpuSet"])]
+                    and _valid_counter_map(attribution["app"]["cpuStat"], APP_COUNTER_FIELDS)
+                    and attribution["app"]["cpuMax"] == prepared_cpu_max
+                    and (
+                        (index == 0 and counter_delta is None and counter_delta_status == "baseline")
+                        or (
+                            index > 0
+                            and counter_delta_status == "delta"
+                        )
+                    )
+                    and set(observed_containers) == set(preparation_containers)
+                )
+                if index > 0:
+                    expected_delta = _attribution_delta(previous_attribution, attribution, allowed_cpus)
+                    _validate_counter_delta_shape(counter_delta, expected_delta, allowed_cpus)
+                    assert counter_delta == expected_delta
+                previous_attribution = attribution
+                for service, prepared in preparation_containers.items():
+                    observed = observed_containers[service]
+                    assert (
+                        observed["containerId"] == prepared["containerId"]
+                        and observed["pid"] == prepared["pid"]
+                        and observed["startTimeTicks"] == prepared["startTimeTicks"]
+                        and observed["effectiveAffinity"] == prepared["effectiveAffinity"]
+                        and observed["cgroupPath"] == prepared["cgroupPath"]
+                    )
                 times.append(row["monotonicSeconds"])
             times.append(end)
             gaps = [after - before for before, after in zip(times, times[1:])]
             assert all(0 <= gap <= 20 for gap in gaps) and window["maximumGapSeconds"] <= 20
+            expected_summary_delta = _attribution_delta(rows[0]["cpuAttribution"], rows[-1]["cpuAttribution"], allowed_cpus)
+            _validate_counter_delta_shape(attribution_summary["counterDelta"], expected_summary_delta, allowed_cpus)
+            assert attribution_summary["counterDelta"] == expected_summary_delta
             assert window["pressureExceededSamples"] == exceeded
             admitted = [row for row in admissions if row.get("windowId") == window_id]
             assert len(admitted) >= 3
@@ -354,6 +587,29 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 assert row["phase"] == "admission" and row["consecutive"] == consecutive
                 assert row["eligible"] is True and "errorClass" not in row and pressure_eligible(row["hostPressure"])
             assert admitted[-1]["monotonicSeconds"] <= start
+        for preparation in preparations:
+            assert (
+                preparation["schemaVersion"] == 1
+                and preparation["status"] == "prepared"
+                and preparation["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
+                and preparation["measurementCpu"] == str(run_config.get("appCpuSet"))
+                and preparation["allowedCpus"] == sorted(runner_context["cpuAffinity"])
+                and isinstance(preparation["containers"], list)
+                and len({row["service"] for row in preparation["containers"]}) == len(preparation["containers"])
+                and all(
+                    isinstance(row, dict)
+                    and isinstance(row.get("containerId"), str)
+                    and isinstance(row.get("cgroupPath"), str)
+                    and container_cgroup_matches(row["containerId"], row["cgroupPath"])
+                    for row in preparation["containers"]
+                )
+                and any(
+                    row["service"] == "app"
+                    and row["cgroup"]["version"] == "v2"
+                    and row["cgroup"]["cpuMax"]["quota"] == row["cgroup"]["cpuMax"]["periodUsec"]
+                    for row in preparation["containers"]
+                )
+            )
     except (AssertionError, KeyError, TypeError, ValueError, OverflowError) as error:
         raise OSError("measurement environment evidence is incomplete or invalid") from error
 

@@ -36,6 +36,26 @@ _Avoid_: notification, because the frame carries data and does not require a fol
 A fixed warm-up and measurement window that records browser workload, live-data volume, main-thread stalls, rendering cadence, and memory for comparison before and after a change.
 _Avoid_: one-off performance impression.
 
+## Forward Proxy Context
+
+**Forward Proxy Node**:
+An endpoint that the service may select as the egress route for outbound requests.
+
+**XHTTP Transport**:
+An Xray transport that carries proxy traffic through HTTP-shaped sessions and has its own path, mode, and extension settings.
+
+**XHTTP Share Link**:
+A VLESS share URL that declares XHTTP as its transport and carries the transport's effective connection settings.
+
+**Validation Probe**:
+A real request sent through a candidate node to determine whether that node can reach the configured upstream.
+
+**Available Candidate**:
+A forward proxy node that satisfies the validation policy and may be offered for import or routing.
+
+**Node Identity**:
+The stable identifier used to recognize the same forward proxy node across normalization, deduplication, bindings, history, and runtime state.
+
 ## Proxy Routing Language
 
 **Same-account retry**:

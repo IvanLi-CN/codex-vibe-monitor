@@ -4,6 +4,7 @@ use super::*;
 pub(crate) use super::*;
 
 mod forward_proxy_config_and_storage;
+mod forward_proxy_xhttp;
 mod invocation_timeline_maintenance;
 mod models_dev_http_client;
 mod observability_lifecycles;

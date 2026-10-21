@@ -60,7 +60,7 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
             }
             Err(err) => {
                 warn!(
-                    subscription_url,
+                    subscription_url_ref = %forward_proxy_log_ref(subscription_url),
                     error = %err,
                     "failed to fetch forward proxy subscription"
                 );
@@ -156,20 +156,21 @@ pub(crate) async fn fetch_subscription_proxy_urls(
     subscription_url: &str,
     request_timeout: Duration,
 ) -> Result<Vec<String>> {
+    let subscription_url_ref = forward_proxy_log_ref(subscription_url);
     let response = timeout(request_timeout, client.get(subscription_url).send())
         .await
         .map_err(|_| anyhow!("subscription request timed out"))?
-        .with_context(|| format!("failed to request subscription url: {subscription_url}"))?;
+        .map_err(|_| anyhow!("subscription request failed"))?;
     if !response.status().is_success() {
         bail!(
-            "subscription url returned status {}: {subscription_url}",
+            "subscription ref {subscription_url_ref} returned status {}",
             response.status()
         );
     }
     let body = timeout(request_timeout, response.text())
         .await
         .map_err(|_| anyhow!("subscription body read timed out"))?
-        .context("failed to read subscription body")?;
+        .map_err(|_| anyhow!("subscription body read failed"))?;
     Ok(parse_proxy_urls_from_subscription_body(&body))
 }
 
@@ -179,16 +180,17 @@ pub(crate) async fn fetch_subscription_proxy_urls_with_validation_budget(
     total_timeout: Duration,
     started: Instant,
 ) -> Result<Vec<String>> {
+    let subscription_url_ref = forward_proxy_log_ref(subscription_url);
     let request_timeout = remaining_timeout_budget(total_timeout, started.elapsed())
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| timeout_error_for_duration(total_timeout))?;
     let response = timeout(request_timeout, client.get(subscription_url).send())
         .await
         .map_err(|_| timeout_error_for_duration(total_timeout))?
-        .with_context(|| format!("failed to request subscription url: {subscription_url}"))?;
+        .map_err(|_| anyhow!("subscription request failed"))?;
     if !response.status().is_success() {
         bail!(
-            "subscription url returned status {}: {subscription_url}",
+            "subscription ref {subscription_url_ref} returned status {}",
             response.status()
         );
     }
@@ -198,7 +200,7 @@ pub(crate) async fn fetch_subscription_proxy_urls_with_validation_budget(
     let body = timeout(read_timeout, response.text())
         .await
         .map_err(|_| timeout_error_for_duration(total_timeout))?
-        .context("failed to read subscription body")?;
+        .map_err(|_| anyhow!("subscription body read failed"))?;
     Ok(parse_proxy_urls_from_subscription_body(&body))
 }
 
@@ -533,7 +535,7 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
             warn!(
                 proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
                 proxy_source = candidate.source,
-                proxy_label = candidate.display_name,
+                proxy_label_ref = %forward_proxy_log_ref(&candidate.display_name),
                 proxy_url_ref = %forward_proxy_log_ref_option(candidate.endpoint_url_raw.as_deref()),
                 error = %err,
                 "penalized forward proxy probe failed"
@@ -825,6 +827,7 @@ pub(crate) struct ForwardProxyCandidateValidationRequest {
 pub(crate) struct ForwardProxyCandidateValidationResponse {
     pub(crate) ok: bool,
     pub(crate) message: String,
+    pub(crate) code: Option<ForwardProxyValidationErrorCode>,
     pub(crate) normalized_value: Option<String>,
     pub(crate) discovered_nodes: Option<usize>,
     pub(crate) latency_ms: Option<f64>,
@@ -840,16 +843,21 @@ impl ForwardProxyCandidateValidationResponse {
         Self {
             ok: true,
             message: message.into(),
+            code: None,
             normalized_value,
             discovered_nodes,
             latency_ms,
         }
     }
 
-    pub(crate) fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(
+        code: ForwardProxyValidationErrorCode,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             ok: false,
             message: message.into(),
+            code: Some(code),
             normalized_value: None,
             discovered_nodes: None,
             latency_ms: None,
@@ -927,6 +935,22 @@ impl ForwardProxyEndpoint {
     }
 }
 
+pub(crate) fn runtime_endpoint_url_for_endpoint(endpoint: &ForwardProxyEndpoint) -> Option<String> {
+    if matches!(
+        endpoint.protocol,
+        ForwardProxyProtocol::Vmess
+            | ForwardProxyProtocol::Vless
+            | ForwardProxyProtocol::Trojan
+            | ForwardProxyProtocol::Shadowsocks
+    ) {
+        return None;
+    }
+    endpoint
+        .endpoint_url
+        .as_ref()
+        .and_then(|url| safe_forward_proxy_endpoint_url(Some(url.as_str())))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardProxyRuntimeState {
     pub(crate) proxy_key: String,
@@ -948,7 +972,7 @@ impl ForwardProxyRuntimeState {
             proxy_key: endpoint.key.clone(),
             display_name: endpoint.display_name.clone(),
             source: endpoint.source.clone(),
-            endpoint_url: endpoint.raw_url.clone(),
+            endpoint_url: runtime_endpoint_url_for_endpoint(endpoint),
             weight: if endpoint.key == FORWARD_PROXY_DIRECT_KEY {
                 match algo {
                     ForwardProxyAlgo::V1 => 1.0,
@@ -1208,7 +1232,7 @@ impl ForwardProxyManager {
                     let runtime = occupied.get_mut();
                     runtime.display_name = endpoint.display_name.clone();
                     runtime.source = endpoint.source.clone();
-                    runtime.endpoint_url = endpoint.raw_url.clone();
+                    runtime.endpoint_url = runtime_endpoint_url_for_endpoint(endpoint);
                 }
                 std::collections::hash_map::Entry::Vacant(vacant) => {
                     vacant.insert(ForwardProxyRuntimeState::default_for_endpoint(
@@ -1239,6 +1263,28 @@ impl ForwardProxyManager {
             })
             .collect::<Vec<_>>();
         endpoint_parts.sort_by(|lhs, rhs| lhs.0.key.cmp(&rhs.0.key));
+
+        let legacy_endpoint_parts = self
+            .endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                endpoint
+                    .raw_url
+                    .as_deref()
+                    .and_then(legacy_forward_proxy_binding_parts_from_raw)
+                    .map(|parts| (endpoint.key.clone(), parts))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut legacy_name_counts = HashMap::<String, usize>::new();
+        let mut legacy_name_protocol_counts = HashMap::<(String, String), usize>::new();
+        for parts in legacy_endpoint_parts.values() {
+            *legacy_name_counts
+                .entry(parts.display_name.clone())
+                .or_default() += 1;
+            *legacy_name_protocol_counts
+                .entry((parts.display_name.clone(), parts.protocol_key.clone()))
+                .or_default() += 1;
+        }
 
         for (_, parts) in &endpoint_parts {
             *name_counts.entry(parts.display_name.clone()).or_default() += 1;
@@ -1320,6 +1366,35 @@ impl ForwardProxyManager {
                         aliases.insert(alias);
                     }
                 }
+                if let Some(legacy_parts) = legacy_endpoint_parts.get(&endpoint.key) {
+                    let legacy_candidates = forward_proxy_binding_key_candidates(legacy_parts);
+                    let legacy_binding_key = if legacy_name_counts
+                        .get(&legacy_parts.display_name)
+                        .copied()
+                        .unwrap_or_default()
+                        <= 1
+                    {
+                        legacy_candidates[0].clone()
+                    } else if legacy_name_protocol_counts
+                        .get(&(
+                            legacy_parts.display_name.clone(),
+                            legacy_parts.protocol_key.clone(),
+                        ))
+                        .copied()
+                        .unwrap_or_default()
+                        <= 1
+                    {
+                        legacy_candidates[1].clone()
+                    } else {
+                        legacy_candidates[2].clone()
+                    };
+                    if legacy_binding_key != binding_key {
+                        bound_key_aliases
+                            .entry(legacy_binding_key.clone())
+                            .or_insert_with(|| binding_key.clone());
+                        aliases.insert(legacy_binding_key);
+                    }
+                }
             }
 
             if primary_endpoint == endpoint.key {
@@ -1340,6 +1415,11 @@ impl ForwardProxyManager {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|alias| alias != &descriptor.key)
+                .filter(|alias| {
+                    alias == FORWARD_PROXY_DIRECT_KEY
+                        || is_stable_forward_proxy_key(alias)
+                        || is_stable_forward_proxy_binding_key(alias)
+                })
                 .collect::<Vec<_>>();
             alias_keys.sort();
             alias_keys.dedup();
@@ -1465,7 +1545,7 @@ impl ForwardProxyManager {
         }
         if let Some(mut runtime) = migrated {
             runtime.proxy_key = endpoint.key.clone();
-            runtime.endpoint_url = Some(raw_url.to_string());
+            runtime.endpoint_url = runtime_endpoint_url_for_endpoint(endpoint);
             self.runtime.insert(endpoint.key.clone(), runtime);
         }
     }

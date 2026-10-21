@@ -36,6 +36,7 @@ mod retention_service_rate_benchmark;
 mod retention_task_local_batches;
 mod retention_task_work_ownership;
 mod system_storage_measurement;
+mod xhttp_validation_pipeline;
 
 #[tokio::test]
 async fn bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes() {
