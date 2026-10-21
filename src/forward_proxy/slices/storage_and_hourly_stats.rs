@@ -366,12 +366,12 @@ pub(crate) async fn persist_forward_proxy_egress_ip_result(
     .bind(&selected_proxy.key)
     .bind(&selected_proxy.display_name)
     .bind(&selected_proxy.source)
-    .bind(
+    .bind(safe_forward_proxy_endpoint_url(
         selected_proxy
             .endpoint_url_raw
             .as_deref()
             .or_else(|| selected_proxy.endpoint_url.as_ref().map(|url| url.as_str())),
-    )
+    ))
     .bind(egress_ip)
     .bind(FORWARD_PROXY_EGRESS_IP_PROVIDER)
     .bind(&now_iso)
@@ -502,9 +502,10 @@ pub(crate) fn canonical_forward_proxy_storage_key(
     proxy_key: &str,
     endpoint_url: Option<&str>,
 ) -> String {
-    endpoint_url
-        .and_then(normalize_single_proxy_key)
-        .or_else(|| normalize_bound_proxy_key(proxy_key))
+    // Runtime keys preserve credentials in their stable identity. The endpoint URL is a
+    // redacted presentation value for native proxies and must only be a legacy fallback.
+    normalize_bound_proxy_key(proxy_key)
+        .or_else(|| endpoint_url.and_then(normalize_single_proxy_key))
         .unwrap_or_else(|| proxy_key.to_string())
 }
 
@@ -1491,7 +1492,7 @@ pub(crate) async fn build_forward_proxy_settings_response(
     )
     .await?;
 
-    let (settings, runtime_rows, runtime_health_key_by_proxy_key) = {
+    let (settings, runtime_rows, runtime_health_key_by_proxy_key, safe_endpoint_url_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
         let mut runtime_rows = manager.snapshot_runtime().into_iter().collect::<Vec<_>>();
         ensure_owner_facing_direct_runtime_row(
@@ -1508,10 +1509,22 @@ pub(crate) async fn build_forward_proxy_settings_response(
                 (runtime.proxy_key.clone(), health_key)
             })
             .collect::<HashMap<_, _>>();
+        let safe_endpoint_url_by_proxy_key = manager
+            .endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                endpoint
+                    .raw_url
+                    .as_deref()
+                    .and_then(|raw| safe_forward_proxy_endpoint_url(Some(raw)))
+                    .map(|safe| (endpoint.key.clone(), safe))
+            })
+            .collect::<HashMap<_, _>>();
         (
             manager.settings.clone(),
             runtime_rows,
             runtime_health_key_by_proxy_key,
+            safe_endpoint_url_by_proxy_key,
         )
     };
     let runtime_health_keys = runtime_health_key_by_proxy_key
@@ -1565,7 +1578,12 @@ pub(crate) async fn build_forward_proxy_settings_response(
                 key: runtime.proxy_key.clone(),
                 source: runtime.source.clone(),
                 display_name: runtime.display_name.clone(),
-                endpoint_url: runtime.endpoint_url.clone(),
+                endpoint_url: safe_forward_proxy_endpoint_url(runtime.endpoint_url.as_deref())
+                    .or_else(|| {
+                        safe_endpoint_url_by_proxy_key
+                            .get(&runtime.proxy_key)
+                            .cloned()
+                    }),
                 weight: runtime.weight,
                 penalized: runtime.is_penalized(),
                 stats: ForwardProxyStatsResponse {
@@ -1630,6 +1648,7 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
     {
         let manager = state.forward_proxy.lock().await;
         for proxy_key in extra_keys {
+            let public_key = public_forward_proxy_key(&proxy_key);
             let maybe_current_key = manager
                 .resolve_current_or_historical_bound_proxy_key(
                     &proxy_key,
@@ -1638,9 +1657,9 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
                 .filter(|candidate| current_node_keys.contains(candidate));
             if let Some(current_key) = maybe_current_key {
                 if let Some(node) = nodes.iter_mut().find(|node| node.key == current_key)
-                    && node.key != proxy_key
+                    && node.key != public_key
                 {
-                    node.alias_keys.push(proxy_key.clone());
+                    node.alias_keys.push(public_key.clone());
                     node.alias_keys.sort();
                     node.alias_keys.dedup();
                 }
@@ -1648,13 +1667,13 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
             }
             let metadata = metadata_map.get(&proxy_key);
             nodes.push(ForwardProxyBindingNodeResponse {
-                key: proxy_key.clone(),
+                key: public_key.clone(),
                 alias_keys: Vec::new(),
                 source: "missing".to_string(),
-                display_name: metadata
-                    .map(|item| item.display_name.clone())
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| proxy_key.clone()),
+                display_name: public_forward_proxy_display_name(
+                    metadata.map(|item| item.display_name.as_str()),
+                    &public_key,
+                ),
                 protocol_label: "UNKNOWN".to_string(),
                 egress_ip: metadata.and_then(|item| item.egress_ip.clone()),
                 egress_ip_checked_at: metadata.and_then(|item| item.egress_ip_checked_at.clone()),
@@ -1669,6 +1688,53 @@ pub(crate) async fn build_forward_proxy_binding_node_catalog(
     }
 
     Ok((nodes, current_node_keys))
+}
+
+fn public_forward_proxy_key(raw: &str) -> String {
+    let normalized = raw.trim();
+    if normalized == FORWARD_PROXY_DIRECT_KEY || is_safe_forward_proxy_key(normalized) {
+        return normalized.to_string();
+    }
+    normalize_bound_proxy_key(normalized).unwrap_or_else(|| stable_forward_proxy_key(normalized))
+}
+
+fn is_safe_forward_proxy_key(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 128
+        && !looks_like_uuid(raw)
+        && raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn looks_like_uuid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
+}
+
+fn public_forward_proxy_display_name(metadata_name: Option<&str>, fallback: &str) -> String {
+    metadata_name
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && !value.contains("://")
+                && !value.contains('@')
+                && !value.contains('?')
+                && !value.contains('{')
+                && !value.contains('}')
+                && !value.chars().any(char::is_control)
+                && !looks_like_uuid(value)
+        })
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 pub(crate) fn apply_forward_proxy_binding_hourly_buckets(
@@ -1974,7 +2040,7 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
                 key: proxy_key,
                 source: runtime.source,
                 display_name: runtime.display_name,
-                endpoint_url: runtime.endpoint_url,
+                endpoint_url: safe_forward_proxy_endpoint_url(runtime.endpoint_url.as_deref()),
                 weight: runtime_weight,
                 penalized,
                 stats: ForwardProxyStatsResponse {
@@ -2209,8 +2275,12 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
                         }
                     }),
                 endpoint_url: runtime
-                    .and_then(|item| item.endpoint_url.clone())
-                    .or_else(|| metadata.and_then(|item| item.endpoint_url.clone())),
+                    .and_then(|item| safe_forward_proxy_endpoint_url(item.endpoint_url.as_deref()))
+                    .or_else(|| {
+                        metadata.and_then(|item| {
+                            safe_forward_proxy_endpoint_url(item.endpoint_url.as_deref())
+                        })
+                    }),
                 weight: runtime.map(|item| item.weight).unwrap_or(fallback_weight),
                 penalized: runtime.map(|item| item.is_penalized()).unwrap_or(false),
                 buckets,
@@ -2364,22 +2434,23 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         refresh_forward_proxy_subscriptions(state.clone(), true, None),
     )
     .await;
-    observation.finish_from_result(&refresh_result);
 
     if let Err(err) = refresh_result {
-        let detail = err.to_string();
+        let detail = sanitize_forward_proxy_error_detail(&err);
+        observation.finish_with_status_and_reason("failed", Some(&detail));
         if let Some(run) = task_run.as_ref() {
             finish_system_task_run_batched(
                 state.as_ref(),
                 run,
                 SystemTaskStatus::Failed,
                 Some("forward proxy manual refresh failed".to_string()),
-                Some(detail),
+                Some(detail.clone()),
             )
             .await;
         }
-        return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+        return Err((StatusCode::BAD_GATEWAY, detail));
     }
+    observation.finish_with_status("success");
 
     let after_subscription_keys = {
         let manager = state.forward_proxy.lock().await;
@@ -2415,4 +2486,9 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         added_node_count,
         refreshed_at: format_utc_iso(Utc::now()),
     }))
+}
+
+fn sanitize_forward_proxy_error_detail(err: &anyhow::Error) -> String {
+    let (code, message) = classify_forward_proxy_validation_error(err);
+    format!("{}: {message}", code.as_str())
 }

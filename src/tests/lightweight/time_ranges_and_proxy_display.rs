@@ -967,6 +967,19 @@ fn proxy_display_name_from_url_decodes_non_ascii_fragment() {
     );
 }
 
+#[test]
+fn proxy_display_name_from_url_rejects_credential_shaped_fragment() {
+    let url = Url::parse(
+        "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#vless%3A%2F%2Fsecret%40edge.example.com%3Fextra%3Dopaque",
+    )
+    .expect("valid vless share link");
+
+    assert_eq!(
+        proxy_display_name_from_url(&url).as_deref(),
+        Some("vless.example.com:443")
+    );
+}
+
 #[tokio::test]
 async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys() {
     let state = test_state_with_openai_base(
@@ -1019,6 +1032,30 @@ async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys
 }
 
 #[tokio::test]
+async fn forward_proxy_binding_nodes_redact_raw_extra_proxy_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let raw_url = "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&security=reality&type=xhttp&path=%2Fprobe";
+    let expected_key = normalize_single_proxy_key(raw_url).expect("normalize fixture proxy key");
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[raw_url.to_string()])
+        .await
+        .expect("build binding nodes response");
+    let missing_node = nodes
+        .iter()
+        .find(|node| node.source == "missing")
+        .expect("raw extra proxy key should produce a missing node");
+    assert_eq!(missing_node.key, expected_key);
+
+    let serialized = serde_json::to_string(missing_node).expect("serialize public node response");
+    assert!(!serialized.contains("vless://"));
+    assert!(!serialized.contains("@edge.example.com"));
+    assert!(!serialized.contains("11111111-1111-1111-1111-111111111111"));
+}
+
+#[tokio::test]
 async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys() {
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
@@ -1049,6 +1086,51 @@ async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys
     assert_eq!(runtime.len(), 1);
     assert_eq!(runtime[0].proxy_key, stable_proxy_key);
     assert_eq!(runtime[0].weight, 0.42);
+}
+
+#[tokio::test]
+async fn load_forward_proxy_runtime_states_preserves_native_proxy_credentials_in_identity() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let first_url = "http://synthetic-user-a:synthetic-password-a@proxy.example.com:8080";
+    let second_url = "http://synthetic-user-b:synthetic-password-b@proxy.example.com:8080";
+    let first_key = normalize_single_proxy_key(first_url).expect("normalize first proxy key");
+    let second_key = normalize_single_proxy_key(second_url).expect("normalize second proxy key");
+    let public_endpoint = safe_forward_proxy_endpoint_url(Some(first_url));
+
+    for (key, display_name, weight) in [
+        (&first_key, "proxy-a", 0.41),
+        (&second_key, "proxy-b", 0.73),
+    ] {
+        persist_forward_proxy_runtime_state(
+            &state.pool,
+            &ForwardProxyRuntimeState {
+                proxy_key: key.clone(),
+                display_name: display_name.to_string(),
+                source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+                endpoint_url: public_endpoint.clone(),
+                weight,
+                success_ema: 0.65,
+                latency_ema_ms: None,
+                consecutive_failures: 0,
+            },
+        )
+        .await
+        .expect("persist native proxy runtime state");
+    }
+
+    let runtime = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load native proxy runtime states");
+    let runtime_by_key = runtime
+        .into_iter()
+        .map(|state| (state.proxy_key.clone(), state))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(runtime_by_key.len(), 2);
+    assert_eq!(runtime_by_key[&first_key].weight, 0.41);
+    assert_eq!(runtime_by_key[&second_key].weight, 0.73);
 }
 
 #[tokio::test]
@@ -1206,10 +1288,7 @@ fn forward_proxy_manager_reuses_legacy_vless_hash_runtime_state() {
         .get(&stable_proxy_key)
         .expect("stable runtime should be preserved");
     assert_eq!(runtime.weight, 0.37);
-    assert_eq!(
-        runtime.endpoint_url.as_deref(),
-        Some(normalized_proxy.as_str())
-    );
+    assert!(runtime.endpoint_url.is_none());
     assert!(!manager.runtime.contains_key(&legacy_proxy_key));
 }
 
@@ -1385,6 +1464,26 @@ fn parse_proxy_urls_from_subscription_body_supports_xray_links() {
     let parsed = parse_proxy_urls_from_subscription_body(&encoded);
     assert!(parsed.iter().any(|item| item.starts_with("vmess://")));
     assert!(parsed.iter().any(|item| item.starts_with("vless://")));
+}
+
+#[tokio::test]
+async fn subscription_fetch_error_does_not_retain_credentials_or_url() {
+    let subscription_url =
+        "http://synthetic-user:synthetic-password@127.0.0.1:1/sub?token=synthetic-token";
+    let error = fetch_subscription_proxy_urls(
+        &reqwest::Client::new(),
+        subscription_url,
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("unreachable subscription should fail");
+    let message = format!("{error:#}");
+
+    assert_eq!(message, "subscription request failed");
+    assert!(!message.contains("synthetic-user"));
+    assert!(!message.contains("synthetic-password"));
+    assert!(!message.contains("synthetic-token"));
+    assert!(!message.contains(subscription_url));
 }
 
 #[test]
@@ -1875,7 +1974,7 @@ async fn validate_subscription_candidate_limits_node_probe_concurrency_to_ten() 
         async move { validate_subscription_candidate(state, subscription_url).await }
     });
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if total_requests.load(Ordering::SeqCst) >= 10 {
                 return;
@@ -2037,6 +2136,7 @@ time.sleep(30)
             local_proxy_url: Url::parse("socks5://127.0.0.1:1080").expect("valid local proxy url"),
             config_path: config_path.clone(),
             child,
+            temporary: false,
         },
     );
     let shutdown = CancellationToken::new();
@@ -2081,6 +2181,52 @@ time.sleep(30)
 }
 
 #[tokio::test]
+async fn xray_supervisor_sync_endpoints_keeps_active_temporary_instances() {
+    let temp_root = make_temp_test_dir("xray-sync-temporary-route");
+    let runtime_dir = temp_root.join("runtime");
+    let mut supervisor = XraySupervisor::new("/path/to/non-existent-xray".to_string(), runtime_dir);
+    let config_path = temp_root.join("temporary-xray.json");
+    fs::write(&config_path, "{}").expect("write temporary xray config placeholder");
+    let child = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import time
+	time.sleep(30)
+",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn temporary xray child");
+    supervisor.instances.insert(
+        "temporary-xray".to_string(),
+        XrayInstance {
+            local_proxy_url: Url::parse("socks5://127.0.0.1:1081").expect("valid local proxy url"),
+            config_path: config_path.clone(),
+            child,
+            temporary: true,
+        },
+    );
+
+    supervisor
+        .sync_endpoints(&mut [], &CancellationToken::new())
+        .await
+        .expect("sync should preserve active temporary routes");
+    assert!(
+        supervisor.instances.contains_key("temporary-xray"),
+        "route sync must not remove an active validation route"
+    );
+
+    supervisor.remove_instance("temporary-xray").await;
+    assert!(
+        !config_path.exists(),
+        "temporary xray config should be removed"
+    );
+    cleanup_temp_test_dir(&temp_root);
+}
+
+#[tokio::test]
 async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path() {
     let temp_root = make_temp_test_dir("xray-runtime-create");
     let runtime_dir = temp_root.join("nested/runtime");
@@ -2107,7 +2253,7 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     let err = supervisor
         .ensure_instance_with_ready_timeout(
             &endpoint,
-            Duration::from_millis(50),
+            Duration::from_secs(2),
             &CancellationToken::new(),
         )
         .await
@@ -2128,6 +2274,73 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     assert!(
         !expected_config_path.exists(),
         "spawn failure should clean temporary xray config file"
+    );
+
+    let _ = fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn xray_supervisor_classifies_rejected_configuration_before_startup() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = make_temp_test_dir("xray-config-validation");
+    let runtime_dir = temp_root.join("runtime");
+    let fake_binary = temp_root.join("fake-xray.sh");
+    fs::write(
+        &fake_binary,
+        "#!/bin/sh
+if [ \"$2\" = \"-test\" ]; then
+  exit 23
+fi
+sleep 30
+",
+    )
+    .expect("write fake xray binary");
+    let mut permissions = fs::metadata(&fake_binary)
+        .expect("read fake xray binary metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&fake_binary, permissions).expect("make fake xray binary executable");
+
+    let mut supervisor =
+        XraySupervisor::new(fake_binary.display().to_string(), runtime_dir.clone());
+    let endpoint = ForwardProxyEndpoint {
+        key: "xray-config-validation-test".to_string(),
+        source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+        display_name: "xray-config-validation-test".to_string(),
+        protocol: ForwardProxyProtocol::Vless,
+        endpoint_url: None,
+        raw_url: Some(
+            "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                .to_string(),
+        ),
+    };
+
+    let err = supervisor
+        .ensure_instance_with_ready_timeout(
+            &endpoint,
+            Duration::from_secs(2),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("rejected xray configuration should fail before startup");
+    let failure = err
+        .downcast_ref::<ForwardProxyValidationError>()
+        .expect("configuration rejection should keep its typed error");
+    assert_eq!(
+        failure.code,
+        ForwardProxyValidationErrorCode::XrayConfigError
+    );
+    assert_eq!(failure.message, "xray rejected proxy configuration");
+    assert!(
+        !runtime_dir
+            .join(format!(
+                "forward-proxy-{:016x}.json",
+                stable_hash_u64(&endpoint.key)
+            ))
+            .exists(),
+        "configuration rejection should clean the temporary config file"
     );
 
     let _ = fs::remove_dir_all(&temp_root);

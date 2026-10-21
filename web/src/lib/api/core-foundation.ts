@@ -2352,6 +2352,7 @@ export type ForwardProxyValidationKind = "proxyUrl" | "subscriptionUrl";
 export interface ForwardProxyValidationResult {
   ok: boolean;
   message: string;
+  code?: string;
   normalizedValue?: string;
   discoveredNodes?: number;
   latencyMs?: number;
@@ -4987,6 +4988,7 @@ function normalizeForwardProxyValidationResult(raw: unknown): ForwardProxyValida
       typeof payload.message === "string" && payload.message.trim()
         ? payload.message
         : "validation failed",
+    code: typeof payload.code === "string" && payload.code.trim() ? payload.code : undefined,
     normalizedValue:
       typeof payload.normalizedValue === "string" ? payload.normalizedValue : undefined,
     discoveredNodes: normalizeFiniteNumber(payload.discoveredNodes),
