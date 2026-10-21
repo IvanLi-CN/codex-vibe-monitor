@@ -1292,9 +1292,7 @@ impl TemporaryXrayRouteGuard {
             warn!("temporary xray route was dropped outside a tokio runtime");
             return None;
         };
-        let Some(key) = self.key.take() else {
-            return None;
-        };
+        let key = self.key.take()?;
         let supervisor = self.supervisor.clone();
         Some(handle.spawn(async move {
             let mut supervisor = supervisor.lock().await;

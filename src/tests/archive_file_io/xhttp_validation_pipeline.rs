@@ -17,10 +17,10 @@ use tokio::{net::TcpListener, process::Command};
 #[ignore = "requires an installed Xray binary; run explicitly with XRAY_BINARY"]
 async fn vless_xhttp_validation_pipeline_reaches_local_upstream_without_direct_fallback() {
     let xray_binary = env::var("XRAY_BINARY").unwrap_or_else(|_| "/opt/homebrew/bin/xray".into());
-    if !Path::new(&xray_binary).is_file() {
-        eprintln!("skipping XHTTP validation smoke: Xray binary is unavailable");
-        return;
-    }
+    assert!(
+        Path::new(&xray_binary).is_file(),
+        "XHTTP validation smoke requires an installed Xray binary at {xray_binary}"
+    );
 
     let temp_root = make_temp_test_dir("xhttp-validation-pipeline");
     let runtime_dir = temp_root.join("runtime");
