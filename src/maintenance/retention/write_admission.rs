@@ -3,6 +3,8 @@ use super::*;
 pub(crate) const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_WRITE_ADMISSION_BUDGET: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON: &str =
+    "retention_archive_file_operation_budget";
 pub(crate) const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 pub(crate) const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 pub(crate) const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
@@ -940,6 +942,32 @@ pub(crate) static RETENTION_WRITE_HEALTH: Lazy<std::sync::Mutex<RetentionWriteHe
     Lazy::new(|| std::sync::Mutex::new(RetentionWriteHealthState::default()));
 
 #[derive(Debug)]
+pub(crate) struct RetentionArchiveFileOperationBudgetExceeded;
+
+impl std::fmt::Display for RetentionArchiveFileOperationBudgetExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("retention archive file work exceeded the operation budget")
+    }
+}
+
+impl std::error::Error for RetentionArchiveFileOperationBudgetExceeded {}
+
+pub(crate) fn retention_archive_file_operation_budget_exhausted() -> anyhow::Error {
+    anyhow::Error::new(RetentionArchiveFileOperationBudgetExceeded)
+}
+
+pub(crate) fn is_retention_archive_file_operation_budget_exhausted(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<RetentionArchiveFileOperationBudgetExceeded>())
+}
+
+pub(crate) fn is_retention_archive_file_work_transient(error: &anyhow::Error) -> bool {
+    is_retention_archive_file_operation_budget_exhausted(error)
+        || is_retention_write_deferred(error)
+}
+
+#[derive(Debug)]
 pub(crate) struct RetentionWriteDeferred {
     pub(crate) operation: &'static str,
 }
@@ -961,7 +989,9 @@ pub(crate) fn retention_write_deferred(operation: &'static str) -> anyhow::Error
 }
 
 pub(crate) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
-    error.is::<RetentionWriteDeferred>() || error.is::<RawOrphanSweepAdmissionDeferred>()
+    error.chain().any(|cause| {
+        cause.is::<RetentionWriteDeferred>() || cause.is::<RawOrphanSweepAdmissionDeferred>()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

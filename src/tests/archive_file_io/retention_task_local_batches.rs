@@ -25,11 +25,9 @@ async fn retention_archive_file_operations_stop_at_the_operation_budget() {
     )
     .await
     .expect_err("deflate should stop when its operation budget is exhausted");
-    assert!(
-        deflate_error
-            .to_string()
-            .contains("archive file work exceeded the operation budget")
-    );
+    assert!(crate::is_retention_archive_file_operation_budget_exhausted(
+        &deflate_error
+    ));
 
     let inflate_error = crate::maintenance::retention_test_with_archive_file_operation_budget(
         Duration::ZERO,
@@ -37,11 +35,9 @@ async fn retention_archive_file_operations_stop_at_the_operation_budget() {
     )
     .await
     .expect_err("inflate should stop when its operation budget is exhausted");
-    assert!(
-        inflate_error
-            .to_string()
-            .contains("archive file work exceeded the operation budget")
-    );
+    assert!(crate::is_retention_archive_file_operation_budget_exhausted(
+        &inflate_error
+    ));
 
     cleanup_temp_test_dir(&temp_dir);
 }

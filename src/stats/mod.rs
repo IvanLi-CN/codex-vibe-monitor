@@ -1,5 +1,4 @@
 use super::*;
-
 pub(crate) const STATS_SUCCESS_LIKE_SQL: &str = "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
 pub(crate) const STATS_TERMINAL_STATUS_SQL: &str =
     "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
@@ -33,7 +32,6 @@ const SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT: usize = SUMMARY_ACCOUNT_ARCHIV
 fn archive_sha_log_ref(sha256: &str) -> &str {
     sha256.get(..12).unwrap_or(sha256)
 }
-
 #[derive(Debug, Clone)]
 pub(crate) enum SummaryWindow {
     All,
@@ -68,10 +66,11 @@ pub(crate) fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -
 pub(crate) fn is_unreadable_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         let message = cause.to_string();
-        message.contains("failed to decompress archive batch ")
-            || message.contains("failed to open archive batch ")
-            || message.contains("summary rollup repair archive SHA changed ")
-            || message.contains("database disk image is malformed")
+        !crate::is_retention_archive_file_work_transient(err)
+            && (message.contains("failed to decompress archive batch ")
+                || message.contains("failed to open archive batch ")
+                || message.contains("summary rollup repair archive SHA changed ")
+                || message.contains("database disk image is malformed"))
     })
 }
 

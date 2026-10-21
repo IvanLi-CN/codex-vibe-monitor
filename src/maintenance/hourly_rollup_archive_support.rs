@@ -469,7 +469,7 @@ fn copy_archive_bytes_with_limits(
         if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
             || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
         {
-            bail!("retention archive file work exceeded the operation budget");
+            return Err(super::retention::retention_archive_file_operation_budget_exhausted());
         }
         if shutdown.is_some_and(CancellationToken::is_cancelled)
             || (shutdown.is_none()

@@ -92,7 +92,9 @@ impl Drop for RetentionDiagnosticRecorder {
 
 fn mark_error(diagnostic: &mut RetentionDiagnosticRecorder, error: &anyhow::Error) {
     let message = error.to_string();
-    if message.contains("archive artifact")
+    if is_retention_archive_file_operation_budget_exhausted(error) {
+        diagnostic.mark_budget();
+    } else if message.contains("archive artifact")
         || message.contains("source identity")
         || message.contains("summary archive")
         || message.contains("semantic proof")
@@ -1310,6 +1312,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     batch_observation.archive_writer_finished(archive_writer_started.elapsed());
                     let Some(mut archive_outcome) = (match archive_result {
                         Ok(outcome) => Some(outcome),
+                        Err(error)
+                            if is_retention_archive_file_operation_budget_exhausted(&error) =>
+                        {
+                            recovery_diagnostic.mark_budget();
+                            return Err(error);
+                        }
                         Err(error) if is_retention_write_deferred(&error) => {
                             retention_recovery_record_deferred("preparing");
                             recovery_diagnostic.mark_stop();

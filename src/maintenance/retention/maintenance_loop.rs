@@ -124,6 +124,19 @@ impl RetentionRunSummary {
     }
 }
 
+fn mark_archive_file_operation_budget_exhausted(
+    summary: &mut RetentionRunSummary,
+    error: &anyhow::Error,
+) -> bool {
+    if !is_retention_archive_file_operation_budget_exhausted(error) {
+        return false;
+    }
+    summary.deferred = true;
+    summary.budget_exhausted = true;
+    summary.wait_reason = Some(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON.to_string());
+    true
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct SystemTaskRunRetentionCandidate {
     pub(crate) id: i64,
@@ -768,7 +781,9 @@ pub(crate) async fn run_data_retention_maintenance_inner(
             );
         }
         if let Err(error) = reconcile_staged_archive_replacements(pool, Some(config)).await {
-            if is_retention_write_deferred(&error) {
+            if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                debug!(error = %error, "staged archive replacement reconciliation hit the archive file operation budget");
+            } else if is_retention_write_deferred(&error) {
                 retention_recovery_record_deferred("legacy_reconcile");
             } else {
                 retention_recovery_persist_latest_failure_best_effort(
@@ -785,7 +800,9 @@ pub(crate) async fn run_data_retention_maintenance_inner(
             );
         }
         if let Err(error) = reconcile_retention_prepared_archives(pool, config).await {
-            if is_retention_write_deferred(&error) {
+            if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                debug!(error = %error, "prepared archive reconciliation hit the archive file operation budget");
+            } else if is_retention_write_deferred(&error) {
                 retention_recovery_record_deferred("prepared_reconcile");
             } else {
                 retention_recovery_persist_latest_failure_best_effort(
@@ -802,7 +819,9 @@ pub(crate) async fn run_data_retention_maintenance_inner(
             );
         }
         if let Err(error) = reconcile_legacy_retention_archive_segments(pool, config).await {
-            if is_retention_write_deferred(&error) {
+            if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                debug!(error = %error, "legacy archive reconciliation hit the archive file operation budget");
+            } else if is_retention_write_deferred(&error) {
                 retention_recovery_record_deferred("legacy_reconcile");
             } else {
                 retention_recovery_persist_latest_failure_best_effort(
@@ -888,7 +907,9 @@ pub(crate) async fn run_data_retention_maintenance_inner(
         {
             Ok(archive) => archive,
             Err(error) => {
-                if retention_run_budget_expired() {
+                if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                    debug!(error = %error, "invocation archive hit the archive file operation budget");
+                } else if retention_run_budget_expired() {
                     summary.deferred = true;
                     summary.wait_reason = Some("retention_work_budget".to_string());
                 } else if is_retention_write_deferred(&error) {
@@ -948,14 +969,14 @@ pub(crate) async fn run_data_retention_maintenance_inner(
     .await;
     let pool_attempt_archive = match pool_attempt_archive {
         Ok(archive) => archive,
-        Err(error) if retention_run_budget_expired() => {
-            summary.deferred = true;
-            summary.wait_reason = Some("retention_work_budget".to_string());
-            debug!(error = %error, "attempt archive task timeout fallback");
-            return Ok(summary);
-        }
         Err(error) => {
-            if is_retention_write_deferred(&error) || crate::is_sqlite_lock_error(&error) {
+            if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                debug!(error = %error, "attempt archive hit the archive file operation budget");
+            } else if retention_run_budget_expired() {
+                summary.deferred = true;
+                summary.wait_reason = Some("retention_work_budget".to_string());
+                debug!(error = %error, "attempt archive task timeout fallback");
+            } else if is_retention_write_deferred(&error) || crate::is_sqlite_lock_error(&error) {
                 summary.deferred = true;
                 summary.wait_reason = Some(if crate::is_sqlite_lock_error(&error) {
                     "sqlite_pressure".to_string()
@@ -1012,7 +1033,9 @@ pub(crate) async fn run_data_retention_maintenance_inner(
         match prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await {
             Ok(pruned) => pruned,
             Err(error) => {
-                if retention_run_budget_expired() {
+                if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                    debug!(error = %error, "invocation detail pruning hit the archive file operation budget");
+                } else if retention_run_budget_expired() {
                     summary.deferred = true;
                     summary.wait_reason = Some("retention_work_budget".to_string());
                 } else if dry_run {
@@ -1302,5 +1325,30 @@ pub(crate) async fn run_best_effort_retention_pragma(
             retention_record_error("retention_pragma", &err);
             Err(err)
         }
+    }
+}
+
+#[cfg(test)]
+mod archive_file_budget_classification_tests {
+    use super::*;
+
+    #[test]
+    fn archive_file_budget_is_deferred_without_becoming_fatal() {
+        let error = retention_archive_file_operation_budget_exhausted().context(
+            "failed to decompress archive batch /tmp/archive.sqlite.gz into /tmp/archive.sqlite",
+        );
+        let mut summary = RetentionRunSummary::default();
+
+        assert!(mark_archive_file_operation_budget_exhausted(
+            &mut summary,
+            &error
+        ));
+        assert!(summary.deferred);
+        assert!(summary.budget_exhausted);
+        assert_eq!(
+            summary.wait_reason.as_deref(),
+            Some(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON)
+        );
+        assert!(summary.fatal_error.is_none());
     }
 }
