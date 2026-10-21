@@ -24,6 +24,7 @@ RESOURCE_UNAVAILABLE_ERRORS = frozenset(
         "runner pressure evidence is invalid",
     }
 )
+HARDWARE_COMPARABILITY_ERROR_PREFIX = "hardware metadata "
 UNSTABLE_MEASUREMENT_ERROR = "unstable measurement windows"
 
 
@@ -48,6 +49,10 @@ def _resource_pressure_error(error: object) -> bool:
         return False
     codes = {code for code in error[len(prefix) :].strip().split(",") if code}
     return bool(codes) and codes <= {"pressure_exceeded"}
+
+
+def _hardware_comparability_error(error: object) -> bool:
+    return isinstance(error, str) and error.startswith(HARDWARE_COMPARABILITY_ERROR_PREFIX)
 
 
 def _unstable_budget_is_observable(root: Path) -> bool:
@@ -104,6 +109,8 @@ def classify_result(root: Path, step_outcome: str) -> str:
     if default.get("status") != "unavailable":
         raise ClassificationError("unavailable evidence did not identify an environmental limitation")
     error = default.get("error")
+    if _hardware_comparability_error(error):
+        raise ClassificationError("hardware comparability evidence is unavailable")
     if _resource_pressure_error(error):
         return "neutral-unavailable"
     if error == UNSTABLE_MEASUREMENT_ERROR and _unstable_budget_is_observable(root):

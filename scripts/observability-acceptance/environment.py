@@ -11,6 +11,8 @@ import subprocess
 import threading
 import time
 
+from cpu_attribution import CpuAttributionError, PreparedCpuAttribution, SAMPLE_INTERVAL_SECONDS
+
 
 def actions_context(source, run, candidate, *, require_runner_identity=True):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
@@ -184,9 +186,10 @@ class MeasurementObserver:
     interval_seconds = 10
     maximum_gap_seconds = 20
 
-    def __init__(self, root, window):
+    def __init__(self, root, window, attribution=None):
         self.root = root
         self.identity = {**window, "phase": "measurement"}
+        self.attribution = attribution
         self.stop = threading.Event()
         self.errors = set()
         self.pressure_exceeded_samples = 0
@@ -198,8 +201,26 @@ class MeasurementObserver:
         self.output = None
         self.worker = None
 
+    def _record_attribution_preparation(self):
+        if self.attribution is None:
+            return
+        path = self.root / "cpu-attribution.json"
+        try:
+            preparations = json.loads(path.read_text()) if path.exists() else []
+        except (OSError, ValueError, UnicodeError) as error:
+            raise OSError("invalid CPU attribution preparation evidence") from error
+        if not isinstance(preparations, list) or any(
+            not isinstance(row, dict) or row.get("windowId") == self.identity["windowId"] for row in preparations
+        ) or len(preparations) >= 9:
+            raise OSError("invalid CPU attribution preparation evidence")
+        preparation = {"windowId": self.identity["windowId"], **self.attribution.metadata()}
+        preparations.append(preparation)
+        path.write_text(json.dumps(preparations, indent=2) + "\n")
+
     def sample(self):
         row = pressure_sample(self.identity)
+        if self.attribution is not None:
+            row["cpuAttribution"] = self.attribution.sample()
         now = row["monotonicSeconds"]
         if self.previous_time is not None:
             gap = now - self.previous_time
@@ -219,9 +240,12 @@ class MeasurementObserver:
             self.pressure_exceeded_samples += 1
             if self.samples == 1:
                 self.errors.add("pressure_exceeded")
+        if self.attribution is not None:
+            self.errors.update(row["cpuAttribution"].get("errorCodes", []))
 
     def start(self):
         self.output = (self.root / "resource-observer.jsonl").open("a")
+        self._record_attribution_preparation()
         self.sample()
         if self.errors:
             raise OSError("measurement began without valid quiet resource evidence")
@@ -262,6 +286,13 @@ class MeasurementObserver:
                    "maximumGapSeconds": self.maximum_gap, "pressureLimits": PRESSURE_LIMITS,
                    "pressureExceededSamples": self.pressure_exceeded_samples,
                    "status": "unavailable" if self.errors else "passed", "reasonCodes": sorted(self.errors)}
+        if self.attribution is not None:
+            attribution_summary = self.attribution.window_summary()
+            attribution_summary["sampleCount"] = self.samples
+            summary["cpuAttribution"] = attribution_summary
+            self.errors.update(attribution_summary.get("errorCodes", []))
+            summary["status"] = "unavailable" if self.errors else "passed"
+            summary["reasonCodes"] = sorted(self.errors)
         path = self.root / "measurement-windows.json"
         try:
             windows = json.loads(path.read_text()) if path.exists() else []
@@ -275,9 +306,19 @@ class MeasurementObserver:
             raise OSError("measured resource environment unavailable: " + ",".join(sorted(self.errors)))
 
 
+    def cpu_usage_usec(self):
+        if self.attribution is None:
+            raise OSError("CPU attribution is not prepared")
+        try:
+            return self.attribution.cpu_usage_usec()
+        except CpuAttributionError as error:
+            self.errors.add(error.code)
+            raise OSError("CPU attribution unavailable: " + error.code) from error
+
+
 @contextmanager
-def observe_resources(root, window):
-    observer = MeasurementObserver(root, window)
+def observe_resources(root, window, attribution: PreparedCpuAttribution | None = None):
+    observer = MeasurementObserver(root, window, attribution)
     try:
         observer.start()
         yield observer
@@ -294,6 +335,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
         raw = [json.loads(line) for line in (root / "resource-observer.jsonl").read_text().splitlines()]
         admissions = [json.loads(line) for line in (root / "environment-admission.jsonl").read_text().splitlines()]
         loads = json.loads((root / "ab-samples.json").read_text())
+        preparations = json.loads((root / "cpu-attribution.json").read_text())
         selected_cpu = runner_context.get("measurementCpu", run_config["appCpuSet"])
         cpu_layout = measurement_cpu_layout(runner_context["cpuAffinity"], selected=selected_cpu)
         assert run_config["appCpuQuota"] == 1
@@ -303,6 +345,8 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
         expected = {f"{index}-{mode}" for index in indices for mode in modes}
         assert len(windows) == len(indices) * len(modes) and {row["windowId"] for row in windows} == expected
         assert {row["windowId"] for row in raw} == expected
+        assert isinstance(preparations, list) and {row["windowId"] for row in preparations} == expected
+        assert len(preparations) == len(expected)
         assert set(loads) == set(modes) and all(len(rows) == len(indices) for rows in loads.values())
         if pair_index is not None:
             assert pair_index in range(3) and run_config["pairIndex"] == pair_index
@@ -324,6 +368,17 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             window_id = window["windowId"]
             assert window_id == f"{window['pairIndex']}-{window['enabled']}"
             assert window["status"] == "passed" and not window["reasonCodes"]
+            attribution_summary = window["cpuAttribution"]
+            assert (
+                attribution_summary["schemaVersion"] == 1
+                and attribution_summary["status"] == "passed"
+                and attribution_summary["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
+                and attribution_summary["measurementCpu"] == str(run_config.get("appCpuSet"))
+                and attribution_summary["allowedCpus"] == sorted(runner_context["cpuAffinity"])
+                and attribution_summary["sampleCount"] == window["sampleCount"]
+                and not attribution_summary["errorCodes"]
+                and set(attribution_summary["counterDelta"]["appCpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+            )
             maximum_wait = 180 if pair_index is not None else 300
             assert window["pressureLimits"] == PRESSURE_LIMITS and 0 <= window["admissionWaitSeconds"] <= maximum_wait
             start, end = window["startedMonotonicSeconds"], window["endedMonotonicSeconds"]
@@ -343,6 +398,18 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 if index == 0:
                     assert row["eligible"] is True
                 assert math.isfinite(row["monotonicSeconds"]) and math.isfinite(row["utcSeconds"])
+                attribution = row["cpuAttribution"]
+                assert (
+                    attribution["schemaVersion"] == 1
+                    and attribution["status"] == "passed"
+                    and attribution["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
+                    and attribution["measurementCpu"] == str(run_config.get("appCpuSet"))
+                    and attribution["allowedCpus"] == sorted(runner_context["cpuAffinity"])
+                    and not attribution["errorCodes"]
+                    and attribution["app"]["pid"] > 0
+                    and attribution["app"]["effectiveAffinity"] == [int(run_config["appCpuSet"])]
+                    and set(attribution["app"]["cpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+                )
                 times.append(row["monotonicSeconds"])
             times.append(end)
             gaps = [after - before for before, after in zip(times, times[1:])]
@@ -354,6 +421,22 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 assert row["phase"] == "admission" and row["consecutive"] == consecutive
                 assert row["eligible"] is True and "errorClass" not in row and pressure_eligible(row["hostPressure"])
             assert admitted[-1]["monotonicSeconds"] <= start
+        for preparation in preparations:
+            assert (
+                preparation["schemaVersion"] == 1
+                and preparation["status"] == "prepared"
+                and preparation["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
+                and preparation["measurementCpu"] == str(run_config.get("appCpuSet"))
+                and preparation["allowedCpus"] == sorted(runner_context["cpuAffinity"])
+                and isinstance(preparation["containers"], list)
+                and len({row["service"] for row in preparation["containers"]}) == len(preparation["containers"])
+                and any(
+                    row["service"] == "app"
+                    and row["cgroup"]["version"] == "v2"
+                    and row["cgroup"]["cpuMax"]["quota"] == row["cgroup"]["cpuMax"]["periodUsec"]
+                    for row in preparation["containers"]
+                )
+            )
     except (AssertionError, KeyError, TypeError, ValueError, OverflowError) as error:
         raise OSError("measurement environment evidence is incomplete or invalid") from error
 

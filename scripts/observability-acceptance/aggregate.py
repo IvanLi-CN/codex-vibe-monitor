@@ -10,6 +10,11 @@ from run import certificate
 
 RUNTIME_SCENARIOS = {"https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu"}
 LANES = ("runtime", "pair-0", "pair-1", "pair-2")
+HARDWARE_KEYS = ("cpuModel", "cpuCount", "kernel", "runnerImage", "runnerImageVersion")
+
+
+class HardwareCompatibilityError(ValueError):
+    """A stable reason for evidence that cannot support a cross-runner comparison."""
 
 
 def read(root, name):
@@ -42,6 +47,41 @@ def verify_part(root, lane, expected):
     return image["Id"], context, scenarios
 
 
+def hardware_signature(context):
+    for key in HARDWARE_KEYS:
+        if key not in context or context[key] in (None, "", []):
+            raise HardwareCompatibilityError(f"hardware metadata unavailable: missing {key}")
+    models = context["cpuModel"]
+    if not isinstance(models, list) or any(not isinstance(model, str) or not model for model in models):
+        raise HardwareCompatibilityError("hardware metadata invalid: cpuModel")
+    if len(set(models)) != len(models):
+        raise HardwareCompatibilityError("hardware metadata invalid: duplicate cpuModel")
+    if len(models) != 1:
+        raise HardwareCompatibilityError("hardware metadata incompatible: cpuModel")
+    if isinstance(context["cpuCount"], bool) or not isinstance(context["cpuCount"], int) or context["cpuCount"] <= 0:
+        raise HardwareCompatibilityError("hardware metadata invalid: cpuCount")
+    if any(not isinstance(context[key], str) or not context[key] for key in ("kernel", "runnerImage", "runnerImageVersion")):
+        raise HardwareCompatibilityError("hardware metadata invalid: runner identity")
+    return (
+        tuple(models),
+        context["cpuCount"],
+        context["kernel"],
+        context["runnerImage"],
+        context["runnerImageVersion"],
+    )
+
+
+def verify_hardware_compatibility(contexts):
+    if len(contexts) != 3:
+        raise HardwareCompatibilityError("hardware metadata unavailable: expected three paired runners")
+    reference = hardware_signature(contexts[0])
+    for context in contexts[1:]:
+        signature = hardware_signature(context)
+        for index, key in enumerate(HARDWARE_KEYS):
+            if signature[index] != reference[index]:
+                raise HardwareCompatibilityError(f"hardware metadata incompatible: {key}")
+
+
 def aggregate(source, candidate_source, root, parts, candidate):
     root.mkdir(parents=True, exist_ok=True)
     # The result job verifies identities from each measurement part; it is not
@@ -70,6 +110,7 @@ def aggregate(source, candidate_source, root, parts, candidate):
         # machine-dependent timings are never compared across hosts.
         if len({pair["runnerIdentity"] for pair in pairs}) != 3:
             raise ValueError("paired experiments did not use isolated runners")
+        verify_hardware_compatibility(pairs)
         scenarios = dict(verified[0][2])
         pair_scenarios = [item[2]["default-observability-ab"] for item in verified[1:]]
         bad = next((row for row in pair_scenarios if row["status"] == "failed"), None)
@@ -91,6 +132,8 @@ def aggregate(source, candidate_source, root, parts, candidate):
             if not within:
                 scenarios["default-observability-ab"]["error"] = "unstable measurement windows" if not stable else "5% observability budget exceeded"
         status = "failed" if any(row["status"] == "failed" for row in scenarios.values()) else "unavailable" if any(row["status"] != "passed" for row in scenarios.values()) else "passed"
+    except HardwareCompatibilityError as error:
+        scenarios["default-observability-ab"] = {"status": "unavailable", "error": str(error)}
     except (OSError, ValueError, KeyError, TypeError) as error:
         # Missing parts, mismatches, and timeout never produce a passing card.
         scenarios["default-observability-ab"] = {"status": "unavailable", "error": "part evidence invalid: " + type(error).__name__}

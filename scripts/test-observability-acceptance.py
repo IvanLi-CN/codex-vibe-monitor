@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 SOURCE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SOURCE / "scripts/observability-acceptance"))
+from cpu_attribution import PreparedCpuAttribution
 import environment
 from run import Run
 import run as acceptance
@@ -31,6 +32,82 @@ spec.loader.exec_module(contract)
 def psi(cpu=0, io=0, memory=0):
     return {name: f"some avg10={value} avg60={value} avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0"
             for name, value in [("cpu", cpu), ("io", io), ("memory", memory)]}
+
+
+def synthetic_process_stat(pid, name, start_ticks=10):
+    values = [0] * 20
+    values[10] = 1
+    values[11] = 1
+    values[18] = start_ticks
+    return f"{pid} ({name}) S " + " ".join(str(value) for value in values)
+
+
+def synthetic_attribution_row(identity, timestamp=0):
+    host = {
+        str(cpu): {
+            "user": 100,
+            "nice": 0,
+            "system": 20,
+            "idle": 80,
+            "iowait": 0,
+            "irq": 0,
+            "softirq": 0,
+            "steal": 0,
+            "guest": 0,
+            "guestNice": 0,
+            "rawTicks": [100, 0, 20, 80, 0, 0, 0, 0, 0, 0],
+            "busyTicks": 120,
+            "idleTicks": 80,
+            "iowaitTicks": 0,
+            "stealTicks": 0,
+        }
+        for cpu in range(4)
+    }
+    app_cpu = {"usage_usec": 100, "user_usec": 60, "system_usec": 40, "nr_periods": 10, "nr_throttled": 0, "throttled_usec": 0}
+    process = {"pid": 100, "startTimeTicks": 10, "effectiveAffinity": [0], "processRuntimeSeconds": 990.0}
+    return {
+        "schemaVersion": 1,
+        "status": "passed",
+        "sampleIntervalSeconds": 10,
+        "measurementCpu": "0",
+        "allowedCpus": [0, 1, 2, 3],
+        "hostCpu": host,
+        "containers": {"app": process, "client": {**process, "pid": 101, "effectiveAffinity": [0, 1, 2, 3]}},
+        "app": {
+            **process,
+            "cpuStat": app_cpu,
+            "cpuPressure": {"some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}, "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}},
+            "cpuMax": {"quota": 100000, "periodUsec": 100000},
+        },
+        "counterDelta": {"hostCpu": {str(cpu): {"user": 0} for cpu in range(4)}, "appCpuStat": app_cpu},
+        "errorCodes": [],
+        "errors": [],
+    }
+
+
+def synthetic_attribution_summary(sample_count):
+    return {
+        "schemaVersion": 1,
+        "status": "passed",
+        "sampleIntervalSeconds": 10,
+        "measurementCpu": "0",
+        "allowedCpus": [0, 1, 2, 3],
+        "sampleCount": sample_count,
+        "counterDelta": {"hostCpu": {str(cpu): {"user": 0} for cpu in range(4)}, "appCpuStat": {"usage_usec": 0, "user_usec": 0, "system_usec": 0, "nr_periods": 0, "nr_throttled": 0, "throttled_usec": 0}},
+        "errorCodes": [],
+    }
+
+
+def synthetic_attribution_preparation(window_id):
+    return {
+        "windowId": window_id,
+        "schemaVersion": 1,
+        "status": "prepared",
+        "sampleIntervalSeconds": 10,
+        "measurementCpu": "0",
+        "allowedCpus": [0, 1, 2, 3],
+        "containers": [{"service": "app", "containerId": "a" * 64, "pid": 100, "startTimeTicks": 10, "effectiveAffinity": [0], "cgroup": {"version": "v2", "cpuMax": {"quota": 100000, "periodUsec": 100000}}}, {"service": "client", "containerId": "b" * 64, "pid": 101, "startTimeTicks": 10, "effectiveAffinity": [0, 1, 2, 3]}],
+    }
 
 
 class ContainerMountTests(unittest.TestCase):
@@ -186,6 +263,50 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.clock = 100.0
         self.window = {"windowId": "0-false", "pairIndex": 0, "enabled": "false"}
+        self.attribution = self.prepare_attribution()
+
+    def prepare_attribution(self):
+        proc = self.root / "synthetic-proc"
+        cgroup = self.root / "synthetic-cgroup"
+        proc.mkdir()
+        cgroup.mkdir()
+        (proc / "uptime").write_text("1000.0 0.0\n")
+        (proc / "stat").write_text("\n".join(
+            f"cpu{cpu} 100 0 20 80 0 0 0 0 0 0" for cpu in range(4)
+        ) + "\n")
+        for pid, name, affinity, container_id in [
+            (100, "app", "0", "a" * 64),
+            (101, "client", "0-3", "b" * 64),
+        ]:
+            process = proc / str(pid)
+            process.mkdir()
+            (process / "stat").write_text(synthetic_process_stat(pid, name))
+            (process / "status").write_text(f"Name:\t{name}\nCpus_allowed_list:\t{affinity}\n")
+            (process / "cgroup").write_text(f"0::/docker/{container_id}\n")
+            group = cgroup / "docker" / container_id
+            group.mkdir(parents=True)
+            if name == "app":
+                (group / "cpu.stat").write_text(
+                    "usage_usec 100\nuser_usec 60\nsystem_usec 40\n"
+                    "nr_periods 10\nnr_throttled 0\nthrottled_usec 0\n"
+                )
+                (group / "cpu.pressure").write_text(
+                    "some avg10=0 avg60=0 avg300=0 total=0\n"
+                    "full avg10=0 avg60=0 avg300=0 total=0\n"
+                )
+                (group / "cpu.max").write_text("100000 100000\n")
+        self.attribution_proc = proc
+        self.attribution_cgroup = cgroup
+        return PreparedCpuAttribution(
+            [0, 1, 2, 3],
+            "0",
+            [
+                {"service": "app", "containerId": "a" * 64, "pid": 100},
+                {"service": "client", "containerId": "b" * 64, "pid": 101},
+            ],
+            proc_root=proc,
+            cgroup_root=cgroup,
+        )
 
     def test_measurement_service_profiles_keep_only_required_observers_running(self):
         self.assertEqual(acceptance.measurement_services("off"), {"prometheus": False, "grafana": False, "tempo": False, "entry": False})
@@ -198,6 +319,43 @@ class ResourceAdmissionTests(unittest.TestCase):
 
     def fake_clock(self):
         return patch.object(environment.time, "monotonic", side_effect=lambda: self.clock)
+
+    def test_cpu_attribution_exposes_process_and_cgroup_boundaries(self):
+        first = self.attribution.sample()
+        second = self.attribution.sample()
+        summary = self.attribution.window_summary()
+        self.assertEqual(first["status"], "passed")
+        self.assertEqual(second["app"]["cpuStat"]["usage_usec"], 100)
+        self.assertEqual(second["containers"]["app"]["effectiveAffinity"], [0])
+        self.assertEqual(second["counterDelta"]["appCpuStat"]["usage_usec"], 0)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["counterDelta"]["appCpuStat"]["nr_throttled"], 0)
+
+    def test_cpu_attribution_rejects_pid_replacement(self):
+        self.attribution.sample()
+        (self.attribution_proc / "100" / "stat").write_text(synthetic_process_stat(100, "app", start_ticks=11))
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("pid_replaced", sample["errorCodes"])
+        self.assertEqual(self.attribution.window_summary()["status"], "unavailable")
+
+    def test_cpu_attribution_rejects_counter_reset(self):
+        self.attribution.sample()
+        app_group = self.attribution_cgroup / "docker" / ("a" * 64)
+        (app_group / "cpu.stat").write_text(
+            "usage_usec 1\nuser_usec 1\nsystem_usec 0\n"
+            "nr_periods 1\nnr_throttled 0\nthrottled_usec 0\n"
+        )
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("cpu_counter_reset", sample["errorCodes"])
+
+    def test_cpu_attribution_rejects_missing_cgroup_pressure(self):
+        self.attribution.sample()
+        (self.attribution_cgroup / "docker" / ("a" * 64) / "cpu.pressure").unlink()
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("cpu_attribution_unsupported", sample["errorCodes"])
 
     def test_thresholds_are_strict_and_invalid_values_are_unknown(self):
         self.assertTrue(environment.pressure_eligible(psi(1.99, 4.99, 0.09)))
@@ -268,7 +426,7 @@ class ResourceAdmissionTests(unittest.TestCase):
 
     def test_mid_window_pressure_cannot_be_hidden_by_quiet_final_sample(self):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
-            with environment.observe_resources(self.root, self.window) as observer:
+            with environment.observe_resources(self.root, self.window, self.attribution) as observer:
                 self.clock += 10
                 with patch.object(environment, "pressure", return_value=psi(cpu=3)):
                     observer.sample()
@@ -286,7 +444,7 @@ class ResourceAdmissionTests(unittest.TestCase):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
                 with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
                     with self.assertRaisesRegex(OSError, reason):
-                        with environment.observe_resources(Path(directory), self.window) as observer:
+                        with environment.observe_resources(Path(directory), self.window, self.attribution) as observer:
                             if reason == "sample_gap":
                                 self.clock += 21
                             else:
@@ -297,7 +455,7 @@ class ResourceAdmissionTests(unittest.TestCase):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
             for mode in ["false", "true"]:
                 window = {**self.window, "enabled": mode, "windowId": f"0-{mode}"}
-                with environment.observe_resources(self.root, window): self.clock += 10
+                with environment.observe_resources(self.root, window, self.attribution): self.clock += 10
         windows = json.loads((self.root / "measurement-windows.json").read_text())
         self.assertEqual([row["windowId"] for row in windows], ["0-false", "0-true"])
         self.assertTrue(all(row["status"] == "passed" and row["sampleCount"] == 2 for row in windows))
@@ -312,7 +470,7 @@ class ResourceAdmissionTests(unittest.TestCase):
                 for mode in samples:
                     window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
                     window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
-                    with environment.observe_resources(self.root, window): self.clock += 10
+                    with environment.observe_resources(self.root, window, self.attribution): self.clock += 10
                     samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10,
                         "traceEvidence": {"enabled": True, "searchableTrace": True, "exportedSpans": 10, "failedSpans": 0, "droppedSpans": 0}})
         (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
@@ -348,7 +506,7 @@ class ResourceAdmissionTests(unittest.TestCase):
                 for mode in ["false", "true"]:
                     window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
                     window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
-                    with environment.observe_resources(self.root, window): self.clock += 10
+                    with environment.observe_resources(self.root, window, self.attribution): self.clock += 10
                     samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10})
         (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
         (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
@@ -370,7 +528,7 @@ class ResourceAdmissionTests(unittest.TestCase):
     def test_ineligible_first_measurement_sample_blocks_window(self):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi(cpu=3)):
             with self.assertRaisesRegex(OSError, "pressure_exceeded"):
-                with environment.observe_resources(self.root, self.window):
+                with environment.observe_resources(self.root, self.window, self.attribution):
                     pass
 
 
@@ -656,18 +814,21 @@ class AggregationTests(unittest.TestCase):
         return self.parts / ("observability-part-123-1-" + lane)
 
     def seed_windows(self, part, pair):
-        windows, rows, admissions, samples = [], [], [], {}
+        windows, rows, admissions, preparations, samples = [], [], [], [], {}
         for index, mode in enumerate(("off", "metrics", "full")):
             start = 200 + index * 180
             identity = {"windowId": f"{pair}-{mode}", "pairIndex": pair, "enabled": mode}
             window = {**identity, "status": "passed", "reasonCodes": [], "pressureLimits": environment.PRESSURE_LIMITS,
                       "admissionWaitSeconds": 40, "startedMonotonicSeconds": start, "endedMonotonicSeconds": start + 60,
                       "startedUTCSeconds": start, "endedUTCSeconds": start + 60,
-                      "maximumGapSeconds": 10, "sampleCount": 7, "pressureExceededSamples": 0}
+                      "maximumGapSeconds": 10, "sampleCount": 7, "pressureExceededSamples": 0,
+                      "cpuAttribution": synthetic_attribution_summary(7)}
             windows.append(window)
+            preparations.append(synthetic_attribution_preparation(window["windowId"]))
             for elapsed in range(0, 61, 10):
                 rows.append({**identity, "phase": "measurement", "eligible": True, "hostPressure": psi(),
-                             "monotonicSeconds": start + elapsed, "utcSeconds": start + elapsed})
+                             "monotonicSeconds": start + elapsed, "utcSeconds": start + elapsed,
+                             "cpuAttribution": synthetic_attribution_row(identity, start + elapsed)})
             for consecutive in range(1, 4):
                 admissions.append({**identity, "phase": "admission", "consecutive": consecutive, "eligible": True,
                                    "hostPressure": psi(), "monotonicSeconds": start - 60 + consecutive * 20})
@@ -677,6 +838,7 @@ class AggregationTests(unittest.TestCase):
                                                 "failedSpans": 0, "droppedSpans": 0}}]
         (part / "measurement-windows.json").write_text(json.dumps(windows))
         (part / "ab-samples.json").write_text(json.dumps(samples))
+        (part / "cpu-attribution.json").write_text(json.dumps(preparations))
         for name, values in [("resource-observer.jsonl", rows), ("environment-admission.jsonl", admissions)]:
             (part / name).write_text("".join(json.dumps(row) + "\n" for row in values))
 
@@ -713,7 +875,7 @@ class AggregationTests(unittest.TestCase):
         self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))
         self.assertFalse(self.aggregate())
 
-    def test_heterogeneous_runners_are_valid_but_runner_reuse_is_rejected(self):
+    def test_heterogeneous_runners_are_unavailable_but_runner_reuse_is_rejected(self):
         self.change("pair-2", "runner-context.json", lambda row: row.update(
             cpuModel=["different CPU"],
             cpuCount=64,
@@ -721,9 +883,24 @@ class AggregationTests(unittest.TestCase):
             runnerImageVersion="different",
             kernel="different-kernel",
         ))
-        self.assertTrue(self.aggregate())
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata incompatible: cpuModel")
+        self.change("pair-2", "runner-context.json", lambda row: row.update(**self.context, runnerIdentity="pair-2"))
         self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
         self.assertFalse(self.aggregate())
+
+    def test_missing_hardware_metadata_is_unavailable(self):
+        self.change("pair-1", "runner-context.json", lambda row: row.pop("kernel"))
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata unavailable: missing kernel")
+
+    def test_duplicate_hardware_metadata_is_unavailable(self):
+        self.change("pair-1", "runner-context.json", lambda row: row.update(cpuModel=["synthetic CPU", "synthetic CPU"]))
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata invalid: duplicate cpuModel")
 
     def test_restarted_clock_or_exceeded_budget_cannot_pass(self):
         self.change("pair-2", "run-config.json", lambda row: row.update(executionStartedUTCSeconds=110))
@@ -805,6 +982,11 @@ class WorkflowGateTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_window_evidence_is_required_and_sensitive_artifacts_are_refused(self):
+        for required in ["measurement-windows.json", "cpu-attribution.json"]:
+            workflow = copy.deepcopy(self.workflow)
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+            upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/" + required, "")
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
         for extra in [False, True]:
             workflow = copy.deepcopy(self.workflow)
             upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
@@ -895,6 +1077,16 @@ class PerformanceDispositionTests(unittest.TestCase):
         }
         self.write_case("unavailable", scenarios)
         with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
+    def test_hardware_comparability_mismatch_remains_blocking(self):
+        scenarios = self.passed_scenarios()
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "hardware metadata incompatible: cpuModel",
+        }
+        self.write_case("unavailable", scenarios)
+        with self.assertRaisesRegex(ClassificationError, "hardware comparability"):
+            classify_result(self.root, "failure")
 
     def test_successful_acceptance_requires_successful_step(self):
         scenarios = {name: {"status": "passed"} for name in self.passed_scenarios()}

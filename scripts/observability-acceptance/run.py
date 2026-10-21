@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
+from cpu_attribution import CpuAttributionError, PreparedCpuAttribution
 from environment import AdmissionBudget, PAIR_ADMISSION_SECONDS, actions_context, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
 from deadline import AcceptanceDeadlineExceeded, ExecutionDeadline, EXECUTION_SECONDS
 
@@ -262,9 +263,28 @@ class Run:
         sidecar=(copied/manifest["symbols"]).read_text()
         assert "codex_vibe_monitor" in sidecar and ("proxy" in sidecar or "sqlite_batch_writer" in sidecar),"known application hot path was not resolved"
         return {"buildId":manifest["buildId"],"originalContainerId":manifest["containerId"],"durationSeconds":30,"symbols":"resolved"}
-    def cpu_usec(self):
-        values=self.compose("exec","-T","app","cat","/sys/fs/cgroup/cpu.stat")
-        return int(dict(line.split() for line in values.splitlines())["usage_usec"])
+    def prepare_cpu_attribution(self, enabled):
+        if self.context is None or self.pair_index is None:
+            raise ValueError("CPU attribution requires a paired GitHub Actions window")
+        services = ["app", "mock-upstream", "client"]
+        services.extend(service for service, running in measurement_services(enabled).items() if running)
+        containers = []
+        for service in services:
+            container = self.compose("ps", "-q", service)
+            if not re.fullmatch(r"[a-f0-9]{12,64}", container):
+                raise OSError("CPU attribution preparation missing running container")
+            metadata = json.loads(execute(["docker", "inspect", container]))[0]
+            if not metadata.get("State", {}).get("Running") or not isinstance(metadata.get("State", {}).get("Pid"), int):
+                raise OSError("CPU attribution preparation found a stopped container")
+            containers.append({"service": service, "containerId": metadata["Id"], "pid": metadata["State"]["Pid"]})
+        try:
+            return PreparedCpuAttribution(
+                self.context["cpuAffinity"],
+                self.context["measurementCpu"],
+                containers,
+            )
+        except CpuAttributionError as error:
+            raise OSError("CPU attribution preparation unavailable: " + error.code) from error
     def overhead(self):
         # An SSH shell or self-hosted Actions job cannot certify the performance budget.
         if self.environment!="github-actions":
@@ -298,14 +318,15 @@ class Run:
                     else:
                         self.compose("stop",service)
                 self.compose("up","-d","app");self.wait_app()
+                attribution=self.prepare_cpu_attribution(enabled)
                 # Observe two complete 30s resource-sampler cycles before timing.
                 self.client("load","--seconds","60","--rate",str(self.args.rate))
                 window={"windowId":f"{index}-{enabled}","pairIndex":index,"enabled":enabled}
                 window["admissionWaitSeconds"]=quiet_admission(self.root,timeout=180,window=window,budget=admission_budget)
-                with observe_resources(self.root,window):
-                    before=self.cpu_usec()
+                with observe_resources(self.root,window,attribution) as observer:
+                    before=observer.cpu_usage_usec()
                     result=self.client("load","--seconds",str(self.args.seconds),"--rate",str(self.args.rate))
-                    result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]
+                    result["cpuSecondsPerRequest"]=(observer.cpu_usage_usec()-before)/1e6/result["completed"]
                     result["cpuCores"]=result["cpuSecondsPerRequest"]*self.args.rate
                     result["windowId"]=window["windowId"]
                     if enabled=="full":
