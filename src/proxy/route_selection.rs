@@ -12,9 +12,7 @@ mod pool_resolution;
 mod route_semantics;
 
 use auth::plain_proxy_error;
-use pool_resolution::{
-    allocate_via_pool_invoke_id, finalize_tracked_pool_attempt, unwrap_via_pool_initial_account,
-};
+use pool_resolution::allocate_via_pool_invoke_id;
 
 pub(crate) use auth::{
     extract_bearer_token, pool_route_response_status_is_success, request_matches_pool_route,
