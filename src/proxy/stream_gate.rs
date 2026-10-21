@@ -1657,6 +1657,7 @@ pub(crate) fn initial_sse_event_kind(bytes: &[u8]) -> Option<String> {
 }
 
 pub(crate) fn build_retryable_overload_gate_outcome(
+    retry_policy: PoolResponsesOverloadRetryPolicy,
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
     upstream_request_id: Option<String>,
@@ -1675,6 +1676,7 @@ pub(crate) fn build_retryable_overload_gate_outcome(
         upstream_request_id: upstream_request_id.clone(),
     };
     PoolInitialResponseGateOutcome::RetrySameAccount {
+        retry_policy,
         message: format_upstream_response_failed_message(&response_info),
         upstream_error_code,
         upstream_error_message,
@@ -1687,6 +1689,7 @@ pub(crate) enum PoolInitialResponsesSseEventDecision {
     ContinueMetadata,
     Forward,
     RetrySameAccount {
+        retry_policy: PoolResponsesOverloadRetryPolicy,
         upstream_error_code: Option<String>,
         upstream_error_message: Option<String>,
         upstream_request_id: Option<String>,
@@ -1698,8 +1701,15 @@ pub(crate) fn classify_pool_initial_responses_sse_event(
     event_bytes: &[u8],
 ) -> PoolInitialResponsesSseEventDecision {
     let response_info = parse_stream_response_payload(event_bytes);
-    if response_info_is_retryable_responses_overload(status, &response_info) {
+    if response_info.stream_terminal_event.is_some()
+        && let Some(retry_policy) = classify_pool_responses_overload(
+            status,
+            response_info.upstream_error_code.as_deref(),
+            response_info.upstream_error_message.as_deref(),
+        )
+    {
         return PoolInitialResponsesSseEventDecision::RetrySameAccount {
+            retry_policy,
             upstream_error_code: response_info.upstream_error_code,
             upstream_error_message: response_info.upstream_error_message,
             upstream_request_id: response_info.upstream_request_id,
@@ -1737,6 +1747,7 @@ pub(crate) enum PoolInitialResponseGateOutcome {
         replayed_bytes_received_at: Option<Instant>,
     },
     RetrySameAccount {
+        retry_policy: PoolResponsesOverloadRetryPolicy,
         message: String,
         upstream_error_code: Option<String>,
         upstream_error_message: Option<String>,
@@ -1802,11 +1813,13 @@ pub(crate) async fn gate_pool_initial_response_stream_with_timestamp(
                     break;
                 }
                 PoolInitialResponsesSseEventDecision::RetrySameAccount {
+                    retry_policy,
                     upstream_error_code,
                     upstream_error_message,
                     upstream_request_id,
                 } => {
                     return Ok(build_retryable_overload_gate_outcome(
+                        retry_policy,
                         upstream_error_code,
                         upstream_error_message,
                         upstream_request_id,
@@ -1902,14 +1915,14 @@ pub(crate) fn gate_pool_initial_compact_response(
         .and_then(|entry| entry.as_str())
         .map(str::to_string);
     let upstream_error_message = extract_upstream_error_message(&value);
-    if !upstream_error_is_retryable_responses_overload(
+    let retry_policy = classify_pool_responses_overload(
+        status,
         upstream_error_code.as_deref(),
         upstream_error_message.as_deref(),
-    ) {
-        return None;
-    }
+    )?;
 
     Some(build_retryable_overload_gate_outcome(
+        retry_policy,
         upstream_error_code,
         upstream_error_message,
         extract_upstream_request_id(&value),
