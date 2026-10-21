@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 27 current explicit file budgets (10 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 26 current explicit file budgets (9 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
