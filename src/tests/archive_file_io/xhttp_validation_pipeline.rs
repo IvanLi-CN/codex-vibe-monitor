@@ -4,13 +4,13 @@ use serde_json::json;
 use std::{
     env, fs,
     path::Path,
-    process::{Command, Stdio},
+    process::Stdio,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, process::Command};
 
 #[cfg(unix)]
 #[tokio::test]
