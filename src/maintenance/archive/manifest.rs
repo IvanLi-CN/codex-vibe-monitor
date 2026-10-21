@@ -249,6 +249,7 @@ async fn mark_archive_batch_upstream_activity_refreshed(
 pub(crate) async fn load_archive_upstream_activity_from_file(
     archive_path: &Path,
 ) -> Result<Vec<(i64, String)>> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(archive_path)?;
     let temp_path = PathBuf::from(format!(
         "{}.{}.sqlite",
         archive_path.display(),

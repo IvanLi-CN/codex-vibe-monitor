@@ -35,6 +35,9 @@ pub(crate) fn cleanup_stale_archive_temp_files(
         if !archive_file_is_stale_temp(&file_path) || !archive_temp_file_is_old_enough(&file_path) {
             continue;
         }
+        if crate::is_archive_file_operation_active(&file_path) {
+            continue;
+        }
         let file_size = archive_file_size(&file_path);
         if dry_run {
             summary.stale_temp_files_removed += 1;

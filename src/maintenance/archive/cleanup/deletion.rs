@@ -252,6 +252,13 @@ where
     let mut archive_lock =
         super::super::retention::retention_archive_file_lock(Path::new(file_path))
             .context("failed to lock archive cleanup path")?;
+    if crate::is_archive_file_operation_active(Path::new(file_path)) {
+        warn!(
+            dataset,
+            file_path, "archive file deletion deferred while a file operation is active"
+        );
+        return Ok(false);
+    }
     let file_sha256 = if Path::new(file_path).exists() {
         match sha256_hex_file(Path::new(file_path)) {
             Ok(value) => Some(value),
@@ -411,6 +418,10 @@ where
         return Ok(false);
     }
 
+    if crate::is_archive_file_operation_active(Path::new(file_path)) {
+        tx.rollback().await?;
+        return Ok(false);
+    }
     match remove_file(file_path) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
