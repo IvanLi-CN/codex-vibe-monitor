@@ -431,7 +431,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             let _ = fs::remove_file(&work_path);
             let _ = fs::remove_file(&temp_gzip_path);
 
-            inflate_gzip_sqlite_file(&archive_path, &work_path)?;
+            inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &work_path).await?;
 
             let backfill_outcome = async {
                 let mut conn = open_archive_sqlite_connection(&work_path).await?;
@@ -471,7 +471,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 let _ = fs::remove_file(&temp_gzip_path);
                 return Err(err);
             }
-            if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
+            if let Err(err) =
+                deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path)
+                    .await
+            {
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
                 return Err(err);
@@ -893,7 +896,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
     let has_summary_pages = snapshots.is_some();
     writer_observation.advance(MonthlyWriterPhase::Inflate);
     if final_path.exists() {
-        inflate_gzip_sqlite_file(&final_path, &work_path)?;
+        inflate_gzip_sqlite_file_with_operation_budget(&final_path, &work_path).await?;
     } else {
         ensure_attachable_archive_sqlite_path(&work_path)?;
     }
@@ -1126,7 +1129,9 @@ async fn archive_rows_into_month_batch_with_snapshots(
             let _ = fs::remove_file(&temp_gzip_path);
             return Err(err);
         }
-    } else if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
+    } else if let Err(err) =
+        deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await
+    {
         let _ = fs::remove_file(&work_path);
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
@@ -1698,7 +1703,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
 
     finalize_archive_sqlite_file(&work_path).await?;
 
-    deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path)?;
+    deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await?;
     publish_prepared_archive_file(&temp_gzip_path, &final_path)?;
 
     let sha256 = sha256_hex_file(&final_path)?;

@@ -8,7 +8,9 @@ use std::{
     env, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::{
@@ -335,41 +337,103 @@ pub(crate) fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) 
 }
 
 pub(crate) fn inflate_gzip_sqlite_file(source: &Path, destination: &Path) -> Result<()> {
+    inflate_gzip_sqlite_file_with_limits(source, destination, None, None)
+}
+
+pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
+    source: &Path,
+    destination: &Path,
+) -> Result<()> {
+    let source = source.to_path_buf();
+    let destination = destination.to_path_buf();
+    run_archive_file_work_with_operation_budget("inflate", move |deadline, shutdown| {
+        inflate_gzip_sqlite_file_with_limits(
+            &source,
+            &destination,
+            Some(deadline),
+            shutdown.as_ref(),
+        )
+    })
+    .await
+}
+
+fn inflate_gzip_sqlite_file_with_limits(
+    source: &Path,
+    destination: &Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&CancellationToken>,
+) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open archive batch {}", source.display()))?;
     let mut decoder = GzDecoder::new(input);
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
     let mut writer = io::BufWriter::new(output);
-    copy_archive_bytes_with_task_deadline(&mut decoder, &mut writer, destination).with_context(
-        || {
-            format!(
-                "failed to decompress archive batch {} into {}",
-                source.display(),
-                destination.display()
-            )
-        },
-    )?;
+    copy_archive_bytes_with_limits(
+        &mut decoder,
+        &mut writer,
+        destination,
+        operation_deadline,
+        shutdown,
+    )
+    .with_context(|| {
+        format!(
+            "failed to decompress archive batch {} into {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
     writer.flush()?;
     Ok(())
 }
 
 pub(crate) fn deflate_sqlite_file_to_gzip(source: &Path, destination: &Path) -> Result<()> {
+    deflate_sqlite_file_to_gzip_with_limits(source, destination, None, None)
+}
+
+pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
+    source: &Path,
+    destination: &Path,
+) -> Result<()> {
+    let source = source.to_path_buf();
+    let destination = destination.to_path_buf();
+    run_archive_file_work_with_operation_budget("deflate", move |deadline, shutdown| {
+        deflate_sqlite_file_to_gzip_with_limits(
+            &source,
+            &destination,
+            Some(deadline),
+            shutdown.as_ref(),
+        )
+    })
+    .await
+}
+
+fn deflate_sqlite_file_to_gzip_with_limits(
+    source: &Path,
+    destination: &Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&CancellationToken>,
+) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open temp archive db {}", source.display()))?;
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create archive gzip {}", destination.display()))?;
     let mut encoder = GzEncoder::new(io::BufWriter::new(output), Compression::default());
     let mut reader = io::BufReader::new(input);
-    copy_archive_bytes_with_task_deadline(&mut reader, &mut encoder, destination).with_context(
-        || {
-            format!(
-                "failed to compress temp archive db {} into {}",
-                source.display(),
-                destination.display()
-            )
-        },
-    )?;
+    copy_archive_bytes_with_limits(
+        &mut reader,
+        &mut encoder,
+        destination,
+        operation_deadline,
+        shutdown,
+    )
+    .with_context(|| {
+        format!(
+            "failed to compress temp archive db {} into {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
     let mut writer = encoder
         .finish()
         .context("failed to finish archive gzip writer")?;
@@ -377,18 +441,40 @@ pub(crate) fn deflate_sqlite_file_to_gzip(source: &Path, destination: &Path) -> 
     Ok(())
 }
 
-fn copy_archive_bytes_with_task_deadline(
+async fn run_archive_file_work_with_operation_budget<F>(
+    operation: &'static str,
+    work: F,
+) -> Result<()>
+where
+    F: FnOnce(Instant, Option<CancellationToken>) -> Result<()> + Send + 'static,
+{
+    let deadline = super::retention::retention_archive_file_operation_deadline();
+    let shutdown = super::retention::retention_run_shutdown_token();
+    // Await the blocking worker so temp-file cleanup cannot race native file I/O after a stop.
+    tokio::task::spawn_blocking(move || work(deadline, shutdown))
+        .await
+        .with_context(|| format!("retention archive {operation} worker panicked"))??;
+    Ok(())
+}
+
+fn copy_archive_bytes_with_limits(
     reader: &mut impl io::Read,
     writer: &mut impl io::Write,
     destination: &Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&CancellationToken>,
 ) -> Result<()> {
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        if super::retention::retention_run_budget_expired() {
-            bail!("retention archive file work exceeded the task timeout");
+        if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
+        {
+            bail!("retention archive file work exceeded the operation budget");
         }
-        if super::retention::retention_run_shutdown_token()
-            .is_some_and(|shutdown| shutdown.is_cancelled())
+        if shutdown.is_some_and(CancellationToken::is_cancelled)
+            || (shutdown.is_none()
+                && super::retention::retention_run_shutdown_token()
+                    .is_some_and(|shutdown| shutdown.is_cancelled()))
         {
             return Err(super::retention::retention_write_deferred(
                 "archive_file_work",

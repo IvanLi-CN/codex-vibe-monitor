@@ -223,7 +223,7 @@ where
         }
         let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         let archive_result = async {
-            inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+            inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await?;
             let archive_pool = SqlitePoolOptions::new()
                 .max_connections(1)
                 .connect(&sqlite_url_for_path(&temp_path))
@@ -640,7 +640,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             let _ = fs::remove_file(&temp_path);
         }
         let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await?;
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&sqlite_url_for_path(&temp_path))

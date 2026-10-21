@@ -1,6 +1,52 @@
 use super::*;
 
 #[tokio::test]
+async fn retention_archive_file_operations_stop_at_the_operation_budget() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "codex-vibe-monitor-retention-archive-file-operation-budget-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create archive file operation budget test directory");
+    let source_path = temp_dir.join("archive.sqlite");
+    let compressed_path = temp_dir.join("archive.sqlite.gz");
+    let budgeted_compressed_path = temp_dir.join("archive-budgeted.sqlite.gz");
+    let inflated_path = temp_dir.join("archive-inflated.sqlite");
+    fs::write(&source_path, vec![b'x'; 4 * 1024 * 1024]).expect("write archive source");
+    deflate_sqlite_file_to_gzip(&source_path, &compressed_path)
+        .expect("create compressed archive source");
+
+    let deflate_error = crate::maintenance::retention_test_with_archive_file_operation_budget(
+        Duration::ZERO,
+        deflate_sqlite_file_to_gzip_with_operation_budget(&source_path, &budgeted_compressed_path),
+    )
+    .await
+    .expect_err("deflate should stop when its operation budget is exhausted");
+    assert!(
+        deflate_error
+            .to_string()
+            .contains("archive file work exceeded the operation budget")
+    );
+
+    let inflate_error = crate::maintenance::retention_test_with_archive_file_operation_budget(
+        Duration::ZERO,
+        inflate_gzip_sqlite_file_with_operation_budget(&compressed_path, &inflated_path),
+    )
+    .await
+    .expect_err("inflate should stop when its operation budget is exhausted");
+    assert!(
+        inflate_error
+            .to_string()
+            .contains("archive file work exceeded the operation budget")
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archive_exports_transaction_and_complete_write_hold_separately() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("archive-observation-boundaries").await;

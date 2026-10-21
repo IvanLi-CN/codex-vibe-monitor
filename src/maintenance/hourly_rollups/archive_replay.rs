@@ -170,7 +170,7 @@ pub(crate) async fn open_historical_rollup_archive_pool(
             != Some(current_signature.as_str());
     if stale_temp {
         remove_temp_sqlite_artifacts(temp_path);
-        inflate_gzip_sqlite_file(archive_path, temp_path)?;
+        inflate_gzip_sqlite_file_with_operation_budget(archive_path, temp_path).await?;
         persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
     }
 
@@ -185,7 +185,7 @@ pub(crate) async fn open_historical_rollup_archive_pool(
         Ok(pool) => Ok(pool),
         Err(first_err) => {
             remove_temp_sqlite_artifacts(temp_path);
-            inflate_gzip_sqlite_file(archive_path, temp_path)?;
+            inflate_gzip_sqlite_file_with_operation_budget(archive_path, temp_path).await?;
             persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.with_context(|| {
                 format!(
@@ -703,7 +703,7 @@ pub(crate) async fn open_historical_rollup_archive_pool_with_budget(
         // Once an archive has been selected, finish building its durable temp copy. The caller
         // still enforces the elapsed budget before the next archive, while the persisted source
         // signature prevents a later pass from repeating a partial gzip inflate.
-        inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, None).await?;
+        inflate_gzip_sqlite_file_with_operation_budget(archive_path, temp_path).await?;
         persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
     }
 
@@ -718,7 +718,7 @@ pub(crate) async fn open_historical_rollup_archive_pool_with_budget(
         Ok(pool) => Ok(Some(pool)),
         Err(first_err) => {
             remove_temp_sqlite_artifacts(temp_path);
-            inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, None).await?;
+            inflate_gzip_sqlite_file_with_operation_budget(archive_path, temp_path).await?;
             persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.map(Some).with_context(|| {
                 format!(

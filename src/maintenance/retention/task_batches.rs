@@ -269,19 +269,16 @@ impl ArchiveSourceIdentityProof {
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
         #[cfg(test)]
         batch_admission::pause_before_archive_identity_proof_inflate().await;
-        if let Some(remaining) = retention_run_remaining_budget() {
-            let complete = inflate_gzip_sqlite_file_with_budget(
-                path,
-                &proof_path,
-                Instant::now(),
-                Some(remaining),
-            )
-            .await?;
-            if !complete {
-                bail!("retention archive identity proof inflate exceeded the operation deadline");
-            }
-        } else if !inflate_gzip_sqlite_file_with_budget(path, &proof_path, Instant::now(), None)
-            .await?
+        let operation_budget = retention_run_remaining_budget()
+            .map(|remaining| remaining.min(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET))
+            .unwrap_or(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET);
+        if !inflate_gzip_sqlite_file_with_budget(
+            path,
+            &proof_path,
+            Instant::now(),
+            Some(operation_budget),
+        )
+        .await?
         {
             bail!("retention archive identity proof inflate exceeded the operation deadline");
         }

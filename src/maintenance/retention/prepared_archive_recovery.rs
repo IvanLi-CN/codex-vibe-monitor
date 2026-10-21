@@ -791,7 +791,7 @@ pub(crate) async fn verify_prepared_retention_archive_artifact(
         retention_temp_suffix()
     ));
     let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-    inflate_gzip_sqlite_file(archive_path, &temp_path)?;
+    inflate_gzip_sqlite_file_with_operation_budget(archive_path, &temp_path).await?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
     ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
     let archive_ids =

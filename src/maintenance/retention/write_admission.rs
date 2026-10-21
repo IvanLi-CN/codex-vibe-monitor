@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_WRITE_ADMISSION_BUDGET: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 pub(crate) const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 pub(crate) const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
@@ -104,6 +105,7 @@ tokio::task_local! {
     pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
     pub(crate) static RETENTION_TEST_WRITE_ADMISSION_BUDGET: RefCell<Option<Duration>>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_FILE_OPERATION_BUDGET: RefCell<Option<Duration>>;
     pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
     pub(crate) static RETENTION_TEST_WRITE_CONNECTION_POOL_READY: Arc<Notify>;
@@ -710,6 +712,26 @@ pub(crate) fn retention_write_admission_budget() -> (Duration, &'static str) {
     }
 }
 
+fn configured_retention_archive_file_operation_budget() -> Duration {
+    #[cfg(test)]
+    if let Ok(Some(budget)) =
+        RETENTION_TEST_ARCHIVE_FILE_OPERATION_BUDGET.try_with(|value| *value.borrow())
+    {
+        return budget;
+    }
+
+    RETENTION_ARCHIVE_FILE_OPERATION_BUDGET
+}
+
+pub(crate) fn retention_archive_file_operation_deadline() -> Instant {
+    let now = Instant::now();
+    let configured = configured_retention_archive_file_operation_budget();
+    let effective = retention_run_remaining_budget()
+        .map(|remaining| remaining.min(configured))
+        .unwrap_or(configured);
+    now + effective
+}
+
 pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {
     RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
 }
@@ -737,6 +759,16 @@ pub(crate) async fn retention_test_with_write_admission_budget<F: Future>(
     work: F,
 ) -> F::Output {
     RETENTION_TEST_WRITE_ADMISSION_BUDGET
+        .scope(RefCell::new(Some(budget)), work)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_archive_file_operation_budget<F: Future>(
+    budget: Duration,
+    work: F,
+) -> F::Output {
+    RETENTION_TEST_ARCHIVE_FILE_OPERATION_BUDGET
         .scope(RefCell::new(Some(budget)), work)
         .await
 }
