@@ -567,21 +567,25 @@ pub(crate) async fn retention_recovery_persist_failure(
     .bind(observed_artifact_sha256.as_deref())
     .execute(pool)
     .await?;
-    sqlx::query(
-        "UPDATE retention_recovery_cursors
-         SET next_retry_at = datetime('now', ?1),
-             consecutive_failure_count = consecutive_failure_count + 1,
-             last_failure_fingerprint = ?2,
-             defer_reason = ?3,
-             updated_at = datetime('now')
-         WHERE scope = ?4",
-    )
-    .bind(format!("+{retry_seconds} seconds"))
-    .bind(&fingerprint)
-    .bind(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
-    .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
-    .execute(pool)
-    .await?;
+    if !quarantine {
+        // Quarantined artifacts are isolated evidence, not retryable scheduler work. Keep their
+        // per-artifact failure metadata, but do not back off unrelated prepared archives.
+        sqlx::query(
+            "UPDATE retention_recovery_cursors
+             SET next_retry_at = datetime('now', ?1),
+                 consecutive_failure_count = consecutive_failure_count + 1,
+                 last_failure_fingerprint = ?2,
+                 defer_reason = ?3,
+                 updated_at = datetime('now')
+             WHERE scope = ?4",
+        )
+        .bind(format!("+{retry_seconds} seconds"))
+        .bind(&fingerprint)
+        .bind(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
+        .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+        .execute(pool)
+        .await?;
+    }
     retention_record_commit!(
         "retention_recovery_failure",
         admission.admission_mode(),
