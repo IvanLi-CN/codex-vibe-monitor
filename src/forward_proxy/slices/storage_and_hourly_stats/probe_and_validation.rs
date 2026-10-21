@@ -1276,38 +1276,34 @@ impl TemporaryXrayRouteGuard {
         Self { supervisor, key }
     }
 
-    async fn cleanup(&mut self) {
-        let Some(key) = self.key.as_ref().cloned() else {
+    async fn cleanup_with_budget(&mut self, budget: Duration) {
+        let Some(cleanup) = self.spawn_cleanup() else {
             return;
         };
-        let mut supervisor = self.supervisor.lock().await;
-        supervisor.remove_instance(&key).await;
-        self.key = None;
+        // The cleanup task owns the route key after it is spawned. A timeout may detach the
+        // task, but must not cancel removal after the supervisor has taken ownership of it.
+        if !budget.is_zero() {
+            let _ = timeout(budget, cleanup).await;
+        }
     }
 
-    async fn cleanup_with_budget(&mut self, budget: Duration) {
-        if budget.is_zero() {
-            self.schedule_cleanup();
-            return;
-        }
-        if timeout(budget, self.cleanup()).await.is_err() {
-            self.schedule_cleanup();
-        }
+    fn spawn_cleanup(&mut self) -> Option<tokio::task::JoinHandle<()>> {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            warn!("temporary xray route was dropped outside a tokio runtime");
+            return None;
+        };
+        let Some(key) = self.key.take() else {
+            return None;
+        };
+        let supervisor = self.supervisor.clone();
+        Some(handle.spawn(async move {
+            let mut supervisor = supervisor.lock().await;
+            supervisor.remove_instance(&key).await;
+        }))
     }
 
     fn schedule_cleanup(&mut self) {
-        let Some(key) = self.key.take() else {
-            return;
-        };
-        let supervisor = self.supervisor.clone();
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            warn!("temporary xray route was dropped outside a tokio runtime");
-            return;
-        };
-        handle.spawn(async move {
-            let mut supervisor = supervisor.lock().await;
-            supervisor.remove_instance(&key).await;
-        });
+        let _ = self.spawn_cleanup();
     }
 }
 
@@ -1791,5 +1787,59 @@ mod tests {
             supervisor.lock().await.instances.is_empty(),
             "dropping a validation route guard must schedule route cleanup"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn temporary_xray_route_cleanup_survives_budget_expiration() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codex-vless-xhttp-route-timeout-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).expect("create route cleanup fixture directory");
+        let config_path = temp_root.join("route.json");
+        fs::write(&config_path, "{}").expect("write route cleanup fixture config");
+        let supervisor = Arc::new(Mutex::new(XraySupervisor::new(
+            "/path/to/non-existent-xray".to_string(),
+            temp_root.join("runtime"),
+        )));
+        let key = "__validate_xray__timeout".to_string();
+        let child = Command::new("python3")
+            .arg("-c")
+            .arg("import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(3)")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cleanup timeout child");
+        supervisor.lock().await.instances.insert(
+            key.clone(),
+            XrayInstance {
+                local_proxy_url: Url::parse("socks5://127.0.0.1:1083")
+                    .expect("valid local proxy url"),
+                config_path: config_path.clone(),
+                child,
+                temporary: false,
+            },
+        );
+
+        let mut guard = TemporaryXrayRouteGuard::new(supervisor.clone(), Some(key));
+        guard.cleanup_with_budget(Duration::from_millis(1)).await;
+        for _ in 0..160 {
+            if !config_path.exists() && supervisor.lock().await.instances.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            !config_path.exists(),
+            "route cleanup must remove its config after timeout"
+        );
+        assert!(
+            supervisor.lock().await.instances.is_empty(),
+            "route cleanup must eventually remove the instance after timeout"
+        );
+        let _ = fs::remove_dir_all(&temp_root);
     }
 }

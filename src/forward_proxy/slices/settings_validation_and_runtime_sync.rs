@@ -1264,6 +1264,28 @@ impl ForwardProxyManager {
             .collect::<Vec<_>>();
         endpoint_parts.sort_by(|lhs, rhs| lhs.0.key.cmp(&rhs.0.key));
 
+        let legacy_endpoint_parts = self
+            .endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                endpoint
+                    .raw_url
+                    .as_deref()
+                    .and_then(legacy_forward_proxy_binding_parts_from_raw)
+                    .map(|parts| (endpoint.key.clone(), parts))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut legacy_name_counts = HashMap::<String, usize>::new();
+        let mut legacy_name_protocol_counts = HashMap::<(String, String), usize>::new();
+        for parts in legacy_endpoint_parts.values() {
+            *legacy_name_counts
+                .entry(parts.display_name.clone())
+                .or_default() += 1;
+            *legacy_name_protocol_counts
+                .entry((parts.display_name.clone(), parts.protocol_key.clone()))
+                .or_default() += 1;
+        }
+
         for (_, parts) in &endpoint_parts {
             *name_counts.entry(parts.display_name.clone()).or_default() += 1;
             *name_protocol_counts
@@ -1342,6 +1364,35 @@ impl ForwardProxyManager {
                             .entry(alias.clone())
                             .or_insert_with(|| binding_key.clone());
                         aliases.insert(alias);
+                    }
+                }
+                if let Some(legacy_parts) = legacy_endpoint_parts.get(&endpoint.key) {
+                    let legacy_candidates = forward_proxy_binding_key_candidates(legacy_parts);
+                    let legacy_binding_key = if legacy_name_counts
+                        .get(&legacy_parts.display_name)
+                        .copied()
+                        .unwrap_or_default()
+                        <= 1
+                    {
+                        legacy_candidates[0].clone()
+                    } else if legacy_name_protocol_counts
+                        .get(&(
+                            legacy_parts.display_name.clone(),
+                            legacy_parts.protocol_key.clone(),
+                        ))
+                        .copied()
+                        .unwrap_or_default()
+                        <= 1
+                    {
+                        legacy_candidates[1].clone()
+                    } else {
+                        legacy_candidates[2].clone()
+                    };
+                    if legacy_binding_key != binding_key {
+                        bound_key_aliases
+                            .entry(legacy_binding_key.clone())
+                            .or_insert_with(|| binding_key.clone());
+                        aliases.insert(legacy_binding_key);
                     }
                 }
             }

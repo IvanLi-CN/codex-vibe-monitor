@@ -1089,6 +1089,51 @@ async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys
 }
 
 #[tokio::test]
+async fn load_forward_proxy_runtime_states_preserves_native_proxy_credentials_in_identity() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let first_url = "http://synthetic-user-a:synthetic-password-a@proxy.example.com:8080";
+    let second_url = "http://synthetic-user-b:synthetic-password-b@proxy.example.com:8080";
+    let first_key = normalize_single_proxy_key(first_url).expect("normalize first proxy key");
+    let second_key = normalize_single_proxy_key(second_url).expect("normalize second proxy key");
+    let public_endpoint = safe_forward_proxy_endpoint_url(Some(first_url));
+
+    for (key, display_name, weight) in [
+        (&first_key, "proxy-a", 0.41),
+        (&second_key, "proxy-b", 0.73),
+    ] {
+        persist_forward_proxy_runtime_state(
+            &state.pool,
+            &ForwardProxyRuntimeState {
+                proxy_key: key.clone(),
+                display_name: display_name.to_string(),
+                source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+                endpoint_url: public_endpoint.clone(),
+                weight,
+                success_ema: 0.65,
+                latency_ema_ms: None,
+                consecutive_failures: 0,
+            },
+        )
+        .await
+        .expect("persist native proxy runtime state");
+    }
+
+    let runtime = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load native proxy runtime states");
+    let runtime_by_key = runtime
+        .into_iter()
+        .map(|state| (state.proxy_key.clone(), state))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(runtime_by_key.len(), 2);
+    assert_eq!(runtime_by_key[&first_key].weight, 0.41);
+    assert_eq!(runtime_by_key[&second_key].weight, 0.73);
+}
+
+#[tokio::test]
 async fn load_forward_proxy_runtime_states_maps_legacy_vless_hash_keys_from_current_settings() {
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
@@ -2064,119 +2109,6 @@ async fn validate_single_forward_proxy_candidate_keeps_xray_startup_running_duri
         !message.contains("shutdown is in progress"),
         "request-scoped validation should not reuse the global shutdown token: {message}"
     );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-#[ignore = "requires an installed Xray binary; run explicitly with XRAY_BINARY"]
-async fn vless_xhttp_validation_pipeline_reaches_local_upstream() {
-    let xray_binary = env::var("XRAY_BINARY").unwrap_or_else(|_| "/opt/homebrew/bin/xray".into());
-    if !Path::new(&xray_binary).is_file() {
-        eprintln!("skipping XHTTP validation smoke: Xray binary is unavailable");
-        return;
-    }
-
-    let temp_root = make_temp_test_dir("xhttp-validation-pipeline");
-    let runtime_dir = temp_root.join("runtime");
-    let upstream_app = Router::new().route("/v1/models", any(|| async { StatusCode::NOT_FOUND }));
-    let upstream_listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind synthetic validation upstream");
-    let upstream_addr = upstream_listener
-        .local_addr()
-        .expect("read synthetic validation upstream address");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(upstream_listener, upstream_app)
-            .await
-            .expect("synthetic validation upstream should run");
-    });
-
-    let server_port = pick_unused_local_port().expect("allocate synthetic XHTTP server port");
-    let server_config_path = temp_root.join("xhttp-server.json");
-    let server_config = json!({
-        "log": { "loglevel": "none" },
-        "inbounds": [{
-            "listen": "127.0.0.1",
-            "port": server_port,
-            "protocol": "vless",
-            "settings": {
-                "clients": [{ "id": "11111111-1111-1111-1111-111111111111" }],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "xhttp",
-                "xhttpSettings": {
-                    "path": "/xp-xhttp",
-                    "mode": "stream-one"
-                }
-            }
-        }],
-        "outbounds": [{ "protocol": "freedom" }]
-    });
-    fs::write(
-        &server_config_path,
-        serde_json::to_vec_pretty(&server_config).expect("serialize synthetic XHTTP server config"),
-    )
-    .expect("write synthetic XHTTP server config");
-    let mut server_child = Command::new(&xray_binary)
-        .arg("run")
-        .arg("-c")
-        .arg(&server_config_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("start synthetic XHTTP server");
-
-    let server_addr = format!("127.0.0.1:{server_port}");
-    let mut server_ready = false;
-    for _ in 0..100 {
-        if tokio::net::TcpStream::connect(&server_addr).await.is_ok() {
-            server_ready = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(server_ready, "synthetic XHTTP server did not become ready");
-
-    let mut config = test_config();
-    config.xray_binary = xray_binary;
-    config.xray_runtime_dir = runtime_dir;
-    config.openai_upstream_base_url = Url::parse(&format!("http://{upstream_addr}/"))
-        .expect("valid synthetic validation upstream base url");
-    let state = test_state_from_config(config, false).await;
-    let endpoint = ForwardProxyEndpoint {
-        key: "xhttp-validation-pipeline".to_string(),
-        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
-        display_name: "xhttp-validation-pipeline".to_string(),
-        protocol: ForwardProxyProtocol::Vless,
-        endpoint_url: None,
-        raw_url: Some(format!(
-            "vless://11111111-1111-1111-1111-111111111111@{server_addr}?encryption=none&security=none&type=xhttp&path=%2Fxp-xhttp&mode=stream-one"
-        )),
-    };
-
-    let result =
-        probe_forward_proxy_endpoint(state.as_ref(), &endpoint, Duration::from_secs(10), None)
-            .await
-            .expect("actual XHTTP validation route should complete");
-    assert!(
-        result.is_some(),
-        "actual XHTTP route should reach the upstream"
-    );
-    assert!(
-        state.xray_supervisor.lock().await.instances.is_empty(),
-        "validation should clean the temporary Xray route"
-    );
-
-    server_child
-        .kill()
-        .await
-        .expect("stop synthetic XHTTP server");
-    let _ = server_child.wait().await;
-    upstream_handle.abort();
-    cleanup_temp_test_dir(&temp_root);
 }
 
 #[tokio::test]

@@ -502,9 +502,10 @@ pub(crate) fn canonical_forward_proxy_storage_key(
     proxy_key: &str,
     endpoint_url: Option<&str>,
 ) -> String {
-    endpoint_url
-        .and_then(normalize_single_proxy_key)
-        .or_else(|| normalize_bound_proxy_key(proxy_key))
+    // Runtime keys preserve credentials in their stable identity. The endpoint URL is a
+    // redacted presentation value for native proxies and must only be a legacy fallback.
+    normalize_bound_proxy_key(proxy_key)
+        .or_else(|| endpoint_url.and_then(normalize_single_proxy_key))
         .unwrap_or_else(|| proxy_key.to_string())
 }
 

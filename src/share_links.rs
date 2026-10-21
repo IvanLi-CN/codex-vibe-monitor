@@ -428,6 +428,23 @@ pub(crate) fn forward_proxy_binding_parts_from_raw(
     })
 }
 
+pub(crate) fn legacy_forward_proxy_binding_parts_from_raw(
+    raw: &str,
+) -> Option<ForwardProxyBindingParts> {
+    let parsed = parse_forward_proxy_entry(raw)?;
+    let display_name = Url::parse(&parsed.normalized)
+        .ok()
+        .and_then(|url| url.fragment().map(percent_decode_once_lossy))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| parsed.display_name.clone());
+    Some(ForwardProxyBindingParts {
+        display_name,
+        protocol_key: parsed.protocol.label().to_string(),
+        host_port: canonical_host_port_string(&parsed.host, parsed.port),
+    })
+}
+
 pub(crate) fn forward_proxy_binding_key_candidates(
     parts: &ForwardProxyBindingParts,
 ) -> [String; 3] {

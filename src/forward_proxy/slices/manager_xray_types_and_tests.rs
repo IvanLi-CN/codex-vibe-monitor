@@ -1896,6 +1896,32 @@ mod tests {
     }
 
     #[test]
+    fn binding_nodes_keep_legacy_unsafe_display_name_aliases() {
+        let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#Tokyo%40JP";
+        let manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_url.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let legacy_parts = legacy_forward_proxy_binding_parts_from_raw(proxy_url)
+            .expect("legacy binding parts should parse");
+        let legacy_key = forward_proxy_binding_key_candidates(&legacy_parts)[0].clone();
+        let node = manager
+            .binding_nodes()
+            .into_iter()
+            .find(|candidate| candidate.protocol_label == "VLESS")
+            .expect("vless binding node should be present");
+
+        assert_eq!(node.display_name, "vless.example.com:443");
+        assert!(
+            node.alias_keys.contains(&legacy_key),
+            "saved binding created from the legacy display name must remain resolvable"
+        );
+    }
+
+    #[test]
     fn binding_keys_escalate_from_name_to_protocol_to_host_port() {
         let shadowsocks_url = |host| {
             format!(
