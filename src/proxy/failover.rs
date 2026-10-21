@@ -5,7 +5,7 @@ pub(crate) use candidate_selection::*;
 mod retry_metadata;
 pub(crate) use retry_metadata::*;
 mod prepare_failure;
-pub(crate) use prepare_failure::record_pool_request_prepare_failure_attempt;
+pub(super) use prepare_failure::record_pool_request_prepare_failure_attempt;
 mod terminal_outcome;
 pub(crate) use terminal_outcome::*;
 mod attempt_execution;
