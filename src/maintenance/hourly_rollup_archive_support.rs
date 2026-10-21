@@ -28,18 +28,23 @@ static ACTIVE_ARCHIVE_FILE_OPERATIONS: Lazy<std::sync::Mutex<HashSet<PathBuf>>> 
     Lazy::new(|| std::sync::Mutex::new(HashSet::new()));
 
 struct ArchiveFileOperationLease {
-    path: PathBuf,
+    paths: Vec<PathBuf>,
     timed_out: Arc<AtomicBool>,
 }
 
 impl ArchiveFileOperationLease {
-    fn register(path: PathBuf) -> Option<Self> {
-        let mut active = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock().ok()?;
-        if !active.insert(path.clone()) {
+    fn register(paths: impl IntoIterator<Item = PathBuf>) -> Option<Self> {
+        let paths = paths.into_iter().collect::<HashSet<_>>();
+        if paths.is_empty() {
             return None;
         }
+        let mut active = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock().ok()?;
+        if paths.iter().any(|path| active.contains(path)) {
+            return None;
+        }
+        active.extend(paths.iter().cloned());
         Some(Self {
-            path,
+            paths: paths.into_iter().collect(),
             timed_out: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -48,7 +53,9 @@ impl ArchiveFileOperationLease {
 impl Drop for ArchiveFileOperationLease {
     fn drop(&mut self) {
         if let Ok(mut active) = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock() {
-            active.remove(&self.path);
+            for path in &self.paths {
+                active.remove(path);
+            }
         }
     }
 }
@@ -388,7 +395,9 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
     let destination = destination.to_path_buf();
     run_archive_file_work_with_operation_budget(
         "inflate",
-        destination.clone(),
+        vec![source.clone(), destination.clone()],
+        vec![destination.clone()],
+        vec![destination.clone()],
         move |deadline, shutdown| {
             inflate_gzip_sqlite_file_with_limits(
                 &source,
@@ -443,7 +452,9 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
     let destination = destination.to_path_buf();
     run_archive_file_work_with_operation_budget(
         "deflate",
-        destination.clone(),
+        vec![source.clone(), destination.clone()],
+        vec![destination.clone()],
+        vec![source.clone(), destination.clone()],
         move |deadline, shutdown| {
             deflate_sqlite_file_to_gzip_with_limits(
                 &source,
@@ -491,7 +502,9 @@ fn deflate_sqlite_file_to_gzip_with_limits(
 
 async fn run_archive_file_work_with_operation_budget<F>(
     operation: &'static str,
-    destination: PathBuf,
+    protected_paths: Vec<PathBuf>,
+    failure_cleanup_paths: Vec<PathBuf>,
+    timeout_cleanup_paths: Vec<PathBuf>,
     work: F,
 ) -> Result<()>
 where
@@ -503,7 +516,7 @@ where
     if remaining.is_zero() {
         return Err(super::retention::retention_archive_file_operation_budget_exhausted());
     }
-    let Some(lease) = ArchiveFileOperationLease::register(destination.clone()) else {
+    let Some(lease) = ArchiveFileOperationLease::register(protected_paths) else {
         return Err(super::retention::retention_write_deferred(
             "archive_file_work",
         ));
@@ -512,23 +525,34 @@ where
     let worker_timed_out = Arc::clone(&timed_out);
     let worker = tokio::task::spawn_blocking(move || {
         let _lease = lease;
+        let cleanup_paths = |paths: &[PathBuf]| {
+            for path in paths {
+                super::retention::remove_temp_sqlite_artifacts_unchecked(path);
+            }
+        };
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(deadline, shutdown)));
         match result {
             Ok(result) => {
-                if result.is_err() || worker_timed_out.load(Ordering::Acquire) {
-                    super::retention::remove_temp_sqlite_artifacts_unchecked(&destination);
+                if result.is_err() {
+                    cleanup_paths(&failure_cleanup_paths);
+                }
+                if worker_timed_out.load(Ordering::Acquire) {
+                    cleanup_paths(&timeout_cleanup_paths);
                 }
                 result
             }
             Err(payload) => {
-                super::retention::remove_temp_sqlite_artifacts_unchecked(&destination);
+                cleanup_paths(&failure_cleanup_paths);
+                if worker_timed_out.load(Ordering::Acquire) {
+                    cleanup_paths(&timeout_cleanup_paths);
+                }
                 std::panic::resume_unwind(payload);
             }
         }
     });
     // A native read/write cannot be aborted safely. Return at the operation deadline, but keep
-    // the lease alive in the worker so concurrent cleanup cannot remove its destination.
+    // the lease alive in the worker so concurrent cleanup cannot remove any protected path.
     match tokio::time::timeout(remaining, worker).await {
         Ok(joined) => {
             joined.with_context(|| format!("retention archive {operation} worker panicked"))??
@@ -590,4 +614,27 @@ pub(crate) fn sha256_hex_file(path: &Path) -> Result<String> {
         hasher.update(&buf[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_file_operation_lease_fences_all_paths() {
+        let suffix = RETENTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let source = PathBuf::from(format!("archive-operation-source-{suffix}"));
+        let destination = PathBuf::from(format!("archive-operation-destination-{suffix}"));
+        let lease = ArchiveFileOperationLease::register([source.clone(), destination.clone()])
+            .expect("register archive file operation lease");
+
+        assert!(is_archive_file_operation_active(&source));
+        assert!(is_archive_file_operation_active(&destination));
+        assert!(ArchiveFileOperationLease::register([source.clone()]).is_none());
+        assert!(ArchiveFileOperationLease::register([destination.clone()]).is_none());
+
+        drop(lease);
+        assert!(!is_archive_file_operation_active(&source));
+        assert!(!is_archive_file_operation_active(&destination));
+    }
 }
