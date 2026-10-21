@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 26,
+    "inventory_entries": 25,
     "suppression_entries": 123
   },
   "loc_targets": {
@@ -17,12 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/proxy/route_selection.rs",
-      "role": "production",
-      "line_budget": 3803,
-      "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
     },
     {
       "path": "src/proxy/usage_persistence.rs",
