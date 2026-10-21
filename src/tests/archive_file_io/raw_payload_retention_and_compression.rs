@@ -693,10 +693,7 @@ async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
     .expect("load invalid publication kind journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
-    assert_eq!(
-        last_failure_stage.as_deref(),
-        Some("task_local_reselection")
-    );
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
     let (failure_count, defer_reason): (i64, Option<String>) = sqlx::query_as(
         "SELECT consecutive_failure_count, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
     )
@@ -751,10 +748,7 @@ async fn retention_quarantines_missing_published_archive_instead_of_retrying() {
         .expect("load missing published archive journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
-    assert_eq!(
-        last_failure_stage.as_deref(),
-        Some("task_local_reselection")
-    );
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

@@ -674,7 +674,7 @@ describe("demo MSW handlers", () => {
       updatedCount: 898,
       coreCompletion: "partial",
       details: {
-        timeoutCount: 0,
+        timeoutCount: null,
         archiveBatches: expect.arrayContaining([
           expect.objectContaining({
             dataset: "codex_invocations",

@@ -597,10 +597,10 @@ pub(crate) async fn prune_old_invocation_details(
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    loop {
+    'work_unit: {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         let sql = format!(
             r#"
@@ -629,7 +629,7 @@ pub(crate) async fn prune_old_invocation_details(
                 Ok(result) => result?,
                 Err(_) => {
                     recovery_diagnostic.mark_budget();
-                    break;
+                    break 'work_unit;
                 }
             }
         } else {
@@ -637,7 +637,7 @@ pub(crate) async fn prune_old_invocation_details(
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
@@ -1046,7 +1046,7 @@ pub(crate) async fn prune_old_invocation_details(
         // One invocation owns the selected bounded archive window. A test-injected operation
         // deadline may stop it inside that window; production scheduling does not use a total
         // timer to split the work into hidden follow-up tasks.
-        break;
+        break 'work_unit;
     }
 
     recovery_diagnostic.finish();
@@ -1136,14 +1136,14 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let mut discovered_ids = HashSet::new();
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    loop {
+    'work_unit: {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         if !archive_batch_can_start() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = load_invocation_archive_candidate_metadata(
@@ -1157,7 +1157,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 Ok(result) => result?,
                 Err(_) => {
                     recovery_diagnostic.mark_budget();
-                    break;
+                    break 'work_unit;
                 }
             }
         } else {
@@ -1165,7 +1165,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
@@ -1760,7 +1760,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         }
         // One scheduled invocation owns one selected candidate window. It completes that logical
         // work unit before returning; the next invocation reselects the remaining live rows.
-        break;
+        break 'work_unit;
     }
 
     recovery_diagnostic.finish();
@@ -1831,14 +1831,14 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    loop {
+    'work_unit: {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         if !archive_batch_can_start() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
@@ -1850,7 +1850,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 Ok(result) => result?,
                 Err(_) => {
                     recovery_diagnostic.mark_budget();
-                    break;
+                    break 'work_unit;
                 }
             }
         } else {
@@ -1858,7 +1858,7 @@ pub(crate) async fn archive_timestamped_dataset(
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
@@ -2371,7 +2371,7 @@ pub(crate) async fn archive_timestamped_dataset(
         }
         // Keep the selected timestamped candidate window as one logical work unit. Operation
         // budgets and cancellation may stop it earlier, but it is never split by a total timer.
-        break;
+        break 'work_unit;
     }
 
     recovery_diagnostic.finish();

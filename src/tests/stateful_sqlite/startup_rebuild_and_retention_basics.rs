@@ -5206,7 +5206,7 @@ async fn retention_task_local_isolation_skips_already_quarantined_prepared_rows(
     .await
     .expect("load actionable journal state");
     assert_eq!(due_state.0, "quarantined");
-    assert_eq!(due_state.1.as_deref(), Some("task_local_reselection"));
+    assert_eq!(due_state.1.as_deref(), Some("prepared_reconcile"));
     let unexpired_quarantine_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined' AND prepared_key LIKE 'unexpired-quarantine-%'",
     )
