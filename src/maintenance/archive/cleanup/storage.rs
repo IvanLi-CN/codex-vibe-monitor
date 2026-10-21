@@ -35,7 +35,15 @@ pub(crate) fn cleanup_stale_archive_temp_files(
         if !archive_file_is_stale_temp(&file_path) || !archive_temp_file_is_old_enough(&file_path) {
             continue;
         }
-        if crate::is_archive_file_operation_active(&file_path) {
+        if dry_run && crate::is_archive_file_operation_active(&file_path) {
+            continue;
+        }
+        let archive_operation_lease = if dry_run {
+            None
+        } else {
+            crate::try_acquire_archive_file_operation_lease(&file_path)
+        };
+        if !dry_run && archive_operation_lease.is_none() {
             continue;
         }
         let file_size = archive_file_size(&file_path);

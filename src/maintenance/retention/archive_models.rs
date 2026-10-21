@@ -416,6 +416,13 @@ pub(crate) fn remove_temp_sqlite_artifacts_unchecked(path: &Path) {
     }
 }
 
+pub(crate) fn remove_temp_archive_file_operation_artifacts_unchecked(path: &Path) {
+    remove_temp_sqlite_artifacts_unchecked(path);
+    if path.extension().and_then(|extension| extension.to_str()) == Some("sqlite") {
+        let _ = fs::remove_file(path.with_extension("owner"));
+    }
+}
+
 impl Drop for TempSqliteCleanup {
     fn drop(&mut self) {
         if !self.keep {

@@ -27,14 +27,17 @@ static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 static ACTIVE_ARCHIVE_FILE_OPERATIONS: Lazy<std::sync::Mutex<HashSet<PathBuf>>> =
     Lazy::new(|| std::sync::Mutex::new(HashSet::new()));
 
-struct ArchiveFileOperationLease {
+pub(crate) struct ArchiveFileOperationLease {
     paths: Vec<PathBuf>,
     timed_out: Arc<AtomicBool>,
 }
 
 impl ArchiveFileOperationLease {
     fn register(paths: impl IntoIterator<Item = PathBuf>) -> Option<Self> {
-        let paths = paths.into_iter().collect::<HashSet<_>>();
+        let paths = paths
+            .into_iter()
+            .map(|path| archive_file_operation_key(&path))
+            .collect::<HashSet<_>>();
         if paths.is_empty() {
             return None;
         }
@@ -60,10 +63,29 @@ impl Drop for ArchiveFileOperationLease {
     }
 }
 
+fn archive_file_operation_key(path: &Path) -> PathBuf {
+    let path_string = path.to_string_lossy();
+    for suffix in [".source-meta", "-journal", "-wal", "-shm"] {
+        if let Some(base) = path_string.strip_suffix(suffix) {
+            return PathBuf::from(base);
+        }
+    }
+    if path.extension().and_then(|extension| extension.to_str()) == Some("owner") {
+        return path.with_extension("sqlite");
+    }
+    path.to_path_buf()
+}
+
+pub(crate) fn try_acquire_archive_file_operation_lease(
+    path: &Path,
+) -> Option<ArchiveFileOperationLease> {
+    ArchiveFileOperationLease::register([path.to_path_buf()])
+}
+
 pub(crate) fn is_archive_file_operation_active(path: &Path) -> bool {
     ACTIVE_ARCHIVE_FILE_OPERATIONS
         .lock()
-        .map(|active| active.contains(path))
+        .map(|active| active.contains(&archive_file_operation_key(path)))
         .unwrap_or(true)
 }
 
@@ -538,14 +560,22 @@ where
                     cleanup_paths(&failure_cleanup_paths);
                 }
                 if worker_timed_out.load(Ordering::Acquire) {
-                    cleanup_paths(&timeout_cleanup_paths);
+                    for path in &timeout_cleanup_paths {
+                        super::retention::remove_temp_archive_file_operation_artifacts_unchecked(
+                            path,
+                        );
+                    }
                 }
                 result
             }
             Err(payload) => {
                 cleanup_paths(&failure_cleanup_paths);
                 if worker_timed_out.load(Ordering::Acquire) {
-                    cleanup_paths(&timeout_cleanup_paths);
+                    for path in &timeout_cleanup_paths {
+                        super::retention::remove_temp_archive_file_operation_artifacts_unchecked(
+                            path,
+                        );
+                    }
                 }
                 std::panic::resume_unwind(payload);
             }
@@ -623,13 +653,20 @@ mod tests {
     #[test]
     fn archive_file_operation_lease_fences_all_paths() {
         let suffix = RETENTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let source = PathBuf::from(format!("archive-operation-source-{suffix}"));
-        let destination = PathBuf::from(format!("archive-operation-destination-{suffix}"));
+        let source = PathBuf::from(format!("archive-operation-source-{suffix}.sqlite"));
+        let destination = PathBuf::from(format!("archive-operation-destination-{suffix}.tmp"));
         let lease = ArchiveFileOperationLease::register([source.clone(), destination.clone()])
             .expect("register archive file operation lease");
 
         assert!(is_archive_file_operation_active(&source));
         assert!(is_archive_file_operation_active(&destination));
+        assert!(is_archive_file_operation_active(&PathBuf::from(format!(
+            "{}-wal",
+            source.display()
+        ))));
+        assert!(is_archive_file_operation_active(
+            &source.with_extension("owner")
+        ));
         assert!(ArchiveFileOperationLease::register([source.clone()]).is_none());
         assert!(ArchiveFileOperationLease::register([destination.clone()]).is_none());
 
