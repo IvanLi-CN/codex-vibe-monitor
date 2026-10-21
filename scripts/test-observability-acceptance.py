@@ -63,27 +63,37 @@ def synthetic_attribution_services(enabled):
 
 
 def synthetic_attribution_row(identity, timestamp=0, baseline=False):
-    host = {
-        str(cpu): {
-            "user": 100,
-            "nice": 0,
-            "system": 20,
-            "idle": 80,
-            "iowait": 0,
-            "irq": 0,
-            "softirq": 0,
-            "steal": 0,
-            "guest": 0,
-            "guestNice": 0,
-            "rawTicks": [100, 0, 20, 80, 0, 0, 0, 0, 0, 0],
-            "busyTicks": 120,
-            "idleTicks": 80,
-            "iowaitTicks": 0,
-            "stealTicks": 0,
+    offset = int(timestamp)
+    host = {}
+    for cpu in range(4):
+        values = {
+            "user": 100 + offset,
+            "nice": offset,
+            "system": 20 + offset,
+            "idle": 80 + offset,
+            "iowait": offset,
+            "irq": offset,
+            "softirq": offset,
+            "steal": offset,
+            "guest": offset,
+            "guestNice": offset,
         }
-        for cpu in range(4)
+        values.update(
+            rawTicks=[values[field] for field in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guestNice")],
+            busyTicks=sum(values[field] for field in ("user", "nice", "system", "irq", "softirq", "steal")),
+            idleTicks=values["idle"],
+            iowaitTicks=values["iowait"],
+            stealTicks=values["steal"],
+        )
+        host[str(cpu)] = values
+    app_cpu = {
+        "usage_usec": 100 + offset,
+        "user_usec": 60 + offset,
+        "system_usec": 40 + offset,
+        "nr_periods": 10 + offset,
+        "nr_throttled": offset,
+        "throttled_usec": offset,
     }
-    app_cpu = {"usage_usec": 100, "user_usec": 60, "system_usec": 40, "nr_periods": 10, "nr_throttled": 0, "throttled_usec": 0}
     process = {**synthetic_container("app", 100, "a" * 64, [0]), "processRuntimeSeconds": 990.0}
     containers = {
         service: {
@@ -106,7 +116,7 @@ def synthetic_attribution_row(identity, timestamp=0, baseline=False):
             "cpuPressure": {"some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}, "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}},
             "cpuMax": {"quota": 100000, "periodUsec": 100000},
         },
-        "counterDelta": None if baseline else {"hostCpu": {str(cpu): {"user": 0} for cpu in range(4)}, "appCpuStat": app_cpu},
+        "counterDelta": None if baseline else {"hostCpu": {str(cpu): {field: 10 for field in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guestNice")} for cpu in range(4)}, "appCpuStat": {field: 10 for field in app_cpu}},
         "counterDeltaStatus": "baseline" if baseline else "delta",
         "errorCodes": [],
         "errors": [],
@@ -114,6 +124,7 @@ def synthetic_attribution_row(identity, timestamp=0, baseline=False):
 
 
 def synthetic_attribution_summary(sample_count):
+    delta = (sample_count - 1) * 10
     return {
         "schemaVersion": 1,
         "status": "passed",
@@ -121,7 +132,7 @@ def synthetic_attribution_summary(sample_count):
         "measurementCpu": "0",
         "allowedCpus": [0, 1, 2, 3],
         "sampleCount": sample_count,
-        "counterDelta": {"hostCpu": {str(cpu): {"user": 0} for cpu in range(4)}, "appCpuStat": {"usage_usec": 0, "user_usec": 0, "system_usec": 0, "nr_periods": 0, "nr_throttled": 0, "throttled_usec": 0}},
+        "counterDelta": {"hostCpu": {str(cpu): {field: delta for field in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guestNice")} for cpu in range(4)}, "appCpuStat": {field: delta for field in ("usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec")}},
         "errorCodes": [],
     }
 
@@ -962,6 +973,30 @@ class AggregationTests(unittest.TestCase):
             "pair-1",
             "resource-observer.jsonl",
             lambda rows: rows[0]["cpuAttribution"].pop("counterDeltaStatus"),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_partial_cpu_counter_delta_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[1]["cpuAttribution"]["counterDelta"]["hostCpu"]["0"].pop("system"),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_fabricated_cpu_counter_delta_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[1]["cpuAttribution"]["counterDelta"]["appCpuStat"].update(usage_usec=11),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_window_counter_summary_must_match_sample_boundaries(self):
+        self.change(
+            "pair-1",
+            "measurement-windows.json",
+            lambda windows: windows[0]["cpuAttribution"]["counterDelta"]["appCpuStat"].update(usage_usec=61),
         )
         self.assertFalse(self.aggregate())
 

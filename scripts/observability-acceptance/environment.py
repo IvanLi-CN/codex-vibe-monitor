@@ -11,7 +11,13 @@ import subprocess
 import threading
 import time
 
-from cpu_attribution import CpuAttributionError, PreparedCpuAttribution, SAMPLE_INTERVAL_SECONDS
+from cpu_attribution import (
+    APP_COUNTER_FIELDS,
+    HOST_COUNTER_FIELDS,
+    CpuAttributionError,
+    PreparedCpuAttribution,
+    SAMPLE_INTERVAL_SECONDS,
+)
 
 
 def actions_context(source, run, candidate, *, require_runner_identity=True):
@@ -74,6 +80,95 @@ PAIRED_ATTRIBUTION_SERVICES = {
     "metrics": BASE_ATTRIBUTION_SERVICES | {"prometheus"},
     "full": BASE_ATTRIBUTION_SERVICES | {"prometheus", "tempo", "entry"},
 }
+
+
+def _valid_counter_map(value, required_fields):
+    return (
+        isinstance(value, dict)
+        and set(required_fields).issubset(value)
+        and all(type(value[field]) is int and value[field] >= 0 for field in required_fields)
+    )
+
+
+def _host_counter_delta(before, after):
+    if not _valid_counter_map(before, HOST_COUNTER_FIELDS) or not _valid_counter_map(after, HOST_COUNTER_FIELDS):
+        raise ValueError("invalid host CPU counter sample")
+    delta = {}
+    for field in HOST_COUNTER_FIELDS:
+        value = after[field] - before[field]
+        if value < 0:
+            raise ValueError("host CPU counter reset")
+        delta[field] = value
+    return delta
+
+
+def _app_counter_delta(before, after):
+    if not _valid_counter_map(before, APP_COUNTER_FIELDS) or not _valid_counter_map(after, APP_COUNTER_FIELDS):
+        raise ValueError("invalid app CPU counter sample")
+    if set(before) != set(after):
+        raise ValueError("app CPU counter fields changed")
+    delta = {}
+    for field in sorted(before):
+        if type(before[field]) is not int or type(after[field]) is not int:
+            raise ValueError("invalid app CPU counter value")
+        value = after[field] - before[field]
+        if value < 0:
+            raise ValueError("app CPU counter reset")
+        delta[field] = value
+    return delta
+
+
+def _validate_attribution_sample(value, allowed_cpus):
+    if not isinstance(value, dict):
+        raise ValueError("missing CPU attribution sample")
+    host = value.get("hostCpu")
+    if not isinstance(host, dict) or set(host) != {str(cpu) for cpu in allowed_cpus}:
+        raise ValueError("invalid host CPU attribution shape")
+    if any(not _valid_counter_map(counters, HOST_COUNTER_FIELDS) for counters in host.values()):
+        raise ValueError("invalid host CPU attribution counters")
+    app = value.get("app")
+    if not isinstance(app, dict) or not _valid_counter_map(app.get("cpuStat"), APP_COUNTER_FIELDS):
+        raise ValueError("invalid app CPU attribution counters")
+
+
+def _attribution_delta(before, after, allowed_cpus):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise ValueError("missing CPU attribution sample")
+    before_host = before.get("hostCpu")
+    after_host = after.get("hostCpu")
+    if not isinstance(before_host, dict) or not isinstance(after_host, dict):
+        raise ValueError("missing host CPU attribution")
+    expected_cpus = {str(cpu) for cpu in allowed_cpus}
+    if set(before_host) != expected_cpus or set(after_host) != expected_cpus:
+        raise ValueError("host CPU attribution set changed")
+    return {
+        "hostCpu": {
+            str(cpu): _host_counter_delta(before_host[str(cpu)], after_host[str(cpu)])
+            for cpu in allowed_cpus
+        },
+        "appCpuStat": _app_counter_delta(
+            before.get("app", {}).get("cpuStat"),
+            after.get("app", {}).get("cpuStat"),
+        ),
+    }
+
+
+def _validate_counter_delta_shape(value, expected, allowed_cpus):
+    if not isinstance(value, dict) or set(value) != {"hostCpu", "appCpuStat"}:
+        raise ValueError("invalid CPU counter delta shape")
+    host = value["hostCpu"]
+    if not isinstance(host, dict) or set(host) != {str(cpu) for cpu in allowed_cpus}:
+        raise ValueError("invalid host CPU counter delta shape")
+    for counters in host.values():
+        if not isinstance(counters, dict) or set(counters) != set(HOST_COUNTER_FIELDS):
+            raise ValueError("invalid host CPU counter delta fields")
+        if any(type(counter) is not int or counter < 0 for counter in counters.values()):
+            raise ValueError("invalid host CPU counter delta value")
+    app = value["appCpuStat"]
+    if not isinstance(app, dict) or set(app) != set(expected["appCpuStat"]):
+        raise ValueError("invalid app CPU counter delta fields")
+    if any(type(counter) is not int or counter < 0 for counter in app.values()):
+        raise ValueError("invalid app CPU counter delta value")
 
 
 def measurement_cpu_layout(affinity, selected=None):
@@ -346,6 +441,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
         preparations = json.loads((root / "cpu-attribution.json").read_text())
         selected_cpu = runner_context.get("measurementCpu", run_config["appCpuSet"])
         cpu_layout = measurement_cpu_layout(runner_context["cpuAffinity"], selected=selected_cpu)
+        allowed_cpus = sorted(runner_context["cpuAffinity"])
         assert run_config["appCpuQuota"] == 1
         assert run_config["appCpuSet"] == cpu_layout["app"]
         assert run_config["auxiliaryCpuSet"] == cpu_layout["auxiliary"]
@@ -392,10 +488,9 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 and attribution_summary["status"] == "passed"
                 and attribution_summary["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
                 and attribution_summary["measurementCpu"] == str(run_config.get("appCpuSet"))
-                and attribution_summary["allowedCpus"] == sorted(runner_context["cpuAffinity"])
+                and attribution_summary["allowedCpus"] == allowed_cpus
                 and attribution_summary["sampleCount"] == window["sampleCount"]
                 and not attribution_summary["errorCodes"]
-                and set(attribution_summary["counterDelta"]["appCpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
                 and expected_services is not None
                 and set(preparation_containers) == expected_services
             )
@@ -408,6 +503,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             assert len(rows) == window["sampleCount"] and len(rows) >= 2
             exceeded = 0
             times = [start]
+            previous_attribution = None
             for index, row in enumerate(rows):
                 assert row["pairIndex"] == window["pairIndex"] and row["enabled"] == window["enabled"]
                 assert row["phase"] == "measurement" and isinstance(row["eligible"], bool) and "errorClass" not in row
@@ -422,29 +518,32 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 observed_containers = attribution["containers"]
                 counter_delta = attribution.get("counterDelta")
                 counter_delta_status = attribution.get("counterDeltaStatus")
+                _validate_attribution_sample(attribution, allowed_cpus)
                 assert (
                     attribution["schemaVersion"] == 1
                     and attribution["status"] == "passed"
                     and attribution["sampleIntervalSeconds"] == SAMPLE_INTERVAL_SECONDS
                     and attribution["measurementCpu"] == str(run_config.get("appCpuSet"))
-                    and attribution["allowedCpus"] == sorted(runner_context["cpuAffinity"])
+                    and attribution["allowedCpus"] == allowed_cpus
                     and not attribution["errorCodes"]
                     and attribution["app"]["pid"] > 0
                     and attribution["app"]["effectiveAffinity"] == [int(run_config["appCpuSet"])]
-                    and set(attribution["app"]["cpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+                    and _valid_counter_map(attribution["app"]["cpuStat"], APP_COUNTER_FIELDS)
                     and attribution["app"]["cpuMax"] == prepared_cpu_max
                     and (
                         (index == 0 and counter_delta is None and counter_delta_status == "baseline")
                         or (
                             index > 0
                             and counter_delta_status == "delta"
-                            and isinstance(counter_delta, dict)
-                            and set(counter_delta) >= {"hostCpu", "appCpuStat"}
-                            and set(counter_delta["appCpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
                         )
                     )
                     and set(observed_containers) == set(preparation_containers)
                 )
+                if index > 0:
+                    expected_delta = _attribution_delta(previous_attribution, attribution, allowed_cpus)
+                    _validate_counter_delta_shape(counter_delta, expected_delta, allowed_cpus)
+                    assert counter_delta == expected_delta
+                previous_attribution = attribution
                 for service, prepared in preparation_containers.items():
                     observed = observed_containers[service]
                     assert (
@@ -458,6 +557,9 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             times.append(end)
             gaps = [after - before for before, after in zip(times, times[1:])]
             assert all(0 <= gap <= 20 for gap in gaps) and window["maximumGapSeconds"] <= 20
+            expected_summary_delta = _attribution_delta(rows[0]["cpuAttribution"], rows[-1]["cpuAttribution"], allowed_cpus)
+            _validate_counter_delta_shape(attribution_summary["counterDelta"], expected_summary_delta, allowed_cpus)
+            assert attribution_summary["counterDelta"] == expected_summary_delta
             assert window["pressureExceededSamples"] == exceeded
             admitted = [row for row in admissions if row.get("windowId") == window_id]
             assert len(admitted) >= 3
