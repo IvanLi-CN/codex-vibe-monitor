@@ -42,6 +42,26 @@ def synthetic_process_stat(pid, name, start_ticks=10):
     return f"{pid} ({name}) S " + " ".join(str(value) for value in values)
 
 
+def synthetic_container(service, pid, container_id, affinity):
+    return {
+        "service": service,
+        "containerId": container_id,
+        "pid": pid,
+        "startTimeTicks": 10,
+        "effectiveAffinity": affinity,
+        "cgroupPath": "/docker/" + container_id,
+    }
+
+
+def synthetic_attribution_services(enabled):
+    services = ["app", "mock-upstream", "client"]
+    if enabled in {"metrics", "full"}:
+        services.append("prometheus")
+    if enabled == "full":
+        services.extend(["tempo", "entry"])
+    return services
+
+
 def synthetic_attribution_row(identity, timestamp=0):
     host = {
         str(cpu): {
@@ -64,7 +84,14 @@ def synthetic_attribution_row(identity, timestamp=0):
         for cpu in range(4)
     }
     app_cpu = {"usage_usec": 100, "user_usec": 60, "system_usec": 40, "nr_periods": 10, "nr_throttled": 0, "throttled_usec": 0}
-    process = {"pid": 100, "startTimeTicks": 10, "effectiveAffinity": [0], "processRuntimeSeconds": 990.0}
+    process = {**synthetic_container("app", 100, "a" * 64, [0]), "processRuntimeSeconds": 990.0}
+    containers = {
+        service: {
+            **synthetic_container(service, 100 + index, chr(ord("a") + index) * 64, [0] if service == "app" else [0, 1, 2, 3]),
+            "processRuntimeSeconds": 990.0,
+        }
+        for index, service in enumerate(synthetic_attribution_services(identity["enabled"]))
+    }
     return {
         "schemaVersion": 1,
         "status": "passed",
@@ -72,7 +99,7 @@ def synthetic_attribution_row(identity, timestamp=0):
         "measurementCpu": "0",
         "allowedCpus": [0, 1, 2, 3],
         "hostCpu": host,
-        "containers": {"app": process, "client": {**process, "pid": 101, "effectiveAffinity": [0, 1, 2, 3]}},
+        "containers": containers,
         "app": {
             **process,
             "cpuStat": app_cpu,
@@ -99,6 +126,14 @@ def synthetic_attribution_summary(sample_count):
 
 
 def synthetic_attribution_preparation(window_id):
+    enabled = window_id.split("-", 1)[1]
+    containers = []
+    for index, service in enumerate(synthetic_attribution_services(enabled)):
+        container_id = chr(ord("a") + index) * 64
+        row = synthetic_container(service, 100 + index, container_id, [0] if service == "app" else [0, 1, 2, 3])
+        if service == "app":
+            row["cgroup"] = {"version": "v2", "cpuMax": {"quota": 100000, "periodUsec": 100000}}
+        containers.append(row)
     return {
         "windowId": window_id,
         "schemaVersion": 1,
@@ -106,7 +141,7 @@ def synthetic_attribution_preparation(window_id):
         "sampleIntervalSeconds": 10,
         "measurementCpu": "0",
         "allowedCpus": [0, 1, 2, 3],
-        "containers": [{"service": "app", "containerId": "a" * 64, "pid": 100, "startTimeTicks": 10, "effectiveAffinity": [0], "cgroup": {"version": "v2", "cpuMax": {"quota": 100000, "periodUsec": 100000}}}, {"service": "client", "containerId": "b" * 64, "pid": 101, "startTimeTicks": 10, "effectiveAffinity": [0, 1, 2, 3]}],
+        "containers": containers,
     }
 
 
@@ -277,6 +312,7 @@ class ResourceAdmissionTests(unittest.TestCase):
         for pid, name, affinity, container_id in [
             (100, "app", "0", "a" * 64),
             (101, "client", "0-3", "b" * 64),
+            (102, "mock-upstream", "0-3", "c" * 64),
         ]:
             process = proc / str(pid)
             process.mkdir()
@@ -303,6 +339,7 @@ class ResourceAdmissionTests(unittest.TestCase):
             [
                 {"service": "app", "containerId": "a" * 64, "pid": 100},
                 {"service": "client", "containerId": "b" * 64, "pid": 101},
+                {"service": "mock-upstream", "containerId": "c" * 64, "pid": 102},
             ],
             proc_root=proc,
             cgroup_root=cgroup,
@@ -853,6 +890,12 @@ class AggregationTests(unittest.TestCase):
         mutate(data)
         path.write_text(json.dumps(data))
 
+    def change_jsonl(self, lane, name, mutate):
+        path = self.part(lane) / name
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        mutate(rows)
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
     def test_complete_nine_windows_can_issue_only_one_full_certificate(self):
         self.assertTrue(self.aggregate())
         card = json.loads((self.output / "empirical-card.json").read_text())
@@ -866,6 +909,18 @@ class AggregationTests(unittest.TestCase):
         (self.part("pair-2") / "measurement-windows.json").unlink()
         self.assertFalse(self.aggregate())
         self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
+
+    def test_missing_auxiliary_cpu_identity_cannot_pass(self):
+        self.change("pair-1", "cpu-attribution.json", lambda rows: rows[0]["containers"].pop(1))
+        self.assertFalse(self.aggregate())
+
+    def test_mismatched_cpu_identity_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[0]["cpuAttribution"]["containers"]["app"].update(containerId="d" * 64),
+        )
+        self.assertFalse(self.aggregate())
 
     def test_wrong_contract_or_candidate_is_rejected(self):
         self.change("pair-1", "runtime-card.json", lambda row: row.update(acceptance_contract_digest="wrong"))

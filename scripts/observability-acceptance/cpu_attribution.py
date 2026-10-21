@@ -47,7 +47,8 @@ def _fail(code: str, source: str) -> None:
 
 def _read_text(path: Path, source: str) -> str:
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_FILE_BYTES + 1)
     except FileNotFoundError as error:
         raise CpuAttributionError("cpu_attribution_unsupported", source) from error
     except OSError as error:
@@ -373,6 +374,7 @@ class PreparedCpuAttribution:
                 "pid": info["pid"],
                 "startTimeTicks": info["startTimeTicks"],
                 "effectiveAffinity": info["effectiveAffinity"],
+                "cgroupPath": info["cgroupPath"],
             }
             if service == "app":
                 row["cgroup"] = {
@@ -406,7 +408,8 @@ class PreparedCpuAttribution:
             errors.append({"code": error.code, "source": error.source})
         for service, info in self._containers.items():
             try:
-                processes[service] = self._read_process(service, int(info["pid"]), expected=info)
+                process = self._read_process(service, int(info["pid"]), expected=info)
+                processes[service] = {"containerId": info["containerId"], **process}
             except CpuAttributionError as error:
                 errors.append({"code": error.code, "source": error.source})
         try:

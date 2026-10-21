@@ -68,6 +68,12 @@ def pressure():
 PRESSURE_LIMITS = {"cpu": 2.0, "io": 5.0, "memory": 0.1}
 MAX_CUMULATIVE_ADMISSION_SECONDS = 900.0
 PAIR_ADMISSION_SECONDS = 450.0
+BASE_ATTRIBUTION_SERVICES = frozenset({"app", "mock-upstream", "client"})
+PAIRED_ATTRIBUTION_SERVICES = {
+    "off": BASE_ATTRIBUTION_SERVICES,
+    "metrics": BASE_ATTRIBUTION_SERVICES | {"prometheus"},
+    "full": BASE_ATTRIBUTION_SERVICES | {"prometheus", "tempo", "entry"},
+}
 
 
 def measurement_cpu_layout(affinity, selected=None):
@@ -347,6 +353,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
         assert {row["windowId"] for row in raw} == expected
         assert isinstance(preparations, list) and {row["windowId"] for row in preparations} == expected
         assert len(preparations) == len(expected)
+        preparations_by_id = {row["windowId"]: row for row in preparations}
         assert set(loads) == set(modes) and all(len(rows) == len(indices) for rows in loads.values())
         if pair_index is not None:
             assert pair_index in range(3) and run_config["pairIndex"] == pair_index
@@ -369,6 +376,13 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             assert window_id == f"{window['pairIndex']}-{window['enabled']}"
             assert window["status"] == "passed" and not window["reasonCodes"]
             attribution_summary = window["cpuAttribution"]
+            preparation = preparations_by_id[window_id]
+            preparation_containers = {row["service"]: row for row in preparation["containers"]}
+            expected_services = (
+                BASE_ATTRIBUTION_SERVICES
+                if pair_index is None
+                else PAIRED_ATTRIBUTION_SERVICES.get(window["enabled"])
+            )
             assert (
                 attribution_summary["schemaVersion"] == 1
                 and attribution_summary["status"] == "passed"
@@ -378,6 +392,8 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 and attribution_summary["sampleCount"] == window["sampleCount"]
                 and not attribution_summary["errorCodes"]
                 and set(attribution_summary["counterDelta"]["appCpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+                and expected_services is not None
+                and set(preparation_containers) == expected_services
             )
             maximum_wait = 180 if pair_index is not None else 300
             assert window["pressureLimits"] == PRESSURE_LIMITS and 0 <= window["admissionWaitSeconds"] <= maximum_wait
@@ -399,6 +415,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                     assert row["eligible"] is True
                 assert math.isfinite(row["monotonicSeconds"]) and math.isfinite(row["utcSeconds"])
                 attribution = row["cpuAttribution"]
+                observed_containers = attribution["containers"]
                 assert (
                     attribution["schemaVersion"] == 1
                     and attribution["status"] == "passed"
@@ -409,7 +426,17 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                     and attribution["app"]["pid"] > 0
                     and attribution["app"]["effectiveAffinity"] == [int(run_config["appCpuSet"])]
                     and set(attribution["app"]["cpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+                    and set(observed_containers) == set(preparation_containers)
                 )
+                for service, prepared in preparation_containers.items():
+                    observed = observed_containers[service]
+                    assert (
+                        observed["containerId"] == prepared["containerId"]
+                        and observed["pid"] == prepared["pid"]
+                        and observed["startTimeTicks"] == prepared["startTimeTicks"]
+                        and observed["effectiveAffinity"] == prepared["effectiveAffinity"]
+                        and observed["cgroupPath"] == prepared["cgroupPath"]
+                    )
                 times.append(row["monotonicSeconds"])
             times.append(end)
             gaps = [after - before for before, after in zip(times, times[1:])]

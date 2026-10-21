@@ -106,8 +106,8 @@ def aggregate(source, candidate_source, root, parts, candidate):
             raise ValueError("parts used different candidate images")
         pairs = [item[1] for item in verified[1:]]
         # Each pair owns its off/metrics/full windows on one isolated runner.
-        # GitHub-hosted runners may legitimately differ across pairs, so raw
-        # machine-dependent timings are never compared across hosts.
+        # Paired comparisons require exact hardware/runtime metadata so raw
+        # machine-dependent timings are not compared across incompatible hosts.
         if len({pair["runnerIdentity"] for pair in pairs}) != 3:
             raise ValueError("paired experiments did not use isolated runners")
         verify_hardware_compatibility(pairs)
