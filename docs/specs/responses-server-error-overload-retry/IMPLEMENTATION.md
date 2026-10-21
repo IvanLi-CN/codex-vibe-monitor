@@ -20,11 +20,11 @@
 ## Verification Commands
 
 - `cargo fmt --all -- --check`: passed locally after the final edits.
-- The `routing_timeout_and_overload_failover` resource bucket passed in the Agent VM with 40 passed and 0 failed using `--test-threads=1`.
-- The resource bucket covers classifier boundaries including internal punctuation/whitespace normalization, Responses SSE and compact same-account success, budget exhaustion without upstream switch, late-failure boundary, preceding-429 and mixed legacy/new overload sequences, mixed 413/429 budget caps, fixed forward-proxy channel selection through local HTTP CONNECT fixtures, and legacy route ladder regressions.
+- The `routing_timeout_and_overload_failover` resource bucket contains 41 tests. The final sequential run had 40 passed and one existing timing-sensitive timeout fixture failed with a 503/200 assertion; that test passed when rerun in isolation with `--test-threads=1`.
+- The resource bucket covers classifier boundaries including internal punctuation/whitespace normalization, Responses SSE and compact same-account success, budget exhaustion without upstream switch, late-failure boundary, preceding-429/413 and mixed legacy/new overload sequences, mixed 413/429 budget caps, fixed forward-proxy channel selection through local HTTP CONNECT fixtures, and legacy route ladder regressions. Every task-specific Responses retry case in the bucket passed.
 - `cargo check --locked --all-targets --all-features`: passed in the Agent VM with Rust 1.96.0.
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed in the Agent VM.
-- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；此前按共享 runner 执行 `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 时，profile 中仍有既有 SQLite/cache/启动/模型等待时序夹具失败，Responses retry 相关用例通过；此前同一 runner 的 11 个既有失败项已按完整失败清单重跑 11/11 passed。本次新增/修改逻辑的最终确定性验收以单线程 40/40 资源桶、check 和 Clippy 为准。
+- `cargo-nextest 0.9.148` 已安装在 Agent VM 的 Cargo bin 中；此前按共享 runner 执行 `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite` 时，profile 中仍有既有 SQLite/cache/启动/模型等待时序夹具失败，Responses retry 相关用例通过；此前同一 runner 的 11 个既有失败项已按完整失败清单重跑 11/11 passed。本次新增/修改逻辑的最终确定性验收以任务相关用例、隔离重跑的既有 timeout 用例、check 和 Clippy 为准，不把整桶中的既有时序失败宣称为本次逻辑失败或通过。
 - Delivery acceptance: 主人已明确将本次计划的 `empirical_acceptance` 修正为 `not_required`；分类、gate、预算和路由行为以本地单元/集成测试作为逻辑正确性证据。
 - Direct macOS test execution remained blocked by the known `libsqlx_macros` dynamic-library `mis-aligned LINKEDIT string pool` loader error; the passing assertions above came from the Agent VM.
 

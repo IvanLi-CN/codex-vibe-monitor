@@ -2361,6 +2361,96 @@ async fn pool_openai_v1_responses_server_error_overload_caps_preceding_429_attem
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_caps_preceding_413_attempts() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        http_status: Option<i64>,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer preceding-413-budget",
+            &[
+                PoolResponsesRetrySequenceStep::PayloadTooLarge,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Preceding 413 Budget",
+        "preceding-413-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-preceding-413-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read preceding 413 budget failure body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 preceding 413 budget body");
+    assert!(body_text.contains("server_error"));
+
+    let attempts = attempts.lock().expect("lock preceding 413 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer preceding-413-budget").copied(),
+        Some(4)
+    );
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        "SELECT http_status, status FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load preceding 413 budget attempts");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.http_status)
+            .collect::<Vec<_>>(),
+        vec![Some(413), Some(200), Some(200), Some(200)]
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_openai_v1_responses_legacy_overload_keeps_group_429_budget() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_responses_retry_sequence_upstream(&[(

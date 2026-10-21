@@ -76,11 +76,11 @@
 - covers: `REQ-RSO-004`
 - Pass condition: 旧信号行为与既有 overload ladder 保持一致，新规则只影响 `server_error` canonical overload message。
 
-### VER-RSO-006: Contract and rollout inspection
+### VER-RSO-006: Optional rollout inspection
 
-- Method: 检查 attempt detail 与 invocation detail 的线上记录，确认匹配样本的 attempt count 大于 1 或按预算耗尽记录多次 attempt，且未出现账号/route 切换。
+- Method: 发布后可选检查 attempt detail 与 invocation detail 的线上记录，确认匹配样本的 attempt count 大于 1 或按预算耗尽记录多次 attempt，且未出现账号/route 切换；该观察不属于本次实现、合并或发布前置 gate。
 - covers: `REQ-RSO-003`, `REQ-RSO-007`, `REQ-RSO-008`
-- Pass condition: 线上记录能区分初次 HTTP 200 logical failure、同账号 retry 和最终终态，不需要新增外部字段。
+- Pass condition: 若执行该观察，线上记录能区分初次 HTTP 200 logical failure、同账号 retry 和最终终态，不需要新增外部字段。
 
 ## Related ADRs
 
