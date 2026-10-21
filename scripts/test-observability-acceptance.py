@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 SOURCE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SOURCE / "scripts/observability-acceptance"))
+from cpu_attribution import CpuAttributionError, PreparedCpuAttribution
 import environment
 from run import Run
 import run as acceptance
@@ -31,6 +32,129 @@ spec.loader.exec_module(contract)
 def psi(cpu=0, io=0, memory=0):
     return {name: f"some avg10={value} avg60={value} avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0"
             for name, value in [("cpu", cpu), ("io", io), ("memory", memory)]}
+
+
+def synthetic_process_stat(pid, name, start_ticks=10):
+    values = [0] * 20
+    values[10] = 1
+    values[11] = 1
+    values[18] = start_ticks
+    return f"{pid} ({name}) S " + " ".join(str(value) for value in values)
+
+
+def synthetic_container(service, pid, container_id, affinity):
+    return {
+        "service": service,
+        "containerId": container_id,
+        "pid": pid,
+        "startTimeTicks": 10,
+        "effectiveAffinity": affinity,
+        "cgroupPath": "/docker/" + container_id,
+    }
+
+
+def synthetic_attribution_services(enabled):
+    services = ["app", "mock-upstream", "client"]
+    if enabled in {"metrics", "full"}:
+        services.append("prometheus")
+    if enabled == "full":
+        services.extend(["tempo", "entry"])
+    return services
+
+
+def synthetic_attribution_row(identity, timestamp=0, baseline=False):
+    offset = int(timestamp)
+    host = {}
+    for cpu in range(4):
+        values = {
+            "user": 100 + offset,
+            "nice": offset,
+            "system": 20 + offset,
+            "idle": 80 + offset,
+            "iowait": offset,
+            "irq": offset,
+            "softirq": offset,
+            "steal": offset,
+            "guest": offset,
+            "guestNice": offset,
+        }
+        values.update(
+            rawTicks=[values[field] for field in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guestNice")],
+            busyTicks=sum(values[field] for field in ("user", "nice", "system", "irq", "softirq", "steal")),
+            idleTicks=values["idle"],
+            iowaitTicks=values["iowait"],
+            stealTicks=values["steal"],
+        )
+        host[str(cpu)] = values
+    app_cpu = {
+        "usage_usec": 100 + offset,
+        "user_usec": 60 + offset,
+        "system_usec": 40 + offset,
+        "nr_periods": 10 + offset,
+        "nr_throttled": offset,
+        "throttled_usec": offset,
+    }
+    process = {**synthetic_container("app", 100, "a" * 64, [0]), "processRuntimeSeconds": 990.0}
+    containers = {
+        service: {
+            **synthetic_container(service, 100 + index, chr(ord("a") + index) * 64, [0] if service == "app" else [0, 1, 2, 3]),
+            "processRuntimeSeconds": 990.0,
+        }
+        for index, service in enumerate(synthetic_attribution_services(identity["enabled"]))
+    }
+    return {
+        "schemaVersion": 1,
+        "status": "passed",
+        "sampleIntervalSeconds": 10,
+        "measurementCpu": "0",
+        "allowedCpus": [0, 1, 2, 3],
+        "hostCpu": host,
+        "containers": containers,
+        "app": {
+            **process,
+            "cpuStat": app_cpu,
+            "cpuPressure": {"some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}, "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}},
+            "cpuMax": {"quota": 100000, "periodUsec": 100000},
+        },
+        "counterDelta": None if baseline else {"hostCpu": {str(cpu): {field: 10 for field in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guestNice")} for cpu in range(4)}, "appCpuStat": {field: 10 for field in app_cpu}},
+        "counterDeltaStatus": "baseline" if baseline else "delta",
+        "errorCodes": [],
+        "errors": [],
+    }
+
+
+def synthetic_attribution_summary(sample_count):
+    delta = (sample_count - 1) * 10
+    return {
+        "schemaVersion": 1,
+        "status": "passed",
+        "sampleIntervalSeconds": 10,
+        "measurementCpu": "0",
+        "allowedCpus": [0, 1, 2, 3],
+        "sampleCount": sample_count,
+        "counterDelta": {"hostCpu": {str(cpu): {field: delta for field in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guestNice")} for cpu in range(4)}, "appCpuStat": {field: delta for field in ("usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec")}},
+        "errorCodes": [],
+    }
+
+
+def synthetic_attribution_preparation(window_id):
+    enabled = window_id.split("-", 1)[1]
+    containers = []
+    for index, service in enumerate(synthetic_attribution_services(enabled)):
+        container_id = chr(ord("a") + index) * 64
+        row = synthetic_container(service, 100 + index, container_id, [0] if service == "app" else [0, 1, 2, 3])
+        if service == "app":
+            row["cgroup"] = {"version": "v2", "cpuMax": {"quota": 100000, "periodUsec": 100000}}
+        containers.append(row)
+    return {
+        "windowId": window_id,
+        "schemaVersion": 1,
+        "status": "prepared",
+        "sampleIntervalSeconds": 10,
+        "measurementCpu": "0",
+        "allowedCpus": [0, 1, 2, 3],
+        "containers": containers,
+    }
 
 
 class ContainerMountTests(unittest.TestCase):
@@ -186,6 +310,52 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.clock = 100.0
         self.window = {"windowId": "0-false", "pairIndex": 0, "enabled": "false"}
+        self.attribution = self.prepare_attribution()
+
+    def prepare_attribution(self):
+        proc = self.root / "synthetic-proc"
+        cgroup = self.root / "synthetic-cgroup"
+        proc.mkdir()
+        cgroup.mkdir()
+        (proc / "uptime").write_text("1000.0 0.0\n")
+        (proc / "stat").write_text("\n".join(
+            f"cpu{cpu} 100 0 20 80 0 0 0 0 0 0" for cpu in range(4)
+        ) + "\n")
+        for pid, name, affinity, container_id in [
+            (100, "app", "0", "a" * 64),
+            (101, "client", "0-3", "b" * 64),
+            (102, "mock-upstream", "0-3", "c" * 64),
+        ]:
+            process = proc / str(pid)
+            process.mkdir()
+            (process / "stat").write_text(synthetic_process_stat(pid, name))
+            (process / "status").write_text(f"Name:\t{name}\nCpus_allowed_list:\t{affinity}\n")
+            (process / "cgroup").write_text(f"0::/docker/{container_id}\n")
+            group = cgroup / "docker" / container_id
+            group.mkdir(parents=True)
+            if name == "app":
+                (group / "cpu.stat").write_text(
+                    "usage_usec 100\nuser_usec 60\nsystem_usec 40\n"
+                    "nr_periods 10\nnr_throttled 0\nthrottled_usec 0\n"
+                )
+                (group / "cpu.pressure").write_text(
+                    "some avg10=0 avg60=0 avg300=0 total=0\n"
+                    "full avg10=0 avg60=0 avg300=0 total=0\n"
+                )
+                (group / "cpu.max").write_text("100000 100000\n")
+        self.attribution_proc = proc
+        self.attribution_cgroup = cgroup
+        return PreparedCpuAttribution(
+            [0, 1, 2, 3],
+            "0",
+            [
+                {"service": "app", "containerId": "a" * 64, "pid": 100},
+                {"service": "client", "containerId": "b" * 64, "pid": 101},
+                {"service": "mock-upstream", "containerId": "c" * 64, "pid": 102},
+            ],
+            proc_root=proc,
+            cgroup_root=cgroup,
+        )
 
     def test_measurement_service_profiles_keep_only_required_observers_running(self):
         self.assertEqual(acceptance.measurement_services("off"), {"prometheus": False, "grafana": False, "tempo": False, "entry": False})
@@ -198,6 +368,70 @@ class ResourceAdmissionTests(unittest.TestCase):
 
     def fake_clock(self):
         return patch.object(environment.time, "monotonic", side_effect=lambda: self.clock)
+
+    def test_cpu_attribution_exposes_process_and_cgroup_boundaries(self):
+        first = self.attribution.sample()
+        second = self.attribution.sample()
+        summary = self.attribution.window_summary()
+        self.assertEqual(first["status"], "passed")
+        self.assertEqual(first["containers"]["app"]["startTimeTicks"], 10)
+        self.assertIsNone(first["counterDelta"])
+        self.assertEqual(first["counterDeltaStatus"], "baseline")
+        self.assertEqual(second["app"]["cpuStat"]["usage_usec"], 100)
+        self.assertEqual(second["containers"]["app"]["effectiveAffinity"], [0])
+        self.assertEqual(second["counterDelta"]["appCpuStat"]["usage_usec"], 0)
+        self.assertEqual(second["counterDeltaStatus"], "delta")
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["counterDelta"]["appCpuStat"]["nr_throttled"], 0)
+
+    def test_cpu_attribution_rejects_pid_replacement(self):
+        self.attribution.sample()
+        (self.attribution_proc / "100" / "stat").write_text(synthetic_process_stat(100, "app", start_ticks=11))
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("pid_replaced", sample["errorCodes"])
+        self.assertEqual(self.attribution.window_summary()["status"], "unavailable")
+
+    def test_cpu_attribution_rejects_counter_reset(self):
+        self.attribution.sample()
+        app_group = self.attribution_cgroup / "docker" / ("a" * 64)
+        (app_group / "cpu.stat").write_text(
+            "usage_usec 1\nuser_usec 1\nsystem_usec 0\n"
+            "nr_periods 1\nnr_throttled 0\nthrottled_usec 0\n"
+        )
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("cpu_counter_reset", sample["errorCodes"])
+
+    def test_cpu_attribution_rejects_container_cgroup_mismatch(self):
+        with self.assertRaises(CpuAttributionError) as raised:
+            PreparedCpuAttribution(
+                [0, 1, 2, 3],
+                "0",
+                [
+                    {"service": "app", "containerId": "d" * 64, "pid": 100},
+                    {"service": "client", "containerId": "b" * 64, "pid": 101},
+                    {"service": "mock-upstream", "containerId": "c" * 64, "pid": 102},
+                ],
+                proc_root=self.attribution_proc,
+                cgroup_root=self.attribution_cgroup,
+            )
+        self.assertEqual(raised.exception.code, "cpu_metadata_mismatch")
+
+    def test_cpu_attribution_rejects_cpu_quota_change(self):
+        self.attribution.sample()
+        app_group = self.attribution_cgroup / "docker" / ("a" * 64)
+        (app_group / "cpu.max").write_text("50000 50000\n")
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("cpu_metadata_mismatch", sample["errorCodes"])
+
+    def test_cpu_attribution_rejects_missing_cgroup_pressure(self):
+        self.attribution.sample()
+        (self.attribution_cgroup / "docker" / ("a" * 64) / "cpu.pressure").unlink()
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("cpu_attribution_unsupported", sample["errorCodes"])
 
     def test_thresholds_are_strict_and_invalid_values_are_unknown(self):
         self.assertTrue(environment.pressure_eligible(psi(1.99, 4.99, 0.09)))
@@ -268,7 +502,7 @@ class ResourceAdmissionTests(unittest.TestCase):
 
     def test_mid_window_pressure_cannot_be_hidden_by_quiet_final_sample(self):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
-            with environment.observe_resources(self.root, self.window) as observer:
+            with environment.observe_resources(self.root, self.window, self.attribution) as observer:
                 self.clock += 10
                 with patch.object(environment, "pressure", return_value=psi(cpu=3)):
                     observer.sample()
@@ -286,7 +520,7 @@ class ResourceAdmissionTests(unittest.TestCase):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
                 with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
                     with self.assertRaisesRegex(OSError, reason):
-                        with environment.observe_resources(Path(directory), self.window) as observer:
+                        with environment.observe_resources(Path(directory), self.window, self.attribution) as observer:
                             if reason == "sample_gap":
                                 self.clock += 21
                             else:
@@ -297,7 +531,7 @@ class ResourceAdmissionTests(unittest.TestCase):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
             for mode in ["false", "true"]:
                 window = {**self.window, "enabled": mode, "windowId": f"0-{mode}"}
-                with environment.observe_resources(self.root, window): self.clock += 10
+                with environment.observe_resources(self.root, window, self.attribution): self.clock += 10
         windows = json.loads((self.root / "measurement-windows.json").read_text())
         self.assertEqual([row["windowId"] for row in windows], ["0-false", "0-true"])
         self.assertTrue(all(row["status"] == "passed" and row["sampleCount"] == 2 for row in windows))
@@ -312,7 +546,7 @@ class ResourceAdmissionTests(unittest.TestCase):
                 for mode in samples:
                     window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
                     window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
-                    with environment.observe_resources(self.root, window): self.clock += 10
+                    with environment.observe_resources(self.root, window, self.attribution): self.clock += 10
                     samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10,
                         "traceEvidence": {"enabled": True, "searchableTrace": True, "exportedSpans": 10, "failedSpans": 0, "droppedSpans": 0}})
         (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
@@ -348,7 +582,7 @@ class ResourceAdmissionTests(unittest.TestCase):
                 for mode in ["false", "true"]:
                     window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
                     window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
-                    with environment.observe_resources(self.root, window): self.clock += 10
+                    with environment.observe_resources(self.root, window, self.attribution): self.clock += 10
                     samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10})
         (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
         (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
@@ -370,7 +604,7 @@ class ResourceAdmissionTests(unittest.TestCase):
     def test_ineligible_first_measurement_sample_blocks_window(self):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi(cpu=3)):
             with self.assertRaisesRegex(OSError, "pressure_exceeded"):
-                with environment.observe_resources(self.root, self.window):
+                with environment.observe_resources(self.root, self.window, self.attribution):
                     pass
 
 
@@ -656,18 +890,21 @@ class AggregationTests(unittest.TestCase):
         return self.parts / ("observability-part-123-1-" + lane)
 
     def seed_windows(self, part, pair):
-        windows, rows, admissions, samples = [], [], [], {}
+        windows, rows, admissions, preparations, samples = [], [], [], [], {}
         for index, mode in enumerate(("off", "metrics", "full")):
             start = 200 + index * 180
             identity = {"windowId": f"{pair}-{mode}", "pairIndex": pair, "enabled": mode}
             window = {**identity, "status": "passed", "reasonCodes": [], "pressureLimits": environment.PRESSURE_LIMITS,
                       "admissionWaitSeconds": 40, "startedMonotonicSeconds": start, "endedMonotonicSeconds": start + 60,
                       "startedUTCSeconds": start, "endedUTCSeconds": start + 60,
-                      "maximumGapSeconds": 10, "sampleCount": 7, "pressureExceededSamples": 0}
+                      "maximumGapSeconds": 10, "sampleCount": 7, "pressureExceededSamples": 0,
+                      "cpuAttribution": synthetic_attribution_summary(7)}
             windows.append(window)
+            preparations.append(synthetic_attribution_preparation(window["windowId"]))
             for elapsed in range(0, 61, 10):
                 rows.append({**identity, "phase": "measurement", "eligible": True, "hostPressure": psi(),
-                             "monotonicSeconds": start + elapsed, "utcSeconds": start + elapsed})
+                             "monotonicSeconds": start + elapsed, "utcSeconds": start + elapsed,
+                             "cpuAttribution": synthetic_attribution_row(identity, start + elapsed, baseline=elapsed == 0)})
             for consecutive in range(1, 4):
                 admissions.append({**identity, "phase": "admission", "consecutive": consecutive, "eligible": True,
                                    "hostPressure": psi(), "monotonicSeconds": start - 60 + consecutive * 20})
@@ -677,6 +914,7 @@ class AggregationTests(unittest.TestCase):
                                                 "failedSpans": 0, "droppedSpans": 0}}]
         (part / "measurement-windows.json").write_text(json.dumps(windows))
         (part / "ab-samples.json").write_text(json.dumps(samples))
+        (part / "cpu-attribution.json").write_text(json.dumps(preparations))
         for name, values in [("resource-observer.jsonl", rows), ("environment-admission.jsonl", admissions)]:
             (part / name).write_text("".join(json.dumps(row) + "\n" for row in values))
 
@@ -690,6 +928,12 @@ class AggregationTests(unittest.TestCase):
         data = json.loads(path.read_text())
         mutate(data)
         path.write_text(json.dumps(data))
+
+    def change_jsonl(self, lane, name, mutate):
+        path = self.part(lane) / name
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        mutate(rows)
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
     def test_complete_nine_windows_can_issue_only_one_full_certificate(self):
         self.assertTrue(self.aggregate())
@@ -705,6 +949,74 @@ class AggregationTests(unittest.TestCase):
         self.assertFalse(self.aggregate())
         self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
 
+    def test_missing_auxiliary_cpu_identity_cannot_pass(self):
+        self.change("pair-1", "cpu-attribution.json", lambda rows: rows[0]["containers"].pop(1))
+        self.assertFalse(self.aggregate())
+
+    def test_mismatched_cpu_identity_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[0]["cpuAttribution"]["containers"]["app"].update(containerId="d" * 64),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_changed_cpu_quota_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[0]["cpuAttribution"]["app"].update(cpuMax={"quota": 50000, "periodUsec": 50000}),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_missing_cpu_counter_baseline_marker_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[0]["cpuAttribution"].pop("counterDeltaStatus"),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_partial_cpu_counter_delta_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[1]["cpuAttribution"]["counterDelta"]["hostCpu"]["0"].pop("system"),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_fabricated_cpu_counter_delta_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[1]["cpuAttribution"]["counterDelta"]["appCpuStat"].update(usage_usec=11),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_window_counter_summary_must_match_sample_boundaries(self):
+        self.change(
+            "pair-1",
+            "measurement-windows.json",
+            lambda windows: windows[0]["cpuAttribution"]["counterDelta"]["appCpuStat"].update(usage_usec=61),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_missing_cpu_pressure_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[1]["cpuAttribution"]["app"]["cpuPressure"]["some"].pop("avg10"),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_mismatched_preparation_cgroup_cannot_pass(self):
+        self.change(
+            "pair-1",
+            "cpu-attribution.json",
+            lambda rows: rows[0]["containers"][0].update(cgroupPath="/docker/" + "d" * 64),
+        )
+        self.assertFalse(self.aggregate())
+
     def test_wrong_contract_or_candidate_is_rejected(self):
         self.change("pair-1", "runtime-card.json", lambda row: row.update(acceptance_contract_digest="wrong"))
         self.assertFalse(self.aggregate())
@@ -713,7 +1025,7 @@ class AggregationTests(unittest.TestCase):
         self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))
         self.assertFalse(self.aggregate())
 
-    def test_heterogeneous_runners_are_valid_but_runner_reuse_is_rejected(self):
+    def test_heterogeneous_runners_are_unavailable_but_runner_reuse_is_rejected(self):
         self.change("pair-2", "runner-context.json", lambda row: row.update(
             cpuModel=["different CPU"],
             cpuCount=64,
@@ -721,9 +1033,24 @@ class AggregationTests(unittest.TestCase):
             runnerImageVersion="different",
             kernel="different-kernel",
         ))
-        self.assertTrue(self.aggregate())
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata incompatible: cpuModel")
+        self.change("pair-2", "runner-context.json", lambda row: row.update(**self.context, runnerIdentity="pair-2"))
         self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
         self.assertFalse(self.aggregate())
+
+    def test_missing_hardware_metadata_is_unavailable(self):
+        self.change("pair-1", "runner-context.json", lambda row: row.pop("kernel"))
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata unavailable: missing kernel")
+
+    def test_duplicate_hardware_metadata_is_unavailable(self):
+        self.change("pair-1", "runner-context.json", lambda row: row.update(cpuModel=["synthetic CPU", "synthetic CPU"]))
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata invalid: duplicate cpuModel")
 
     def test_restarted_clock_or_exceeded_budget_cannot_pass(self):
         self.change("pair-2", "run-config.json", lambda row: row.update(executionStartedUTCSeconds=110))
@@ -805,6 +1132,11 @@ class WorkflowGateTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_window_evidence_is_required_and_sensitive_artifacts_are_refused(self):
+        for required in ["measurement-windows.json", "cpu-attribution.json"]:
+            workflow = copy.deepcopy(self.workflow)
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+            upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/" + required, "")
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
         for extra in [False, True]:
             workflow = copy.deepcopy(self.workflow)
             upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
@@ -895,6 +1227,16 @@ class PerformanceDispositionTests(unittest.TestCase):
         }
         self.write_case("unavailable", scenarios)
         with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
+    def test_hardware_comparability_mismatch_remains_blocking(self):
+        scenarios = self.passed_scenarios()
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "hardware metadata incompatible: cpuModel",
+        }
+        self.write_case("unavailable", scenarios)
+        with self.assertRaisesRegex(ClassificationError, "hardware comparability"):
+            classify_result(self.root, "failure")
 
     def test_successful_acceptance_requires_successful_step(self):
         scenarios = {name: {"status": "passed"} for name in self.passed_scenarios()}

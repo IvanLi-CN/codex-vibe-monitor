@@ -218,7 +218,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
     evidence = str(upload.get("with", {}).get("path", "")).splitlines()
     expected_evidence = {"runtime-card.json", "part-outcome.json", "scenarios.json", "client-failures.json", "ab-samples.json",
-                         "run-config.json", "image-identity.json", "runner-context.json",
+                         "run-config.json", "image-identity.json", "runner-context.json", "cpu-attribution.json",
                          "environment-admission.jsonl", "resource-observer.jsonl", "measurement-windows.json",
                          "cpu-verified/*.manifest.json", "cpu-verified/*.json.gz", "cpu-verified/*.syms.json"}
     prefix = "${{ runner.temp }}/observability-acceptance/"
