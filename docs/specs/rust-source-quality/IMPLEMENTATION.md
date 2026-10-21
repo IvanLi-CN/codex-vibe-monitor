@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 26 current explicit file budgets (9 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 25 current explicit file budgets (8 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -404,6 +404,12 @@ The live hourly-rollup source is now a facade over explicit `live_repair.rs`, `a
 The proxy failover source is now organized into explicit candidate-selection, retry-orchestration, attempt-execution, attempt-response, terminal-outcome, and metadata modules. The parent `src/proxy/failover.rs` retains the stable entry wrappers, request-compression tests, and module exports; the existing `retry_metadata.rs` and `prepare_failure.rs` helpers remain the shared metadata and preparation boundaries. After rustfmt, the parent is 208 physical lines and the children are 604, 90, 97, 1,021, 1,648, 1,509, and 287 lines respectively, all below the 2,500-line production target. The parent is removed from the explicit policy inventory, leaving 27 entries: 10 production and 17 test/helper; the immutable candidate baseline remains 32/23 and the suppression inventory is 123. Candidate selection, account/route retry budgets, request preparation, upstream transport, early response gates, streaming first-chunk handling, terminal persistence, reservation ownership, timeout accumulation, and failure classification remain behaviorally unchanged; no API, schema, configuration, UI, include!, test resource bucket, or frozen invocations module changes are introduced.
 
 Validation for this extraction is the canonical source-quality runner, the source-quality fixture harness, all-target locked checking and Clippy, the three shared backend resource profiles, focused failover/overload regression selectors, and `git diff --check`.
+
+## Route Selection Extraction
+
+The route-selection source is now a facade over `route_semantics.rs`, `pool_resolution.rs`, `pool_forwarding.rs`, and `forward_retry.rs` under `src/proxy/route_selection/`; the existing `auth.rs` module remains the authentication and pool-route helper boundary. The semantic child retains bounded replay deserialization, sticky projection validation, request semantic CPU attribution, file-read/JSON-parse counters, slow-path logging, and image/compaction/stream/service-tier/reasoning projections. The resolution child retains prompt-cache and encrypted-session owner binding, terminal persistence, initial-account and attempt finalization, image/compaction intent, and diagnostic backfill. The forwarding child moves the complete pool orchestration state machine, and the retry child moves the complete 429 retry and response-body draining adapter. After rustfmt, the parent is 25 lines and the children are 1,199, 582, 1,724, and 274 lines; the canonical policy removes the parent and retains 25 entries with 8 production and 17 test/helper files. No API, schema, configuration, reservation, attempt trace, health, response, retry, test resource, or frozen `src/api/slices/invocations_and_summary.rs` behavior changes.
+
+Validation for this extraction is the focused route-selection/request-entry and proxy forwarding coverage, the lightweight and stateful SQLite backend profiles, the source-quality checker and fixture harness, rustfmt, locked all-target checking, all-features Clippy, quality-gate and documentation contract checks, and `git diff --check`.
 
 ## CI Contract
 
