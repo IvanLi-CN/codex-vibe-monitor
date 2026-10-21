@@ -1,4 +1,15 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMPORARY_XRAY_ROUTE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_temporary_xray_route_key(raw_url: &str) -> String {
+    let route_id = NEXT_TEMPORARY_XRAY_ROUTE_ID.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "__validate_xray__{:016x}_{route_id:016x}",
+        stable_hash_u64(raw_url)
+    )
+}
 
 pub(crate) fn parse_forward_proxy_nodes_latency_test_keys(raw_query: &str) -> Vec<String> {
     url::form_urlencoded::parse(raw_query.as_bytes())
@@ -225,6 +236,23 @@ pub(crate) fn resolve_forward_proxy_endpoint_for_test(
                 .get(proxy_key)
                 .and_then(|runtime| runtime.endpoint_url.as_deref())
                 .and_then(parse_forward_proxy_entry)
+                .map(|parsed| ForwardProxyEndpoint {
+                    key: proxy_key.to_string(),
+                    source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+                    display_name: parsed.display_name,
+                    protocol: parsed.protocol,
+                    endpoint_url: parsed.endpoint_url,
+                    raw_url: Some(parsed.normalized),
+                })
+        })
+        .or_else(|| {
+            manager
+                .settings
+                .proxy_urls
+                .iter()
+                .flat_map(|entry| split_proxy_entry_tokens(entry))
+                .filter_map(parse_forward_proxy_entry)
+                .find(|parsed| parsed.stable_key == proxy_key)
                 .map(|parsed| ForwardProxyEndpoint {
                     key: proxy_key.to_string(),
                     source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
@@ -1325,7 +1353,12 @@ pub(crate) async fn probe_forward_proxy_endpoint(
             Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
                 return Ok(None);
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                if timeout_budget_exhausted(validation_timeout, started.elapsed()) {
+                    return Err(timeout_error_for_duration(validation_timeout));
+                }
+                return Err(err);
+            }
         };
 
     let probe_result = async {
@@ -1456,11 +1489,7 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
         .raw_url
         .as_deref()
         .ok_or_else(|| anyhow!("xray proxy validation requires raw proxy url"))?;
-    let temporary_key = format!(
-        "__validate_xray__{:016x}_{}",
-        stable_hash_u64(raw_url),
-        Utc::now().timestamp_millis()
-    );
+    let temporary_key = next_temporary_xray_route_key(raw_url);
     let probe_endpoint = ForwardProxyEndpoint {
         key: temporary_key.clone(),
         source: endpoint.source.clone(),
@@ -1621,4 +1650,52 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
         }
         info!(trigger, "forward proxy bootstrap probe round finished");
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_xray_route_keys_are_unique_for_the_same_raw_url() {
+        let raw_url = "vless://synthetic-node@example.com:443";
+        let first = next_temporary_xray_route_key(raw_url);
+        let second = next_temporary_xray_route_key(raw_url);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("__validate_xray__"));
+        assert!(second.starts_with("__validate_xray__"));
+    }
+
+    #[test]
+    fn latency_endpoint_resolution_rehydrates_manual_native_proxy_from_settings() {
+        let raw_url = "http://synthetic-user:synthetic-password@proxy.example.com:8080";
+        let mut manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![raw_url.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let proxy_key = manager
+            .endpoints
+            .first()
+            .expect("manual proxy endpoint")
+            .key
+            .clone();
+        manager.endpoints.clear();
+        manager.runtime.clear();
+
+        let endpoint = resolve_forward_proxy_endpoint_for_test(&manager, &proxy_key)
+            .expect("manual proxy should be restored from settings");
+        assert_eq!(endpoint.raw_url.as_deref(), Some(raw_url));
+        assert_eq!(
+            endpoint
+                .endpoint_url
+                .as_ref()
+                .expect("native proxy endpoint url")
+                .as_str(),
+            "http://synthetic-user:synthetic-password@proxy.example.com:8080/"
+        );
+    }
 }

@@ -205,6 +205,7 @@ impl XraySupervisor {
             "forward-proxy-{:016x}.json",
             stable_hash_u64(&endpoint.key)
         ));
+        let startup_started = Instant::now();
         let config = build_xray_instance_config(local_port, outbound);
         let serialized = serde_json::to_vec_pretty(&config).map_err(|err| {
             wrap_xray_error(
@@ -226,16 +227,30 @@ impl XraySupervisor {
         // missing or unlaunchable binary is still a startup failure; a launched binary that
         // rejects the configuration is a configuration failure. The preflight is bounded by
         // the same deadline as route startup so a broken binary cannot hold validation open.
-        let preflight =
-            match run_xray_config_preflight(&self.binary, &config_path, ready_timeout, shutdown)
-                .await
-            {
-                Ok(preflight) => preflight,
-                Err(err) => {
-                    let _ = fs::remove_file(&config_path);
-                    return Err(err);
-                }
-            };
+        let preflight_timeout = match ready_timeout.checked_sub(startup_started.elapsed()) {
+            Some(remaining) if !remaining.is_zero() => remaining,
+            _ => {
+                let _ = fs::remove_file(&config_path);
+                return Err(anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::ProxyTimeout,
+                    "xray proxy route startup timed out",
+                )));
+            }
+        };
+        let preflight = match run_xray_config_preflight(
+            &self.binary,
+            &config_path,
+            preflight_timeout,
+            shutdown,
+        )
+        .await
+        {
+            Ok(preflight) => preflight,
+            Err(err) => {
+                let _ = fs::remove_file(&config_path);
+                return Err(err);
+            }
+        };
         if !preflight.status.success() {
             warn!(
                 proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
@@ -249,6 +264,16 @@ impl XraySupervisor {
                 "xray rejected proxy configuration",
             )));
         }
+        let remaining_ready_timeout = match ready_timeout.checked_sub(startup_started.elapsed()) {
+            Some(remaining) if !remaining.is_zero() => remaining,
+            _ => {
+                let _ = fs::remove_file(&config_path);
+                return Err(anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::ProxyTimeout,
+                    "xray proxy route startup timed out",
+                )));
+            }
+        };
 
         let mut child = match Command::new(&self.binary)
             .arg("run")
@@ -275,7 +300,8 @@ impl XraySupervisor {
             .map(|stderr| tokio::spawn(read_bounded_xray_diagnostic(stderr)));
 
         if let Err(err) =
-            wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout, shutdown).await
+            wait_for_xray_proxy_ready(&mut child, local_port, remaining_ready_timeout, shutdown)
+                .await
         {
             let _ = terminate_child_process(
                 &mut child,
