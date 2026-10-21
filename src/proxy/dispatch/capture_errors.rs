@@ -61,7 +61,7 @@ pub(crate) async fn emit_admitted_proxy_capture_runtime_snapshot(
     }
 }
 
-pub(crate) fn build_local_capture_error_envelope(
+pub(super) fn build_local_capture_error_envelope(
     invoke_id: &str,
     status: StatusCode,
     message: &str,
@@ -79,7 +79,7 @@ pub(crate) fn build_local_capture_error_envelope(
     )
 }
 
-pub(crate) fn build_local_capture_error_resp_raw(
+pub(super) fn build_local_capture_error_resp_raw(
     envelope: &ProxyErrorResponseEnvelope,
 ) -> RawPayloadMeta {
     RawPayloadMeta {
