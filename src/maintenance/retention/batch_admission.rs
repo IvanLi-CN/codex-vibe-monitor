@@ -399,35 +399,22 @@ async fn wait_for_maintenance_eligibility(operation: &'static str, requested_at:
     let coordinator = retention_write_coordinator_handle();
     let eligibility =
         coordinator.wait_for_maintenance_eligibility(requested_at, RETENTION_FAIRNESS_INTERVAL);
-    let waited = if let Some(remaining) = retention_run_remaining_budget() {
-        let eligibility = tokio::time::timeout(remaining, eligibility);
-        if let Some(shutdown) = retention_run_shutdown_token() {
-            tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => {
-                    retention_record_defer(operation, "shutdown");
-                    return false;
-                }
-                result = eligibility => result.is_ok(),
-            }
-        } else {
-            eligibility.await.is_ok()
-        }
-    } else if let Some(shutdown) = retention_run_shutdown_token() {
+    let (admission_budget, timeout_reason) = retention_write_admission_budget();
+    let eligibility = tokio::time::timeout(admission_budget, eligibility);
+    let waited = if let Some(shutdown) = retention_run_shutdown_token() {
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
                 retention_record_defer(operation, "shutdown");
                 return false;
             }
-            () = eligibility => true,
+            result = eligibility => result.is_ok(),
         }
     } else {
-        eligibility.await;
-        true
+        eligibility.await.is_ok()
     };
     if !waited {
-        retention_record_defer(operation, "retention_work_budget");
+        retention_record_defer(operation, timeout_reason);
     }
     waited
 }

@@ -567,9 +567,22 @@ pub(crate) async fn retention_recovery_persist_failure(
     .bind(observed_artifact_sha256.as_deref())
     .execute(pool)
     .await?;
-    if !quarantine {
-        // Quarantined artifacts are isolated evidence, not retryable scheduler work. Keep their
-        // per-artifact failure metadata, but do not back off unrelated prepared archives.
+    if quarantine {
+        // Quarantined artifacts are isolated evidence, not retryable scheduler work. Clear any
+        // existing global backoff so the quarantined row cannot delay unrelated recovery work.
+        sqlx::query(
+            "UPDATE retention_recovery_cursors
+             SET next_retry_at = NULL,
+                 consecutive_failure_count = 0,
+                 last_failure_fingerprint = NULL,
+                 defer_reason = NULL,
+                 updated_at = datetime('now')
+             WHERE scope = ?1",
+        )
+        .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+        .execute(pool)
+        .await?;
+    } else {
         sqlx::query(
             "UPDATE retention_recovery_cursors
              SET next_retry_at = datetime('now', ?1),

@@ -271,3 +271,41 @@ async fn retention_recovery_admission_deadline_cancels_waiter_without_preempting
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
+
+#[tokio::test]
+async fn retention_admission_without_run_deadline_uses_operation_budget() {
+    use crate::maintenance::{
+        RETENTION_TEST_WRITE_COORDINATOR, acquire_retention_write_admission,
+        retention_test_with_write_admission_budget,
+    };
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let p1 = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let result = RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            coordinator.clone(),
+            retention_test_with_write_admission_budget(
+                Duration::from_millis(100),
+                acquire_retention_write_admission("operation_budget_test"),
+            ),
+        )
+        .await;
+
+    assert!(
+        result.is_none(),
+        "operation budget must bound coordinator wait"
+    );
+    let snapshot = coordinator.snapshot().await;
+    assert_eq!(snapshot.active_write_class.as_deref(), Some("p1_terminal"));
+    assert_eq!(snapshot.maintenance_waiter_count, 0);
+    assert_eq!(
+        snapshot
+            .write_admission
+            .maintenance_retention
+            .admission_count,
+        0
+    );
+    drop(p1);
+}

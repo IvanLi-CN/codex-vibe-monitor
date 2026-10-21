@@ -1,6 +1,7 @@
 use super::*;
 
 pub(crate) const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_WRITE_ADMISSION_BUDGET: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 pub(crate) const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 pub(crate) const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
@@ -102,6 +103,7 @@ tokio::task_local! {
         Arc<RetentionSqliteMaintenanceTestProbe>;
     pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
+    pub(crate) static RETENTION_TEST_WRITE_ADMISSION_BUDGET: RefCell<Option<Duration>>;
     pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
     pub(crate) static RETENTION_TEST_WRITE_CONNECTION_POOL_READY: Arc<Notify>;
@@ -689,6 +691,25 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
         .flatten()
 }
 
+fn configured_retention_write_admission_budget() -> Duration {
+    #[cfg(test)]
+    if let Ok(Some(budget)) =
+        RETENTION_TEST_WRITE_ADMISSION_BUDGET.try_with(|value| *value.borrow())
+    {
+        return budget;
+    }
+
+    RETENTION_WRITE_ADMISSION_BUDGET
+}
+
+pub(crate) fn retention_write_admission_budget() -> (Duration, &'static str) {
+    let configured = configured_retention_write_admission_budget();
+    match retention_run_remaining_budget() {
+        Some(remaining) if remaining <= configured => (remaining, "retention_work_budget"),
+        _ => (configured, "retention_write_admission"),
+    }
+}
+
 pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {
     RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
 }
@@ -707,6 +728,16 @@ pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
 ) -> F::Output {
     RETENTION_RUN_DEADLINE
         .scope(RefCell::new(Some(Instant::now() + budget)), work)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_write_admission_budget<F: Future>(
+    budget: Duration,
+    work: F,
+) -> F::Output {
+    RETENTION_TEST_WRITE_ADMISSION_BUDGET
+        .scope(RefCell::new(Some(budget)), work)
         .await
 }
 
@@ -1507,17 +1538,14 @@ pub(crate) async fn acquire_retention_write_coordinator(
         }
     };
     // A queued maintenance waiter owns no SQLite work. Dropping it unregisters the waiter;
-    // the deadline must also cover admission behind an active foreground writer.
-    let write_permit = if let Some(remaining) = retention_run_remaining_budget() {
-        match tokio::time::timeout(remaining, acquire).await {
-            Ok(permit) => permit,
-            Err(_) => {
-                retention_record_defer(operation, "retention_work_budget");
-                return None;
-            }
+    // the operation budget must also cover admission behind an active foreground writer.
+    let (admission_budget, timeout_reason) = retention_write_admission_budget();
+    let write_permit = match tokio::time::timeout(admission_budget, acquire).await {
+        Ok(permit) => permit,
+        Err(_) => {
+            retention_record_defer(operation, timeout_reason);
+            return None;
         }
-    } else {
-        acquire.await
     };
     let Some(write_permit) = write_permit else {
         retention_record_defer(operation, "shutdown");

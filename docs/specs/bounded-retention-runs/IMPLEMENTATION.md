@@ -34,11 +34,11 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 仍被 manifest 引用的旧隔离记录不会自动删除，既有 recovery health 因此可能持续为 degraded；这是保留隔离事实的诊断，不能据此断言当前归档停滞。新任务不依赖该健康标签准入。区分历史隔离与当前故障的健康展示属于后续优化，本轮不隐藏告警或放宽文件/raw 保护。
 
-准入等待受本轮剩余超时约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一约束，避免归档未开始时等待超过整轮兜底时间。没有旧 prepared 行时不提交空隔离事务。
+准入等待受独立的操作级预算约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一操作级预算，没有整轮兜底期限。没有旧 prepared 行时不提交空隔离事务。
 
 每轮通过 task-local 保存首次实际准入拒绝原因，供不可变运行结果使用；后续阶段成功提交不会擦除该原因，下一轮也不会继承历史恢复或共享写状态的原因。后台槽占用保留 `background_busy`，不能误报为 SQLite 压力。
 
-主库的可选 `PRAGMA optimize` / checkpoint 使用独立连接、至多 2 秒且不超过整轮剩余时间的执行期限、匹配的 busy timeout 和每 1000 VM 指令检查的真实 SQLite progress handler。执行完成后移除 handler 并等待连接关闭，再释放后台准入；不把取消中的连接还池。维护语句的取消不撤销已完成归档，也不伪装成整轮超时，日志记录 `sqlite_maintenance_query_budget`；连接清理失败不能被预算取消掩盖。回归测试验证慢写语句取消后原值保留、独立 writer 能立即取得锁。
+主库的可选 `PRAGMA optimize` / checkpoint 使用独立连接、至多 2 秒的操作级执行期限、匹配的 busy timeout 和每 1000 VM 指令检查的真实 SQLite progress handler。执行完成后移除 handler 并等待连接关闭，再释放后台准入；不把取消中的连接还池。维护语句的取消不撤销已完成归档，也不伪装成操作级预算停止，日志记录 `sqlite_maintenance_query_budget`；连接清理失败不能被预算取消掩盖。回归测试验证慢写语句取消后原值保留、独立 writer 能立即取得锁。
 
 容量排查发现在线 terminal 写入复用大历史 Prompt key 时，原工作集触发器的 OR 条件会对历史正文反复计算展示状态，持续占用 P1。查询改为现有 key/时间索引上的近期范围，以及 `invocation_in_progress_live` 的旧活跃 ID 和当前变更 ID；仍回到源记录复核 key、时间和展示状态。当前 ID 覆盖 INSERT/UPDATE/DELETE 的触发器执行顺序，两个时间范围不重叠。此优化保留实时工作集口径，不调用会话历史统计物化。
 
@@ -46,16 +46,16 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## 模块映射
 
-| 需求                | 当前源码                                                                                       | 验证口径                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| REQ-BRR-002/022     | `src/maintenance/retention/batch_plan.rs`, `task_batches.rs`                                   | 预算参与批次规划；运行超时只作安全兜底，重复超时是缺陷信号                             |
-| REQ-BRR-022         | `src/maintenance/archive/writers.rs`, `quota_compaction.rs`, `retention/archive_identity.rs`   | 同月规范路径、任务临时文件清理、身份冲突和内容摘要、未证明源行保留                     |
-| REQ-BRR-022         | `src/summary_source_change.rs`, `retention/batch_plan.rs`                                      | 完整 V2 Snapshot 验证在写事务外；短事务比较元数据后发布，Summary 不重复计入 live 副本  |
-| REQ-BRR-023         | `src/maintenance/retention.rs`, `src/runtime.rs`                                               | batch rows、已提交行、文件准备、锁等待、整轮有效服务速率、24h 到达速率、倍率及超时次数 |
-| REQ-BRR-023         | `web/src/lib/api/core-foundation.ts`, `RetentionRunThroughput.tsx`, `SystemTaskDetailPage.tsx` | 新字段可选；真实零与缺失区分，旧响应显示未知；Prompt 统计仍暂不可用                    |
-| REQ-BRR-016..021    | 既有 runtime、maintenance_store、小时 observer 和趋势组件                                      | 单一 owner 自动追赶、禁用控制、准确小时双指标保留；本轮不新增调度器或改动小时观测定义  |
-| REQ-BRR-003/005/015 | 既有 Prompt cache 物化所有者                                                                   | 独立持久化队列继续异步处理；不放回归档事务，不改变精确统计读契约                       |
-| REQ-BRR-002/004/023 | `src/schema.rs`, `schema/prompt_cache_working_set_triggers.rs`, `retention.rs`                 | 大 key 在线工作集不扫描历史正文；准入超时取消 waiter，P1 优先和现有迁移事实保留        |
+| 需求                | 当前源码                                                                                       | 验证口径                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| REQ-BRR-002/022     | `src/maintenance/retention/batch_plan.rs`, `task_batches.rs`                                   | 操作级预算参与批次规划；测试注入的 operation deadline 只保护回归边界，重复停止是缺陷信号 |
+| REQ-BRR-022         | `src/maintenance/archive/writers.rs`, `quota_compaction.rs`, `retention/archive_identity.rs`   | 同月规范路径、任务临时文件清理、身份冲突和内容摘要、未证明源行保留                       |
+| REQ-BRR-022         | `src/summary_source_change.rs`, `retention/batch_plan.rs`                                      | 完整 V2 Snapshot 验证在写事务外；短事务比较元数据后发布，Summary 不重复计入 live 副本    |
+| REQ-BRR-023         | `src/maintenance/retention.rs`, `src/runtime.rs`                                               | batch rows、已提交行、文件准备、锁等待、整轮有效服务速率、24h 到达速率、倍率及超时次数   |
+| REQ-BRR-023         | `web/src/lib/api/core-foundation.ts`, `RetentionRunThroughput.tsx`, `SystemTaskDetailPage.tsx` | 新字段可选；真实零与缺失区分，旧响应显示未知；Prompt 统计仍暂不可用                      |
+| REQ-BRR-016..021    | 既有 runtime、maintenance_store、小时 observer 和趋势组件                                      | 单一 owner 自动追赶、禁用控制、准确小时双指标保留；本轮不新增调度器或改动小时观测定义    |
+| REQ-BRR-003/005/015 | 既有 Prompt cache 物化所有者                                                                   | 独立持久化队列继续异步处理；不放回归档事务，不改变精确统计读契约                         |
+| REQ-BRR-002/004/023 | `src/schema.rs`, `schema/prompt_cache_working_set_triggers.rs`, `retention.rs`                 | 大 key 在线工作集不扫描历史正文；准入超时取消 waiter，P1 优先和现有迁移事实保留          |
 
 ## 观测与 API
 
@@ -116,7 +116,7 @@ Usage-breakdown repair fences every verified source directory through transactio
 - 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选的普通源码/功能验证和适用视觉门禁完成后启动；合并前必须通过必需 Actions 检查及产物冒烟。按主人禁止不必要性能实验进入通用 PR 门禁的指令，性能预算及 CPU 诊断保留为 Actions 辅助检查，Build Artifacts 不再依赖其结果。本次交付不将历史开销失败、缺测或尚未完成的容量实测标为通过；后续性能验证独立记录。
 - Quota 候选排序使用专用 SQLite 连接，操作级查询预算限制锁等待，progress handler 在截止或关闭请求时中断实际查询；移除 handler 并关闭连接后才返回。准备月度文件使用独立的取消/操作边界，未完成工作随 future 清理，已提交批次保留。回归通过固定回调取消、零准备预算及未完成 future 验证源行保留、连接释放和下一轮重新选取，不使用执行速度断言。
 
-- 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受剩余期限及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
+- 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受自身操作预算及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
 
 - 池连接归还由 SQLx 异步执行。写许可申请前在无许可状态下确认池可用并完成空闲连接归还，避免单连接池或刚提交微批次误报池满；随后仍不持连接排队、获准后只非阻塞取连接。确定性回归按 pool-ready 通知安排 P1 取走连接，验证反向等待不存在以及 readiness 竞争时释放许可延期。
 
