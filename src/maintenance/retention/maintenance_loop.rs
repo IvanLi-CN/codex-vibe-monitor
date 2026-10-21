@@ -570,8 +570,7 @@ pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&Cancellat
     }
     if !should_stop && retention_run_budget_expired() {
         info!(
-            budget_ms = RETENTION_WORK_BUDGET.as_millis() as u64,
-            "data retention maintenance stopped at a safe boundary because its work budget expired"
+            "data retention maintenance stopped at a safe boundary because an operation deadline expired"
         );
     }
     should_stop || retention_run_budget_expired()
@@ -595,7 +594,6 @@ pub(crate) async fn run_data_retention_maintenance_with_prompt_cache(
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let run_started_at = Instant::now();
-    let run_deadline = run_started_at + RETENTION_WORK_BUDGET;
     let run = async {
         if let Some(shutdown) = shutdown {
             RETENTION_SHUTDOWN
@@ -621,30 +619,27 @@ pub(crate) async fn run_data_retention_maintenance_with_prompt_cache(
             .await
         }
     };
-    let result = RETENTION_RUN_DEADLINE
+    let result = RETENTION_CURRENT_PREPARED_KEY
         .scope(
-            RefCell::new(Some(run_deadline)),
-            RETENTION_CURRENT_PREPARED_KEY.scope(
-                RefCell::new(None),
-                batch_plan::TASK_BATCH_METRICS.scope(
-                    RefCell::new(Vec::new()),
-                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
-                        run.await.map(|mut summary| {
-                            batch_plan::collect_run_metrics(&mut summary);
-                            let defer_reason =
-                                RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
-                            (summary, defer_reason)
-                        })
-                    }),
-                ),
+            RefCell::new(None),
+            batch_plan::TASK_BATCH_METRICS.scope(
+                RefCell::new(Vec::new()),
+                RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                    run.await.map(|mut summary| {
+                        batch_plan::collect_run_metrics(&mut summary);
+                        let defer_reason =
+                            RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
+                        (summary, defer_reason)
+                    })
+                }),
             ),
         )
         .await;
     result.map(|(mut summary, defer_reason)| {
         summary.apply_recorded_defer_reason(defer_reason);
-        summary.work_budget_ms = Some(RETENTION_WORK_BUDGET.as_millis() as u64);
+        summary.work_budget_ms = None;
         summary.elapsed_ms = Some(run_started_at.elapsed().as_millis() as u64);
-        summary.timeout_count = Some(u64::from(summary.budget_exhausted));
+        summary.timeout_count = None;
         let run_seconds = run_started_at.elapsed().as_secs_f64();
         for batch in &mut summary.batches {
             batch.committed_rows_per_second =

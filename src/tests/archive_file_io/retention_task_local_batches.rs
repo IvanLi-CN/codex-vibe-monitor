@@ -1765,6 +1765,106 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
 }
 
 #[tokio::test]
+async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-complete-work-unit-797").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 797).await;
+    let page_stores = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let summary = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES
+        .scope(
+            page_stores.clone(),
+            run_data_retention_maintenance(&pool, &config, Some(false), None),
+        )
+        .await
+        .expect("complete the selected retention work unit");
+
+    assert_eq!(summary.invocation_rows_archived, 797);
+    assert_eq!(summary.archive_batches_touched, 1);
+    assert_eq!(summary.work_budget_ms, None);
+    assert_eq!(summary.timeout_count, None);
+    assert!(!summary.budget_exhausted);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source row count after complete work unit"),
+        0
+    );
+
+    let manifest_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("authoritative manifest count");
+    assert_eq!(manifest_count, 1);
+
+    let (batch_id, manifest_rows, status, manifest_sha) =
+        sqlx::query_as::<_, (i64, i64, String, String)>(
+            "SELECT id, row_count, status, sha256
+             FROM archive_batches
+             WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("one authoritative monthly manifest");
+    assert_eq!(manifest_rows, 797);
+    assert_eq!(status, ARCHIVE_STATUS_COMPLETED);
+
+    let (page_count, page_rows) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(row_count), 0)
+         FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+    )
+    .bind(batch_id)
+    .bind(&manifest_sha)
+    .fetch_one(&pool)
+    .await
+    .expect("Summary page counts");
+    assert_eq!((page_count, page_rows), (2, 797));
+    let (proof_pages, proof_rows) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT page_count, row_count
+         FROM summary_archive_snapshot_v2_proof
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+    )
+    .bind(batch_id)
+    .bind(&manifest_sha)
+    .fetch_one(&pool)
+    .await
+    .expect("Summary proof counts");
+    assert_eq!((proof_pages, proof_rows), (2, 797));
+    assert_eq!(
+        page_stores.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "each newly scanned Summary page is stored once"
+    );
+
+    let batch = summary
+        .batches
+        .iter()
+        .find(|batch| batch.dataset == "codex_invocations")
+        .expect("invocation batch metrics");
+    assert_eq!(batch.batch_rows, 797);
+    assert_eq!(batch.committed_rows, 797);
+    assert!(batch.file_prepare_ms.is_some());
+    assert!(batch.source_identity_ms.is_some());
+    assert!(batch.archive_writer_ms.is_some());
+    assert!(batch.summary_proof_ms.is_some());
+    let serialized_batch = serde_json::to_value(batch).expect("serialize invocation metrics");
+    assert!(serialized_batch.get("lockWaitMs").is_some());
+
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-page-resume").await;

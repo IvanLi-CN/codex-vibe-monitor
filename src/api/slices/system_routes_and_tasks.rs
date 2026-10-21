@@ -2448,11 +2448,13 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.system_task_run_rows_pruned,
     );
     let detail = format!(
-        "dry_run={} completion={} core_completion={} budget_ms={} elapsed_ms={} settlement_ms={} budget_exhausted={} recoverable_failure={} wait_reason={:?} fatal_error={:?} backlog_total={:?} observed_at={:?} source_max_invocation_id={:?} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={}",
+        "dry_run={} completion={} core_completion={} budget_ms={} elapsed_ms={} settlement_ms={} budget_exhausted={} recoverable_failure={} wait_reason={:?} fatal_error={:?} backlog_total={:?} observed_at={:?} source_max_invocation_id={:?} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_upstream_request_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={}",
         summary.dry_run,
         summary.completion(),
         summary.core_completion(),
-        summary.work_budget_ms.unwrap_or_default(),
+        summary
+            .work_budget_ms
+            .map_or_else(|| "none".to_string(), |value| value.to_string()),
         summary.elapsed_ms.unwrap_or_default(),
         summary.settlement_ms.unwrap_or_default(),
         summary.budget_exhausted,

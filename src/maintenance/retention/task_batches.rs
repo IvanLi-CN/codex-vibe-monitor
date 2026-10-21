@@ -243,7 +243,15 @@ fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
     retention_run_budget_expired()
         || error
             .to_string()
-            .contains("retention archive identity proof inflate exceeded the task budget")
+            .contains("retention archive identity proof inflate exceeded the operation deadline")
+}
+
+fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {
+    retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+        || is_retention_write_deferred(error)
+        || error
+            .to_string()
+            .contains("retention archive file work cancelled")
 }
 
 impl ArchiveSourceIdentityProof {
@@ -270,10 +278,12 @@ impl ArchiveSourceIdentityProof {
             )
             .await?;
             if !complete {
-                bail!("retention archive identity proof inflate exceeded the task budget");
+                bail!("retention archive identity proof inflate exceeded the operation deadline");
             }
-        } else {
-            inflate_gzip_sqlite_file(path, &proof_path)?;
+        } else if !inflate_gzip_sqlite_file_with_budget(path, &proof_path, Instant::now(), None)
+            .await?
+        {
+            bail!("retention archive identity proof inflate exceeded the operation deadline");
         }
         let connection = open_archive_sqlite_connection(&proof_path).await?;
         Ok(Self {
@@ -775,6 +785,10 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_cancelled(&error) => {
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
                         recovery_diagnostic.mark_budget();
                         break;
@@ -1029,9 +1043,10 @@ pub(crate) async fn prune_old_invocation_details(
             }
             batch_observation.complete();
         }
-        if retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // One invocation owns the selected bounded archive window. A test-injected operation
+        // deadline may stop it inside that window; production scheduling does not use a total
+        // timer to split the work into hidden follow-up tasks.
+        break;
     }
 
     recovery_diagnostic.finish();
@@ -1353,6 +1368,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .await
                     {
                         Ok(proof) => proof,
+                        Err(error) if archive_identity_proof_load_cancelled(&error) => {
+                            recovery_diagnostic.mark_stop();
+                            break;
+                        }
                         Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
                             recovery_diagnostic.mark_budget();
                             break;
@@ -1363,8 +1382,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         }
                     };
                     let summary_proof_started = Instant::now();
-                    let proof_future =
-                        batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages);
+                    let proof_future = batch_plan::prepare_summary_proof(pool, &archive_outcome);
                     let proof_result = if let Some(remaining) = retention_run_remaining_budget() {
                         match tokio::time::timeout(remaining, proof_future).await {
                             Ok(result) => {
@@ -1740,13 +1758,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             batch_observation.complete();
         }
-        // Normal task scope is fixed at selection. The next scheduled run reselects live rows
-        // and rebuilds the file; a published monthly Summary artifact may resume its durable
-        // page prefix by manifest SHA, but source deletion never resumes a prior transaction.
-        // Direct fixture helpers may drain.
-        if retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // One scheduled invocation owns one selected candidate window. It completes that logical
+        // work unit before returning; the next invocation reselects the remaining live rows.
+        break;
     }
 
     recovery_diagnostic.finish();
@@ -1985,6 +1999,10 @@ pub(crate) async fn archive_timestamped_dataset(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_cancelled(&error) => {
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
                         recovery_diagnostic.mark_budget();
                         break;
@@ -2351,9 +2369,9 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             batch_observation.complete();
         }
-        if retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // Keep the selected timestamped candidate window as one logical work unit. Operation
+        // budgets and cancellation may stop it earlier, but it is never split by a total timer.
+        break;
     }
 
     recovery_diagnostic.finish();

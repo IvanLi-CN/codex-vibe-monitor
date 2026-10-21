@@ -119,6 +119,11 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_budget(
     let mut buffer = vec![0_u8; HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES];
 
     loop {
+        if crate::maintenance::retention::retention_run_shutdown_token()
+            .is_some_and(|shutdown| shutdown.is_cancelled())
+        {
+            bail!("retention archive file work cancelled");
+        }
         let read = decoder.read(&mut buffer).with_context(|| {
             format!(
                 "failed to decompress archive batch {} into {}",

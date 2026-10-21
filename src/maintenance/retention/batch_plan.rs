@@ -754,7 +754,6 @@ pub(crate) async fn store_task_summary_snapshot_page(
 pub(super) async fn prepare_summary_proof(
     pool: &Pool<Sqlite>,
     outcome: &ArchiveBatchOutcome,
-    pages: Vec<TaskArchiveSnapshotPage>,
 ) -> Result<Option<VerifiedSummaryArchiveSnapshot>> {
     let archive_path = Path::new(&outcome.file_path);
     let Some((connection, admission, archive_lock)) =
@@ -829,16 +828,8 @@ pub(super) async fn prepare_summary_proof(
         .return_to_pool()
         .await
         .context("return summary manifest transaction connection to pool")?;
-    for (index, page) in pages.into_iter().enumerate() {
-        if store_task_summary_snapshot_page(pool, outcome, batch_id, u32::try_from(index)?, page)
-            .await?
-            .is_none()
-        {
-            return Ok(None);
-        }
-    }
-    // Pages are not deletion authority until the complete semantic proof is checked. Reads
-    // and decompression of the month happen with no main-database writer permit held.
+    // Summary pages are persisted by the monthly writer exactly once. This phase only validates
+    // the published artifact and the already durable page set before granting deletion authority.
     let archive_lock = retention_archive_file_try_lock(archive_path)?;
     if sha256_hex_file(archive_path)? != outcome.sha256 {
         bail!("summary archive artifact changed before semantic proof");

@@ -387,6 +387,13 @@ fn copy_archive_bytes_with_task_deadline(
         if super::retention::retention_run_budget_expired() {
             bail!("retention archive file work exceeded the task timeout");
         }
+        if super::retention::retention_run_shutdown_token()
+            .is_some_and(|shutdown| shutdown.is_cancelled())
+        {
+            return Err(super::retention::retention_write_deferred(
+                "archive_file_work",
+            ));
+        }
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             return Ok(());

@@ -2,9 +2,11 @@
 
 Status: Accepted
 
+The total-work-budget portion of this decision is superseded by [ADR 0045](0045-retention-work-unit-operation-budgets.md). The durable page and proof contracts remain in force.
+
 ## Decision
 
-The monthly invocation archive keeps the existing canonical gzip SQLite file, `archive_batches` manifest, `summary_archive_snapshot` V2 pages, and final proof contract. No new schema object, archive layout, page format, or retention budget is introduced.
+The monthly invocation archive keeps the existing canonical gzip SQLite file, `archive_batches` manifest, `summary_archive_snapshot` V2 pages, and final proof contract. No new schema object, archive layout, or page format is introduced; operation-level transaction and cancellation boundaries remain explicit.
 
 This decision narrows the continuation prohibition in ADR 0032: unfinished task files, source candidate IDs, cursors, and deletion transactions remain non-resumable, while already committed V2 Summary pages are explicitly progress evidence that may be reused by manifest identity.
 
@@ -19,7 +21,7 @@ On retry, the task reselects live source rows and rebuilds the task file. It may
 - A `materializing` manifest is never an authoritative Summary source, regardless of how many pages are present.
 - Page transactions verify the batch file path and SHA before writing and have no deletion authority.
 - A file publication failure leaves live source rows and the predecessor artifact recoverable; a page or proof failure leaves the published artifact non-authoritative and retryable.
-- The existing 120-second retention work budget remains unchanged; page commits create safe progress within that budget rather than extending it.
+- Summary page commits remain short, independently bounded transactions; the former fixed total-work-budget rule is superseded by ADR 0045.
 
 ## Consequences
 

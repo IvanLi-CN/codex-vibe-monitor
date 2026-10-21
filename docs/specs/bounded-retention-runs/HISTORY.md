@@ -1,5 +1,9 @@
 # 有预算、可恢复的 Retention：主题关系与兼容性
 
+## 2026-10-21 Work-unit boundary refresh
+
+生产 retention 不再使用固定总任务预算；每次调度拥有一个选定的有界逻辑工作单元，取消、真实压力/准入延期和操作级预算仍按既有安全边界停止。月度 Summary 页现在由 writer 单次写入、proof 阶段只校验，已发布 artifact 复用仅保留为崩溃/重启恢复证据。详见 [ADR 0045](../../adr/0045-retention-work-unit-operation-budgets.md)。
+
 ## Monthly proof reuse boundary
 
 月度归档恢复现在把 proof 副本解压纳入剩余任务预算；预算耗尽记录为 partial/budget stop 并清理未完成副本，不再误记为 proof failure。复用前同时验证压缩归档的实际 row count、选定 ID 集和内容身份，任何不一致都保留 live source rows 并回到安全重建/延期路径。

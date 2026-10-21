@@ -89,6 +89,8 @@ tokio::task_local! {
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE: Duration;
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_COMMITTED: Arc<Notify>;
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED: Arc<Notify>;
+    pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES:
+        Arc<std::sync::atomic::AtomicUsize>;
 }
 
 #[derive(Debug, Clone)]
@@ -1500,19 +1502,24 @@ async fn prepare_task_month_snapshot_pages(
                 )?,
             };
             let page_index = u32::try_from(pages.len())?;
-            if super::super::retention::store_task_summary_snapshot_page(
+            let stored = super::super::retention::store_task_summary_snapshot_page(
                 pool,
                 outcome,
                 batch_id,
                 page_index,
                 page.clone(),
             )
-            .await?
-            .is_none()
-            {
+            .await?;
+            if stored.is_none() {
                 return Err(super::super::retention::retention_write_deferred(
                     "archive_snapshot_page",
                 ));
+            }
+            #[cfg(test)]
+            if let Ok(counter) = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES
+                .try_with(Arc::clone)
+            {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             pages.push(page);
             #[cfg(test)]
@@ -1532,6 +1539,13 @@ async fn prepare_task_month_snapshot_pages(
             row_id = last.id;
             if super::super::retention::retention_run_remaining_budget()
                 .is_some_and(|remaining| remaining.is_zero()) {
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_snapshot_page",
+                ));
+            }
+            if super::super::retention::retention_run_shutdown_token()
+                .is_some_and(|shutdown| shutdown.is_cancelled())
+            {
                 return Err(super::super::retention::retention_write_deferred(
                     "archive_snapshot_page",
                 ));

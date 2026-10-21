@@ -6,9 +6,6 @@ pub(crate) const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 pub(crate) const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(crate) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 pub(crate) const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
-// Keep the archive run bounded while allowing one normal file-preparation cycle to finish.
-// Phase timings below make it possible to replace this calibration with a measured budget.
-pub(crate) const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(120);
 pub(crate) const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(2);
 pub(crate) const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub(crate) const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
@@ -854,6 +851,13 @@ impl RetentionWriteBudget {
         if breached {
             self.next_rows = self.next_rows.saturating_div(2).max(1);
         } else if elapsed <= RETENTION_WRITE_TARGET && estimated_bytes < RETENTION_WRITE_MAX_BYTES {
+            // A single oversized row must not leave the byte estimate high enough to force every
+            // later small commit through a one-row candidate. The actual micro-batch builder
+            // still enforces RETENTION_WRITE_MAX_BYTES for every candidate, so this only removes
+            // stale conservative state after a successful normal commit.
+            self.estimated_bytes_per_row = self
+                .estimated_bytes_per_row
+                .min(observed_bytes_per_row.saturating_mul(4).max(256));
             self.next_rows = self
                 .next_rows
                 .saturating_add(1)

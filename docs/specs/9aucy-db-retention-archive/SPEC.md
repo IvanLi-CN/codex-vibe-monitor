@@ -113,6 +113,8 @@
 
 `XY_RETENTION_BATCH_ROWS` 只限制候选扫描和 archive 准备上限，不得直接决定 SQLite 写事务大小。实际提交使用独立的自适应微批预算，默认从 4 行开始，最大 64 行或 1 MiB 估算写入，以 200ms 为目标、250ms 为告警线。
 
+生产 retention 调度不设置固定总工作预算；一次调度拥有一个已选定的有界逻辑工作单元，并在取消、真实压力/准入延期或操作级预算下安全结束。月度 Summary 页由 writer 各自短事务单次持久化，proof 阶段只校验已持久化页；崩溃/重启时的已发布 artifact 复用仍须重新验证 manifest、文件、coverage、keyset 和 source identity，不能成为正常跨任务续作。
+
 ## 归档与维护约束
 
 - 所有删除动作都必须遵守 `导出成功 -> Summary-eligible manifest 成功 -> 删除源数据`。`codex_invocations` manifest 只有在 Archive Publication Proof 完整时才能最终化为 `completed`。
