@@ -492,11 +492,12 @@ pub(crate) async fn retention_recovery_persist_failure(
         .failure_fingerprint
         .unwrap_or_default();
     let error_text = error.to_string();
-    let quarantine = error_text.contains("identity collision")
-        || error_text.contains("verification failed")
-        || error_text.contains("publication kind")
-        || error_text.contains("ownership verification")
-        || error_text.contains("semantic proof validation failed");
+    let quarantine = !is_retention_archive_file_work_transient(error)
+        && (error_text.contains("identity collision")
+            || error_text.contains("verification failed")
+            || error_text.contains("publication kind")
+            || error_text.contains("ownership verification")
+            || error_text.contains("semantic proof validation failed"));
     let Some(admission) = acquire_retention_write_admission("retention_recovery_failure").await
     else {
         retention_recovery_persist_scheduler_cursor_without_pressure(
@@ -791,56 +792,66 @@ pub(crate) async fn verify_prepared_retention_archive_artifact(
         retention_temp_suffix()
     ));
     let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
+    let operation_deadline = retention_archive_file_operation_deadline();
     inflate_gzip_sqlite_file_with_operation_budget(archive_path, &temp_path).await?;
-    let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
-    ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
-    let archive_ids =
-        sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
-            .fetch_all(&mut archive_db)
-            .await?;
-    let expected_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)?;
-    if descriptor.part_key.is_some() && archive_ids != expected_ids {
-        bail!("prepared archive source identity verification failed");
+    let remaining = operation_deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(retention_archive_file_operation_budget_exhausted());
     }
-    if descriptor.part_key.is_none()
-        && expected_ids
-            .iter()
-            .any(|expected_id| archive_ids.binary_search(expected_id).is_err())
-    {
-        bail!("prepared archive source identity verification failed");
-    }
-    let identity_ids = if descriptor.part_key.is_some() {
-        archive_ids.as_slice()
-    } else {
-        expected_ids.as_slice()
+    let verification = async {
+        let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
+        ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
+        let archive_ids =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
+                .fetch_all(&mut archive_db)
+                .await?;
+        let expected_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)?;
+        if descriptor.part_key.is_some() && archive_ids != expected_ids {
+            bail!("prepared archive source identity verification failed");
+        }
+        if descriptor.part_key.is_none()
+            && expected_ids
+                .iter()
+                .any(|expected_id| archive_ids.binary_search(expected_id).is_err())
+        {
+            bail!("prepared archive source identity verification failed");
+        }
+        let identity_ids = if descriptor.part_key.is_some() {
+            archive_ids.as_slice()
+        } else {
+            expected_ids.as_slice()
+        };
+        let archive_identity_matches = invocation_archive_source_identity_matches(
+            &mut archive_db,
+            InvocationArchiveIdentityDatabase::Main,
+            identity_ids,
+            &descriptor.source_identity_sha256,
+        )
+        .await?;
+        archive_db.close().await?;
+        if !archive_identity_matches {
+            bail!("prepared archive source identity verification failed");
+        }
+        let mut source_connection = pool.acquire().await?;
+        let source_identity_matches = invocation_archive_source_identity_matches(
+            &mut source_connection,
+            InvocationArchiveIdentityDatabase::Main,
+            &expected_ids,
+            &descriptor.source_identity_sha256,
+        )
+        .await?;
+        drop(source_connection);
+        if !source_identity_matches {
+            bail!("prepared archive live source identity verification failed");
+        }
+        if sha256_hex_file_with_deadline(archive_path, operation_deadline)? != expected_sha256 {
+            bail!("prepared archive artifact digest verification failed");
+        }
+        Ok::<i64, anyhow::Error>(archive_ids.len() as i64)
     };
-    let archive_identity_matches = invocation_archive_source_identity_matches(
-        &mut archive_db,
-        InvocationArchiveIdentityDatabase::Main,
-        identity_ids,
-        &descriptor.source_identity_sha256,
-    )
-    .await?;
-    archive_db.close().await?;
-    if !archive_identity_matches {
-        bail!("prepared archive source identity verification failed");
-    }
-    let mut source_connection = pool.acquire().await?;
-    let source_identity_matches = invocation_archive_source_identity_matches(
-        &mut source_connection,
-        InvocationArchiveIdentityDatabase::Main,
-        &expected_ids,
-        &descriptor.source_identity_sha256,
-    )
-    .await?;
-    drop(source_connection);
-    if !source_identity_matches {
-        bail!("prepared archive live source identity verification failed");
-    }
-    if sha256_hex_file(archive_path)? != expected_sha256 {
-        bail!("prepared archive artifact digest verification failed");
-    }
-    Ok(archive_ids.len() as i64)
+    tokio::time::timeout(remaining, verification)
+        .await
+        .map_err(|_| retention_archive_file_operation_budget_exhausted())?
 }
 
 pub(crate) fn retention_recovery_archive_outcome(

@@ -239,6 +239,7 @@ struct ArchiveSourceIdentityProof {
     _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
     connection: Option<SqliteConnection>,
     spec: ArchiveTableSpec,
+    operation_deadline: Instant,
 }
 
 fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
@@ -272,9 +273,11 @@ impl ArchiveSourceIdentityProof {
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
         #[cfg(test)]
         batch_admission::pause_before_archive_identity_proof_inflate().await;
-        let operation_budget = retention_run_remaining_budget()
-            .map(|remaining| remaining.min(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET))
-            .unwrap_or(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET);
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let operation_budget = operation_deadline.saturating_duration_since(Instant::now());
+        if operation_budget.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
         if !inflate_gzip_sqlite_file_with_budget(
             path,
             &proof_path,
@@ -285,12 +288,21 @@ impl ArchiveSourceIdentityProof {
         {
             bail!("retention archive identity proof inflate exceeded the operation deadline");
         }
-        let connection = open_archive_sqlite_connection(&proof_path).await?;
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        let connection = tokio::time::timeout(remaining, async {
+            open_archive_sqlite_connection(&proof_path).await
+        })
+        .await
+        .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
         Ok(Self {
             cleanup,
             _work_owner_file: work_owner_file,
             connection: Some(connection),
             spec,
+            operation_deadline,
         })
     }
 
@@ -299,16 +311,32 @@ impl ArchiveSourceIdentityProof {
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
-        if self.spec.dataset == "codex_invocations" {
-            invocation_archive_source_identity_sha256(
-                connection,
-                InvocationArchiveIdentityDatabase::Main,
-                ids,
+        let remaining = self
+            .operation_deadline
+            .saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        let result = if self.spec.dataset == "codex_invocations" {
+            tokio::time::timeout(
+                remaining,
+                invocation_archive_source_identity_sha256(
+                    connection,
+                    InvocationArchiveIdentityDatabase::Main,
+                    ids,
+                ),
             )
             .await
+            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
         } else {
-            archive_table_source_identity_sha256(connection, self.spec, "main", ids).await
-        }
+            tokio::time::timeout(
+                remaining,
+                archive_table_source_identity_sha256(connection, self.spec, "main", ids),
+            )
+            .await
+            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
+        }?;
+        Ok(result)
     }
 
     async fn has_exact_ids(&mut self, ids: &[i64], expected_count: i64) -> Result<bool> {
@@ -317,20 +345,32 @@ impl ArchiveSourceIdentityProof {
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
-        let archive_row_count =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
-                .fetch_one(&mut *connection)
-                .await
-                .context("count rows in archive source identity proof")?;
-        let selected_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM main.codex_invocations
-             WHERE id IN (SELECT value FROM json_each(?1))",
-        )
-        .bind(ids_json)
-        .fetch_one(&mut *connection)
+        let remaining = self
+            .operation_deadline
+            .saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        tokio::time::timeout(remaining, async {
+            let archive_row_count =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .context("count rows in archive source identity proof")?;
+            let selected_count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM main.codex_invocations
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(ids_json)
+            .fetch_one(&mut *connection)
+            .await
+            .context("count selected rows in archive source identity proof")?;
+            Ok::<bool, anyhow::Error>(
+                archive_row_count == expected_count && selected_count == expected_count,
+            )
+        })
         .await
-        .context("count selected rows in archive source identity proof")?;
-        Ok(archive_row_count == expected_count && selected_count == expected_count)
+        .map_err(|_| retention_archive_file_operation_budget_exhausted())?
     }
 
     async fn close(mut self) -> Result<()> {

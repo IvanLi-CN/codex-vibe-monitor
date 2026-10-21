@@ -865,6 +865,24 @@ pub(crate) fn sha256_hex_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+pub(crate) fn sha256_hex_file_with_deadline(path: &Path, deadline: Instant) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 8192];
+    loop {
+        if Instant::now() >= deadline {
+            return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+        }
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
