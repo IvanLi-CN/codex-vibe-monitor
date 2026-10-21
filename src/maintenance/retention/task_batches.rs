@@ -239,7 +239,6 @@ struct ArchiveSourceIdentityProof {
     _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
     connection: Option<SqliteConnection>,
     spec: ArchiveTableSpec,
-    operation_deadline: Instant,
 }
 
 fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
@@ -302,7 +301,6 @@ impl ArchiveSourceIdentityProof {
             _work_owner_file: work_owner_file,
             connection: Some(connection),
             spec,
-            operation_deadline,
         })
     }
 
@@ -311,9 +309,8 @@ impl ArchiveSourceIdentityProof {
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
-        let remaining = self
-            .operation_deadline
-            .saturating_duration_since(Instant::now());
+        let remaining =
+            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(retention_archive_file_operation_budget_exhausted());
         }
@@ -345,9 +342,8 @@ impl ArchiveSourceIdentityProof {
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
-        let remaining = self
-            .operation_deadline
-            .saturating_duration_since(Instant::now());
+        let remaining =
+            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(retention_archive_file_operation_budget_exhausted());
         }

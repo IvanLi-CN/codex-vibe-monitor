@@ -289,6 +289,14 @@ impl RetentionArchiveFileLock {
     }
 }
 
+struct ArchiveLockCancellationSignal(Arc<AtomicBool>);
+
+impl Drop for ArchiveLockCancellationSignal {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn retention_file_lock(
     path: &Path,
@@ -339,23 +347,97 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
     retention_file_lock(path, libc::LOCK_EX, retention_archive_locks_are_try_only())
 }
 
+#[cfg(unix)]
+fn retention_file_lock_until(
+    path: &Path,
+    deadline: Instant,
+    cancellation: &AtomicBool,
+    shutdown: Option<&CancellationToken>,
+    try_only: bool,
+) -> Result<RetentionArchiveFileLock> {
+    if try_only {
+        return retention_file_lock(path, libc::LOCK_EX, true);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("archive path has no parent directory"))?;
+    let file = match File::open(parent) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RetentionArchiveFileLock(None));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to open archive directory lock: {}",
+                    parent.display()
+                )
+            });
+        }
+    };
+    loop {
+        if cancellation.load(Ordering::Acquire)
+            || shutdown.is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(retention_write_deferred("archive_file_lock"));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            return Ok(RetentionArchiveFileLock(Some(file)));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EAGAIN)
+            && error.raw_os_error() != Some(libc::EWOULDBLOCK)
+        {
+            return Err(error).with_context(|| {
+                format!("failed to lock archive directory: {}", parent.display())
+            });
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
 pub(crate) async fn retention_archive_file_lock_async(
     path: &Path,
 ) -> Result<RetentionArchiveFileLock> {
     let path = path.to_path_buf();
+    let deadline = retention_archive_file_operation_deadline();
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(retention_archive_file_operation_budget_exhausted());
+    }
     let try_only = retention_archive_locks_are_try_only();
-    tokio::task::spawn_blocking(move || {
+    let shutdown = retention_run_shutdown_token();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let _cancellation_signal = ArchiveLockCancellationSignal(Arc::clone(&cancellation));
+    let worker_cancellation = Arc::clone(&cancellation);
+    let worker = tokio::task::spawn_blocking(move || {
         #[cfg(unix)]
         {
-            retention_file_lock(&path, libc::LOCK_EX, try_only)
+            retention_file_lock_until(
+                &path,
+                deadline,
+                &worker_cancellation,
+                shutdown.as_ref(),
+                try_only,
+            )
         }
         #[cfg(not(unix))]
         {
             retention_archive_file_lock(&path)
         }
-    })
-    .await
-    .context("archive directory lock worker panicked")?
+    });
+    match tokio::time::timeout(remaining, worker).await {
+        Ok(joined) => joined.context("archive directory lock worker panicked")?,
+        Err(_) => {
+            cancellation.store(true, Ordering::Release);
+            Err(retention_archive_file_operation_budget_exhausted())
+        }
+    }
 }
 
 #[cfg(unix)]
