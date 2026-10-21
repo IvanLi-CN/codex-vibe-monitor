@@ -231,21 +231,24 @@ pub(crate) async fn compact_old_quota_snapshots(
                 );
             }
             drop(connection);
-            let archive_future =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
             let remaining = super::super::retention::retention_run_remaining_budget();
             #[cfg(test)]
             let remaining = RETENTION_TEST_QUOTA_ARCHIVE_PREPARE_BUDGET
                 .try_with(|budget| *budget)
                 .ok()
                 .or(remaining);
-            let archive_result = if let Some(remaining) = remaining {
-                match tokio::time::timeout(remaining, archive_future).await {
-                    Ok(result) => result,
-                    Err(_) => return Ok((rows_archived, archive_batches)),
+            let archive_result = {
+                let archive_future =
+                    archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
+                tokio::pin!(archive_future);
+                if let Some(remaining) = remaining {
+                    match tokio::time::timeout(remaining, &mut archive_future).await {
+                        Ok(result) => result,
+                        Err(_) => return Ok((rows_archived, archive_batches)),
+                    }
+                } else {
+                    archive_future.await
                 }
-            } else {
-                archive_future.await
             };
             let Some(mut archive_outcome) =
                 super::super::retention::retention_prepared_batch_or_deferred(archive_result)?

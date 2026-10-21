@@ -428,10 +428,16 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             let suffix = retention_temp_suffix();
             let work_path = PathBuf::from(format!("{}.{}.sqlite", batch.file_path, suffix));
             let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", batch.file_path, suffix));
-            let _ = fs::remove_file(&work_path);
-            let _ = fs::remove_file(&temp_gzip_path);
+            remove_temp_sqlite_artifacts(&work_path);
+            remove_temp_sqlite_artifacts(&temp_gzip_path);
 
-            inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &work_path).await?;
+            if let Err(error) =
+                inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &work_path).await
+            {
+                remove_temp_sqlite_artifacts(&work_path);
+                remove_temp_sqlite_artifacts(&temp_gzip_path);
+                return Err(error);
+            }
 
             let backfill_outcome = async {
                 let mut conn = open_archive_sqlite_connection(&work_path).await?;
@@ -450,8 +456,8 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             let outcome = match backfill_outcome {
                 Ok(outcome) => outcome,
                 Err(err) => {
-                    let _ = fs::remove_file(&work_path);
-                    let _ = fs::remove_file(&temp_gzip_path);
+                    remove_temp_sqlite_artifacts(&work_path);
+                    remove_temp_sqlite_artifacts(&temp_gzip_path);
                     return Err(err);
                 }
             };
@@ -467,16 +473,16 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             }
 
             if let Err(err) = finalize_archive_sqlite_file(&work_path).await {
-                let _ = fs::remove_file(&work_path);
-                let _ = fs::remove_file(&temp_gzip_path);
+                remove_temp_sqlite_artifacts(&work_path);
+                remove_temp_sqlite_artifacts(&temp_gzip_path);
                 return Err(err);
             }
             if let Err(err) =
                 deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path)
                     .await
             {
-                let _ = fs::remove_file(&work_path);
-                let _ = fs::remove_file(&temp_gzip_path);
+                remove_temp_sqlite_artifacts(&work_path);
+                remove_temp_sqlite_artifacts(&temp_gzip_path);
                 return Err(err);
             }
             // The startup caller already owns the coordinated P2 write permit. Acquiring the
@@ -501,8 +507,8 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             .execute(pool)
             .await?;
             if staged.rows_affected() != 1 {
-                let _ = fs::remove_file(&work_path);
-                let _ = fs::remove_file(&temp_gzip_path);
+                remove_temp_sqlite_artifacts(&work_path);
+                remove_temp_sqlite_artifacts(&temp_gzip_path);
                 return Err(anyhow::anyhow!(
                     "archive public-id backfill replacement staging conflict; retry batch"
                 ));
@@ -522,16 +528,16 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             .await?;
             let Some((current_sha256, existing_staged_path)) = current_state else {
                 tx.rollback().await?;
-                let _ = fs::remove_file(&work_path);
-                let _ = fs::remove_file(&temp_gzip_path);
+                remove_temp_sqlite_artifacts(&work_path);
+                remove_temp_sqlite_artifacts(&temp_gzip_path);
                 continue;
             };
             if current_sha256.as_deref() != Some(expected_existing_sha256)
                 || existing_staged_path.as_deref() != Some(staged_path_string.as_str())
             {
                 tx.rollback().await?;
-                let _ = fs::remove_file(&work_path);
-                let _ = fs::remove_file(&temp_gzip_path);
+                remove_temp_sqlite_artifacts(&work_path);
+                remove_temp_sqlite_artifacts(&temp_gzip_path);
                 continue;
             }
             if had_existing_file {
@@ -582,7 +588,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 }
                 return Err(error);
             }
-            let _ = fs::remove_file(&work_path);
+            remove_temp_sqlite_artifacts(&work_path);
 
             if let Err(error) = sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
                 .bind(&sha256)
@@ -844,8 +850,8 @@ async fn archive_rows_into_month_batch_with_snapshots(
     let temp_gzip_path = PathBuf::from(format!("{}.task-{}.tmp", final_path.display(), suffix));
     let _work_owner_file =
         super::archive_task_work::create_task_work_file(&final_path, &work_path)?;
-    // Drop also runs when the caller's timeout cancels this future. Never hand unfinished
-    // work files to a later retention run.
+    // Cleanup is fenced while a blocking archive worker still owns the destination. Its error
+    // path removes partial output before the next retention run can reuse the work directory.
     let _work_cleanup = TempSqliteCleanup::new(work_path.clone());
     let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
     writer_observation.advance(MonthlyWriterPhase::PredecessorDigest);
@@ -890,7 +896,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
     }
 
     if temp_gzip_path.exists() {
-        let _ = fs::remove_file(&temp_gzip_path);
+        remove_temp_sqlite_artifacts(&temp_gzip_path);
     }
 
     let has_summary_pages = snapshots.is_some();
@@ -1101,8 +1107,8 @@ async fn archive_rows_into_month_batch_with_snapshots(
     ) = match row_count {
         Ok(values) => values,
         Err(err) => {
-            let _ = fs::remove_file(&work_path);
-            let _ = fs::remove_file(&temp_gzip_path);
+            remove_temp_sqlite_artifacts(&work_path);
+            remove_temp_sqlite_artifacts(&temp_gzip_path);
             return Err(err);
         }
     };
@@ -1112,8 +1118,8 @@ async fn archive_rows_into_month_batch_with_snapshots(
     }
     writer_observation.advance(MonthlyWriterPhase::Finalize);
     if let Err(err) = finalize_archive_sqlite_file(&work_path).await {
-        let _ = fs::remove_file(&work_path);
-        let _ = fs::remove_file(&temp_gzip_path);
+        remove_temp_sqlite_artifacts(&work_path);
+        remove_temp_sqlite_artifacts(&temp_gzip_path);
         return Err(err);
     }
 
@@ -1125,15 +1131,15 @@ async fn archive_rows_into_month_batch_with_snapshots(
                 final_path.display()
             )
         }) {
-            let _ = fs::remove_file(&work_path);
-            let _ = fs::remove_file(&temp_gzip_path);
+            remove_temp_sqlite_artifacts(&work_path);
+            remove_temp_sqlite_artifacts(&temp_gzip_path);
             return Err(err);
         }
     } else if let Err(err) =
         deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await
     {
-        let _ = fs::remove_file(&work_path);
-        let _ = fs::remove_file(&temp_gzip_path);
+        remove_temp_sqlite_artifacts(&work_path);
+        remove_temp_sqlite_artifacts(&temp_gzip_path);
         return Err(err);
     }
     writer_observation.advance(MonthlyWriterPhase::OutputDigest);
@@ -1199,8 +1205,8 @@ async fn archive_rows_into_month_batch_with_snapshots(
     )
     .await
     {
-        let _ = fs::remove_file(&work_path);
-        let _ = fs::remove_file(&temp_gzip_path);
+        remove_temp_sqlite_artifacts(&work_path);
+        remove_temp_sqlite_artifacts(&temp_gzip_path);
         return Err(err);
     }
     if let (Some(batch_id), Some(snapshots)) = (snapshot_batch_id, snapshots) {

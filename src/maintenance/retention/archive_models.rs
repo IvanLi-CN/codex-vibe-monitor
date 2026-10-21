@@ -402,6 +402,13 @@ pub(crate) fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
+    if crate::is_archive_file_operation_active(path) {
+        return;
+    }
+    remove_temp_sqlite_artifacts_unchecked(path);
+}
+
+pub(crate) fn remove_temp_sqlite_artifacts_unchecked(path: &Path) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(temp_sqlite_source_meta_path(path));
     for suffix in ["-journal", "-wal", "-shm"] {

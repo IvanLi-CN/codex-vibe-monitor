@@ -9,12 +9,15 @@ use std::os::fd::AsRawFd;
 pub(crate) struct TaskWorkOwner {
     file: Option<File>,
     path: PathBuf,
+    work_path: PathBuf,
 }
 
 impl Drop for TaskWorkOwner {
     fn drop(&mut self) {
         drop(self.file.take());
-        let _ = fs::remove_file(&self.path);
+        if !crate::is_archive_file_operation_active(&self.work_path) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -55,6 +58,7 @@ pub(super) fn create_task_work_file(final_path: &Path, work_path: &Path) -> Resu
     Ok(TaskWorkOwner {
         file: Some(owner_file),
         path: owner_path,
+        work_path: work_path.to_path_buf(),
     })
 }
 
@@ -136,6 +140,10 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
             ));
         }
         let owner_path = parent.join(format!("{stem}.owner"));
+        let work_path = parent.join(format!("{stem}.sqlite"));
+        if crate::is_archive_file_operation_active(&work_path) {
+            continue;
+        }
         let owner_file = match fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -151,7 +159,6 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
             Err(error) => return Err(error.into()),
         };
         if owner_file.is_none() {
-            let work_path = parent.join(format!("{stem}.sqlite"));
             match fs::symlink_metadata(&work_path) {
                 Ok(metadata) if !metadata.is_file() => continue,
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {

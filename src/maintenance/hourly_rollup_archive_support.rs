@@ -2,12 +2,17 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Asia::Shanghai;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     env, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -19,6 +24,41 @@ use crate::{
 };
 
 static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ACTIVE_ARCHIVE_FILE_OPERATIONS: Lazy<std::sync::Mutex<HashSet<PathBuf>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashSet::new()));
+
+struct ArchiveFileOperationLease {
+    path: PathBuf,
+    timed_out: Arc<AtomicBool>,
+}
+
+impl ArchiveFileOperationLease {
+    fn register(path: PathBuf) -> Option<Self> {
+        let mut active = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock().ok()?;
+        if !active.insert(path.clone()) {
+            return None;
+        }
+        Some(Self {
+            path,
+            timed_out: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+
+impl Drop for ArchiveFileOperationLease {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock() {
+            active.remove(&self.path);
+        }
+    }
+}
+
+pub(crate) fn is_archive_file_operation_active(path: &Path) -> bool {
+    ACTIVE_ARCHIVE_FILE_OPERATIONS
+        .lock()
+        .map(|active| active.contains(path))
+        .unwrap_or(true)
+}
 
 pub(crate) fn resolved_raw_path_candidates(
     path: &str,
@@ -346,14 +386,18 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
 ) -> Result<()> {
     let source = source.to_path_buf();
     let destination = destination.to_path_buf();
-    run_archive_file_work_with_operation_budget("inflate", move |deadline, shutdown| {
-        inflate_gzip_sqlite_file_with_limits(
-            &source,
-            &destination,
-            Some(deadline),
-            shutdown.as_ref(),
-        )
-    })
+    run_archive_file_work_with_operation_budget(
+        "inflate",
+        destination.clone(),
+        move |deadline, shutdown| {
+            inflate_gzip_sqlite_file_with_limits(
+                &source,
+                &destination,
+                Some(deadline),
+                shutdown.as_ref(),
+            )
+        },
+    )
     .await
 }
 
@@ -397,14 +441,18 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
 ) -> Result<()> {
     let source = source.to_path_buf();
     let destination = destination.to_path_buf();
-    run_archive_file_work_with_operation_budget("deflate", move |deadline, shutdown| {
-        deflate_sqlite_file_to_gzip_with_limits(
-            &source,
-            &destination,
-            Some(deadline),
-            shutdown.as_ref(),
-        )
-    })
+    run_archive_file_work_with_operation_budget(
+        "deflate",
+        destination.clone(),
+        move |deadline, shutdown| {
+            deflate_sqlite_file_to_gzip_with_limits(
+                &source,
+                &destination,
+                Some(deadline),
+                shutdown.as_ref(),
+            )
+        },
+    )
     .await
 }
 
@@ -443,6 +491,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
 
 async fn run_archive_file_work_with_operation_budget<F>(
     operation: &'static str,
+    destination: PathBuf,
     work: F,
 ) -> Result<()>
 where
@@ -450,10 +499,45 @@ where
 {
     let deadline = super::retention::retention_archive_file_operation_deadline();
     let shutdown = super::retention::retention_run_shutdown_token();
-    // Await the blocking worker so temp-file cleanup cannot race native file I/O after a stop.
-    tokio::task::spawn_blocking(move || work(deadline, shutdown))
-        .await
-        .with_context(|| format!("retention archive {operation} worker panicked"))??;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+    }
+    let Some(lease) = ArchiveFileOperationLease::register(destination.clone()) else {
+        return Err(super::retention::retention_write_deferred(
+            "archive_file_work",
+        ));
+    };
+    let timed_out = Arc::clone(&lease.timed_out);
+    let worker_timed_out = Arc::clone(&timed_out);
+    let worker = tokio::task::spawn_blocking(move || {
+        let _lease = lease;
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(deadline, shutdown)));
+        match result {
+            Ok(result) => {
+                if result.is_err() || worker_timed_out.load(Ordering::Acquire) {
+                    super::retention::remove_temp_sqlite_artifacts_unchecked(&destination);
+                }
+                result
+            }
+            Err(payload) => {
+                super::retention::remove_temp_sqlite_artifacts_unchecked(&destination);
+                std::panic::resume_unwind(payload);
+            }
+        }
+    });
+    // A native read/write cannot be aborted safely. Return at the operation deadline, but keep
+    // the lease alive in the worker so concurrent cleanup cannot remove its destination.
+    match tokio::time::timeout(remaining, worker).await {
+        Ok(joined) => {
+            joined.with_context(|| format!("retention archive {operation} worker panicked"))??
+        }
+        Err(_) => {
+            timed_out.store(true, Ordering::Release);
+            return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+        }
+    }
     Ok(())
 }
 

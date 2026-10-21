@@ -1287,27 +1287,30 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     )
                 } else {
                     let mut snapshot_pages = Vec::new();
-                    let archive_future = archive_rows_into_task_month_batch(
-                        pool,
-                        config,
-                        spec,
-                        &group_key,
-                        &ids,
-                        &mut snapshot_pages,
-                    );
                     let archive_writer_started = Instant::now();
-                    let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                        match tokio::time::timeout(remaining, archive_future).await {
-                            Ok(result) => result,
-                            Err(_) => {
-                                batch_observation
-                                    .archive_writer_finished(archive_writer_started.elapsed());
-                                recovery_diagnostic.mark_budget();
-                                break;
+                    let archive_result = {
+                        let archive_future = archive_rows_into_task_month_batch(
+                            pool,
+                            config,
+                            spec,
+                            &group_key,
+                            &ids,
+                            &mut snapshot_pages,
+                        );
+                        tokio::pin!(archive_future);
+                        if let Some(remaining) = retention_run_remaining_budget() {
+                            match tokio::time::timeout(remaining, &mut archive_future).await {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    batch_observation
+                                        .archive_writer_finished(archive_writer_started.elapsed());
+                                    recovery_diagnostic.mark_budget();
+                                    break;
+                                }
                             }
+                        } else {
+                            archive_future.await
                         }
-                    } else {
-                        archive_future.await
                     };
                     batch_observation.archive_writer_finished(archive_writer_started.elapsed());
                     let Some(mut archive_outcome) = (match archive_result {
@@ -1940,19 +1943,23 @@ pub(crate) async fn archive_timestamped_dataset(
             drop(source_verify_phase);
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_writer_started = Instant::now();
-            let archive_future =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
-            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, archive_future).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
-                        recovery_diagnostic.mark_budget();
-                        break;
+            let archive_result = {
+                let archive_future =
+                    archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
+                tokio::pin!(archive_future);
+                if let Some(remaining) = retention_run_remaining_budget() {
+                    match tokio::time::timeout(remaining, &mut archive_future).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            batch_observation
+                                .archive_writer_finished(archive_writer_started.elapsed());
+                            recovery_diagnostic.mark_budget();
+                            break;
+                        }
                     }
+                } else {
+                    archive_future.await
                 }
-            } else {
-                archive_future.await
             };
             batch_observation.archive_writer_finished(archive_writer_started.elapsed());
             let Some(mut archive_outcome) =
