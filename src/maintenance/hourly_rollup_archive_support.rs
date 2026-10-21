@@ -900,4 +900,68 @@ mod tests {
         drop(second);
         assert!(!is_archive_file_operation_active(&source));
     }
+
+    #[tokio::test]
+    async fn archive_file_work_timeout_keeps_worker_lease_until_drain() {
+        let suffix = RETENTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let work_path = PathBuf::from(format!("archive-timeout-worker-{suffix}.sqlite"));
+        let worker_started = Arc::new(AtomicBool::new(false));
+        let worker_release = Arc::new(AtomicBool::new(false));
+        let started = Arc::clone(&worker_started);
+        let release = Arc::clone(&worker_release);
+        let task = tokio::spawn(run_archive_file_work_with_deadline(
+            ArchiveFileWorkRequest {
+                operation: "test_archive_file_timeout",
+                protected_paths: vec![work_path.clone()],
+                shared_read_paths: Vec::new(),
+                failure_cleanup_paths: Vec::new(),
+                timeout_cleanup_paths: Vec::new(),
+                deadline: None,
+                timeout: Some(Duration::from_millis(20)),
+                shutdown: None,
+            },
+            move |_, _| {
+                started.store(true, Ordering::Release);
+                while !release.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            },
+        ));
+
+        if tokio::time::timeout(Duration::from_secs(1), async {
+            while !worker_started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            worker_release.store(true, Ordering::Release);
+            panic!("archive worker did not start");
+        }
+
+        let result = match tokio::time::timeout(Duration::from_secs(1), task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                worker_release.store(true, Ordering::Release);
+                panic!("archive worker task failed: {error}");
+            }
+            Err(_) => {
+                worker_release.store(true, Ordering::Release);
+                panic!("archive worker timeout did not return");
+            }
+        };
+        assert!(result.is_err());
+        assert!(is_archive_file_operation_active(&work_path));
+        worker_release.store(true, Ordering::Release);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while is_archive_file_operation_active(&work_path) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("archive worker should drain and release its lease");
+    }
 }
