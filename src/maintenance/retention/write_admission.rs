@@ -339,6 +339,25 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
     retention_file_lock(path, libc::LOCK_EX, retention_archive_locks_are_try_only())
 }
 
+pub(crate) async fn retention_archive_file_lock_async(
+    path: &Path,
+) -> Result<RetentionArchiveFileLock> {
+    let path = path.to_path_buf();
+    let try_only = retention_archive_locks_are_try_only();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        {
+            retention_file_lock(&path, libc::LOCK_EX, try_only)
+        }
+        #[cfg(not(unix))]
+        {
+            retention_archive_file_lock(&path)
+        }
+    })
+    .await
+    .context("archive directory lock worker panicked")?
+}
+
 #[cfg(unix)]
 pub(crate) fn retention_task_work_directory_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
     match retention_file_lock(path, libc::LOCK_EX, true) {
@@ -698,6 +717,10 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
 
 pub(crate) fn retention_maintenance_is_active() -> bool {
     RETENTION_MAINTENANCE_ACTIVE.try_with(|_| ()).is_ok()
+}
+
+pub(crate) fn retention_prepared_archive_isolation_active() -> bool {
+    retention_run_remaining_budget().is_some() || (retention_maintenance_is_active() && !cfg!(test))
 }
 
 fn configured_retention_write_admission_budget() -> Duration {
@@ -1477,7 +1500,14 @@ pub(crate) async fn acquire_retention_pool_connection(
                 }
             }
         } else {
-            pool.acquire().await.map(Some)
+            let (admission_budget, timeout_reason) = retention_write_admission_budget();
+            match tokio::time::timeout(admission_budget, pool.acquire()).await {
+                Ok(result) => result.map(Some),
+                Err(_) => {
+                    retention_record_defer(operation, timeout_reason);
+                    Ok(None)
+                }
+            }
         }
     };
     let result = if let Some(shutdown) = shutdown.as_ref() {

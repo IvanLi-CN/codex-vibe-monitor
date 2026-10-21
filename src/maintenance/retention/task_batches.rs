@@ -790,6 +790,10 @@ pub(crate) async fn prune_old_invocation_details(
                         break;
                     }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        retention_record_defer(
+                            "archive_identity_proof",
+                            RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
+                        );
                         recovery_diagnostic.mark_budget();
                         break;
                     }
@@ -1382,6 +1386,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             break;
                         }
                         Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                            retention_record_defer(
+                                "archive_identity_proof",
+                                RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
+                            );
                             recovery_diagnostic.mark_budget();
                             break;
                         }
@@ -2017,6 +2025,10 @@ pub(crate) async fn archive_timestamped_dataset(
                         break;
                     }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        retention_record_defer(
+                            "archive_identity_proof",
+                            RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
+                        );
                         recovery_diagnostic.mark_budget();
                         break;
                     }

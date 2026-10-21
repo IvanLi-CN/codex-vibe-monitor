@@ -416,8 +416,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
-            let _archive_lock =
-                super::super::retention::retention_archive_file_lock(&archive_path)?;
+            let _archive_lock = super::super::retention::retention_archive_file_lock_async(
+                &archive_path,
+            )
+            .await?;
             if !archive_path.is_file()
                 || sha256_hex_file(&archive_path)? != expected_existing_sha256
             {

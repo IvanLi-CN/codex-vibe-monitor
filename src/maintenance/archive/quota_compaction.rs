@@ -277,9 +277,10 @@ pub(crate) async fn compact_old_quota_snapshots(
             if super::super::retention::retention_run_budget_expired() {
                 return Ok((rows_archived, archive_batches));
             }
-            let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(
-                &archive_outcome.file_path,
-            ))?;
+            let _archive_lock = super::super::retention::retention_archive_file_lock_async(
+                Path::new(&archive_outcome.file_path),
+            )
+            .await?;
             let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
                 Ok(value) => value,
                 Err(_) => return Ok((rows_archived, archive_batches)),

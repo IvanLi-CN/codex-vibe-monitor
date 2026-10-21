@@ -431,7 +431,6 @@ pub(super) async fn acquire_write_connection(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
-    let wait_for_busy = wait_for_busy && retention_run_remaining_budget().is_some();
     loop {
         if let Some(reason) = gate.background_deny_reason()
             && (!wait_for_busy
@@ -519,7 +518,6 @@ pub(super) async fn acquire_write_admission(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
-    let wait_for_busy = wait_for_busy && retention_run_remaining_budget().is_some();
     loop {
         let generation = gate.eligibility_generation();
         if let Some(reason) = gate.background_deny_reason() {
@@ -593,9 +591,15 @@ async fn wait_for_background_change(
     operation: &'static str,
     generation: u64,
 ) -> bool {
-    let Some(remaining) = retention_run_remaining_budget() else {
-        return false;
+    let (remaining, timeout_reason) = if let Some(remaining) = retention_run_remaining_budget() {
+        (remaining, "retention_work_budget")
+    } else {
+        retention_write_admission_budget()
     };
+    if remaining.is_zero() {
+        retention_record_defer(operation, timeout_reason);
+        return false;
+    }
     let eligible = tokio::time::timeout(remaining, gate.wait_for_eligibility_change(generation));
     let result = if let Some(shutdown) = retention_run_shutdown_token() {
         tokio::select! {
@@ -610,7 +614,7 @@ async fn wait_for_background_change(
         eligible.await
     };
     if result.is_err() {
-        retention_record_defer(operation, "retention_work_budget");
+        retention_record_defer(operation, timeout_reason);
         return false;
     }
     true

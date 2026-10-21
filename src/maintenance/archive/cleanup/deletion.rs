@@ -91,8 +91,10 @@ pub(super) async fn stage_archive_batch_deletion(
     expected_sha256: &str,
     source_safe_start: Option<NaiveDate>,
 ) -> Result<bool> {
-    let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
-        .context("failed to lock archive cleanup path")?;
+    let _archive_lock =
+        super::super::retention::retention_archive_file_lock_async(Path::new(file_path))
+            .await
+            .context("failed to lock archive cleanup path")?;
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("archive_cleanup_stage").await
     else {
@@ -250,7 +252,8 @@ where
     let parent_identity =
         super::super::retention::retention_archive_parent_identity(Path::new(file_path));
     let mut archive_lock =
-        super::super::retention::retention_archive_file_lock(Path::new(file_path))
+        super::super::retention::retention_archive_file_lock_async(Path::new(file_path))
+            .await
             .context("failed to lock archive cleanup path")?;
     let Some(_archive_operation_lease) =
         crate::try_acquire_archive_file_operation_lease(Path::new(file_path))
@@ -329,7 +332,8 @@ where
         };
         if parent.exists() {
             archive_lock =
-                super::super::retention::retention_archive_file_lock(Path::new(file_path))
+                super::super::retention::retention_archive_file_lock_async(Path::new(file_path))
+                    .await
                     .context("failed to lock recreated archive cleanup path")?;
             if !archive_lock.is_held() {
                 tx.rollback().await?;

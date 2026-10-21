@@ -1445,7 +1445,7 @@ pub(crate) async fn retire_task_local_quarantines(
             break;
         }
         let path = Path::new(&file);
-        let _lock = retention_archive_file_lock(path)?;
+        let _lock = retention_archive_file_lock_async(path).await?;
         let Some(_admission) = acquire_retention_write_admission("legacy_quarantine_cleanup").await
         else {
             break;
@@ -1478,7 +1478,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
-    if retention_maintenance_is_active() {
+    if retention_prepared_archive_isolation_active() {
         // Compatibility isolation only. A current task never continues source mutations
         // from the previous program's prepared artifact or source_ids cursor.
         let pending: bool = sqlx::query_scalar(
@@ -1626,7 +1626,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
             // The restore decision and the cleanup of its journal pointer must share the same
             // directory fence as the publisher. A pre-lock snapshot could otherwise overwrite a
             // newer retry artifact or clear a newly written staging path.
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1749,7 +1749,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
         // and is still missing, remove only this orphaned journal row so the source rows can be
         // prepared again on the next bounded pass.
         if state == RETENTION_RECOVERY_STATE_PREPARING && !path.exists() {
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1801,7 +1801,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PREPARING && path.is_file() {
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1900,7 +1900,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PUBLISHED {
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1989,7 +1989,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
                 // Hold the archive lock before resolving ownership and keep it through the
                 // delete/ledger transaction so a replacement cannot win between the check and
                 // physical removal.
-                let archive_lock = match retention_archive_file_lock(path) {
+                let archive_lock = match retention_archive_file_lock_async(path).await {
                     Ok(lock) => lock,
                     Err(error) => prepared_item_failure!(error),
                 };
@@ -2112,7 +2112,7 @@ pub(crate) async fn reconcile_staged_archive_replacements(
     drop(probe);
     for (id, file_path) in rows {
         let path = Path::new(&file_path);
-        let archive_lock = match retention_archive_file_lock(path) {
+        let archive_lock = match retention_archive_file_lock_async(path).await {
             Ok(lock) => lock,
             Err(error) => {
                 retention_recovery_record_failure("legacy_reconcile", &error);

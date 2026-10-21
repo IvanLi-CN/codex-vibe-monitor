@@ -173,7 +173,7 @@ where
             unavailable_archive_file_paths.push(archive_file.file_path.clone());
             continue;
         }
-        let _archive_lock = match retention_archive_file_lock(&archive_path) {
+        let _archive_lock = match retention_archive_file_lock_async(&archive_path).await {
             Ok(lock) => lock,
             Err(error) => {
                 warn!(
@@ -621,7 +621,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             source_incomplete = true;
             continue;
         }
-        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let _archive_lock = retention_archive_file_lock_async(&archive_path).await?;
         let Some(expected_sha256) = archive_file.sha256.as_deref() else {
             source_incomplete = true;
             continue;

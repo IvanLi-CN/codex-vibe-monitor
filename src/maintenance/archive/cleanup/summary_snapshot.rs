@@ -1231,7 +1231,8 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
-    let _archive_lock = super::super::retention::retention_archive_file_lock(archive_path)?;
+    let _archive_lock =
+        super::super::retention::retention_archive_file_lock_async(archive_path).await?;
     let Some(_admission) = super::super::retention::acquire_retention_write_admission(
         "summary_archive_snapshot_backfill",
     )

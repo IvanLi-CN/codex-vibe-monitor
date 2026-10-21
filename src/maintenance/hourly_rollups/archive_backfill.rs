@@ -31,7 +31,7 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             }
-            let _archive_lock = retention_archive_file_lock(&archive_path)?;
+            let _archive_lock = retention_archive_file_lock_async(&archive_path).await?;
             let Some(expected_sha256) = archive_file.sha256.as_deref() else {
                 remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
