@@ -2360,6 +2360,78 @@ async fn pool_openai_v1_responses_server_error_overload_caps_preceding_429_attem
     upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn pool_openai_v1_responses_legacy_overload_keeps_group_429_budget() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer legacy-after-429-budget",
+            &[
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::LegacyOverload,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Legacy After 429 Budget",
+        "legacy-after-429-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 5 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable legacy after 429 account retry settings");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-legacy-after-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read legacy after 429 budget body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 legacy after 429 budget body");
+    assert!(body_text.contains("server_is_overloaded"));
+
+    let attempts = attempts
+        .lock()
+        .expect("lock legacy after 429 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer legacy-after-429-budget").copied(),
+        Some(5)
+    );
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn pool_responses_classify_account_concurrency_rate_limit_as_retryable_overload() {
     let payload = br#"event: response.failed

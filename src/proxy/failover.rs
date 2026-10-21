@@ -1956,16 +1956,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         let model_mapping_pattern = model_mapping
             .as_ref()
             .map(|mapping| mapping.source_model.as_str());
-        let same_account_attempt_loop_budget =
-            if pool_uses_responses_family_retry_budget_policy(original_uri, &method) {
-                // Responses early failures share the four-attempt budget so a
-                // later canonical server_error cannot extend retries past it.
-                overload_same_account_attempt_budget
-            } else {
-                overload_same_account_attempt_budget
-                    .saturating_add(1)
-                    .saturating_add(group_upstream_429_max_retries)
-            };
+        let same_account_attempt_loop_budget = if priority_handoff_admitted {
+            1
+        } else {
+            overload_same_account_attempt_budget
+                .saturating_add(1)
+                .saturating_add(group_upstream_429_max_retries)
+        };
         let mut group_upstream_429_retry_count = 0_u8;
         let mut retried_upstream_413_for_account = last_error.as_ref().is_some_and(|err| {
             err.status == StatusCode::PAYLOAD_TOO_LARGE
@@ -3534,12 +3531,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     status,
                     priority_handoff_admitted,
                     retried_upstream_413_for_account,
-                ) && same_account_only_retry_has_budget
-                    && same_account_attempt + 1 < same_account_attempt_loop_budget;
+                ) && same_account_only_retry_has_budget;
                 let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
                     && group_upstream_429_retry_count < group_upstream_429_max_retries
-                    && same_account_only_retry_has_budget
-                    && same_account_attempt + 1 < same_account_attempt_loop_budget;
+                    && same_account_only_retry_has_budget;
                 let upstream_request_id_header = response
                     .headers()
                     .get("x-request-id")

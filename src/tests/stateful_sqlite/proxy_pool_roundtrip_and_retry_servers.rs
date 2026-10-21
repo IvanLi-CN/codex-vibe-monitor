@@ -298,6 +298,7 @@ struct PoolResponseFailedSequenceUpstreamState {
 #[derive(Clone, Copy)]
 pub(crate) enum PoolResponsesRetrySequenceStep {
     CanonicalOverload,
+    LegacyOverload,
     PayloadTooLarge,
     RateLimited,
 }
@@ -916,7 +917,24 @@ async fn pool_responses_retry_sequence_upstream(
         .and_then(|steps| steps.get(attempt.saturating_sub(1)))
         .copied()
     {
-        Some(PoolResponsesRetrySequenceStep::CanonicalOverload) => {
+        Some(
+            step @ (PoolResponsesRetrySequenceStep::CanonicalOverload
+            | PoolResponsesRetrySequenceStep::LegacyOverload),
+        ) => {
+            let (failure_code, failure_message) = match step {
+                PoolResponsesRetrySequenceStep::CanonicalOverload => (
+                    "server_error",
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+                PoolResponsesRetrySequenceStep::LegacyOverload => (
+                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+                PoolResponsesRetrySequenceStep::PayloadTooLarge
+                | PoolResponsesRetrySequenceStep::RateLimited => {
+                    unreachable!("non-overload step matched overload branch")
+                }
+            };
             let failed_event = serde_json::to_string(&json!({
                 "type": "response.failed",
                 "response": {
@@ -924,8 +942,8 @@ async fn pool_responses_retry_sequence_upstream(
                     "model": "gpt-5.4",
                     "status": "failed",
                     "error": {
-                        "code": "server_error",
-                        "message": "Our servers are currently overloaded. Please try again later.",
+                        "code": failure_code,
+                        "message": failure_message,
                     },
                 },
             }))
