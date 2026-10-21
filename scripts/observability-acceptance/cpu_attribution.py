@@ -191,6 +191,7 @@ def parse_process_stat(text: str, uptime_text: str, source: str) -> dict[str, in
     if len(fields) < 20:
         _fail("cpu_read_failed", source)
     try:
+        # The slice starts at field 3 (state), so field 22 starttime is index 19.
         start_ticks = int(fields[19])
         user_ticks = int(fields[11])
         system_ticks = int(fields[12])

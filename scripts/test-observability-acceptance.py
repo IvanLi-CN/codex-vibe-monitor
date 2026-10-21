@@ -374,6 +374,7 @@ class ResourceAdmissionTests(unittest.TestCase):
         second = self.attribution.sample()
         summary = self.attribution.window_summary()
         self.assertEqual(first["status"], "passed")
+        self.assertEqual(first["containers"]["app"]["startTimeTicks"], 10)
         self.assertIsNone(first["counterDelta"])
         self.assertEqual(first["counterDeltaStatus"], "baseline")
         self.assertEqual(second["app"]["cpuStat"]["usage_usec"], 100)
@@ -997,6 +998,22 @@ class AggregationTests(unittest.TestCase):
             "pair-1",
             "measurement-windows.json",
             lambda windows: windows[0]["cpuAttribution"]["counterDelta"]["appCpuStat"].update(usage_usec=61),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_missing_cpu_pressure_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[1]["cpuAttribution"]["app"]["cpuPressure"]["some"].pop("avg10"),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_mismatched_preparation_cgroup_cannot_pass(self):
+        self.change(
+            "pair-1",
+            "cpu-attribution.json",
+            lambda rows: rows[0]["containers"][0].update(cgroupPath="/docker/" + "d" * 64),
         )
         self.assertFalse(self.aggregate())
 

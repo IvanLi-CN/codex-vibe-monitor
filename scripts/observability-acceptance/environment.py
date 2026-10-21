@@ -17,6 +17,7 @@ from cpu_attribution import (
     CpuAttributionError,
     PreparedCpuAttribution,
     SAMPLE_INTERVAL_SECONDS,
+    container_cgroup_matches,
 )
 
 
@@ -90,6 +91,21 @@ def _valid_counter_map(value, required_fields):
     )
 
 
+def _valid_cpu_pressure(value):
+    fields = {"avg10", "avg60", "avg300", "total"}
+    if not isinstance(value, dict) or set(value) != {"some", "full"}:
+        return False
+    for stats in value.values():
+        if not isinstance(stats, dict) or set(stats) != fields:
+            return False
+        for name in ("avg10", "avg60", "avg300"):
+            if type(stats[name]) not in (int, float) or not math.isfinite(stats[name]) or not 0 <= stats[name] <= 100:
+                return False
+        if type(stats["total"]) is not int or stats["total"] < 0:
+            return False
+    return True
+
+
 def _host_counter_delta(before, after):
     if not _valid_counter_map(before, HOST_COUNTER_FIELDS) or not _valid_counter_map(after, HOST_COUNTER_FIELDS):
         raise ValueError("invalid host CPU counter sample")
@@ -127,7 +143,11 @@ def _validate_attribution_sample(value, allowed_cpus):
     if any(not _valid_counter_map(counters, HOST_COUNTER_FIELDS) for counters in host.values()):
         raise ValueError("invalid host CPU attribution counters")
     app = value.get("app")
-    if not isinstance(app, dict) or not _valid_counter_map(app.get("cpuStat"), APP_COUNTER_FIELDS):
+    if (
+        not isinstance(app, dict)
+        or not _valid_counter_map(app.get("cpuStat"), APP_COUNTER_FIELDS)
+        or not _valid_cpu_pressure(app.get("cpuPressure"))
+    ):
         raise ValueError("invalid app CPU attribution counters")
 
 
@@ -576,6 +596,13 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 and preparation["allowedCpus"] == sorted(runner_context["cpuAffinity"])
                 and isinstance(preparation["containers"], list)
                 and len({row["service"] for row in preparation["containers"]}) == len(preparation["containers"])
+                and all(
+                    isinstance(row, dict)
+                    and isinstance(row.get("containerId"), str)
+                    and isinstance(row.get("cgroupPath"), str)
+                    and container_cgroup_matches(row["containerId"], row["cgroupPath"])
+                    for row in preparation["containers"]
+                )
                 and any(
                     row["service"] == "app"
                     and row["cgroup"]["version"] == "v2"
