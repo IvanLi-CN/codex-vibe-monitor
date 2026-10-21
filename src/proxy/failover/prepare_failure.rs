@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) async fn record_pool_request_prepare_failure_attempt(
+pub(crate) async fn record_pool_request_prepare_failure_attempt(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     account: &PoolResolvedAccount,

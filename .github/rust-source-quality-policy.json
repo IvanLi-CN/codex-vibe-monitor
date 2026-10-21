@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 28,
-    "suppression_entries": 124
+    "inventory_entries": 26,
+    "suppression_entries": 123
   },
   "loc_targets": {
     "production": 2500,
@@ -17,18 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/proxy/failover.rs",
-      "role": "production",
-      "line_budget": 5000,
-      "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
-    },
-    {
-      "path": "src/proxy/request_entry.rs",
-      "role": "production",
-      "line_budget": 6462,
-      "next_module_workstream": "Split proxy request entry validation, capture, reservation, and response persistence."
     },
     {
       "path": "src/proxy/route_selection.rs",
@@ -351,12 +339,6 @@
       "reason": "Retain this targeted allow for the pre-attempt persistence adapter until the capture error context becomes a dedicated value."
     },
     {
-      "path": "src/proxy/failover.rs",
-      "kind": "allow",
-      "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/failover.rs; remove it when the listed boundary split is complete."
-    },
-    {
       "path": "src/proxy/mod.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Proxy dispatch adapters preserve established call-site contracts.\" )]",
@@ -453,10 +435,10 @@
       "reason": "Retain this targeted expect for the current argument bundle at src/proxy/raw_capture_circuit.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/proxy/request_entry.rs",
+      "path": "src/proxy/request_entry/attempt_lifecycle.rs",
       "kind": "allow",
       "declaration": "#[allow(dead_code)]",
-      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/request_entry.rs; remove it when the listed module workstream makes the item reachable."
+      "reason": "Retain this targeted allow for the recovered attempt row compatibility helper until its archive recovery callers make the item reachable."
     },
     {
       "path": "src/proxy/stream_gate.rs",

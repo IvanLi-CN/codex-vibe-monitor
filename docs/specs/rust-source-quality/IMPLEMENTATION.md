@@ -7,14 +7,14 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 31 current explicit file budgets (14 production and 17 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 26 current explicit file budgets (9 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
   `.github/workflows/ci-main.yml` delegate Rust source quality to the same
   runner while retaining the existing lint job name and check topology.
 
-The prompt-cache conversation query governance extraction removes `src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs` from the selected inventory after reducing it to 10 lines, reuses the existing 1,402-line `snapshots.rs`, and assigns the other stateful tests to `metadata_and_history.rs` (1,536 lines), `statistics.rs` (617), `activity_windows.rs` (923), `pagination.rs` (681), `runtime_and_cache.rs` (903), and `test_support.rs` (16). It registers `response_payload_content_encodings.rs` (85 lines) in lightweight and `payload_metadata_backfills.rs` (591 lines) in archive/file I/O. The 60 existing tests remain exactly once with their identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup; the only fixture deduplication is the three identical count-mode row inserters, and the two parent wrappers now live in private `test_support.rs`. The final candidate also removes an unused archive-test import without changing behavior. The final policy state is 36 entries (19 production and 17 test/helper) with 117 suppressions and immutable preparation counts 32/23.
+The prompt-cache conversation query governance extraction removes `src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs` from the selected inventory after reducing it to 10 lines, reuses the existing 1,402-line `snapshots.rs`, and assigns the other stateful tests to `metadata_and_history.rs` (1,536 lines), `statistics.rs` (617), `activity_windows.rs` (923), `pagination.rs` (681), `runtime_and_cache.rs` (903), and `test_support.rs` (16). It registers `response_payload_content_encodings.rs` (85 lines) in lightweight and `payload_metadata_backfills.rs` (591 lines) in archive/file I/O. The 60 existing tests remain exactly once with their identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup; the only fixture deduplication is the three identical count-mode row inserters, and the two parent wrappers now live in private `test_support.rs`. The final candidate also removes an unused archive-test import without changing behavior. That extraction stage left the policy at 36 entries (19 production and 17 test/helper) with 117 suppressions and immutable preparation counts 32/23; the current inventory is summarized above.
 
 The provisioning-scope extraction moves six contiguous stateful SQLite tests
 from physical lines 768 through 1,400 of
@@ -377,8 +377,8 @@ Formal validation of this proposed contract remains pending. Formal25's full lig
 
 ## Inventory Contract
 
-The policy has 15 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 32 paths; a long path absent from the inventory is
+The policy has 10 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
+The checker only reads those 27 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
@@ -398,6 +398,12 @@ The archive hourly-rollup extraction delegates production responsibilities to `e
 ## Live Hourly Rollup Extraction
 
 The live hourly-rollup source is now a facade over explicit `live_repair.rs`, `archive_replay.rs`, `archive_backfill.rs`, and `bootstrap.rs` modules. The parent retains its route, static, HTTP server, schema, compatibility wrapper, archive-support, and existing inline test responsibilities; the extracted children are 1,949, 2,232, 299, and 287 lines after rustfmt, all below the 2,500-line production target. Existing public/crate-visible names, SQL, transactions, timing, retry and cancellation behavior, locks, cache state, test names, assertions, fixtures, and resource buckets remain unchanged, with no `include!` composition. The canonical policy removes the parent entry and now has 31 explicit files: 14 production and 17 test/helper entries; immutable candidate counts remain 32/23 and suppression entries remain 125.
+
+## Proxy Failover Extraction
+
+The proxy failover source is now organized into explicit candidate-selection, retry-orchestration, attempt-execution, attempt-response, terminal-outcome, and metadata modules. The parent `src/proxy/failover.rs` retains the stable entry wrappers, request-compression tests, and module exports; the existing `retry_metadata.rs` and `prepare_failure.rs` helpers remain the shared metadata and preparation boundaries. After rustfmt, the parent is 208 physical lines and the children are 604, 90, 97, 1,021, 1,648, 1,509, and 287 lines respectively, all below the 2,500-line production target. The parent is removed from the explicit policy inventory, leaving 27 entries: 10 production and 17 test/helper; the immutable candidate baseline remains 32/23 and the suppression inventory is 123. Candidate selection, account/route retry budgets, request preparation, upstream transport, early response gates, streaming first-chunk handling, terminal persistence, reservation ownership, timeout accumulation, and failure classification remain behaviorally unchanged; no API, schema, configuration, UI, include!, test resource bucket, or frozen invocations module changes are introduced.
+
+Validation for this extraction is the canonical source-quality runner, the source-quality fixture harness, all-target locked checking and Clippy, the three shared backend resource profiles, focused failover/overload regression selectors, and `git diff --check`.
 
 ## CI Contract
 
