@@ -92,7 +92,9 @@ impl Drop for RetentionDiagnosticRecorder {
 
 fn mark_error(diagnostic: &mut RetentionDiagnosticRecorder, error: &anyhow::Error) {
     let message = error.to_string();
-    if message.contains("archive artifact")
+    if is_retention_archive_file_operation_budget_exhausted(error) {
+        diagnostic.mark_budget();
+    } else if message.contains("archive artifact")
         || message.contains("source identity")
         || message.contains("summary archive")
         || message.contains("semantic proof")
@@ -241,9 +243,18 @@ struct ArchiveSourceIdentityProof {
 
 fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
     retention_run_budget_expired()
+        || is_retention_archive_file_operation_budget_exhausted(error)
         || error
             .to_string()
-            .contains("retention archive identity proof inflate exceeded the task budget")
+            .contains("retention archive identity proof inflate exceeded the operation deadline")
+}
+
+fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {
+    retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+        || is_retention_write_deferred(error)
+        || error
+            .to_string()
+            .contains("retention archive file work cancelled")
 }
 
 impl ArchiveSourceIdentityProof {
@@ -261,21 +272,30 @@ impl ArchiveSourceIdentityProof {
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
         #[cfg(test)]
         batch_admission::pause_before_archive_identity_proof_inflate().await;
-        if let Some(remaining) = retention_run_remaining_budget() {
-            let complete = inflate_gzip_sqlite_file_with_budget(
-                path,
-                &proof_path,
-                Instant::now(),
-                Some(remaining),
-            )
-            .await?;
-            if !complete {
-                bail!("retention archive identity proof inflate exceeded the task budget");
-            }
-        } else {
-            inflate_gzip_sqlite_file(path, &proof_path)?;
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let operation_budget = operation_deadline.saturating_duration_since(Instant::now());
+        if operation_budget.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
         }
-        let connection = open_archive_sqlite_connection(&proof_path).await?;
+        if !inflate_gzip_sqlite_file_with_budget(
+            path,
+            &proof_path,
+            Instant::now(),
+            Some(operation_budget),
+        )
+        .await?
+        {
+            bail!("retention archive identity proof inflate exceeded the operation deadline");
+        }
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        let connection = tokio::time::timeout(remaining, async {
+            open_archive_sqlite_connection(&proof_path).await
+        })
+        .await
+        .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
         Ok(Self {
             cleanup,
             _work_owner_file: work_owner_file,
@@ -289,16 +309,31 @@ impl ArchiveSourceIdentityProof {
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
-        if self.spec.dataset == "codex_invocations" {
-            invocation_archive_source_identity_sha256(
-                connection,
-                InvocationArchiveIdentityDatabase::Main,
-                ids,
+        let remaining =
+            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        let result = if self.spec.dataset == "codex_invocations" {
+            tokio::time::timeout(
+                remaining,
+                invocation_archive_source_identity_sha256(
+                    connection,
+                    InvocationArchiveIdentityDatabase::Main,
+                    ids,
+                ),
             )
             .await
+            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
         } else {
-            archive_table_source_identity_sha256(connection, self.spec, "main", ids).await
-        }
+            tokio::time::timeout(
+                remaining,
+                archive_table_source_identity_sha256(connection, self.spec, "main", ids),
+            )
+            .await
+            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
+        }?;
+        Ok(result)
     }
 
     async fn has_exact_ids(&mut self, ids: &[i64], expected_count: i64) -> Result<bool> {
@@ -307,20 +342,31 @@ impl ArchiveSourceIdentityProof {
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
-        let archive_row_count =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
-                .fetch_one(&mut *connection)
-                .await
-                .context("count rows in archive source identity proof")?;
-        let selected_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM main.codex_invocations
-             WHERE id IN (SELECT value FROM json_each(?1))",
-        )
-        .bind(ids_json)
-        .fetch_one(&mut *connection)
+        let remaining =
+            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        tokio::time::timeout(remaining, async {
+            let archive_row_count =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .context("count rows in archive source identity proof")?;
+            let selected_count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM main.codex_invocations
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(ids_json)
+            .fetch_one(&mut *connection)
+            .await
+            .context("count selected rows in archive source identity proof")?;
+            Ok::<bool, anyhow::Error>(
+                archive_row_count == expected_count && selected_count == expected_count,
+            )
+        })
         .await
-        .context("count selected rows in archive source identity proof")?;
-        Ok(archive_row_count == expected_count && selected_count == expected_count)
+        .map_err(|_| retention_archive_file_operation_budget_exhausted())?
     }
 
     async fn close(mut self) -> Result<()> {
@@ -587,10 +633,10 @@ pub(crate) async fn prune_old_invocation_details(
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    loop {
+    'work_unit: {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         let sql = format!(
             r#"
@@ -619,7 +665,7 @@ pub(crate) async fn prune_old_invocation_details(
                 Ok(result) => result?,
                 Err(_) => {
                     recovery_diagnostic.mark_budget();
-                    break;
+                    break 'work_unit;
                 }
             }
         } else {
@@ -627,7 +673,7 @@ pub(crate) async fn prune_old_invocation_details(
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
@@ -775,7 +821,15 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_cancelled(&error) => {
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        retention_record_defer(
+                            "archive_identity_proof",
+                            RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
+                        );
                         recovery_diagnostic.mark_budget();
                         break;
                     }
@@ -1029,9 +1083,10 @@ pub(crate) async fn prune_old_invocation_details(
             }
             batch_observation.complete();
         }
-        if retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // One invocation owns the selected bounded archive window. A test-injected operation
+        // deadline may stop it inside that window; production scheduling does not use a total
+        // timer to split the work into hidden follow-up tasks.
+        break 'work_unit;
     }
 
     recovery_diagnostic.finish();
@@ -1121,14 +1176,14 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let mut discovered_ids = HashSet::new();
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    loop {
+    'work_unit: {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         if !archive_batch_can_start() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = load_invocation_archive_candidate_metadata(
@@ -1142,7 +1197,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 Ok(result) => result?,
                 Err(_) => {
                     recovery_diagnostic.mark_budget();
-                    break;
+                    break 'work_unit;
                 }
             }
         } else {
@@ -1150,7 +1205,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
@@ -1273,31 +1328,40 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     )
                 } else {
                     let mut snapshot_pages = Vec::new();
-                    let archive_future = archive_rows_into_task_month_batch(
-                        pool,
-                        config,
-                        spec,
-                        &group_key,
-                        &ids,
-                        &mut snapshot_pages,
-                    );
                     let archive_writer_started = Instant::now();
-                    let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                        match tokio::time::timeout(remaining, archive_future).await {
-                            Ok(result) => result,
-                            Err(_) => {
-                                batch_observation
-                                    .archive_writer_finished(archive_writer_started.elapsed());
-                                recovery_diagnostic.mark_budget();
-                                break;
+                    let archive_result = {
+                        let archive_future = archive_rows_into_task_month_batch(
+                            pool,
+                            config,
+                            spec,
+                            &group_key,
+                            &ids,
+                            &mut snapshot_pages,
+                        );
+                        tokio::pin!(archive_future);
+                        if let Some(remaining) = retention_run_remaining_budget() {
+                            match tokio::time::timeout(remaining, &mut archive_future).await {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    batch_observation
+                                        .archive_writer_finished(archive_writer_started.elapsed());
+                                    recovery_diagnostic.mark_budget();
+                                    break;
+                                }
                             }
+                        } else {
+                            archive_future.await
                         }
-                    } else {
-                        archive_future.await
                     };
                     batch_observation.archive_writer_finished(archive_writer_started.elapsed());
                     let Some(mut archive_outcome) = (match archive_result {
                         Ok(outcome) => Some(outcome),
+                        Err(error)
+                            if is_retention_archive_file_operation_budget_exhausted(&error) =>
+                        {
+                            recovery_diagnostic.mark_budget();
+                            return Err(error);
+                        }
                         Err(error) if is_retention_write_deferred(&error) => {
                             retention_recovery_record_deferred("preparing");
                             recovery_diagnostic.mark_stop();
@@ -1353,7 +1417,15 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .await
                     {
                         Ok(proof) => proof,
+                        Err(error) if archive_identity_proof_load_cancelled(&error) => {
+                            recovery_diagnostic.mark_stop();
+                            break;
+                        }
                         Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                            retention_record_defer(
+                                "archive_identity_proof",
+                                RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
+                            );
                             recovery_diagnostic.mark_budget();
                             break;
                         }
@@ -1363,8 +1435,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         }
                     };
                     let summary_proof_started = Instant::now();
-                    let proof_future =
-                        batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages);
+                    let proof_future = batch_plan::prepare_summary_proof(pool, &archive_outcome);
                     let proof_result = if let Some(remaining) = retention_run_remaining_budget() {
                         match tokio::time::timeout(remaining, proof_future).await {
                             Ok(result) => {
@@ -1740,13 +1811,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             batch_observation.complete();
         }
-        // Normal task scope is fixed at selection. The next scheduled run reselects live rows
-        // and rebuilds the file; a published monthly Summary artifact may resume its durable
-        // page prefix by manifest SHA, but source deletion never resumes a prior transaction.
-        // Direct fixture helpers may drain.
-        if retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // One scheduled invocation owns one selected candidate window. It completes that logical
+        // work unit before returning; the next invocation reselects the remaining live rows.
+        break 'work_unit;
     }
 
     recovery_diagnostic.finish();
@@ -1817,14 +1884,14 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    loop {
+    'work_unit: {
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         if !archive_batch_can_start() {
             recovery_diagnostic.mark_budget();
-            break;
+            break 'work_unit;
         }
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
@@ -1836,7 +1903,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 Ok(result) => result?,
                 Err(_) => {
                     recovery_diagnostic.mark_budget();
-                    break;
+                    break 'work_unit;
                 }
             }
         } else {
@@ -1844,7 +1911,7 @@ pub(crate) async fn archive_timestamped_dataset(
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
@@ -1921,19 +1988,23 @@ pub(crate) async fn archive_timestamped_dataset(
             drop(source_verify_phase);
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_writer_started = Instant::now();
-            let archive_future =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
-            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, archive_future).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
-                        recovery_diagnostic.mark_budget();
-                        break;
+            let archive_result = {
+                let archive_future =
+                    archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
+                tokio::pin!(archive_future);
+                if let Some(remaining) = retention_run_remaining_budget() {
+                    match tokio::time::timeout(remaining, &mut archive_future).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            batch_observation
+                                .archive_writer_finished(archive_writer_started.elapsed());
+                            recovery_diagnostic.mark_budget();
+                            break;
+                        }
                     }
+                } else {
+                    archive_future.await
                 }
-            } else {
-                archive_future.await
             };
             batch_observation.archive_writer_finished(archive_writer_started.elapsed());
             let Some(mut archive_outcome) =
@@ -1985,7 +2056,15 @@ pub(crate) async fn archive_timestamped_dataset(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_cancelled(&error) => {
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        retention_record_defer(
+                            "archive_identity_proof",
+                            RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
+                        );
                         recovery_diagnostic.mark_budget();
                         break;
                     }
@@ -2351,9 +2430,9 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             batch_observation.complete();
         }
-        if retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // Keep the selected timestamped candidate window as one logical work unit. Operation
+        // budgets and cancellation may stop it earlier, but it is never split by a total timer.
+        break 'work_unit;
     }
 
     recovery_diagnostic.finish();

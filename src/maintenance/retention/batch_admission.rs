@@ -254,7 +254,12 @@ where
         pause_before_archive_file_verify().await;
         let file_verify_phase = observe_file_verify();
         let actual_sha256 = expected_sha256
-            .map(|_| sha256_hex_file(archive_path))
+            .map(|_| {
+                sha256_hex_file_with_deadline(
+                    archive_path,
+                    retention_archive_file_operation_deadline(),
+                )
+            })
             .transpose()?;
         let target_exists = if expected_sha256.is_none() {
             match fs::symlink_metadata(archive_path) {
@@ -399,35 +404,22 @@ async fn wait_for_maintenance_eligibility(operation: &'static str, requested_at:
     let coordinator = retention_write_coordinator_handle();
     let eligibility =
         coordinator.wait_for_maintenance_eligibility(requested_at, RETENTION_FAIRNESS_INTERVAL);
-    let waited = if let Some(remaining) = retention_run_remaining_budget() {
-        let eligibility = tokio::time::timeout(remaining, eligibility);
-        if let Some(shutdown) = retention_run_shutdown_token() {
-            tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => {
-                    retention_record_defer(operation, "shutdown");
-                    return false;
-                }
-                result = eligibility => result.is_ok(),
-            }
-        } else {
-            eligibility.await.is_ok()
-        }
-    } else if let Some(shutdown) = retention_run_shutdown_token() {
+    let (admission_budget, timeout_reason) = retention_write_admission_budget();
+    let eligibility = tokio::time::timeout(admission_budget, eligibility);
+    let waited = if let Some(shutdown) = retention_run_shutdown_token() {
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
                 retention_record_defer(operation, "shutdown");
                 return false;
             }
-            () = eligibility => true,
+            result = eligibility => result.is_ok(),
         }
     } else {
-        eligibility.await;
-        true
+        eligibility.await.is_ok()
     };
     if !waited {
-        retention_record_defer(operation, "retention_work_budget");
+        retention_record_defer(operation, timeout_reason);
     }
     waited
 }
@@ -444,7 +436,6 @@ pub(super) async fn acquire_write_connection(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
-    let wait_for_busy = wait_for_busy && retention_run_remaining_budget().is_some();
     loop {
         if let Some(reason) = gate.background_deny_reason()
             && (!wait_for_busy
@@ -532,7 +523,6 @@ pub(super) async fn acquire_write_admission(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
-    let wait_for_busy = wait_for_busy && retention_run_remaining_budget().is_some();
     loop {
         let generation = gate.eligibility_generation();
         if let Some(reason) = gate.background_deny_reason() {
@@ -606,9 +596,15 @@ async fn wait_for_background_change(
     operation: &'static str,
     generation: u64,
 ) -> bool {
-    let Some(remaining) = retention_run_remaining_budget() else {
-        return false;
+    let (remaining, timeout_reason) = if let Some(remaining) = retention_run_remaining_budget() {
+        (remaining, "retention_work_budget")
+    } else {
+        retention_write_admission_budget()
     };
+    if remaining.is_zero() {
+        retention_record_defer(operation, timeout_reason);
+        return false;
+    }
     let eligible = tokio::time::timeout(remaining, gate.wait_for_eligibility_change(generation));
     let result = if let Some(shutdown) = retention_run_shutdown_token() {
         tokio::select! {
@@ -623,7 +619,7 @@ async fn wait_for_background_change(
         eligible.await
     };
     if result.is_err() {
-        retention_record_defer(operation, "retention_work_budget");
+        retention_record_defer(operation, timeout_reason);
         return false;
     }
     true

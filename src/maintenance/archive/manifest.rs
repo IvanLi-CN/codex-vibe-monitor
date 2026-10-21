@@ -249,6 +249,8 @@ async fn mark_archive_batch_upstream_activity_refreshed(
 pub(crate) async fn load_archive_upstream_activity_from_file(
     archive_path: &Path,
 ) -> Result<Vec<(i64, String)>> {
+    let _archive_lock =
+        super::super::retention::retention_archive_file_lock_async(archive_path).await?;
     let temp_path = PathBuf::from(format!(
         "{}.{}.sqlite",
         archive_path.display(),
@@ -258,7 +260,7 @@ pub(crate) async fn load_archive_upstream_activity_from_file(
         let _ = fs::remove_file(&temp_path);
     }
     let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-    inflate_gzip_sqlite_file(archive_path, &temp_path)?;
+    inflate_gzip_sqlite_file_with_operation_budget(archive_path, &temp_path).await?;
 
     let database_url = format!("sqlite://{}", temp_path.to_string_lossy());
     let connect_opts = build_sqlite_connect_options(

@@ -173,7 +173,7 @@ where
             unavailable_archive_file_paths.push(archive_file.file_path.clone());
             continue;
         }
-        let _archive_lock = match retention_archive_file_lock(&archive_path) {
+        let _archive_lock = match retention_archive_file_lock_async(&archive_path).await {
             Ok(lock) => lock,
             Err(error) => {
                 warn!(
@@ -187,7 +187,10 @@ where
                 continue;
             }
         };
-        let actual_sha256 = match sha256_hex_file(&archive_path) {
+        let actual_sha256 = match sha256_hex_file_with_deadline(
+            &archive_path,
+            super::super::retention::retention_archive_file_operation_deadline(),
+        ) {
             Ok(value) => value,
             Err(error) => {
                 warn!(
@@ -223,7 +226,7 @@ where
         }
         let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         let archive_result = async {
-            inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+            inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await?;
             let archive_pool = SqlitePoolOptions::new()
                 .max_connections(1)
                 .connect(&sqlite_url_for_path(&temp_path))
@@ -621,12 +624,19 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             source_incomplete = true;
             continue;
         }
-        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let _archive_lock = retention_archive_file_lock_async(&archive_path).await?;
         let Some(expected_sha256) = archive_file.sha256.as_deref() else {
             source_incomplete = true;
             continue;
         };
-        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+        if sha256_hex_file_with_deadline(
+            &archive_path,
+            super::super::retention::retention_archive_file_operation_deadline(),
+        )
+        .ok()
+        .as_deref()
+            != Some(expected_sha256)
+        {
             source_incomplete = true;
             continue;
         }
@@ -640,7 +650,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             let _ = fs::remove_file(&temp_path);
         }
         let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await?;
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&sqlite_url_for_path(&temp_path))

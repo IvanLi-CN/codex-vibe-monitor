@@ -492,11 +492,12 @@ pub(crate) async fn retention_recovery_persist_failure(
         .failure_fingerprint
         .unwrap_or_default();
     let error_text = error.to_string();
-    let quarantine = error_text.contains("identity collision")
-        || error_text.contains("verification failed")
-        || error_text.contains("publication kind")
-        || error_text.contains("ownership verification")
-        || error_text.contains("semantic proof validation failed");
+    let quarantine = !is_retention_archive_file_work_transient(error)
+        && (error_text.contains("identity collision")
+            || error_text.contains("verification failed")
+            || error_text.contains("publication kind")
+            || error_text.contains("ownership verification")
+            || error_text.contains("semantic proof validation failed"));
     let Some(admission) = acquire_retention_write_admission("retention_recovery_failure").await
     else {
         retention_recovery_persist_scheduler_cursor_without_pressure(
@@ -567,21 +568,38 @@ pub(crate) async fn retention_recovery_persist_failure(
     .bind(observed_artifact_sha256.as_deref())
     .execute(pool)
     .await?;
-    sqlx::query(
-        "UPDATE retention_recovery_cursors
-         SET next_retry_at = datetime('now', ?1),
-             consecutive_failure_count = consecutive_failure_count + 1,
-             last_failure_fingerprint = ?2,
-             defer_reason = ?3,
-             updated_at = datetime('now')
-         WHERE scope = ?4",
-    )
-    .bind(format!("+{retry_seconds} seconds"))
-    .bind(&fingerprint)
-    .bind(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
-    .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
-    .execute(pool)
-    .await?;
+    if quarantine {
+        // Quarantined artifacts are isolated evidence, not retryable scheduler work. Clear any
+        // existing global backoff so the quarantined row cannot delay unrelated recovery work.
+        sqlx::query(
+            "UPDATE retention_recovery_cursors
+             SET next_retry_at = NULL,
+                 consecutive_failure_count = 0,
+                 last_failure_fingerprint = NULL,
+                 defer_reason = NULL,
+                 updated_at = datetime('now')
+             WHERE scope = ?1",
+        )
+        .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE retention_recovery_cursors
+             SET next_retry_at = datetime('now', ?1),
+                 consecutive_failure_count = consecutive_failure_count + 1,
+                 last_failure_fingerprint = ?2,
+                 defer_reason = ?3,
+                 updated_at = datetime('now')
+             WHERE scope = ?4",
+        )
+        .bind(format!("+{retry_seconds} seconds"))
+        .bind(&fingerprint)
+        .bind(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
+        .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+        .execute(pool)
+        .await?;
+    }
     retention_record_commit!(
         "retention_recovery_failure",
         admission.admission_mode(),
@@ -774,56 +792,66 @@ pub(crate) async fn verify_prepared_retention_archive_artifact(
         retention_temp_suffix()
     ));
     let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-    inflate_gzip_sqlite_file(archive_path, &temp_path)?;
-    let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
-    ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
-    let archive_ids =
-        sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
-            .fetch_all(&mut archive_db)
-            .await?;
-    let expected_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)?;
-    if descriptor.part_key.is_some() && archive_ids != expected_ids {
-        bail!("prepared archive source identity verification failed");
+    let operation_deadline = retention_archive_file_operation_deadline();
+    inflate_gzip_sqlite_file_with_operation_budget(archive_path, &temp_path).await?;
+    let remaining = operation_deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(retention_archive_file_operation_budget_exhausted());
     }
-    if descriptor.part_key.is_none()
-        && expected_ids
-            .iter()
-            .any(|expected_id| archive_ids.binary_search(expected_id).is_err())
-    {
-        bail!("prepared archive source identity verification failed");
-    }
-    let identity_ids = if descriptor.part_key.is_some() {
-        archive_ids.as_slice()
-    } else {
-        expected_ids.as_slice()
+    let verification = async {
+        let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
+        ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
+        let archive_ids =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
+                .fetch_all(&mut archive_db)
+                .await?;
+        let expected_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)?;
+        if descriptor.part_key.is_some() && archive_ids != expected_ids {
+            bail!("prepared archive source identity verification failed");
+        }
+        if descriptor.part_key.is_none()
+            && expected_ids
+                .iter()
+                .any(|expected_id| archive_ids.binary_search(expected_id).is_err())
+        {
+            bail!("prepared archive source identity verification failed");
+        }
+        let identity_ids = if descriptor.part_key.is_some() {
+            archive_ids.as_slice()
+        } else {
+            expected_ids.as_slice()
+        };
+        let archive_identity_matches = invocation_archive_source_identity_matches(
+            &mut archive_db,
+            InvocationArchiveIdentityDatabase::Main,
+            identity_ids,
+            &descriptor.source_identity_sha256,
+        )
+        .await?;
+        archive_db.close().await?;
+        if !archive_identity_matches {
+            bail!("prepared archive source identity verification failed");
+        }
+        let mut source_connection = pool.acquire().await?;
+        let source_identity_matches = invocation_archive_source_identity_matches(
+            &mut source_connection,
+            InvocationArchiveIdentityDatabase::Main,
+            &expected_ids,
+            &descriptor.source_identity_sha256,
+        )
+        .await?;
+        drop(source_connection);
+        if !source_identity_matches {
+            bail!("prepared archive live source identity verification failed");
+        }
+        if sha256_hex_file_with_deadline(archive_path, operation_deadline)? != expected_sha256 {
+            bail!("prepared archive artifact digest verification failed");
+        }
+        Ok::<i64, anyhow::Error>(archive_ids.len() as i64)
     };
-    let archive_identity_matches = invocation_archive_source_identity_matches(
-        &mut archive_db,
-        InvocationArchiveIdentityDatabase::Main,
-        identity_ids,
-        &descriptor.source_identity_sha256,
-    )
-    .await?;
-    archive_db.close().await?;
-    if !archive_identity_matches {
-        bail!("prepared archive source identity verification failed");
-    }
-    let mut source_connection = pool.acquire().await?;
-    let source_identity_matches = invocation_archive_source_identity_matches(
-        &mut source_connection,
-        InvocationArchiveIdentityDatabase::Main,
-        &expected_ids,
-        &descriptor.source_identity_sha256,
-    )
-    .await?;
-    drop(source_connection);
-    if !source_identity_matches {
-        bail!("prepared archive live source identity verification failed");
-    }
-    if sha256_hex_file(archive_path)? != expected_sha256 {
-        bail!("prepared archive artifact digest verification failed");
-    }
-    Ok(archive_ids.len() as i64)
+    tokio::time::timeout(remaining, verification)
+        .await
+        .map_err(|_| retention_archive_file_operation_budget_exhausted())?
 }
 
 pub(crate) fn retention_recovery_archive_outcome(
@@ -1428,7 +1456,7 @@ pub(crate) async fn retire_task_local_quarantines(
             break;
         }
         let path = Path::new(&file);
-        let _lock = retention_archive_file_lock(path)?;
+        let _lock = retention_archive_file_lock_async(path).await?;
         let Some(_admission) = acquire_retention_write_admission("legacy_quarantine_cleanup").await
         else {
             break;
@@ -1461,7 +1489,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
-    if retention_run_remaining_budget().is_some() {
+    if retention_prepared_archive_isolation_active() {
         // Compatibility isolation only. A current task never continues source mutations
         // from the previous program's prepared artifact or source_ids cursor.
         let pending: bool = sqlx::query_scalar(
@@ -1609,7 +1637,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
             // The restore decision and the cleanup of its journal pointer must share the same
             // directory fence as the publisher. A pre-lock snapshot could otherwise overwrite a
             // newer retry artifact or clear a newly written staging path.
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1667,7 +1695,10 @@ pub(crate) async fn reconcile_retention_prepared_archives(
                 Err(error) => prepared_item_failure!(error),
             };
             let current_sha = if path.is_file() {
-                match sha256_hex_file(path) {
+                match sha256_hex_file_with_deadline(
+                    path,
+                    retention_archive_file_operation_deadline(),
+                ) {
                     Ok(sha) => Some(sha),
                     Err(error) => prepared_item_failure!(error),
                 }
@@ -1732,7 +1763,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
         // and is still missing, remove only this orphaned journal row so the source rows can be
         // prepared again on the next bounded pass.
         if state == RETENTION_RECOVERY_STATE_PREPARING && !path.exists() {
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1784,11 +1815,14 @@ pub(crate) async fn reconcile_retention_prepared_archives(
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PREPARING && path.is_file() {
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
-            let actual_sha = match sha256_hex_file(path) {
+            let actual_sha = match sha256_hex_file_with_deadline(
+                path,
+                retention_archive_file_operation_deadline(),
+            ) {
                 Ok(sha) => sha,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1883,14 +1917,30 @@ pub(crate) async fn reconcile_retention_prepared_archives(
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PUBLISHED {
-            let _archive_lock = match retention_archive_file_lock(path) {
+            let _archive_lock = match retention_archive_file_lock_async(path).await {
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
-            let valid = path.is_file()
-                && artifact_sha256.as_deref().is_some_and(|expected| {
-                    sha256_hex_file(path).ok().as_deref() == Some(expected)
-                });
+            let valid = if !path.is_file() {
+                false
+            } else {
+                match artifact_sha256.as_deref() {
+                    Some(expected) => {
+                        match sha256_hex_file_with_deadline(
+                            path,
+                            retention_archive_file_operation_deadline(),
+                        ) {
+                            Ok(actual) => actual == expected,
+                            Err(error) if is_retention_archive_file_work_transient(&error) => {
+                                retention_recovery_record_deferred("prepared_reconcile");
+                                return Err(error);
+                            }
+                            Err(_) => false,
+                        }
+                    }
+                    None => false,
+                }
+            };
             if !valid {
                 let error = anyhow!("published retention archive artifact verification failed");
                 prepared_item_failure!(error);
@@ -1972,7 +2022,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
                 // Hold the archive lock before resolving ownership and keep it through the
                 // delete/ledger transaction so a replacement cannot win between the check and
                 // physical removal.
-                let archive_lock = match retention_archive_file_lock(path) {
+                let archive_lock = match retention_archive_file_lock_async(path).await {
                     Ok(lock) => lock,
                     Err(error) => prepared_item_failure!(error),
                 };
@@ -2095,7 +2145,7 @@ pub(crate) async fn reconcile_staged_archive_replacements(
     drop(probe);
     for (id, file_path) in rows {
         let path = Path::new(&file_path);
-        let archive_lock = match retention_archive_file_lock(path) {
+        let archive_lock = match retention_archive_file_lock_async(path).await {
             Ok(lock) => lock,
             Err(error) => {
                 retention_recovery_record_failure("legacy_reconcile", &error);
@@ -2145,7 +2195,7 @@ pub(crate) async fn reconcile_staged_archive_replacements(
             continue;
         }
         let current_sha = if path.is_file() {
-            match sha256_hex_file(path) {
+            match sha256_hex_file_with_deadline(path, retention_archive_file_operation_deadline()) {
                 Ok(sha) => Some(sha),
                 Err(error) => {
                     retention_recovery_record_failure("legacy_reconcile", &error);
@@ -2169,7 +2219,10 @@ pub(crate) async fn reconcile_staged_archive_replacements(
             continue;
         }
         if staged_path.is_file() {
-            let staged_sha = match sha256_hex_file(staged_path) {
+            let staged_sha = match sha256_hex_file_with_deadline(
+                staged_path,
+                retention_archive_file_operation_deadline(),
+            ) {
                 Ok(sha) => sha,
                 Err(error) => {
                     retention_recovery_record_failure("legacy_reconcile", &error);
@@ -2329,7 +2382,8 @@ pub(crate) fn restore_staged_legacy_archive_file(
     final_path: &Path,
     expected_sha256: &str,
 ) -> Result<()> {
-    let staged_sha256 = sha256_hex_file(staged_path)?;
+    let staged_sha256 =
+        sha256_hex_file_with_deadline(staged_path, retention_archive_file_operation_deadline())?;
     if staged_sha256 != expected_sha256 {
         bail!("archive rollback artifact digest verification failed");
     }

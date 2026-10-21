@@ -2,9 +2,11 @@
 
 Status: Accepted
 
+The fixed total-budget framing is superseded by [ADR 0045](0045-retention-work-unit-operation-budgets.md). Durable artifact reuse remains only a crash/restart recovery proof path, not normal task continuation.
+
 ## Context
 
-The existing 120-second retention budget can expire after the canonical monthly gzip has been published and its V2 Summary pages have passed semantic validation, but before the first source-conversion transaction commits. Rebuilding the same month on the next run repeats the dominant file preparation cost while leaving every source row live. A zero-commit run can therefore repeat indefinitely even though the published artifact is complete enough to prove the selected source identity.
+The previous fixed 120-second retention budget could expire after the canonical monthly gzip had been published and its V2 Summary pages had passed semantic validation, but before the first source-conversion transaction committed. Rebuilding the same month on the next run repeated the dominant file preparation cost while leaving every source row live. A zero-commit run could therefore repeat indefinitely even though the published artifact was complete enough to prove the selected source identity.
 
 ADR 0042 permits durable V2 page progress to be reused, but page progress alone does not make the published gzip reusable. The proof marker was previously written as part of the first source-conversion transaction, so a run that stopped before that transaction had no durable certificate for the already published artifact.
 
@@ -15,7 +17,7 @@ ADR 0042 permits durable V2 page progress to be reused, but page progress alone 
 - Reuse never resumes source candidate IDs, temporary SQLite files, cursors, accumulated values, or a source-deletion transaction. Missing or invalid proof, manifest, file, coverage, or source identity falls back to safe rebuild or deferral.
 - Budget exhaustion while inflating the identity-proof copy is a normal partial stop, not a proof failure; the incomplete copy is cleaned up and the next run may safely rebuild or retry.
 - Only the existing source-conversion commit may advance the manifest to `completed` and grant the established deletion and cleanup authority. A stale writer may not demote a completed manifest.
-- No schema, archive layout, page format, retention budget, or Summary reader contract changes.
+- No schema, archive layout, page format, or Summary reader contract changes; operation-level budgets and native cleanup remain explicit.
 
 ## Consequences
 

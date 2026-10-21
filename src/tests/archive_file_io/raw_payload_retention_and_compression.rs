@@ -693,10 +693,7 @@ async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
     .expect("load invalid publication kind journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
-    assert_eq!(
-        last_failure_stage.as_deref(),
-        Some("task_local_reselection")
-    );
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
     let (failure_count, defer_reason): (i64, Option<String>) = sqlx::query_as(
         "SELECT consecutive_failure_count, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
     )
@@ -705,6 +702,81 @@ async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
     .expect("load durable invalid-kind failure cursor");
     assert_eq!(failure_count, 0);
     assert_eq!(defer_reason, None);
+    assert!(
+        archive_path.exists(),
+        "quarantine retains the artifact for evidence"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_quarantine_clears_existing_recovery_backoff() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-quarantine-clears-backoff").await;
+    let archive_root = config.archive_dir.join("codex_invocations");
+    fs::create_dir_all(&archive_root).expect("create archive root");
+    let archive_path = archive_root.join("legacy-unknown-kind.sqlite.gz");
+    fs::write(&archive_path, b"unverified legacy artifact").expect("write legacy artifact");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, publication_kind, updated_at
+        ) VALUES ('quarantine-clears-backoff', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'preparing', 'unsupported_kind', datetime('now'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed invalid publication kind");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors
+         SET next_retry_at = datetime('now', '+300 seconds'),
+             consecutive_failure_count = 4,
+             last_failure_fingerprint = 'previous-failure',
+             defer_reason = 'retry_backoff'
+         WHERE scope = 'prepared_archives'",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed existing recovery backoff");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let persisted = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            coordinator,
+            crate::maintenance::retention_recovery_persist_prepared_failure_best_effort(
+                &pool,
+                "quarantine-clears-backoff",
+                &anyhow::anyhow!("prepared archive publication kind is invalid"),
+            ),
+        )
+        .await;
+    assert!(persisted, "quarantine failure state must persist");
+
+    let (state, next_retry_at, last_failure_stage): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT state, next_retry_at, last_failure_stage
+             FROM retention_prepared_archives WHERE prepared_key = 'quarantine-clears-backoff'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load quarantined archive");
+    assert_eq!(state, "quarantined");
+    assert_eq!(next_retry_at, None);
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
+
+    let cursor: (Option<String>, i64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, consecutive_failure_count, last_failure_fingerprint, defer_reason
+         FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load cleared recovery backoff");
+    assert_eq!(cursor, (None, 0, None, None));
     assert!(
         archive_path.exists(),
         "quarantine retains the artifact for evidence"
@@ -751,10 +823,7 @@ async fn retention_quarantines_missing_published_archive_instead_of_retrying() {
         .expect("load missing published archive journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
-    assert_eq!(
-        last_failure_stage.as_deref(),
-        Some("task_local_reselection")
-    );
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

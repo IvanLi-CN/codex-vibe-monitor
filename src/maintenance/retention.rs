@@ -207,6 +207,12 @@ mod retention_write_budget_tests {
         assert!(budget.observe_commit(1, RETENTION_WRITE_MAX_BYTES + 1, Duration::ZERO));
         assert_eq!(budget.candidate_limit(1_000), 1);
 
+        assert!(!budget.observe_commit(1, 256, Duration::from_millis(1)));
+        assert_eq!(
+            budget.candidate_limit(1_000),
+            2,
+            "a normal commit must recover the candidate from an oversized-row estimate"
+        );
         for _ in 0..100 {
             assert!(!budget.observe_commit(1, 256, Duration::from_millis(1)));
         }

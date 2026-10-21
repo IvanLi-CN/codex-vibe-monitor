@@ -32,6 +32,9 @@ pub(crate) use archive_cleanup::*;
 pub(crate) use archive_hourly_rollups::*;
 pub(crate) use archive_manifest::*;
 pub(crate) use archive_quota_compaction::*;
-pub(crate) use archive_task_work::{TaskWorkOwner, create_retention_identity_work_file};
+pub(crate) use archive_task_work::{
+    TaskWorkArtifactFence, TaskWorkOwner, create_retention_identity_work_file,
+    task_work_artifact_is_active, try_acquire_task_work_artifact_fence,
+};
 pub(crate) use archive_writers::*;
 pub(crate) use node_health_deltas::*;

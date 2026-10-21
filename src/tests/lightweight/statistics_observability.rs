@@ -168,3 +168,21 @@ async fn prompt_cache_health_reads_do_not_publish_last_good_timestamp() {
     })
     .await;
 }
+
+#[test]
+fn transient_archive_file_stops_are_not_classified_as_unreadable() {
+    let budget_error = crate::retention_archive_file_operation_budget_exhausted();
+    assert!(!crate::is_unreadable_invocation_summary_archive_error(
+        &budget_error
+    ));
+    let cancellation_error = crate::retention_write_deferred("archive_file_work");
+    assert!(!crate::is_unreadable_invocation_summary_archive_error(
+        &cancellation_error
+    ));
+    let corruption = anyhow!(
+        "failed to decompress archive batch /tmp/archive.sqlite.gz into /tmp/archive.sqlite"
+    );
+    assert!(crate::is_unreadable_invocation_summary_archive_error(
+        &corruption
+    ));
+}

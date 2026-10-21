@@ -3702,10 +3702,10 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     details:
       taskKey === "retention_archive"
         ? {
-            budgetMs: 120000,
+            budgetMs: null,
             elapsedMs: latestRunDurationMs || 31_000,
             settlementMs: 2,
-            timeoutCount: 0,
+            timeoutCount: null,
             archiveBatches: [
               {
                 dataset: "codex_invocations",
@@ -5812,6 +5812,13 @@ function demoOwnedMaintenanceDetails(taskKey: string, manual = true): Record<str
       bytesReleased: 65536,
       coverage: "bounded_scan",
       overallRemaining: null,
+    };
+  if (taskKey === "retention_archive")
+    return {
+      ...base,
+      budgetMs: null,
+      elapsedMs: 1200,
+      timeoutCount: null,
     };
   return { ...base, budgetMs: 120000, elapsedMs: 1200 };
 }

@@ -9,11 +9,33 @@ use std::os::fd::AsRawFd;
 pub(crate) struct TaskWorkOwner {
     file: Option<File>,
     path: PathBuf,
+    work_path: PathBuf,
+}
+
+pub(crate) enum TaskWorkArtifactFence {
+    Unowned,
+    Active,
+    Held(File),
 }
 
 impl Drop for TaskWorkOwner {
     fn drop(&mut self) {
-        drop(self.file.take());
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        if crate::is_archive_file_operation_active(&self.work_path) {
+            let owner_path = self.path.clone();
+            let work_path = self.work_path.clone();
+            std::thread::spawn(move || {
+                while crate::is_archive_file_operation_active(&work_path) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                drop(file);
+                let _ = fs::remove_file(owner_path);
+            });
+            return;
+        }
+        drop(file);
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -55,11 +77,78 @@ pub(super) fn create_task_work_file(final_path: &Path, work_path: &Path) -> Resu
     Ok(TaskWorkOwner {
         file: Some(owner_file),
         path: owner_path,
+        work_path: work_path.to_path_buf(),
     })
 }
 
 fn task_work_owner_path(work_path: &Path) -> PathBuf {
     work_path.with_extension("owner")
+}
+
+fn task_work_path_for_artifact(path: &Path) -> Option<PathBuf> {
+    let path_string = path.to_string_lossy();
+    for suffix in [".source-meta", "-journal", "-wal", "-shm"] {
+        if let Some(base) = path_string.strip_suffix(suffix) {
+            return Some(PathBuf::from(base));
+        }
+    }
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("owner" | "tmp" | "partial") => Some(path.with_extension("sqlite")),
+        Some("sqlite") => Some(path.to_path_buf()),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn try_acquire_task_work_artifact_fence(path: &Path) -> Result<TaskWorkArtifactFence> {
+    let Some(work_path) = task_work_path_for_artifact(path) else {
+        return Ok(TaskWorkArtifactFence::Unowned);
+    };
+    let owner_path = task_work_owner_path(&work_path);
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&owner_path)
+    {
+        Ok(file) => {
+            return if try_lock_task_work(&file)? {
+                Ok(TaskWorkArtifactFence::Held(file))
+            } else {
+                Ok(TaskWorkArtifactFence::Active)
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("inspect task-local archive work owner"),
+    }
+
+    let work_file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&work_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TaskWorkArtifactFence::Unowned);
+        }
+        Err(error) => return Err(error).context("inspect task-local archive work"),
+    };
+    if try_lock_task_work(&work_file)? {
+        Ok(TaskWorkArtifactFence::Held(work_file))
+    } else {
+        Ok(TaskWorkArtifactFence::Active)
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn try_acquire_task_work_artifact_fence(_path: &Path) -> Result<TaskWorkArtifactFence> {
+    Ok(TaskWorkArtifactFence::Unowned)
+}
+
+pub(crate) fn task_work_artifact_is_active(path: &Path) -> bool {
+    matches!(
+        try_acquire_task_work_artifact_fence(path),
+        Ok(TaskWorkArtifactFence::Active) | Err(_)
+    )
 }
 
 pub(crate) fn create_retention_identity_work_file(
@@ -136,6 +225,10 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
             ));
         }
         let owner_path = parent.join(format!("{stem}.owner"));
+        let work_path = parent.join(format!("{stem}.sqlite"));
+        if crate::is_archive_file_operation_active(&work_path) {
+            continue;
+        }
         let owner_file = match fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -151,7 +244,6 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
             Err(error) => return Err(error.into()),
         };
         if owner_file.is_none() {
-            let work_path = parent.join(format!("{stem}.sqlite"));
             match fs::symlink_metadata(&work_path) {
                 Ok(metadata) if !metadata.is_file() => continue,
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {

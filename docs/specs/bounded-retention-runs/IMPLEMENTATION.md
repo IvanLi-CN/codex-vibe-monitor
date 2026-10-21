@@ -2,9 +2,9 @@
 
 ## Write-admission isolation
 
-REQ-BRR-024 / VER-BRR-013 refine the existing monthly batch path using [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). The repair prepares a fenced predecessor before admission and retains the existing atomic rename/sync/manifest sequence in the short publication transaction. A native owner drains cancelled work before releasing admission; post-drain cleanup retains only the file fence, and ambiguous COMMIT or failed compensation preserves recovery references. Confirmed work is recorded before a cleanup await. Non-authoritative proof pages must not repeat full monthly hashing. Summary proof validation, its durable proof transaction, and archive proof-copy inflation are bounded by the remaining retention work budget; a timeout leaves the published artifact retryable, records a budget stop rather than a proof failure, and relies on native cleanup for any started transaction. When the work budget ends after publication and durable Summary proof but before source conversion, the next run may reuse the final artifact only after rechecking the materializing manifest, file identity, proof, keyset coverage and current live-source identity; source conversion remains the normal deletion-authority path. The child repairs and parent publication path are integrated; delivery requires final current-head GitHub CI and formal review, independently of released or partial-candidate evidence.
+REQ-BRR-024 / VER-BRR-013 refine the existing monthly batch path using [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). The repair prepares a fenced predecessor before admission and retains the existing atomic rename/sync/manifest sequence in the short publication transaction. A native owner drains cancelled work before releasing admission; post-drain cleanup retains only the file fence, and ambiguous COMMIT or failed compensation preserves recovery references. Confirmed work is recorded before a cleanup await. Non-authoritative proof pages must not repeat full monthly hashing or page writes. Summary proof validation, its durable proof transaction, and archive proof-copy inflation retain their own operation-level bounds; a stop leaves the published artifact retryable and relies on native cleanup for any started transaction. A later run may reuse the final artifact only after rechecking the materializing manifest, file identity, proof, keyset coverage and current live-source identity, and only as crash/restart recovery evidence; source conversion remains the normal deletion-authority path. The child repairs and parent publication path are integrated; delivery requires final current-head GitHub CI and formal review, independently of released or partial-candidate evidence.
 
-The joint competition fixture retains 64 real source rows, two-row source SQL microtransactions, the independent locked maintenance database and all proxy/write-hold assertions. The file candidate query and 16MiB workset selector use their existing 1000-row target independently of the SQL cap; otherwise the fixture rewrites the monthly artifact 32 times instead of amortizing one preparation across 32 commits. Its five-second archive completion limit is an outer elapsed deadline around real archive work. The production run-budget seam reserves five seconds before selecting a new file batch, so supplying that same five-second value would exercise no archive work at all. Production run and settlement budgets stay unchanged; timeout or zero archived rows still fails acceptance.
+The joint competition fixture retains 64 real source rows, two-row source SQL microtransactions, the independent locked maintenance database and all proxy/write-hold assertions. The file candidate query and 16MiB workset selector use their existing 1000-row target independently of the SQL cap; otherwise the fixture rewrites the monthly artifact 32 times instead of amortizing one preparation across 32 commits. Its five-second archive completion limit is a test-only outer elapsed deadline around real archive work. It does not define production scheduling; the production path uses the selected work-unit boundary plus operation-level cancellation and pressure rules. Timeout or zero archived rows still fails acceptance.
 
 Caller-side duplicate artifact hashes before identity-proof loading are removed only where the writer has already returned a proved digest. The final archive-fenced digest check, exact per-chunk source proof and Summary deletion authority remain mandatory. A real-file replacement regression preserves live source rows and the staged materializing manifest after rejection. This removes repeated preparation and verification in the controlled working set; an aggregate monthly-writer duration alone neither identifies its dominant substage nor proves a new archive layout is necessary.
 
@@ -18,7 +18,7 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## 任务内批次与月度目标
 
-每轮按数据集选取最多 1000 条符合保留策略的 live 候选，按月份分组，结合实际 payload 字节、现有 gzip 文件大小、可用磁盘和 120 秒设计预算决定是否开始文件批次。正常目标为数百到数千条；尾部、管理员配置或 payload 上限造成不足 512 条时记录原因。规划拒绝不通过缩成单条伪装成果。
+每轮按数据集选取最多 1000 条符合保留策略的 live 候选，按月份分组，结合实际 payload 字节、现有 gzip 文件大小、可用磁盘和操作级边界决定是否开始文件批次。选定窗口由当前任务作为一个完整逻辑工作单元闭环；正常目标为数百到数千条，尾部、管理员配置或 payload 上限造成不足 512 条时记录原因。规划拒绝不通过缩成单条伪装成果。
 
 既有月度文件的空间预检读取 gzip 内前 100 字节 SQLite 文件头，用有效页数和页大小计算完整大小，覆盖超过 4 GiB 的文件；页数为零、版本计数不一致或 gzip 长度低 32 位不匹配时拒绝文件准备，不退回可能回绕的 ISIZE。空间同时预留工作副本和 SQLite 临时空间，不增加完整解压扫描。SQLite 头的有效性规则沿用[官方文件格式](https://sqlite.org/fileformat.html#in_header_database_size)。
 
@@ -28,17 +28,17 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 当前任务创建带 PID/唯一序号的临时 SQLite 副本，批量写入已选记录，一次校验内容和身份、一次压缩、一次原子替换目标文件。临时 SQLite、journal/WAL/SHM 和压缩中间文件有任务内清理 guard。工作文件的内核锁识别实际活跃所有者，不依赖可复用或跨容器命名空间的 PID；创建及废弃清理使用短暂、非阻塞的目录锁，文件准备期间只保留工作文件锁。清理只接受规范目标下三个数字组成的任务文件名，在磁盘预检之前丢弃已无内核所有者的临时文件及孤立 sidecar；不读取其中数据，不续作它们。
 
-文件发布后按现有 manifest、摘要及 Verified Archive 证明转换源记录。独立源连接不回收到连接池；归档 ATTACH 的文件 URI 显式使用磁盘模式，避免共享内存源把目标文件也建到内存。主库写入每次最多 64 条；全部内容证明在事务外准备，短事务复核源身份、证明元数据和 raw 引用后提交。预算耗尽发生在发布和完整 Summary proof 之后时，proof 可在 `materializing` manifest 下持久化，后续运行仅在重新验证文件、manifest、最终 proof marker 与 manifest coverage 一致、解压归档实际 row count/selected ID set、coverage、proof 和当前 live source identity 后复用该最终 gzip；proof 副本解压按剩余工作预算分块执行，未完成即清理并回到安全重建/延期，且不得将预算停止误记为 proof failure。该状态仍不具备 Summary/cleanup 权威，源转换完成事务仍是唯一删除授权路径。已提交微批次保留其完整事实；失败后未提交源行仍为 live，下一轮重新选择。小时物化进度的前缀复核使用有界存在性检查，避免持有 writer permit 时 COUNT 百万行；运行详情只保存阶段错误与指纹，不输出源错误中的路径或敏感内容。已发布文件中的 live 副本按身份重新覆盖，不能作为已删除源行的证明替代品。旧目标的恢复备份只保护文件替换异常，不用作下一轮数据 staging。
+文件发布后按现有 manifest、摘要及 Verified Archive 证明转换源记录。独立源连接不回收到连接池；归档 ATTACH 的文件 URI 显式使用磁盘模式，避免共享内存源把目标文件也建到内存。主库写入每次最多 64 条；全部内容证明在事务外准备，短事务复核源身份、证明元数据和 raw 引用后提交。操作级边界触发停止时，proof 可在 `materializing` manifest 下持久化，后续运行仅在重新验证文件、manifest、最终 proof marker 与 manifest coverage 一致、解压归档实际 row count/selected ID set、coverage、proof 和当前 live source identity 后作为崩溃/重启恢复证据复用该最终 gzip；proof 副本解压按自身操作预算分块执行，未完成即清理并回到安全重建/延期，且不得将停止误记为 proof failure。该状态仍不具备 Summary/cleanup 权威，源转换完成事务仍是唯一删除授权路径。已提交微批次保留其完整事实；失败后未提交源行仍为 live，下一轮重新选择。小时物化进度的前缀复核使用有界存在性检查，避免持有 writer permit 时 COUNT 百万行；运行详情只保存阶段错误与指纹，不输出源错误中的路径或敏感内容。已发布文件中的 live 副本按身份重新覆盖，不能作为已删除源行的证明替代品。旧目标的恢复备份只保护文件替换异常，不用作下一轮数据 staging。
 
 普通任务将旧 preparing/published prepared 行隔离为现有 `quarantined`，不解析其 source IDs 作为正常归档输入。既有 manifest、completed archive 和 cleanup 事实保留；历史恢复工具仍可读取旧状态。主库不增加表、列或状态枚举值。
 
 仍被 manifest 引用的旧隔离记录不会自动删除，既有 recovery health 因此可能持续为 degraded；这是保留隔离事实的诊断，不能据此断言当前归档停滞。新任务不依赖该健康标签准入。区分历史隔离与当前故障的健康展示属于后续优化，本轮不隐藏告警或放宽文件/raw 保护。
 
-准入等待受本轮剩余超时约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一约束，避免归档未开始时等待超过整轮兜底时间。没有旧 prepared 行时不提交空隔离事务。
+准入等待受独立的操作级预算约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一操作级预算，没有整轮兜底期限。没有旧 prepared 行时不提交空隔离事务。
 
 每轮通过 task-local 保存首次实际准入拒绝原因，供不可变运行结果使用；后续阶段成功提交不会擦除该原因，下一轮也不会继承历史恢复或共享写状态的原因。后台槽占用保留 `background_busy`，不能误报为 SQLite 压力。
 
-主库的可选 `PRAGMA optimize` / checkpoint 使用独立连接、至多 2 秒且不超过整轮剩余时间的执行期限、匹配的 busy timeout 和每 1000 VM 指令检查的真实 SQLite progress handler。执行完成后移除 handler 并等待连接关闭，再释放后台准入；不把取消中的连接还池。维护语句的取消不撤销已完成归档，也不伪装成整轮超时，日志记录 `sqlite_maintenance_query_budget`；连接清理失败不能被预算取消掩盖。回归测试验证慢写语句取消后原值保留、独立 writer 能立即取得锁。
+主库的可选 `PRAGMA optimize` / checkpoint 使用独立连接、至多 2 秒的操作级执行期限、匹配的 busy timeout 和每 1000 VM 指令检查的真实 SQLite progress handler。执行完成后移除 handler 并等待连接关闭，再释放后台准入；不把取消中的连接还池。维护语句的取消不撤销已完成归档，也不伪装成操作级预算停止，日志记录 `sqlite_maintenance_query_budget`；连接清理失败不能被预算取消掩盖。回归测试验证慢写语句取消后原值保留、独立 writer 能立即取得锁。
 
 容量排查发现在线 terminal 写入复用大历史 Prompt key 时，原工作集触发器的 OR 条件会对历史正文反复计算展示状态，持续占用 P1。查询改为现有 key/时间索引上的近期范围，以及 `invocation_in_progress_live` 的旧活跃 ID 和当前变更 ID；仍回到源记录复核 key、时间和展示状态。当前 ID 覆盖 INSERT/UPDATE/DELETE 的触发器执行顺序，两个时间范围不重叠。此优化保留实时工作集口径，不调用会话历史统计物化。
 
@@ -46,22 +46,22 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## 模块映射
 
-| 需求                | 当前源码                                                                                       | 验证口径                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| REQ-BRR-002/022     | `src/maintenance/retention/batch_plan.rs`, `task_batches.rs`                                   | 预算参与批次规划；运行超时只作安全兜底，重复超时是缺陷信号                             |
-| REQ-BRR-022         | `src/maintenance/archive/writers.rs`, `quota_compaction.rs`, `retention/archive_identity.rs`   | 同月规范路径、任务临时文件清理、身份冲突和内容摘要、未证明源行保留                     |
-| REQ-BRR-022         | `src/summary_source_change.rs`, `retention/batch_plan.rs`                                      | 完整 V2 Snapshot 验证在写事务外；短事务比较元数据后发布，Summary 不重复计入 live 副本  |
-| REQ-BRR-023         | `src/maintenance/retention.rs`, `src/runtime.rs`                                               | batch rows、已提交行、文件准备、锁等待、整轮有效服务速率、24h 到达速率、倍率及超时次数 |
-| REQ-BRR-023         | `web/src/lib/api/core-foundation.ts`, `RetentionRunThroughput.tsx`, `SystemTaskDetailPage.tsx` | 新字段可选；真实零与缺失区分，旧响应显示未知；Prompt 统计仍暂不可用                    |
-| REQ-BRR-016..021    | 既有 runtime、maintenance_store、小时 observer 和趋势组件                                      | 单一 owner 自动追赶、禁用控制、准确小时双指标保留；本轮不新增调度器或改动小时观测定义  |
-| REQ-BRR-003/005/015 | 既有 Prompt cache 物化所有者                                                                   | 独立持久化队列继续异步处理；不放回归档事务，不改变精确统计读契约                       |
-| REQ-BRR-002/004/023 | `src/schema.rs`, `schema/prompt_cache_working_set_triggers.rs`, `retention.rs`                 | 大 key 在线工作集不扫描历史正文；准入超时取消 waiter，P1 优先和现有迁移事实保留        |
+| 需求                | 当前源码                                                                                       | 验证口径                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| REQ-BRR-002/022     | `src/maintenance/retention/batch_plan.rs`, `task_batches.rs`                                   | 操作级预算参与批次规划；测试注入的 operation deadline 只保护回归边界，重复停止是缺陷信号 |
+| REQ-BRR-022         | `src/maintenance/archive/writers.rs`, `quota_compaction.rs`, `retention/archive_identity.rs`   | 同月规范路径、任务临时文件清理、身份冲突和内容摘要、未证明源行保留                       |
+| REQ-BRR-022         | `src/summary_source_change.rs`, `retention/batch_plan.rs`                                      | 完整 V2 Snapshot 验证在写事务外；短事务比较元数据后发布，Summary 不重复计入 live 副本    |
+| REQ-BRR-023         | `src/maintenance/retention.rs`, `src/runtime.rs`                                               | batch rows、已提交行、文件准备、锁等待、整轮有效服务速率、24h 到达速率、倍率及超时次数   |
+| REQ-BRR-023         | `web/src/lib/api/core-foundation.ts`, `RetentionRunThroughput.tsx`, `SystemTaskDetailPage.tsx` | 新字段可选；真实零与缺失区分，旧响应显示未知；Prompt 统计仍暂不可用                      |
+| REQ-BRR-016..021    | 既有 runtime、maintenance_store、小时 observer 和趋势组件                                      | 单一 owner 自动追赶、禁用控制、准确小时双指标保留；本轮不新增调度器或改动小时观测定义    |
+| REQ-BRR-003/005/015 | 既有 Prompt cache 物化所有者                                                                   | 独立持久化队列继续异步处理；不放回归档事务，不改变精确统计读契约                         |
+| REQ-BRR-002/004/023 | `src/schema.rs`, `schema/prompt_cache_working_set_triggers.rs`, `retention.rs`                 | 大 key 在线工作集不扫描历史正文；准入超时取消 waiter，P1 优先和现有迁移事实保留          |
 
 ## 观测与 API
 
-维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、sourceIdentityMs、archiveWriterMs、summaryProofMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple、timeoutCount 和 smallBatchReason；不适用的阶段保持未知。
+维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、sourceIdentityMs、archiveWriterMs、summaryProofMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple、timeoutCount 和 smallBatchReason；不适用的阶段保持未知。`budgetMs` 仍是兼容字段，但正常生产 retention 不再填入整轮预算而保持缺失。
 
-批次 timeoutCount 只计该选定数据集/月批次尚未全部提交且整轮执行期限已到的停止；每批最多一次，按 dataset 汇总即可得到其次数。已完成批次的迟后收尾、未过期的准入延期及非超时错误不计入。invocation 身份读取也在批次观测范围内。兼容的整轮 timeoutCount 继续表示该轮是否触发兜底期限，budgetExhausted 仍独立报告；旧批次缺少新字段时归一化为未知，不补零。轻量回归用零期限和无期限的确定性上下文验证归属及序列化，不测 CPU 性能。
+批次 timeoutCount 只计该选定数据集/月批次尚未全部提交且测试注入的 operation deadline 或兼容旧 timeout 路径停止；每批最多一次，按 dataset 汇总即可得到其次数。已完成批次的迟后收尾、未过期的准入延期及非超时错误不计入。invocation 身份读取也在批次观测范围内。生产路径没有整轮兜底期限，正常运行的 `timeoutCount` 保持缺失，`budgetExhausted` 仍独立报告测试注入的预算停止；旧批次缺少新字段时归一化为未知，不补零。轻量回归用确定性上下文验证归属及序列化，不测 CPU 性能。
 
 服务速率使用本数据集实际提交行数除以整轮 elapsed，包含其他阶段、准入和收尾，避免只用压缩的短时速度。到达速率在独占连接上以真实 SQLite progress handler 的 2 秒预算读取最近 24 小时行数；不可观测则为未知，真实零到达时倍率未知。运行结果一经持久化，后台统计刷新不改写它。
 
@@ -114,13 +114,13 @@ Usage-breakdown repair fences every verified source directory through transactio
 - 同步 v4.0.2 基线后的 `bfc0d23f` 在 Actions 的原作业单次重跑中取得有效稳定的六窗口结果：CPU/请求相对开销 5.61% 未通过，p95 开销 0.64% 通过。开启模式的短 profile 只能定位热点，无法独立证明相对开销来源；诊断作业补齐关闭模式同阶段 profile，归档运行时与 5% 验收阈值不变。
 - 路由超时回归使用不返回正文的本地上游并固定初始 sticky 路由，备用上游使用既有本地成功夹具；直接验证初次 stream timeout、备用 transit 请求成功及恰好一次接管，不依赖虚构域名的 DNS/连接耗时制造 502/503。测试配置使用 2 秒功能超时，不断言 wall-clock 性能；不改生产路由逻辑或默认超时。retention 准入回归验证延期、无泄漏 waiter、P1 优先和未写入元数据，移除 CPU 敏感的一秒内完成断言。此批次只在 GitHub Actions 执行 stateful profile。
 - 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选的普通源码/功能验证和适用视觉门禁完成后启动；合并前必须通过必需 Actions 检查及产物冒烟。按主人禁止不必要性能实验进入通用 PR 门禁的指令，性能预算及 CPU 诊断保留为 Actions 辅助检查，Build Artifacts 不再依赖其结果。本次交付不将历史开销失败、缺测或尚未完成的容量实测标为通过；后续性能验证独立记录。
-- Quota 候选排序使用专用 SQLite 连接，剩余任务预算限制锁等待，progress handler 在截止或关闭请求时中断实际查询；移除 handler 并关闭连接后才返回。准备月度文件复用任务剩余时间的超时兜底，未完成工作随 future 清理，已提交批次保留。回归通过固定回调取消、零准备预算及未完成 future 验证源行保留、连接释放和下一轮重新选取，不使用执行速度断言。
+- Quota 候选排序使用专用 SQLite 连接，操作级查询预算限制锁等待，progress handler 在截止或关闭请求时中断实际查询；移除 handler 并关闭连接后才返回。准备月度文件使用独立的取消/操作边界，未完成工作随 future 清理，已提交批次保留。回归通过固定回调取消、零准备预算及未完成 future 验证源行保留、连接释放和下一轮重新选取，不使用执行速度断言。
 
-- 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受剩余期限及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
+- 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受自身操作预算及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
 
 - 池连接归还由 SQLx 异步执行。写许可申请前在无许可状态下确认池可用并完成空闲连接归还，避免单连接池或刚提交微批次误报池满；随后仍不持连接排队、获准后只非阻塞取连接。确定性回归按 pool-ready 通知安排 P1 取走连接，验证反向等待不存在以及 readiness 竞争时释放许可延期。
 
-运行在首条提交前触发兜底超时也属于 overall partial，不能按无提交的纯准入延期处理；fatal 仍优先，纯压力/连接池/写准入等待且未超时仍为 deferred。完成度回归直接构造 budgetExhausted、deferred 和起点范围组合，覆盖未知范围及 fatal 优先，不执行计时或性能测量。
+运行在首条提交前触发测试注入的 operation deadline 也属于 overall partial，不能按无提交的纯准入延期处理；fatal 仍优先，纯压力/连接池/写准入等待且未超时仍为 deferred。完成度回归直接构造 budgetExhausted、deferred 和起点范围组合，覆盖未知范围及 fatal 优先，不执行计时或性能测量。
 
 ## Visual Evidence
 

@@ -1,14 +1,15 @@
 use super::*;
 
 pub(crate) const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_WRITE_ADMISSION_BUDGET: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON: &str =
+    "retention_archive_file_operation_budget";
 pub(crate) const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 pub(crate) const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 pub(crate) const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(crate) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 pub(crate) const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
-// Keep the archive run bounded while allowing one normal file-preparation cycle to finish.
-// Phase timings below make it possible to replace this calibration with a measured budget.
-pub(crate) const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(120);
 pub(crate) const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(2);
 pub(crate) const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub(crate) const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
@@ -50,6 +51,7 @@ pub(crate) static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> 
 
 tokio::task_local! {
     pub(crate) static RETENTION_SHUTDOWN: CancellationToken;
+    pub(crate) static RETENTION_MAINTENANCE_ACTIVE: ();
     pub(crate) static RETENTION_RUN_DEADLINE: RefCell<Option<Instant>>;
     pub(crate) static RETENTION_RUN_DEFER_REASON: RefCell<Option<String>>;
     pub(crate) static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
@@ -105,6 +107,8 @@ tokio::task_local! {
         Arc<RetentionSqliteMaintenanceTestProbe>;
     pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
+    pub(crate) static RETENTION_TEST_WRITE_ADMISSION_BUDGET: RefCell<Option<Duration>>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_FILE_OPERATION_BUDGET: RefCell<Option<Duration>>;
     pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
     pub(crate) static RETENTION_TEST_WRITE_CONNECTION_POOL_READY: Arc<Notify>;
@@ -285,6 +289,14 @@ impl RetentionArchiveFileLock {
     }
 }
 
+struct ArchiveLockCancellationSignal(Arc<AtomicBool>);
+
+impl Drop for ArchiveLockCancellationSignal {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn retention_file_lock(
     path: &Path,
@@ -333,6 +345,99 @@ pub(crate) fn retention_file_lock(
 #[cfg(unix)]
 pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
     retention_file_lock(path, libc::LOCK_EX, retention_archive_locks_are_try_only())
+}
+
+#[cfg(unix)]
+fn retention_file_lock_until(
+    path: &Path,
+    deadline: Instant,
+    cancellation: &AtomicBool,
+    shutdown: Option<&CancellationToken>,
+    try_only: bool,
+) -> Result<RetentionArchiveFileLock> {
+    if try_only {
+        return retention_file_lock(path, libc::LOCK_EX, true);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("archive path has no parent directory"))?;
+    let file = match File::open(parent) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RetentionArchiveFileLock(None));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to open archive directory lock: {}",
+                    parent.display()
+                )
+            });
+        }
+    };
+    loop {
+        if cancellation.load(Ordering::Acquire)
+            || shutdown.is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(retention_write_deferred("archive_file_lock"));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            return Ok(RetentionArchiveFileLock(Some(file)));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EAGAIN)
+            && error.raw_os_error() != Some(libc::EWOULDBLOCK)
+        {
+            return Err(error).with_context(|| {
+                format!("failed to lock archive directory: {}", parent.display())
+            });
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
+pub(crate) async fn retention_archive_file_lock_async(
+    path: &Path,
+) -> Result<RetentionArchiveFileLock> {
+    let path = path.to_path_buf();
+    let deadline = retention_archive_file_operation_deadline();
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(retention_archive_file_operation_budget_exhausted());
+    }
+    let try_only = retention_archive_locks_are_try_only();
+    let shutdown = retention_run_shutdown_token();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let _cancellation_signal = ArchiveLockCancellationSignal(Arc::clone(&cancellation));
+    let worker_cancellation = Arc::clone(&cancellation);
+    let worker = tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        {
+            retention_file_lock_until(
+                &path,
+                deadline,
+                &worker_cancellation,
+                shutdown.as_ref(),
+                try_only,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            retention_archive_file_lock(&path)
+        }
+    });
+    match tokio::time::timeout(remaining, worker).await {
+        Ok(joined) => joined.context("archive directory lock worker panicked")?,
+        Err(_) => {
+            cancellation.store(true, Ordering::Release);
+            Err(retention_archive_file_operation_budget_exhausted())
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -692,6 +797,48 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
         .flatten()
 }
 
+pub(crate) fn retention_maintenance_is_active() -> bool {
+    RETENTION_MAINTENANCE_ACTIVE.try_with(|_| ()).is_ok()
+}
+
+pub(crate) fn retention_prepared_archive_isolation_active() -> bool {
+    retention_run_remaining_budget().is_some() || (retention_maintenance_is_active() && !cfg!(test))
+}
+
+fn configured_retention_write_admission_budget() -> Duration {
+    #[cfg(test)]
+    if let Ok(Some(budget)) =
+        RETENTION_TEST_WRITE_ADMISSION_BUDGET.try_with(|value| *value.borrow())
+    {
+        return budget;
+    }
+
+    RETENTION_WRITE_ADMISSION_BUDGET
+}
+
+pub(crate) fn retention_write_admission_budget() -> (Duration, &'static str) {
+    let configured = configured_retention_write_admission_budget();
+    match retention_run_remaining_budget() {
+        Some(remaining) if remaining <= configured => (remaining, "retention_work_budget"),
+        _ => (configured, "retention_write_admission"),
+    }
+}
+
+fn configured_retention_archive_file_operation_budget() -> Duration {
+    #[cfg(test)]
+    if let Ok(Some(budget)) =
+        RETENTION_TEST_ARCHIVE_FILE_OPERATION_BUDGET.try_with(|value| *value.borrow())
+    {
+        return budget;
+    }
+
+    RETENTION_ARCHIVE_FILE_OPERATION_BUDGET
+}
+
+pub(crate) fn retention_archive_file_operation_deadline() -> Instant {
+    Instant::now() + configured_retention_archive_file_operation_budget()
+}
+
 pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {
     RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
 }
@@ -710,6 +857,26 @@ pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
 ) -> F::Output {
     RETENTION_RUN_DEADLINE
         .scope(RefCell::new(Some(Instant::now() + budget)), work)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_write_admission_budget<F: Future>(
+    budget: Duration,
+    work: F,
+) -> F::Output {
+    RETENTION_TEST_WRITE_ADMISSION_BUDGET
+        .scope(RefCell::new(Some(budget)), work)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_archive_file_operation_budget<F: Future>(
+    budget: Duration,
+    work: F,
+) -> F::Output {
+    RETENTION_TEST_ARCHIVE_FILE_OPERATION_BUDGET
+        .scope(RefCell::new(Some(budget)), work)
         .await
 }
 
@@ -854,6 +1021,13 @@ impl RetentionWriteBudget {
         if breached {
             self.next_rows = self.next_rows.saturating_div(2).max(1);
         } else if elapsed <= RETENTION_WRITE_TARGET && estimated_bytes < RETENTION_WRITE_MAX_BYTES {
+            // A single oversized row must not leave the byte estimate high enough to force every
+            // later small commit through a one-row candidate. The actual micro-batch builder
+            // still enforces RETENTION_WRITE_MAX_BYTES for every candidate, so this only removes
+            // stale conservative state after a successful normal commit.
+            self.estimated_bytes_per_row = self
+                .estimated_bytes_per_row
+                .min(observed_bytes_per_row.saturating_mul(4).max(256));
             self.next_rows = self
                 .next_rows
                 .saturating_add(1)
@@ -871,6 +1045,32 @@ pub(crate) struct RetentionWriteHealthState {
 
 pub(crate) static RETENTION_WRITE_HEALTH: Lazy<std::sync::Mutex<RetentionWriteHealthState>> =
     Lazy::new(|| std::sync::Mutex::new(RetentionWriteHealthState::default()));
+
+#[derive(Debug)]
+pub(crate) struct RetentionArchiveFileOperationBudgetExceeded;
+
+impl std::fmt::Display for RetentionArchiveFileOperationBudgetExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("retention archive file work exceeded the operation budget")
+    }
+}
+
+impl std::error::Error for RetentionArchiveFileOperationBudgetExceeded {}
+
+pub(crate) fn retention_archive_file_operation_budget_exhausted() -> anyhow::Error {
+    anyhow::Error::new(RetentionArchiveFileOperationBudgetExceeded)
+}
+
+pub(crate) fn is_retention_archive_file_operation_budget_exhausted(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<RetentionArchiveFileOperationBudgetExceeded>())
+}
+
+pub(crate) fn is_retention_archive_file_work_transient(error: &anyhow::Error) -> bool {
+    is_retention_archive_file_operation_budget_exhausted(error)
+        || is_retention_write_deferred(error)
+}
 
 #[derive(Debug)]
 pub(crate) struct RetentionWriteDeferred {
@@ -894,7 +1094,9 @@ pub(crate) fn retention_write_deferred(operation: &'static str) -> anyhow::Error
 }
 
 pub(crate) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
-    error.is::<RetentionWriteDeferred>() || error.is::<RawOrphanSweepAdmissionDeferred>()
+    error.chain().any(|cause| {
+        cause.is::<RetentionWriteDeferred>() || cause.is::<RawOrphanSweepAdmissionDeferred>()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1375,7 +1577,14 @@ pub(crate) async fn acquire_retention_pool_connection(
                 }
             }
         } else {
-            pool.acquire().await.map(Some)
+            let (admission_budget, timeout_reason) = retention_write_admission_budget();
+            match tokio::time::timeout(admission_budget, pool.acquire()).await {
+                Ok(result) => result.map(Some),
+                Err(_) => {
+                    retention_record_defer(operation, timeout_reason);
+                    Ok(None)
+                }
+            }
         }
     };
     let result = if let Some(shutdown) = shutdown.as_ref() {
@@ -1503,17 +1712,14 @@ pub(crate) async fn acquire_retention_write_coordinator(
         }
     };
     // A queued maintenance waiter owns no SQLite work. Dropping it unregisters the waiter;
-    // the deadline must also cover admission behind an active foreground writer.
-    let write_permit = if let Some(remaining) = retention_run_remaining_budget() {
-        match tokio::time::timeout(remaining, acquire).await {
-            Ok(permit) => permit,
-            Err(_) => {
-                retention_record_defer(operation, "retention_work_budget");
-                return None;
-            }
+    // the operation budget must also cover admission behind an active foreground writer.
+    let (admission_budget, timeout_reason) = retention_write_admission_budget();
+    let write_permit = match tokio::time::timeout(admission_budget, acquire).await {
+        Ok(permit) => permit,
+        Err(_) => {
+            retention_record_defer(operation, timeout_reason);
+            return None;
         }
-    } else {
-        acquire.await
     };
     let Some(write_permit) = write_permit else {
         retention_record_defer(operation, "shutdown");

@@ -31,14 +31,21 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             }
-            let _archive_lock = retention_archive_file_lock(&archive_path)?;
+            let _archive_lock = retention_archive_file_lock_async(&archive_path).await?;
             let Some(expected_sha256) = archive_file.sha256.as_deref() else {
                 remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             };
-            if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+            if sha256_hex_file_with_deadline(
+                &archive_path,
+                super::super::retention::retention_archive_file_operation_deadline(),
+            )
+            .ok()
+            .as_deref()
+                != Some(expected_sha256)
+            {
                 remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
