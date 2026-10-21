@@ -29,28 +29,28 @@ async fn quota_compaction_candidates(
         ORDER BY timestamp_value ASC, id ASC
         LIMIT ?2
     "#;
-    let Some(remaining) = super::super::retention::retention_run_remaining_budget() else {
-        return Ok(Some(
-            sqlx::query_as::<_, TimestampedArchiveCandidate>(query_sql)
-                .bind(cutoff)
-                .bind(candidate_limit as i64)
-                .fetch_all(pool)
-                .await?,
-        ));
-    };
-    if remaining.is_zero() {
+    let query_budget = super::super::retention::retention_run_remaining_budget()
+        .unwrap_or(super::super::retention::RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET)
+        .min(super::super::retention::RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET);
+    if query_budget.is_zero() {
         return Ok(None);
     }
-    let deadline = Instant::now() + remaining;
+    let deadline = Instant::now() + query_budget;
     let shutdown = super::super::retention::retention_run_shutdown_token();
+    if shutdown
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return Ok(None);
+    }
     let interrupted = Arc::new(AtomicBool::new(false));
     let options = pool
         .connect_options()
         .as_ref()
         .clone()
-        .busy_timeout(remaining);
+        .busy_timeout(query_budget);
     let mut connection =
-        match tokio::time::timeout(remaining, SqliteConnection::connect_with(&options)).await {
+        match tokio::time::timeout(query_budget, SqliteConnection::connect_with(&options)).await {
             Ok(connection) => connection?,
             Err(_) => return Ok(None),
         };
@@ -62,6 +62,7 @@ async fn quota_compaction_candidates(
         .await?;
     {
         let interrupted = interrupted.clone();
+        let progress_shutdown = shutdown.clone();
         #[cfg(test)]
         let test_probe = super::super::retention::RETENTION_TEST_SQLITE_MAINTENANCE_PROBE
             .try_with(Arc::clone)
@@ -77,7 +78,9 @@ async fn quota_compaction_candidates(
             let test_cancelled = false;
             let keep_running = Instant::now() < deadline
                 && !test_cancelled
-                && shutdown.as_ref().is_none_or(|token| !token.is_cancelled());
+                && progress_shutdown
+                    .as_ref()
+                    .is_none_or(|token| !token.is_cancelled());
             if !keep_running {
                 interrupted.store(true, Ordering::Release);
             }
@@ -103,7 +106,12 @@ async fn quota_compaction_candidates(
     });
     cleanup?;
     closed?;
-    if interrupted.load(Ordering::Acquire) || Instant::now() >= deadline {
+    if interrupted.load(Ordering::Acquire)
+        || Instant::now() >= deadline
+        || shutdown
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    {
         return Ok(None);
     }
     Ok(Some(result?))
@@ -161,18 +169,18 @@ pub(crate) async fn compact_old_quota_snapshots(
     let mut rows_archived = 0usize;
     let mut archive_batches = 0usize;
 
-    loop {
+    'work_unit: {
         if !super::super::retention::batch_plan::archive_batch_can_start() {
-            break;
+            break 'work_unit;
         }
         let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
         let Some(candidates) = quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
         else {
-            break;
+            break 'work_unit;
         };
 
         if candidates.is_empty() {
-            break;
+            break 'work_unit;
         }
 
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
@@ -350,9 +358,9 @@ pub(crate) async fn compact_old_quota_snapshots(
                 archive_batches += 1;
             }
         }
-        if super::super::retention::retention_run_remaining_budget().is_some() {
-            break;
-        }
+        // One scheduled invocation owns one bounded candidate window. The next invocation
+        // reselects remaining live rows instead of extending this task with a hidden scan.
+        break 'work_unit;
     }
 
     Ok((rows_archived, archive_batches))

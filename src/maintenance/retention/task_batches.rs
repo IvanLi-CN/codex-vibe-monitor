@@ -243,6 +243,7 @@ struct ArchiveSourceIdentityProof {
 
 fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
     retention_run_budget_expired()
+        || is_retention_archive_file_operation_budget_exhausted(error)
         || error
             .to_string()
             .contains("retention archive identity proof inflate exceeded the operation deadline")

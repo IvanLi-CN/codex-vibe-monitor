@@ -5,7 +5,7 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -24,11 +24,18 @@ use crate::{
 };
 
 static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static ACTIVE_ARCHIVE_FILE_OPERATIONS: Lazy<std::sync::Mutex<HashSet<PathBuf>>> =
-    Lazy::new(|| std::sync::Mutex::new(HashSet::new()));
+#[derive(Default)]
+struct ActiveArchiveFileOperations {
+    writers: HashSet<PathBuf>,
+    readers: HashMap<PathBuf, usize>,
+}
+
+static ACTIVE_ARCHIVE_FILE_OPERATIONS: Lazy<std::sync::Mutex<ActiveArchiveFileOperations>> =
+    Lazy::new(|| std::sync::Mutex::new(ActiveArchiveFileOperations::default()));
 
 pub(crate) struct ArchiveFileOperationLease {
     paths: Vec<PathBuf>,
+    shared_read_paths: Vec<PathBuf>,
     timed_out: Arc<AtomicBool>,
 }
 
@@ -42,20 +49,42 @@ impl Drop for ArchiveFileOperationCancellationSignal {
 
 impl ArchiveFileOperationLease {
     fn register(paths: impl IntoIterator<Item = PathBuf>) -> Option<Self> {
+        Self::register_with_shared_reads(paths, [])
+    }
+
+    fn register_with_shared_reads(
+        paths: impl IntoIterator<Item = PathBuf>,
+        shared_read_paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Option<Self> {
         let paths = paths
             .into_iter()
             .map(|path| archive_file_operation_key(&path))
             .collect::<HashSet<_>>();
-        if paths.is_empty() {
+        let shared_read_paths = shared_read_paths
+            .into_iter()
+            .map(|path| archive_file_operation_key(&path))
+            .collect::<HashSet<_>>();
+        if paths.is_empty() && shared_read_paths.is_empty() {
             return None;
         }
         let mut active = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock().ok()?;
-        if paths.iter().any(|path| active.contains(path)) {
+        if paths
+            .iter()
+            .any(|path| active.writers.contains(path) || active.readers.contains_key(path))
+            || shared_read_paths
+                .iter()
+                .any(|path| active.writers.contains(path))
+            || paths.iter().any(|path| shared_read_paths.contains(path))
+        {
             return None;
         }
-        active.extend(paths.iter().cloned());
+        active.writers.extend(paths.iter().cloned());
+        for path in &shared_read_paths {
+            *active.readers.entry(path.clone()).or_default() += 1;
+        }
         Some(Self {
             paths: paths.into_iter().collect(),
+            shared_read_paths: shared_read_paths.into_iter().collect(),
             timed_out: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -65,7 +94,16 @@ impl Drop for ArchiveFileOperationLease {
     fn drop(&mut self) {
         if let Ok(mut active) = ACTIVE_ARCHIVE_FILE_OPERATIONS.lock() {
             for path in &self.paths {
-                active.remove(path);
+                active.writers.remove(path);
+            }
+            for path in &self.shared_read_paths {
+                if let Some(readers) = active.readers.get_mut(path) {
+                    if *readers <= 1 {
+                        active.readers.remove(path);
+                    } else {
+                        *readers -= 1;
+                    }
+                }
             }
         }
     }
@@ -93,7 +131,10 @@ pub(crate) fn try_acquire_archive_file_operation_lease(
 pub(crate) fn is_archive_file_operation_active(path: &Path) -> bool {
     ACTIVE_ARCHIVE_FILE_OPERATIONS
         .lock()
-        .map(|active| active.contains(&archive_file_operation_key(path)))
+        .map(|active| {
+            let key = archive_file_operation_key(path);
+            active.writers.contains(&key) || active.readers.contains_key(&key)
+        })
         .unwrap_or(true)
 }
 
@@ -428,7 +469,8 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
     let destination = destination.to_path_buf();
     run_archive_file_work_with_operation_budget(
         "inflate",
-        vec![source.clone(), destination.clone()],
+        vec![destination.clone()],
+        vec![source.clone()],
         vec![destination.clone()],
         vec![destination.clone()],
         move |deadline, shutdown| {
@@ -458,7 +500,8 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_elapsed_budget(
     run_archive_file_work_with_deadline(
         ArchiveFileWorkRequest {
             operation: "historical_rollup_archive_inflate",
-            protected_paths: vec![source.clone(), destination.clone()],
+            protected_paths: vec![destination.clone()],
+            shared_read_paths: vec![source.clone()],
             failure_cleanup_paths: vec![destination.clone()],
             timeout_cleanup_paths: vec![destination.clone()],
             deadline,
@@ -549,6 +592,7 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
     run_archive_file_work_with_operation_budget(
         "deflate",
         vec![source.clone(), destination.clone()],
+        Vec::new(),
         vec![destination.clone()],
         vec![source.clone(), destination.clone()],
         move |deadline, shutdown| {
@@ -599,6 +643,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
 async fn run_archive_file_work_with_operation_budget<F>(
     operation: &'static str,
     protected_paths: Vec<PathBuf>,
+    shared_read_paths: Vec<PathBuf>,
     failure_cleanup_paths: Vec<PathBuf>,
     timeout_cleanup_paths: Vec<PathBuf>,
     work: F,
@@ -616,6 +661,7 @@ where
         ArchiveFileWorkRequest {
             operation,
             protected_paths,
+            shared_read_paths,
             failure_cleanup_paths,
             timeout_cleanup_paths,
             deadline: Some(deadline),
@@ -635,6 +681,7 @@ where
 struct ArchiveFileWorkRequest {
     operation: &'static str,
     protected_paths: Vec<PathBuf>,
+    shared_read_paths: Vec<PathBuf>,
     failure_cleanup_paths: Vec<PathBuf>,
     timeout_cleanup_paths: Vec<PathBuf>,
     deadline: Option<Instant>,
@@ -653,13 +700,16 @@ where
     let ArchiveFileWorkRequest {
         operation,
         protected_paths,
+        shared_read_paths,
         failure_cleanup_paths,
         timeout_cleanup_paths,
         deadline,
         timeout,
         shutdown,
     } = request;
-    let Some(lease) = ArchiveFileOperationLease::register(protected_paths) else {
+    let Some(lease) =
+        ArchiveFileOperationLease::register_with_shared_reads(protected_paths, shared_read_paths)
+    else {
         return Err(super::retention::retention_write_deferred(operation));
     };
     let timed_out = Arc::clone(&lease.timed_out);
@@ -821,5 +871,33 @@ mod tests {
         drop(lease);
         assert!(!is_archive_file_operation_active(&source));
         assert!(!is_archive_file_operation_active(&destination));
+    }
+
+    #[test]
+    fn archive_file_operation_lease_allows_shared_readers_but_fences_writers() {
+        let suffix = RETENTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let source = PathBuf::from(format!("archive-shared-source-{suffix}.sqlite.gz"));
+        let first = ArchiveFileOperationLease::register_with_shared_reads(
+            [PathBuf::from(format!(
+                "archive-shared-first-{suffix}.sqlite"
+            ))],
+            [source.clone()],
+        )
+        .expect("register first shared archive reader");
+        let second = ArchiveFileOperationLease::register_with_shared_reads(
+            [PathBuf::from(format!(
+                "archive-shared-second-{suffix}.sqlite"
+            ))],
+            [source.clone()],
+        )
+        .expect("register second shared archive reader");
+
+        assert!(is_archive_file_operation_active(&source));
+        assert!(ArchiveFileOperationLease::register([source.clone()]).is_none());
+
+        drop(first);
+        assert!(is_archive_file_operation_active(&source));
+        drop(second);
+        assert!(!is_archive_file_operation_active(&source));
     }
 }

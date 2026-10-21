@@ -51,6 +51,7 @@ pub(crate) static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> 
 
 tokio::task_local! {
     pub(crate) static RETENTION_SHUTDOWN: CancellationToken;
+    pub(crate) static RETENTION_MAINTENANCE_ACTIVE: ();
     pub(crate) static RETENTION_RUN_DEADLINE: RefCell<Option<Instant>>;
     pub(crate) static RETENTION_RUN_DEFER_REASON: RefCell<Option<String>>;
     pub(crate) static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
@@ -693,6 +694,10 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
         })
         .ok()
         .flatten()
+}
+
+pub(crate) fn retention_maintenance_is_active() -> bool {
+    RETENTION_MAINTENANCE_ACTIVE.try_with(|_| ()).is_ok()
 }
 
 fn configured_retention_write_admission_budget() -> Duration {

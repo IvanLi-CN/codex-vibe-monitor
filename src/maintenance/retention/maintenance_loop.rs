@@ -632,19 +632,22 @@ pub(crate) async fn run_data_retention_maintenance_with_prompt_cache(
             .await
         }
     };
-    let result = RETENTION_CURRENT_PREPARED_KEY
+    let result = RETENTION_MAINTENANCE_ACTIVE
         .scope(
-            RefCell::new(None),
-            batch_plan::TASK_BATCH_METRICS.scope(
-                RefCell::new(Vec::new()),
-                RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
-                    run.await.map(|mut summary| {
-                        batch_plan::collect_run_metrics(&mut summary);
-                        let defer_reason =
-                            RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
-                        (summary, defer_reason)
-                    })
-                }),
+            (),
+            RETENTION_CURRENT_PREPARED_KEY.scope(
+                RefCell::new(None),
+                batch_plan::TASK_BATCH_METRICS.scope(
+                    RefCell::new(Vec::new()),
+                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                        run.await.map(|mut summary| {
+                            batch_plan::collect_run_metrics(&mut summary);
+                            let defer_reason =
+                                RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
+                            (summary, defer_reason)
+                        })
+                    }),
+                ),
             ),
         )
         .await;
@@ -1154,7 +1157,31 @@ pub(crate) async fn run_data_retention_maintenance_inner(
         dry_run,
     )
     .await
-    .context("failed to archive forward proxy attempts during retention")?;
+    .context("failed to archive forward proxy attempts during retention");
+    let proxy_archive = match proxy_archive {
+        Ok(archive) => archive,
+        Err(error) => {
+            if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                debug!(error = %error, "forward proxy archive hit the archive file operation budget");
+            } else if retention_run_budget_expired() {
+                summary.deferred = true;
+                summary.wait_reason = Some("retention_work_budget".to_string());
+            } else if is_retention_write_deferred(&error) || crate::is_sqlite_lock_error(&error) {
+                summary.deferred = true;
+                summary.wait_reason = Some(if crate::is_sqlite_lock_error(&error) {
+                    RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE.to_string()
+                } else {
+                    "retention_write_admission".to_string()
+                });
+            } else {
+                summary.fatal_error = Some(format!(
+                    "forward proxy archive failed; failure_fingerprint:{}",
+                    retention_error_fingerprint(&error)
+                ));
+            }
+            return Ok(summary);
+        }
+    };
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
     summary.raw_files_removed += proxy_archive.2;
@@ -1165,7 +1192,31 @@ pub(crate) async fn run_data_retention_maintenance_inner(
 
     let quota_archive = compact_old_quota_snapshots(pool, config, dry_run)
         .await
-        .context("failed to compact old quota snapshots during retention")?;
+        .context("failed to compact old quota snapshots during retention");
+    let quota_archive = match quota_archive {
+        Ok(archive) => archive,
+        Err(error) => {
+            if mark_archive_file_operation_budget_exhausted(&mut summary, &error) {
+                debug!(error = %error, "quota compaction hit the archive file operation budget");
+            } else if retention_run_budget_expired() {
+                summary.deferred = true;
+                summary.wait_reason = Some("retention_work_budget".to_string());
+            } else if is_retention_write_deferred(&error) || crate::is_sqlite_lock_error(&error) {
+                summary.deferred = true;
+                summary.wait_reason = Some(if crate::is_sqlite_lock_error(&error) {
+                    RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE.to_string()
+                } else {
+                    "retention_write_admission".to_string()
+                });
+            } else {
+                summary.fatal_error = Some(format!(
+                    "quota compaction failed; failure_fingerprint:{}",
+                    retention_error_fingerprint(&error)
+                ));
+            }
+            return Ok(summary);
+        }
+    };
     summary.quota_snapshot_rows_archived += quota_archive.0;
     summary.archive_batches_touched += quota_archive.1;
 

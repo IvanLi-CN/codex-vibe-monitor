@@ -1478,7 +1478,7 @@ pub(crate) async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
-    if retention_run_remaining_budget().is_some() {
+    if retention_maintenance_is_active() {
         // Compatibility isolation only. A current task never continues source mutations
         // from the previous program's prepared artifact or source_ids cursor.
         let pending: bool = sqlx::query_scalar(

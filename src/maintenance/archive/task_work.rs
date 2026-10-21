@@ -20,10 +20,23 @@ pub(crate) enum TaskWorkArtifactFence {
 
 impl Drop for TaskWorkOwner {
     fn drop(&mut self) {
-        drop(self.file.take());
-        if !crate::is_archive_file_operation_active(&self.work_path) {
-            let _ = fs::remove_file(&self.path);
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        if crate::is_archive_file_operation_active(&self.work_path) {
+            let owner_path = self.path.clone();
+            let work_path = self.work_path.clone();
+            std::thread::spawn(move || {
+                while crate::is_archive_file_operation_active(&work_path) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                drop(file);
+                let _ = fs::remove_file(owner_path);
+            });
+            return;
         }
+        drop(file);
+        let _ = fs::remove_file(&self.path);
     }
 }
 
