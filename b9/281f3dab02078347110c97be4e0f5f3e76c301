@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.9.14",
+  "base_stable_version": "4.9.13",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-21T05:40:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.9.14",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "dbb97474205f780c6a68892f7bf982f5c0030ef7",
+  "pr_number": 1152,
+  "pr_title": "fix(proxy): retry canonical Responses server overloads",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.9.14",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.9.14",
+  "target_sha": "b9281f3dab02078347110c97be4e0f5f3e76c301",
+  "type_label": "type:patch"
+}
