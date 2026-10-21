@@ -387,7 +387,9 @@ pub(crate) async fn verify_legacy_retention_archive_segment(
     {
         return Ok(None);
     }
-    if sha256_hex_file(archive_path)? != expected_sha256 {
+    if sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())?
+        != expected_sha256
+    {
         return Ok(None);
     }
     Ok(Some((descriptor, expected_sha256.to_string())))

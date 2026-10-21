@@ -281,7 +281,10 @@ pub(crate) async fn compact_old_quota_snapshots(
                 Path::new(&archive_outcome.file_path),
             )
             .await?;
-            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
+            let actual_sha256 = match sha256_hex_file_with_deadline(
+                Path::new(&archive_outcome.file_path),
+                super::super::retention::retention_archive_file_operation_deadline(),
+            ) {
                 Ok(value) => value,
                 Err(_) => return Ok((rows_archived, archive_batches)),
             };

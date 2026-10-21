@@ -254,7 +254,12 @@ where
         pause_before_archive_file_verify().await;
         let file_verify_phase = observe_file_verify();
         let actual_sha256 = expected_sha256
-            .map(|_| sha256_hex_file(archive_path))
+            .map(|_| {
+                sha256_hex_file_with_deadline(
+                    archive_path,
+                    retention_archive_file_operation_deadline(),
+                )
+            })
             .transpose()?;
         let target_exists = if expected_sha256.is_none() {
             match fs::symlink_metadata(archive_path) {

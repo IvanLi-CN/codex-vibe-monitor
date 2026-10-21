@@ -708,7 +708,10 @@ pub(crate) fn historical_rollup_archive_source_signature(
     path: &Path,
     expected_sha256: &str,
 ) -> Result<String> {
-    let actual_sha256 = crate::maintenance::sha256_hex_file(path)?;
+    let actual_sha256 = crate::maintenance::sha256_hex_file_with_deadline(
+        path,
+        crate::maintenance::retention::retention_archive_file_operation_deadline(),
+    )?;
     anyhow::ensure!(
         actual_sha256 == expected_sha256,
         "archive batch {} does not match manifest SHA-256",
@@ -1353,7 +1356,13 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         };
         if !archive_path.exists()
             || archive_file.sha256.as_deref().is_none_or(|expected| {
-                sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
+                sha256_hex_file_with_deadline(
+                    &archive_path,
+                    super::super::retention::retention_archive_file_operation_deadline(),
+                )
+                .ok()
+                .as_deref()
+                    != Some(expected)
             })
         {
             remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
@@ -2023,7 +2032,13 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         };
         if !archive_path.exists()
             || archive_file.sha256.as_deref().is_none_or(|expected| {
-                sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
+                sha256_hex_file_with_deadline(
+                    &archive_path,
+                    super::super::retention::retention_archive_file_operation_deadline(),
+                )
+                .ok()
+                .as_deref()
+                    != Some(expected)
             })
         {
             remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));

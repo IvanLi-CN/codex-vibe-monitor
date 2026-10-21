@@ -265,8 +265,16 @@ where
         return Ok(false);
     };
     let file_sha256 = if Path::new(file_path).exists() {
-        match sha256_hex_file(Path::new(file_path)) {
+        match sha256_hex_file_with_deadline(
+            Path::new(file_path),
+            super::super::retention::retention_archive_file_operation_deadline(),
+        ) {
             Ok(value) => Some(value),
+            Err(error)
+                if super::super::retention::is_retention_archive_file_work_transient(&error) =>
+            {
+                return Err(error);
+            }
             Err(error) => {
                 warn!(
                     dataset,
@@ -340,7 +348,10 @@ where
                 return Ok(false);
             }
             let current_sha256 = if Path::new(file_path).is_file() {
-                Some(sha256_hex_file(Path::new(file_path))?)
+                Some(sha256_hex_file_with_deadline(
+                    Path::new(file_path),
+                    super::super::retention::retention_archive_file_operation_deadline(),
+                )?)
             } else {
                 None
             };

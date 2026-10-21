@@ -134,8 +134,14 @@ fn publish_prepared_archive_file(temporary_file_path: &Path, final_file_path: &P
             )
         })?,
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            let prepared_sha = sha256_hex_file(temporary_file_path)?;
-            let existing_sha = sha256_hex_file(final_file_path)?;
+            let prepared_sha = sha256_hex_file_with_deadline(
+                temporary_file_path,
+                super::super::retention::retention_archive_file_operation_deadline(),
+            )?;
+            let existing_sha = sha256_hex_file_with_deadline(
+                final_file_path,
+                super::super::retention::retention_archive_file_operation_deadline(),
+            )?;
             if prepared_sha != existing_sha {
                 bail!(
                     "archive batch identity collision for {}",
@@ -421,7 +427,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             )
             .await?;
             if !archive_path.is_file()
-                || sha256_hex_file(&archive_path)? != expected_existing_sha256
+                || sha256_hex_file_with_deadline(
+                    &archive_path,
+                    super::super::retention::retention_archive_file_operation_deadline(),
+                )? != expected_existing_sha256
             {
                 return Err(anyhow::anyhow!(
                     "pool archive identity verification failed before public-id backfill"
@@ -492,7 +501,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             // The startup caller already owns the coordinated P2 write permit. Acquiring the
             // retention admission again here would self-wait on that permit. Hash the prepared
             // artifact before entering the bounded publication transaction.
-            let sha256 = sha256_hex_file(&temp_gzip_path)?;
+            let sha256 = sha256_hex_file_with_deadline(
+                &temp_gzip_path,
+                super::super::retention::retention_archive_file_operation_deadline(),
+            )?;
             let had_existing_file = archive_path.is_file();
             let backup_path = PathBuf::from(format!(
                 "{}.{}.restore",
@@ -860,7 +872,10 @@ async fn archive_rows_into_month_batch_with_snapshots(
     let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
     writer_observation.advance(MonthlyWriterPhase::PredecessorDigest);
     let existing_final_sha256 = if final_path.exists() {
-        Some(sha256_hex_file(&final_path)?)
+        Some(sha256_hex_file_with_deadline(
+            &final_path,
+            super::super::retention::retention_archive_file_operation_deadline(),
+        )?)
     } else {
         None
     };
@@ -1152,7 +1167,10 @@ async fn archive_rows_into_month_batch_with_snapshots(
             .clone()
             .context("unchanged archive artifact is missing its predecessor digest")?
     } else {
-        sha256_hex_file(&temp_gzip_path)?
+        sha256_hex_file_with_deadline(
+            &temp_gzip_path,
+            super::super::retention::retention_archive_file_operation_deadline(),
+        )?
     };
     let mut outcome = ArchiveBatchOutcome {
         dataset: spec.dataset,
@@ -1716,7 +1734,10 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await?;
     publish_prepared_archive_file(&temp_gzip_path, &final_path)?;
 
-    let sha256 = sha256_hex_file(&final_path)?;
+    let sha256 = sha256_hex_file_with_deadline(
+        &final_path,
+        super::super::retention::retention_archive_file_operation_deadline(),
+    )?;
     Ok(ArchiveBatchOutcome {
         dataset: spec.dataset,
         month_key,

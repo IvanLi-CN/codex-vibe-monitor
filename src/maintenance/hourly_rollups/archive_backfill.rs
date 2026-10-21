@@ -38,7 +38,14 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             };
-            if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+            if sha256_hex_file_with_deadline(
+                &archive_path,
+                super::super::retention::retention_archive_file_operation_deadline(),
+            )
+            .ok()
+            .as_deref()
+                != Some(expected_sha256)
+            {
                 remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;

@@ -1695,7 +1695,10 @@ pub(crate) async fn reconcile_retention_prepared_archives(
                 Err(error) => prepared_item_failure!(error),
             };
             let current_sha = if path.is_file() {
-                match sha256_hex_file(path) {
+                match sha256_hex_file_with_deadline(
+                    path,
+                    retention_archive_file_operation_deadline(),
+                ) {
                     Ok(sha) => Some(sha),
                     Err(error) => prepared_item_failure!(error),
                 }
@@ -1816,7 +1819,10 @@ pub(crate) async fn reconcile_retention_prepared_archives(
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
-            let actual_sha = match sha256_hex_file(path) {
+            let actual_sha = match sha256_hex_file_with_deadline(
+                path,
+                retention_archive_file_operation_deadline(),
+            ) {
                 Ok(sha) => sha,
                 Err(error) => prepared_item_failure!(error),
             };
@@ -1915,10 +1921,26 @@ pub(crate) async fn reconcile_retention_prepared_archives(
                 Ok(lock) => lock,
                 Err(error) => prepared_item_failure!(error),
             };
-            let valid = path.is_file()
-                && artifact_sha256.as_deref().is_some_and(|expected| {
-                    sha256_hex_file(path).ok().as_deref() == Some(expected)
-                });
+            let valid = if !path.is_file() {
+                false
+            } else {
+                match artifact_sha256.as_deref() {
+                    Some(expected) => {
+                        match sha256_hex_file_with_deadline(
+                            path,
+                            retention_archive_file_operation_deadline(),
+                        ) {
+                            Ok(actual) => actual == expected,
+                            Err(error) if is_retention_archive_file_work_transient(&error) => {
+                                retention_recovery_record_deferred("prepared_reconcile");
+                                return Err(error);
+                            }
+                            Err(_) => false,
+                        }
+                    }
+                    None => false,
+                }
+            };
             if !valid {
                 let error = anyhow!("published retention archive artifact verification failed");
                 prepared_item_failure!(error);
@@ -2173,7 +2195,7 @@ pub(crate) async fn reconcile_staged_archive_replacements(
             continue;
         }
         let current_sha = if path.is_file() {
-            match sha256_hex_file(path) {
+            match sha256_hex_file_with_deadline(path, retention_archive_file_operation_deadline()) {
                 Ok(sha) => Some(sha),
                 Err(error) => {
                     retention_recovery_record_failure("legacy_reconcile", &error);
@@ -2197,7 +2219,10 @@ pub(crate) async fn reconcile_staged_archive_replacements(
             continue;
         }
         if staged_path.is_file() {
-            let staged_sha = match sha256_hex_file(staged_path) {
+            let staged_sha = match sha256_hex_file_with_deadline(
+                staged_path,
+                retention_archive_file_operation_deadline(),
+            ) {
                 Ok(sha) => sha,
                 Err(error) => {
                     retention_recovery_record_failure("legacy_reconcile", &error);
@@ -2357,7 +2382,8 @@ pub(crate) fn restore_staged_legacy_archive_file(
     final_path: &Path,
     expected_sha256: &str,
 ) -> Result<()> {
-    let staged_sha256 = sha256_hex_file(staged_path)?;
+    let staged_sha256 =
+        sha256_hex_file_with_deadline(staged_path, retention_archive_file_operation_deadline())?;
     if staged_sha256 != expected_sha256 {
         bail!("archive rollback artifact digest verification failed");
     }

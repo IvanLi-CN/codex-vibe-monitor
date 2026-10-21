@@ -187,7 +187,10 @@ where
                 continue;
             }
         };
-        let actual_sha256 = match sha256_hex_file(&archive_path) {
+        let actual_sha256 = match sha256_hex_file_with_deadline(
+            &archive_path,
+            super::super::retention::retention_archive_file_operation_deadline(),
+        ) {
             Ok(value) => value,
             Err(error) => {
                 warn!(
@@ -626,7 +629,14 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             source_incomplete = true;
             continue;
         };
-        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+        if sha256_hex_file_with_deadline(
+            &archive_path,
+            super::super::retention::retention_archive_file_operation_deadline(),
+        )
+        .ok()
+        .as_deref()
+            != Some(expected_sha256)
+        {
             source_incomplete = true;
             continue;
         }

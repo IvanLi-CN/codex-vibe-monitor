@@ -836,12 +836,7 @@ fn configured_retention_archive_file_operation_budget() -> Duration {
 }
 
 pub(crate) fn retention_archive_file_operation_deadline() -> Instant {
-    let now = Instant::now();
-    let configured = configured_retention_archive_file_operation_budget();
-    let effective = retention_run_remaining_budget()
-        .map(|remaining| remaining.min(configured))
-        .unwrap_or(configured);
-    now + effective
+    Instant::now() + configured_retention_archive_file_operation_budget()
 }
 
 pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {

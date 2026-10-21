@@ -831,7 +831,9 @@ pub(super) async fn prepare_summary_proof(
     // Summary pages are persisted by the monthly writer exactly once. This phase only validates
     // the published artifact and the already durable page set before granting deletion authority.
     let archive_lock = retention_archive_file_try_lock(archive_path)?;
-    if sha256_hex_file(archive_path)? != outcome.sha256 {
+    if sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())?
+        != outcome.sha256
+    {
         bail!("summary archive artifact changed before semantic proof");
     }
     let proof = prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?;

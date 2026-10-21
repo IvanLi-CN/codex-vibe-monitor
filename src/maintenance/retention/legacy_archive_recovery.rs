@@ -66,8 +66,15 @@ pub(crate) async fn reconcile_legacy_retention_archive_segments(
             }
         };
         let _archive_lock = retention_archive_file_lock_async(path).await?;
-        let sha256 = match sha256_hex_file(path) {
+        let sha256 = match sha256_hex_file_with_deadline(
+            path,
+            retention_archive_file_operation_deadline(),
+        ) {
             Ok(sha256) => Some(sha256),
+            Err(error) if is_retention_archive_file_work_transient(&error) => {
+                retention_recovery_record_deferred("legacy_reconcile");
+                return Err(error);
+            }
             Err(error) => {
                 retention_recovery_record_failure("legacy_reconcile", &error);
                 None
