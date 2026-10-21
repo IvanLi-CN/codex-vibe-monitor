@@ -875,7 +875,9 @@ pub(super) async fn run_startup_backfill_task_with_pressure(
             )
             .await?;
             let detail = format!(
-                "skipped_missing_file={} skipped_invalid_json={} skipped_missing_key={}",
+                "examined={} candidates={} skipped_missing_file={} skipped_invalid_json={} skipped_missing_key={}",
+                outcome.summary.examined,
+                outcome.summary.scanned,
                 outcome.summary.skipped_missing_file,
                 outcome.summary.skipped_invalid_json,
                 outcome.summary.skipped_missing_key
@@ -1007,7 +1009,9 @@ pub(super) async fn run_startup_backfill_task_with_pressure(
             )
             .await?;
             let detail = format!(
-                "skipped_missing_file={} skipped_invalid_json={} skipped_missing_tier={}",
+                "examined={} candidates={} skipped_missing_file={} skipped_invalid_json={} skipped_missing_tier={}",
+                outcome.summary.examined,
+                outcome.summary.scanned,
                 outcome.summary.skipped_missing_file,
                 outcome.summary.skipped_invalid_json,
                 outcome.summary.skipped_missing_tier
@@ -1067,7 +1071,9 @@ pub(super) async fn run_startup_backfill_task_with_pressure(
             )
             .await?;
             let detail = format!(
-                "skipped_missing_file={} skipped_invalid_json={} skipped_missing_effort={}",
+                "examined={} candidates={} skipped_missing_file={} skipped_invalid_json={} skipped_missing_effort={}",
+                outcome.summary.examined,
+                outcome.summary.scanned,
                 outcome.summary.skipped_missing_file,
                 outcome.summary.skipped_invalid_json,
                 outcome.summary.skipped_missing_effort

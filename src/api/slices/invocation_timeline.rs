@@ -22,6 +22,9 @@ const INVOCATION_TIMELINE_MAX_CROSS_DAY_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 256;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
+// Filtering is applied after the indexed source page is read. Keep sparse or highly selective
+// requests from turning a bounded snapshot into an unbounded historical scan.
+const INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS: usize = 400_000;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
 const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -814,7 +817,7 @@ fn reserve_timeline_snapshot_budget(
     Ok(())
 }
 
-async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<(), ApiError> {
+pub(crate) async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (\
             snapshot_token TEXT NOT NULL,\
@@ -921,15 +924,6 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             });
         }
     };
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let Some(_write_permit) = coordinator
-        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-    else {
-        return Ok(TimelineSnapshotCleanupResult {
-            skipped: Some("sqlite_writer_busy".to_string()),
-            ..Default::default()
-        });
-    };
     let materialization_guard = match INVOCATION_TIMELINE_MATERIALIZATION_LOCK.try_lock() {
         Ok(guard) => guard,
         Err(_) => {
@@ -978,16 +972,11 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         .fetch_all(pool)
         .await?
     };
-    if scan_limit > 0 {
-        let next_cursor = if scanned_tokens.len() == scan_limit {
-            scanned_tokens.last().cloned()
-        } else {
-            None
-        };
-        *INVOCATION_TIMELINE_CLEANUP_CURSOR
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_cursor;
-    }
+    let next_cursor = if scan_limit > 0 && scanned_tokens.len() == scan_limit {
+        scanned_tokens.last().cloned()
+    } else {
+        None
+    };
     let mut unique_tokens = tokens.iter().cloned().collect::<HashSet<_>>();
     for token in scanned_tokens {
         if unique_tokens.insert(token.clone()) {
@@ -1021,10 +1010,17 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         ..Default::default()
     };
     crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 0);
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     for token in tokens {
         if active_tokens.contains(&token) {
             continue;
         }
+        let Some(_write_permit) = coordinator
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        else {
+            result.skipped = Some("sqlite_writer_busy".to_string());
+            return Ok(result);
+        };
         let delete_result = sqlx::query(&format!(
             "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
         ))
@@ -1039,6 +1035,11 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 1);
         }
         acknowledge_timeline_snapshot_release(&token);
+    }
+    if scan_limit > 0 {
+        *INVOCATION_TIMELINE_CLEANUP_CURSOR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_cursor;
     }
     Ok(result)
 }
@@ -1248,13 +1249,6 @@ async fn materialize_timeline_snapshot(
     upstream_account_id: Option<i64>,
     include_live: bool,
 ) -> Result<(), ApiError> {
-    ensure_timeline_snapshot_table(&state.pool).await?;
-    sqlx::query(&format!(
-        "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-    ))
-    .bind(snapshot_token)
-    .execute(&state.pool)
-    .await?;
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
     let (cache_row_base, cache_byte_base) = timeline_snapshot_cache_usage(snapshot_token);
@@ -1262,6 +1256,7 @@ async fn materialize_timeline_snapshot(
     let mut materialized_sources = Vec::new();
     let mut materialized_row_count = 0;
     let mut materialized_byte_count = 0;
+    let mut scanned_source_rows = 0_usize;
     let mut runtime_records = if include_live {
         runtime_overlay_snapshot(state)
     } else {
@@ -1300,6 +1295,18 @@ async fn materialize_timeline_snapshot(
             source_transaction.commit().await?;
             None
         } else {
+            scanned_source_rows = scanned_source_rows.saturating_add(page.len());
+            if scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
+                tracing::warn!(
+                    snapshot_token,
+                    scanned_source_rows,
+                    max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
+                    "invocation timeline source scan budget exhausted"
+                );
+                return Err(ApiError::unavailable(anyhow!(
+                    "invocation timeline source scan budget exhausted"
+                )));
+            }
             let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
             page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
             let next_cursor = page.last().cloned().map(|last| TimelineCursor {
@@ -1443,14 +1450,23 @@ async fn materialize_timeline_snapshot(
         .iter()
         .map(|(record, is_runtime)| encode_timeline_snapshot_insert_row(record, *is_runtime))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    insert_timeline_snapshot_records_on_connection(
-        &mut publish_transaction,
-        snapshot_token,
-        &published_rows,
-    )
-    .await?;
-    publish_transaction.commit().await?;
+    for batch in published_rows.chunks(INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE) {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+            .await;
+        let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        insert_timeline_snapshot_records_on_connection(
+            &mut publish_transaction,
+            snapshot_token,
+            batch,
+        )
+        .await?;
+        publish_transaction.commit().await?;
+    }
+    // The token is inserted into the in-memory snapshot registry before materialization, but it
+    // is only returned to callers after every short insert transaction succeeds. Readers with an
+    // `asOf` token must already have passed that registry check, so no durable publication UPDATE
+    // is needed and a large snapshot never takes one writer lock for a full-table flag update.
     set_timeline_snapshot_usage(
         snapshot_token,
         materialized_row_count,
@@ -1552,7 +1568,7 @@ pub(crate) async fn fetch_timeline(
     let overlap_start_bound = crate::db_occurred_at_lower_bound(overlap_start);
     let end_bound = crate::db_occurred_at_upper_bound(range_end);
     let mut cleanup_guard: Option<TimelineSnapshotCleanupGuard> = None;
-    let (as_of, _snapshot) = if let Some(as_of) = params.as_of.as_deref() {
+    let (as_of, snapshot) = if let Some(as_of) = params.as_of.as_deref() {
         if let Some(cursor) = cursor.as_ref()
             && cursor.as_of != as_of
         {
@@ -1635,7 +1651,6 @@ pub(crate) async fn fetch_timeline(
         .await;
         (as_of.clone(), snapshot)
     };
-    ensure_timeline_snapshot_table(&state.pool).await?;
     let mut page_query = QueryBuilder::<Sqlite>::new(&format!(
         "SELECT invoke_id, occurred_at, payload FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = "
     ));
@@ -1661,12 +1676,7 @@ pub(crate) async fn fetch_timeline(
         .await?;
     let has_more = rows.len() as i64 > page_size;
     rows.truncate(page_size as usize);
-    let total = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-    ))
-    .bind(as_of.clone())
-    .fetch_one(&state.pool)
-    .await?;
+    let total = i64::try_from(snapshot.row_count).unwrap_or(i64::MAX);
     let next_cursor = if has_more {
         rows.last()
             .map(|row| {

@@ -462,10 +462,11 @@ async fn invocation_ranges_failed_commit_cannot_publish() {
     ensure_schema(&pool).await.unwrap();
     let manager =
         Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
-    let first = manager
-        .allocate(&pool, Some("failed-refill"))
-        .await
-        .unwrap();
+    let first = allocate_fixture_with_bounded_timeout_retry(|| {
+        manager.allocate(&pool, Some("failed-refill"))
+    })
+    .await
+    .unwrap();
     sqlx::query("PRAGMA foreign_keys=ON")
         .execute(&pool)
         .await
@@ -481,10 +482,11 @@ async fn invocation_ranges_failed_commit_cannot_publish() {
     sqlx::query("CREATE TRIGGER reject_refill_at_commit AFTER UPDATE OF last_invoke_sequence ON prompt_cache_conversations WHEN NEW.last_invoke_sequence>63 BEGIN INSERT INTO invocation_range_commit_child(parent_id) VALUES(1); END")
         .execute(&pool).await.unwrap();
     for sequence in 1..64 {
-        let id = manager
-            .allocate(&pool, Some("failed-refill"))
-            .await
-            .unwrap();
+        let id = allocate_fixture_with_bounded_timeout_retry(|| {
+            manager.allocate(&pool, Some("failed-refill"))
+        })
+        .await
+        .unwrap();
         assert_eq!(
             id,
             format!(
@@ -511,10 +513,11 @@ async fn invocation_ranges_failed_commit_cannot_publish() {
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='failed-refill'").fetch_one(&pool).await.unwrap(), 63);
     let restarted =
         Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
-    let next = restarted
-        .allocate(&pool, Some("failed-refill"))
-        .await
-        .unwrap();
+    let next = allocate_fixture_with_bounded_timeout_retry(|| {
+        restarted.allocate(&pool, Some("failed-refill"))
+    })
+    .await
+    .unwrap();
     assert_eq!(
         &next[6..],
         encode_prompt_cache_conversation_sequence(64).unwrap(),
