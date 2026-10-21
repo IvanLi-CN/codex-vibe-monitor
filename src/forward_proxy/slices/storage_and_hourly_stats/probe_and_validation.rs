@@ -1,4 +1,15 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMPORARY_XRAY_ROUTE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_temporary_xray_route_key(raw_url: &str) -> String {
+    let route_id = NEXT_TEMPORARY_XRAY_ROUTE_ID.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "__validate_xray__{:016x}_{route_id:016x}",
+        stable_hash_u64(raw_url)
+    )
+}
 
 pub(crate) fn parse_forward_proxy_nodes_latency_test_keys(raw_query: &str) -> Vec<String> {
     url::form_urlencoded::parse(raw_query.as_bytes())
@@ -234,6 +245,23 @@ pub(crate) fn resolve_forward_proxy_endpoint_for_test(
                     raw_url: Some(parsed.normalized),
                 })
         })
+        .or_else(|| {
+            manager
+                .settings
+                .proxy_urls
+                .iter()
+                .flat_map(|entry| split_proxy_entry_tokens(entry))
+                .filter_map(parse_forward_proxy_entry)
+                .find(|parsed| parsed.stable_key == proxy_key)
+                .map(|parsed| ForwardProxyEndpoint {
+                    key: proxy_key.to_string(),
+                    source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+                    display_name: parsed.display_name,
+                    protocol: parsed.protocol,
+                    endpoint_url: parsed.endpoint_url,
+                    raw_url: Some(parsed.normalized),
+                })
+        })
 }
 
 pub(crate) async fn load_forward_proxy_endpoints_for_latency_test(
@@ -296,12 +324,13 @@ pub(crate) async fn timed_forward_proxy_egress_ip_probe(
                 error: None,
             }
         }
-        Err(err) => {
+        Err(_err) => {
+            let safe_error = "egress IP probe failed";
             if let Err(persist_err) = persist_forward_proxy_egress_ip_result(
                 &state.pool,
                 selected_proxy,
                 None,
-                Some(&err.to_string()),
+                Some(safe_error),
             )
             .await
             {
@@ -316,7 +345,7 @@ pub(crate) async fn timed_forward_proxy_egress_ip_probe(
                 latency_ms: None,
                 ip: None,
                 http_status: None,
-                error: Some(err.to_string()),
+                error: Some(safe_error.to_string()),
             }
         }
     }
@@ -325,17 +354,18 @@ pub(crate) async fn timed_forward_proxy_egress_ip_probe(
 pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
     client: &Client,
     request_timeout: Duration,
+    strict_status: bool,
 ) -> ForwardProxyLatencyProbeTargetResult {
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("models") {
         Ok(target) => target,
-        Err(err) => {
+        Err(_err) => {
             return ForwardProxyLatencyProbeTargetResult {
                 ok: false,
                 latency_ms: None,
                 ip: None,
                 http_status: None,
-                error: Some(err.to_string()),
+                error: Some("upstream target unavailable".to_string()),
             };
         }
     };
@@ -344,7 +374,7 @@ pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
     match result {
         Ok(Ok(response)) => {
             let status = response.status();
-            let ok = is_manual_latency_probe_reachable_status(status);
+            let ok = is_forward_proxy_latency_probe_reachable_status(status, strict_status);
             ForwardProxyLatencyProbeTargetResult {
                 ok,
                 latency_ms: ok.then(|| elapsed_ms(started)),
@@ -357,12 +387,12 @@ pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
                 },
             }
         }
-        Ok(Err(err)) => ForwardProxyLatencyProbeTargetResult {
+        Ok(Err(_err)) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
             latency_ms: None,
             ip: None,
             http_status: None,
-            error: Some(err.to_string()),
+            error: Some("upstream request failed".to_string()),
         },
         Err(_) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
@@ -390,17 +420,18 @@ pub(crate) fn oauth_codex_latency_probe_target(path_segment: &str) -> Result<Url
 pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     client: &Client,
     request_timeout: Duration,
+    strict_status: bool,
 ) -> ForwardProxyLatencyProbeTargetResult {
     let started = Instant::now();
     let target = match oauth_codex_latency_probe_target("responses") {
         Ok(target) => target,
-        Err(err) => {
+        Err(_err) => {
             return ForwardProxyLatencyProbeTargetResult {
                 ok: false,
                 latency_ms: None,
                 ip: None,
                 http_status: None,
-                error: Some(err.to_string()),
+                error: Some("upstream target unavailable".to_string()),
             };
         }
     };
@@ -409,7 +440,7 @@ pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     match result {
         Ok(Ok(response)) => {
             let status = response.status();
-            let ok = is_manual_latency_probe_reachable_status(status);
+            let ok = is_forward_proxy_latency_probe_reachable_status(status, strict_status);
             ForwardProxyLatencyProbeTargetResult {
                 ok,
                 latency_ms: ok.then(|| elapsed_ms(started)),
@@ -422,12 +453,12 @@ pub(crate) async fn timed_forward_proxy_codex_responses_probe(
                 },
             }
         }
-        Ok(Err(err)) => ForwardProxyLatencyProbeTargetResult {
+        Ok(Err(_err)) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
             latency_ms: None,
             ip: None,
             http_status: None,
-            error: Some(err.to_string()),
+            error: Some("upstream request failed".to_string()),
         },
         Err(_) => ForwardProxyLatencyProbeTargetResult {
             ok: false,
@@ -473,6 +504,34 @@ pub(crate) fn is_manual_latency_probe_reachable_status(status: StatusCode) -> bo
     status.as_u16() < 500
 }
 
+pub(crate) fn is_forward_proxy_latency_probe_reachable_status(
+    status: StatusCode,
+    strict_status: bool,
+) -> bool {
+    if strict_status {
+        is_validation_probe_reachable_status(status)
+    } else {
+        is_manual_latency_probe_reachable_status(status)
+    }
+}
+
+fn endpoint_uses_xhttp_transport(endpoint: &ForwardProxyEndpoint) -> bool {
+    if endpoint.protocol != ForwardProxyProtocol::Vless {
+        return false;
+    }
+    let Some(raw_url) = endpoint.raw_url.as_deref() else {
+        return false;
+    };
+    let Ok(url) = Url::parse(raw_url) else {
+        return false;
+    };
+    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    query
+        .get("type")
+        .or_else(|| query.get("net"))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("xhttp"))
+}
+
 pub(crate) async fn run_forward_proxy_latency_test_round(
     state: Arc<AppState>,
     endpoint: &ForwardProxyEndpoint,
@@ -482,6 +541,7 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
     is_single_node_test: bool,
 ) -> ForwardProxyLatencyTestNodeProgress {
     let selected_proxy = SelectedForwardProxy::from_endpoint(endpoint);
+    let strict_status = endpoint_uses_xhttp_transport(endpoint);
     let total_timeout = if is_single_node_test {
         forward_proxy_manual_latency_single_timeout()
     } else {
@@ -501,24 +561,32 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
     };
     let mut oauth_upstream = egress_ip.clone();
     let mut codex_responses = egress_ip.clone();
-    let mut round_started = Instant::now();
+    let round_started = Instant::now();
 
     if !round_timeout.is_zero() {
-        match resolve_forward_proxy_probe_endpoint_url(
-            state.as_ref(),
-            endpoint,
-            round_timeout,
-            Some(&state.shutdown),
-        )
-        .await
+        let route_result = match remaining_timeout_budget(round_timeout, round_started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
         {
+            Some(route_timeout) => {
+                resolve_forward_proxy_probe_endpoint_url(
+                    state.as_ref(),
+                    endpoint,
+                    route_timeout,
+                    Some(&state.shutdown),
+                )
+                .await
+            }
+            None => Err(anyhow!("manual latency test round budget exhausted")),
+        };
+        match route_result {
             Ok((endpoint_url, temporary_xray_key)) => {
+                let mut temporary_route =
+                    TemporaryXrayRouteGuard::new(state.xray_supervisor.clone(), temporary_xray_key);
                 let client_result = state
                     .http_clients
                     .client_for_forward_proxy(endpoint_url.as_ref());
                 match client_result {
                     Ok(client) => {
-                        round_started = Instant::now();
                         egress_ip = timed_forward_proxy_egress_ip_probe(
                             state.as_ref(),
                             &selected_proxy,
@@ -531,7 +599,12 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                                 .filter(|remaining| !remaining.is_zero());
                         oauth_upstream = match remaining_round {
                             Some(remaining) => {
-                                timed_forward_proxy_oauth_upstream_probe(&client, remaining).await
+                                timed_forward_proxy_oauth_upstream_probe(
+                                    &client,
+                                    remaining,
+                                    strict_status,
+                                )
+                                .await
                             }
                             None => ForwardProxyLatencyProbeTargetResult {
                                 ok: false,
@@ -548,7 +621,12 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                                 .filter(|remaining| !remaining.is_zero());
                         codex_responses = match remaining_round {
                             Some(remaining) => {
-                                timed_forward_proxy_codex_responses_probe(&client, remaining).await
+                                timed_forward_proxy_codex_responses_probe(
+                                    &client,
+                                    remaining,
+                                    strict_status,
+                                )
+                                .await
                             }
                             None => ForwardProxyLatencyProbeTargetResult {
                                 ok: false,
@@ -562,20 +640,22 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                         };
                     }
                     Err(err) => {
-                        egress_ip.error = Some(err.to_string());
-                        oauth_upstream.error = Some(err.to_string());
-                        codex_responses.error = Some(err.to_string());
+                        let safe_error = super::sanitize_forward_proxy_error_detail(&err);
+                        egress_ip.error = Some(safe_error.clone());
+                        oauth_upstream.error = Some(safe_error.clone());
+                        codex_responses.error = Some(safe_error);
                     }
                 }
-                if let Some(temp_key) = temporary_xray_key {
-                    let mut supervisor = state.xray_supervisor.lock().await;
-                    supervisor.remove_instance(&temp_key).await;
-                }
+                let cleanup_budget =
+                    remaining_timeout_budget(round_timeout, round_started.elapsed())
+                        .unwrap_or_default();
+                temporary_route.cleanup_with_budget(cleanup_budget).await;
             }
             Err(err) => {
-                egress_ip.error = Some(err.to_string());
-                oauth_upstream.error = Some(err.to_string());
-                codex_responses.error = Some(err.to_string());
+                let safe_error = super::sanitize_forward_proxy_error_detail(&err);
+                egress_ip.error = Some(safe_error.clone());
+                oauth_upstream.error = Some(safe_error.clone());
+                codex_responses.error = Some(safe_error);
             }
         }
     }
@@ -882,8 +962,12 @@ pub(crate) async fn post_forward_proxy_candidate_validation(
     let response = match result {
         Ok(response) => response,
         Err(err) => {
-            warn!(error = %err, "forward proxy candidate validation failed");
-            ForwardProxyCandidateValidationResponse::failed(err.to_string())
+            let (code, message) = classify_forward_proxy_validation_error(&err);
+            warn!(
+                code = code.as_str(),
+                "forward proxy candidate validation failed"
+            );
+            ForwardProxyCandidateValidationResponse::failed(code, message)
         }
     };
 
@@ -894,8 +978,12 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
     state: &AppState,
     value: String,
 ) -> Result<ForwardProxyCandidateValidationResponse> {
-    let parsed = parse_forward_proxy_entry(value.trim())
-        .ok_or_else(|| anyhow!("unsupported proxy url or unsupported scheme"))?;
+    let parsed = parse_forward_proxy_entry(value.trim()).ok_or_else(|| {
+        anyhow!(ForwardProxyValidationError::new(
+            ForwardProxyValidationErrorCode::UnsupportedTransport,
+            "unsupported proxy url or unsupported scheme",
+        ))
+    })?;
     let endpoint = ForwardProxyEndpoint {
         key: format!(
             "__validate_proxy__{:016x}",
@@ -921,6 +1009,53 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
         Some(1),
         Some(latency_ms),
     ))
+}
+
+pub(crate) fn classify_forward_proxy_validation_error(
+    err: &anyhow::Error,
+) -> (ForwardProxyValidationErrorCode, String) {
+    if let Some(failure) = err.downcast_ref::<ForwardProxyValidationError>() {
+        return (failure.code, failure.message.clone());
+    }
+
+    let detail = format!("{err:#}");
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return (
+            ForwardProxyValidationErrorCode::ProxyTimeout,
+            "proxy validation timed out".to_string(),
+        );
+    }
+    if lower.contains("validation probe returned status") {
+        let status = detail
+            .split("validation probe returned status")
+            .nth(1)
+            .and_then(|suffix| suffix.split_whitespace().next())
+            .filter(|status| status.bytes().all(|byte| byte.is_ascii_digit()))
+            .map(|status| format!("validation probe returned status {status}"));
+        let message = status
+            .unwrap_or_else(|| "validation probe returned a rejected upstream status".to_string());
+        return (
+            ForwardProxyValidationErrorCode::UpstreamStatusRejected,
+            message,
+        );
+    }
+    if lower.contains("xray") {
+        return (
+            ForwardProxyValidationErrorCode::XrayStartupError,
+            "xray proxy route failed to start".to_string(),
+        );
+    }
+    if lower.contains("proxy") || lower.contains("validation request failed") {
+        return (
+            ForwardProxyValidationErrorCode::ProxyConnectError,
+            "proxy connection failed during validation".to_string(),
+        );
+    }
+    (
+        ForwardProxyValidationErrorCode::ValidationFailed,
+        "proxy validation failed".to_string(),
+    )
 }
 
 pub(crate) async fn validate_subscription_candidate(
@@ -981,7 +1116,9 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
     let cancellation = CancellationToken::new();
     let _cancel_on_drop = ProbeCancellationGuard(cancellation.clone());
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let (tx, mut rx) = mpsc::channel::<Result<f64, String>>(endpoint_count.max(1));
+    let (tx, mut rx) = mpsc::channel::<Result<f64, (ForwardProxyValidationErrorCode, String)>>(
+        endpoint_count.max(1),
+    );
 
     for endpoint in endpoints {
         let state = state.clone();
@@ -991,10 +1128,11 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
         tokio::spawn(async move {
             let _permit = match semaphore.acquire_owned().await {
                 Ok(permit) => permit,
-                Err(err) => {
+                Err(_) => {
                     let _ = tx
-                        .send(Err(format!(
-                            "subscription validation concurrency limiter closed: {err}"
+                        .send(Err((
+                            ForwardProxyValidationErrorCode::ValidationFailed,
+                            "subscription validation concurrency limiter closed".to_string(),
                         )))
                         .await;
                     return;
@@ -1018,11 +1156,9 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
                     cancellation.cancel();
                     let _ = tx.send(Ok(latency_ms)).await;
                 }
-                Err(err) if cancellation.is_cancelled() => {
-                    let _ = tx.send(Err(format!("{err:#}"))).await;
-                }
                 Err(err) => {
-                    let _ = tx.send(Err(format!("{err:#}"))).await;
+                    let (code, message) = classify_forward_proxy_validation_error(&err);
+                    let _ = tx.send(Err((code, message))).await;
                 }
             }
         });
@@ -1030,7 +1166,7 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
     drop(tx);
 
     let mut completed = 0usize;
-    let mut last_error: Option<String> = None;
+    let mut last_error: Option<(ForwardProxyValidationErrorCode, String)> = None;
     loop {
         let Some(remaining_timeout) =
             remaining_timeout_budget(validation_timeout, validation_started.elapsed())
@@ -1058,7 +1194,12 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
                 cancellation.cancel();
                 return Ok(latency_ms);
             }
-            Err(err) => last_error = Some(err),
+            Err(err) => {
+                last_error = Some(select_more_specific_validation_failure(
+                    last_error.take(),
+                    err,
+                ));
+            }
         }
         if completed >= endpoint_count {
             break;
@@ -1070,9 +1211,51 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
         timeout_seconds_for_message(attempt_timeout)
     );
     if let Some(err) = last_error {
-        message.push_str(&format!("; last error: {err}"));
+        message.push_str(&format!("; last error: {}", err.1));
+        return Err(anyhow!(ForwardProxyValidationError::new(err.0, message)));
     }
-    bail!(message)
+    Err(anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::ValidationFailed,
+        message,
+    )))
+}
+
+fn select_more_specific_validation_failure(
+    current: Option<(ForwardProxyValidationErrorCode, String)>,
+    candidate: (ForwardProxyValidationErrorCode, String),
+) -> (ForwardProxyValidationErrorCode, String) {
+    let Some(current) = current else {
+        return candidate;
+    };
+    let current_rank = (
+        validation_error_priority(current.0),
+        current.0.as_str(),
+        current.1.as_str(),
+    );
+    let candidate_rank = (
+        validation_error_priority(candidate.0),
+        candidate.0.as_str(),
+        candidate.1.as_str(),
+    );
+    if candidate_rank > current_rank {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn validation_error_priority(code: ForwardProxyValidationErrorCode) -> u8 {
+    match code {
+        ForwardProxyValidationErrorCode::InvalidXhttpExtra
+        | ForwardProxyValidationErrorCode::UnsupportedXhttpMode
+        | ForwardProxyValidationErrorCode::UnsupportedTransport => 5,
+        ForwardProxyValidationErrorCode::XrayConfigError => 4,
+        ForwardProxyValidationErrorCode::XrayStartupError => 3,
+        ForwardProxyValidationErrorCode::ProxyConnectError => 2,
+        ForwardProxyValidationErrorCode::ProxyTimeout => 1,
+        ForwardProxyValidationErrorCode::UpstreamStatusRejected => 1,
+        ForwardProxyValidationErrorCode::ValidationFailed => 0,
+    }
 }
 
 pub(crate) struct ProbeCancellationGuard(CancellationToken);
@@ -1080,6 +1263,51 @@ pub(crate) struct ProbeCancellationGuard(CancellationToken);
 impl Drop for ProbeCancellationGuard {
     fn drop(&mut self) {
         self.0.cancel();
+    }
+}
+
+struct TemporaryXrayRouteGuard {
+    supervisor: Arc<Mutex<XraySupervisor>>,
+    key: Option<String>,
+}
+
+impl TemporaryXrayRouteGuard {
+    fn new(supervisor: Arc<Mutex<XraySupervisor>>, key: Option<String>) -> Self {
+        Self { supervisor, key }
+    }
+
+    async fn cleanup_with_budget(&mut self, budget: Duration) {
+        let Some(cleanup) = self.spawn_cleanup() else {
+            return;
+        };
+        // The cleanup task owns the route key after it is spawned. A timeout may detach the
+        // task, but must not cancel removal after the supervisor has taken ownership of it.
+        if !budget.is_zero() {
+            let _ = timeout(budget, cleanup).await;
+        }
+    }
+
+    fn spawn_cleanup(&mut self) -> Option<tokio::task::JoinHandle<()>> {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            warn!("temporary xray route was dropped outside a tokio runtime");
+            return None;
+        };
+        let key = self.key.take()?;
+        let supervisor = self.supervisor.clone();
+        Some(handle.spawn(async move {
+            let mut supervisor = supervisor.lock().await;
+            supervisor.remove_instance(&key).await;
+        }))
+    }
+
+    fn schedule_cleanup(&mut self) {
+        let _ = self.spawn_cleanup();
+    }
+}
+
+impl Drop for TemporaryXrayRouteGuard {
+    fn drop(&mut self) {
+        self.schedule_cleanup();
     }
 }
 
@@ -1106,14 +1334,23 @@ pub(crate) async fn probe_subscription_endpoint_with_retries(
             return Err(timeout_error_for_duration(validation_timeout));
         }
 
+        let probe =
+            probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation));
+        tokio::pin!(probe);
         let probe_result = tokio::select! {
             _ = cancellation.cancelled() => {
+                // The probe owns a temporary Xray route. Let its cancellation-aware cleanup
+                // finish before dropping the future, otherwise a successful sibling can leave
+                // an orphaned process and config file behind.
+                let _ = probe.await;
                 return Err(shutdown_cancelled_forward_proxy_probe());
             }
             _ = tokio::time::sleep(remaining_timeout) => {
+                cancellation.cancel();
+                let _ = probe.await;
                 return Err(timeout_error_for_duration(validation_timeout));
             }
-            result = probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation)) => {
+            result = &mut probe => {
                 result
             }
         };
@@ -1152,20 +1389,26 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         .join("v1/models")
         .context("failed to build validation probe target")?;
     let started = Instant::now();
-    let (endpoint_url, temporary_xray_key) = match resolve_forward_proxy_probe_endpoint_url(
-        state,
-        endpoint,
-        validation_timeout,
-        shutdown,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
-            return Ok(None);
-        }
-        Err(err) => return Err(err),
-    };
+    let route_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| timeout_error_for_duration(validation_timeout))?;
+    let (endpoint_url, temporary_xray_key) =
+        match resolve_forward_proxy_probe_endpoint_url(state, endpoint, route_timeout, shutdown)
+            .await
+        {
+            Ok(result) => result,
+            Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
+                return Ok(None);
+            }
+            Err(err) => {
+                if timeout_budget_exhausted(validation_timeout, started.elapsed()) {
+                    return Err(timeout_error_for_duration(validation_timeout));
+                }
+                return Err(err);
+            }
+        };
+    let mut temporary_route =
+        TemporaryXrayRouteGuard::new(state.xray_supervisor.clone(), temporary_xray_key);
 
     let probe_result = async {
         let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
@@ -1173,7 +1416,13 @@ pub(crate) async fn probe_forward_proxy_endpoint(
             .ok_or_else(|| timeout_error_for_duration(validation_timeout))?;
         let client = state
             .http_clients
-            .client_for_forward_proxy(endpoint_url.as_ref())?;
+            .client_for_forward_proxy(endpoint_url.as_ref())
+            .map_err(|_| {
+                anyhow!(ForwardProxyValidationError::new(
+                    ForwardProxyValidationErrorCode::ProxyConnectError,
+                    "proxy connection failed during validation",
+                ))
+            })?;
         let response = match shutdown {
             Some(shutdown) => {
                 tokio::select! {
@@ -1183,19 +1432,22 @@ pub(crate) async fn probe_forward_proxy_endpoint(
                     response = timeout(send_timeout, client.get(probe_target).send()) => {
                         response
                             .map_err(|_| timeout_error_for_duration(validation_timeout))?
-                            .context("validation request failed")?
+                            .map_err(proxy_connection_error)?
                     }
                 }
             }
             None => timeout(send_timeout, client.get(probe_target).send())
                 .await
                 .map_err(|_| timeout_error_for_duration(validation_timeout))?
-                .context("validation request failed")?,
+                .map_err(proxy_connection_error)?,
         };
         let status = response.status();
         // Validation only needs to prove the route is reachable; auth/404 still count as reachable.
         if !is_validation_probe_reachable_status(status) {
-            bail!("validation probe returned status {}", status);
+            return Err(anyhow!(ForwardProxyValidationError::new(
+                ForwardProxyValidationErrorCode::UpstreamStatusRejected,
+                format!("validation probe returned status {status}"),
+            )));
         }
         if shutdown.is_some_and(CancellationToken::is_cancelled) {
             return Ok(None);
@@ -1204,10 +1456,9 @@ pub(crate) async fn probe_forward_proxy_endpoint(
     }
     .await;
 
-    if let Some(temp_key) = temporary_xray_key {
-        let mut supervisor = state.xray_supervisor.lock().await;
-        supervisor.remove_instance(&temp_key).await;
-    }
+    let cleanup_budget =
+        remaining_timeout_budget(validation_timeout, started.elapsed()).unwrap_or_default();
+    temporary_route.cleanup_with_budget(cleanup_budget).await;
 
     probe_result
 }
@@ -1245,10 +1496,20 @@ pub(crate) fn timeout_budget_exhausted(total_timeout: Duration, elapsed: Duratio
 }
 
 pub(crate) fn timeout_error_for_duration(timeout: Duration) -> anyhow::Error {
-    anyhow!(
-        "validation request timed out after {}s",
-        timeout_seconds_for_message(timeout)
-    )
+    anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::ProxyTimeout,
+        format!(
+            "validation request timed out after {}s",
+            timeout_seconds_for_message(timeout)
+        ),
+    ))
+}
+
+fn proxy_connection_error(_error: reqwest::Error) -> anyhow::Error {
+    anyhow!(ForwardProxyValidationError::new(
+        ForwardProxyValidationErrorCode::ProxyConnectError,
+        "proxy connection failed during validation",
+    ))
 }
 
 pub(crate) fn timeout_seconds_for_message(timeout: Duration) -> u64 {
@@ -1276,11 +1537,7 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
         .raw_url
         .as_deref()
         .ok_or_else(|| anyhow!("xray proxy validation requires raw proxy url"))?;
-    let temporary_key = format!(
-        "__validate_xray__{:016x}_{}",
-        stable_hash_u64(raw_url),
-        Utc::now().timestamp_millis()
-    );
+    let temporary_key = next_temporary_xray_route_key(raw_url);
     let probe_endpoint = ForwardProxyEndpoint {
         key: temporary_key.clone(),
         source: endpoint.source.clone(),
@@ -1293,7 +1550,7 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
     let route_url = {
         let mut supervisor = state.xray_supervisor.lock().await;
         supervisor
-            .ensure_instance_with_ready_timeout(
+            .ensure_temporary_instance_with_ready_timeout(
                 &probe_endpoint,
                 validation_timeout,
                 &validation_shutdown,
@@ -1421,7 +1678,7 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
                         trigger,
                         proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
                         proxy_source = endpoint.source,
-                        proxy_label = endpoint.display_name,
+                        proxy_label_ref = %forward_proxy_log_ref(&endpoint.display_name),
                         proxy_url_ref = %forward_proxy_log_ref_option(endpoint.raw_url.as_deref()),
                         failure_kind,
                         error = %err,
@@ -1441,4 +1698,146 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
         }
         info!(trigger, "forward proxy bootstrap probe round finished");
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_xray_route_keys_are_unique_for_the_same_raw_url() {
+        let raw_url = "vless://synthetic-node@example.com:443";
+        let first = next_temporary_xray_route_key(raw_url);
+        let second = next_temporary_xray_route_key(raw_url);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("__validate_xray__"));
+        assert!(second.starts_with("__validate_xray__"));
+    }
+
+    #[test]
+    fn latency_endpoint_resolution_rehydrates_manual_native_proxy_from_settings() {
+        let raw_url = "http://synthetic-user:synthetic-password@proxy.example.com:8080";
+        let mut manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![raw_url.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let proxy_key = manager
+            .endpoints
+            .first()
+            .expect("manual proxy endpoint")
+            .key
+            .clone();
+        manager.endpoints.clear();
+        manager.runtime.clear();
+
+        let endpoint = resolve_forward_proxy_endpoint_for_test(&manager, &proxy_key)
+            .expect("manual proxy should be restored from settings");
+        assert_eq!(endpoint.raw_url.as_deref(), Some(raw_url));
+        assert_eq!(
+            endpoint
+                .endpoint_url
+                .as_ref()
+                .expect("native proxy endpoint url")
+                .as_str(),
+            "http://synthetic-user:synthetic-password@proxy.example.com:8080/"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn temporary_xray_route_guard_cleans_up_when_dropped() {
+        let supervisor = Arc::new(Mutex::new(XraySupervisor::new(
+            "/path/to/non-existent-xray".to_string(),
+            std::env::temp_dir().join("codex-vless-xhttp-route-guard"),
+        )));
+        let key = "__validate_xray__synthetic".to_string();
+        let child = Command::new("python3")
+            .arg("-c")
+            .arg("import time; time.sleep(30)")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn temporary xray guard child");
+        supervisor.lock().await.instances.insert(
+            key.clone(),
+            XrayInstance {
+                local_proxy_url: Url::parse("socks5://127.0.0.1:1082")
+                    .expect("valid local proxy url"),
+                config_path: std::env::temp_dir().join("codex-vless-xhttp-route-guard.json"),
+                child,
+                temporary: true,
+            },
+        );
+
+        drop(TemporaryXrayRouteGuard::new(supervisor.clone(), Some(key)));
+        for _ in 0..20 {
+            if supervisor.lock().await.instances.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            supervisor.lock().await.instances.is_empty(),
+            "dropping a validation route guard must schedule route cleanup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn temporary_xray_route_cleanup_survives_budget_expiration() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codex-vless-xhttp-route-timeout-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).expect("create route cleanup fixture directory");
+        let config_path = temp_root.join("route.json");
+        fs::write(&config_path, "{}").expect("write route cleanup fixture config");
+        let supervisor = Arc::new(Mutex::new(XraySupervisor::new(
+            "/path/to/non-existent-xray".to_string(),
+            temp_root.join("runtime"),
+        )));
+        let key = "__validate_xray__timeout".to_string();
+        let child = Command::new("python3")
+            .arg("-c")
+            .arg("import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(3)")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cleanup timeout child");
+        supervisor.lock().await.instances.insert(
+            key.clone(),
+            XrayInstance {
+                local_proxy_url: Url::parse("socks5://127.0.0.1:1083")
+                    .expect("valid local proxy url"),
+                config_path: config_path.clone(),
+                child,
+                temporary: false,
+            },
+        );
+
+        let mut guard = TemporaryXrayRouteGuard::new(supervisor.clone(), Some(key));
+        guard.cleanup_with_budget(Duration::from_millis(1)).await;
+        for _ in 0..160 {
+            if !config_path.exists() && supervisor.lock().await.instances.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            !config_path.exists(),
+            "route cleanup must remove its config after timeout"
+        );
+        assert!(
+            supervisor.lock().await.instances.is_empty(),
+            "route cleanup must eventually remove the instance after timeout"
+        );
+        let _ = fs::remove_dir_all(&temp_root);
+    }
 }

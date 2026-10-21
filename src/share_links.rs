@@ -41,7 +41,7 @@ pub(crate) fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<Strin
     for entry in raw_entries {
         for token in split_proxy_entry_tokens(&entry) {
             if let Some(parsed) = parse_forward_proxy_entry(token)
-                && seen.insert(parsed.normalized.clone())
+                && seen.insert(parsed.stable_key.clone())
             {
                 normalized.push(parsed.normalized);
             }
@@ -428,6 +428,23 @@ pub(crate) fn forward_proxy_binding_parts_from_raw(
     })
 }
 
+pub(crate) fn legacy_forward_proxy_binding_parts_from_raw(
+    raw: &str,
+) -> Option<ForwardProxyBindingParts> {
+    let parsed = parse_forward_proxy_entry(raw)?;
+    let display_name = Url::parse(&parsed.normalized)
+        .ok()
+        .and_then(|url| url.fragment().map(percent_decode_once_lossy))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| parsed.display_name.clone());
+    Some(ForwardProxyBindingParts {
+        display_name,
+        protocol_key: parsed.protocol.label().to_string(),
+        host_port: canonical_host_port_string(&parsed.host, parsed.port),
+    })
+}
+
 pub(crate) fn forward_proxy_binding_key_candidates(
     parts: &ForwardProxyBindingParts,
 ) -> [String; 3] {
@@ -445,14 +462,44 @@ pub(crate) fn forward_proxy_binding_key_candidates(
 }
 
 pub(crate) fn proxy_display_name_from_url(url: &Url) -> Option<String> {
-    if let Some(fragment) = url.fragment()
-        && !fragment.trim().is_empty()
-    {
-        return Some(percent_decode_once_lossy(fragment));
+    if let Some(fragment) = url.fragment() {
+        let decoded = percent_decode_once_lossy(fragment);
+        if let Some(display_name) = safe_proxy_display_name(&decoded) {
+            return Some(display_name);
+        }
     }
     let host = url.host_str()?;
     let port = url.port_or_known_default()?;
     Some(format!("{host}:{port}"))
+}
+
+fn safe_proxy_display_name(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value.len() > 128
+        || value.contains("://")
+        || value.contains('@')
+        || value.contains('?')
+        || value.contains('{')
+        || value.contains('}')
+        || value.chars().any(char::is_control)
+        || looks_like_uuid(value)
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn looks_like_uuid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
 }
 
 pub(crate) fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> {
@@ -676,6 +723,18 @@ pub(crate) fn canonical_stream_query_pairs(
             query_pairs.push(("host".to_string(), host.clone()));
             query_pairs.push(("path".to_string(), path.clone()));
         }
+        "xhttp" => {
+            consumed_keys.extend(["host", "path", "mode", "extra"]);
+            query_pairs.push((
+                "xhttpSettings".to_string(),
+                canonical_xhttp_settings(
+                    &query,
+                    &host,
+                    &path,
+                    xhttp_query_has_ambiguous_duplicates(&original_query_pairs),
+                ),
+            ));
+        }
         _ => {}
     }
 
@@ -754,6 +813,171 @@ pub(crate) fn canonical_stream_query_pairs(
     );
     query_pairs.sort();
     query_pairs
+}
+
+pub(crate) fn xhttp_query_has_ambiguous_duplicates(pairs: &[(String, String)]) -> bool {
+    let has_xhttp = pairs.iter().any(|(key, value)| {
+        matches!(key.as_str(), "type" | "net") && value.trim().eq_ignore_ascii_case("xhttp")
+    });
+    if !has_xhttp {
+        return false;
+    }
+
+    for key in [
+        "type",
+        "net",
+        "security",
+        "host",
+        "path",
+        "mode",
+        "extra",
+        "sni",
+        "serverName",
+        "fp",
+        "fingerprint",
+        "pbk",
+        "sid",
+        "spx",
+        "allowInsecure",
+        "insecure",
+        "alpn",
+        "flow",
+        "encryption",
+    ] {
+        if pairs
+            .iter()
+            .filter(|(candidate, _)| candidate == key)
+            .count()
+            > 1
+        {
+            return true;
+        }
+    }
+
+    let type_value = pairs
+        .iter()
+        .find(|(key, _)| key == "type")
+        .map(|(_, value)| value.trim().to_ascii_lowercase());
+    let net_value = pairs
+        .iter()
+        .find(|(key, _)| key == "net")
+        .map(|(_, value)| value.trim().to_ascii_lowercase());
+    matches!((type_value, net_value), (Some(type_value), Some(net_value)) if type_value != net_value)
+}
+
+pub(crate) fn safe_forward_proxy_endpoint_url(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    let parsed = Url::parse(raw).ok()?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    Some(format!(
+        "{scheme}://{}",
+        canonical_host_port_string(host, port)
+    ))
+}
+
+fn canonical_xhttp_settings(
+    query: &HashMap<String, String>,
+    host: &str,
+    path: &str,
+    invalid_query_shape: bool,
+) -> String {
+    let mut extra = match query.get("extra") {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(object)) => object,
+            Ok(_) | Err(_) => serde_json::Map::from_iter([(
+                "__invalid_xhttp_extra".to_string(),
+                Value::Bool(true),
+            )]),
+        },
+        None => serde_json::Map::new(),
+    };
+
+    let mut settings = serde_json::Map::new();
+    if query.contains_key("host") {
+        extra.remove("host");
+        settings.insert("host".to_string(), Value::String(host.to_string()));
+    } else if let Some(value) = extra.remove("host") {
+        if value.is_string() {
+            settings.insert("host".to_string(), value);
+        } else {
+            settings.insert("__invalid_xhttp_host".to_string(), Value::Bool(true));
+        }
+    }
+    if query.contains_key("path") {
+        extra.remove("path");
+        settings.insert("path".to_string(), Value::String(path.to_string()));
+    } else if let Some(value) = extra.remove("path") {
+        if value.is_string() {
+            settings.insert("path".to_string(), value);
+        } else {
+            settings.insert("__invalid_xhttp_path".to_string(), Value::Bool(true));
+        }
+    }
+    let mut effective_mode = Some("auto".to_string());
+    if let Some(mode) = query.get("mode") {
+        extra.remove("mode");
+        let mode = mode.trim().to_ascii_lowercase();
+        if mode.is_empty() {
+            effective_mode = None;
+            settings.insert("__invalid_xhttp_mode".to_string(), Value::Bool(true));
+        } else {
+            effective_mode = Some(mode);
+        }
+    } else if let Some(value) = extra.remove("mode") {
+        if let Some(mode) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            effective_mode = Some(mode.to_ascii_lowercase());
+        } else {
+            effective_mode = None;
+            settings.insert("__invalid_xhttp_mode".to_string(), Value::Bool(true));
+        }
+    }
+    if let Some(mode) = effective_mode {
+        settings.insert("mode".to_string(), Value::String(mode));
+    }
+    if !extra.is_empty() {
+        settings.insert("extra".to_string(), Value::Object(extra));
+    }
+    if invalid_query_shape {
+        settings.insert("__invalid_xhttp_query".to_string(), Value::Bool(true));
+    }
+
+    canonical_json_value(&Value::Object(settings))
+}
+
+fn canonical_json_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).expect("JSON strings serialize"),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_json_value)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let pairs = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).expect("JSON object keys serialize");
+                    format!("{encoded_key}:{}", canonical_json_value(&values[key]))
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", pairs.join(","))
+        }
+    }
 }
 
 pub(crate) fn canonical_stream_identity_from_url(
@@ -1066,9 +1290,7 @@ pub(crate) fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
     let display_name = value
         .get("ps")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .and_then(safe_proxy_display_name)
         .unwrap_or_else(|| format!("{address}:{port}"));
 
     Ok(VmessShareLink {
@@ -1142,7 +1364,7 @@ pub(crate) fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShare
     let (main, _) = split_once_first(main, '?');
     let display_name = fragment
         .map(percent_decode_once_lossy)
-        .filter(|value| !value.trim().is_empty());
+        .and_then(|value| safe_proxy_display_name(&value));
 
     if let Ok(url) = Url::parse(raw)
         && let Some(host) = url.host_str()

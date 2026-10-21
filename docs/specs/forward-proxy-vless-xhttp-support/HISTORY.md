@@ -1,0 +1,31 @@
+# VLESS XHTTP Forward Proxy Support 主题历史
+
+> 这里记录主题局部生命周期、替换、兼容性与必要背景；完整 ADR 取舍保留在 `docs/adr/`。单次任务流水账不放这里，规范正文仍以 `./SPEC.md` 为准。
+
+## Lifecycle / Compatibility
+
+- New active topic for additive VLESS XHTTP support.
+- Existing forward-proxy protocols and their identities remain compatibility boundaries.
+
+## Replacements / Background
+
+- The deployed forward-proxy validator accepts the VLESS share-link shape but the Xray builder only emits transport-specific settings for TCP, WS, gRPC, and HTTPUpgrade, leaving XHTTP-specific settings absent.
+- The topic was created to make XHTTP configuration generation, validation, runtime routing, identity, and diagnostics one durable contract instead of treating a failed XHTTP node as a generic unavailable candidate.
+
+## Implemented Compatibility Boundary
+
+- VLESS XHTTP now builds Xray `xhttpSettings` from `type/net`, top-level transport fields, and a validated JSON object nested under `xhttpSettings.extra`; top-level `host/path/mode` override same-name extra fields, and VMess/Trojan do not inherit the capability implicitly.
+- Manual imports, subscriptions, saved nodes, single validation, batch validation, and latency probes continue through the shared outbound builder and preserve the existing success-status and batch-round contracts.
+- Canonical identity now consumes the effective XHTTP configuration with recursive object-key ordering, while existing non-XHTTP transport and binding aliases remain unchanged.
+- Validation responses retain their existing fields and add stable failure codes with bounded, redacted messages; Settings preserves those codes, and binding-node aliases expose only opaque keys while internal URL aliases remain available for compatibility; test fixtures contain no user-provided node credentials.
+- Xray now preflights generated configuration before starting a route, uses exclusive `0600` config creation, and the owner-facing Settings success state keeps normalized links internal for persistence without rendering credentials; runtime/statistics endpoint fields are reduced to protocol/host/port identifiers, XHTTP latency status handling is strict while legacy protocol latency behavior remains compatible.
+- Local formatting and metadata checks passed; a local macOS Rust test attempt was blocked before compilation by the environment's `sqlx_macros` dynamic-library linker error, so it is not recorded as a passing test. The current PR artifact was exercised in a controlled Linux smoke with Xray 26.2.6, a synthetic VLESS XHTTP server, and a local upstream: the positive validation reached the upstream, while the stopped-Xray control returned `proxy_connect_error` without an additional upstream hit. Release delivery still requires the post-fix exact-head CI and merge gates.
+
+## Related Changes
+
+- `./IMPLEMENTATION.md`
+
+## References
+
+- `./SPEC.md`
+- `./IMPLEMENTATION.md`
