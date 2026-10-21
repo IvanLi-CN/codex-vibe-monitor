@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 SOURCE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SOURCE / "scripts/observability-acceptance"))
-from cpu_attribution import PreparedCpuAttribution
+from cpu_attribution import CpuAttributionError, PreparedCpuAttribution
 import environment
 from run import Run
 import run as acceptance
@@ -386,6 +386,29 @@ class ResourceAdmissionTests(unittest.TestCase):
         sample = self.attribution.sample()
         self.assertEqual(sample["status"], "unavailable")
         self.assertIn("cpu_counter_reset", sample["errorCodes"])
+
+    def test_cpu_attribution_rejects_container_cgroup_mismatch(self):
+        with self.assertRaises(CpuAttributionError) as raised:
+            PreparedCpuAttribution(
+                [0, 1, 2, 3],
+                "0",
+                [
+                    {"service": "app", "containerId": "d" * 64, "pid": 100},
+                    {"service": "client", "containerId": "b" * 64, "pid": 101},
+                    {"service": "mock-upstream", "containerId": "c" * 64, "pid": 102},
+                ],
+                proc_root=self.attribution_proc,
+                cgroup_root=self.attribution_cgroup,
+            )
+        self.assertEqual(raised.exception.code, "cpu_metadata_mismatch")
+
+    def test_cpu_attribution_rejects_cpu_quota_change(self):
+        self.attribution.sample()
+        app_group = self.attribution_cgroup / "docker" / ("a" * 64)
+        (app_group / "cpu.max").write_text("50000 50000\n")
+        sample = self.attribution.sample()
+        self.assertEqual(sample["status"], "unavailable")
+        self.assertIn("cpu_metadata_mismatch", sample["errorCodes"])
 
     def test_cpu_attribution_rejects_missing_cgroup_pressure(self):
         self.attribution.sample()
@@ -919,6 +942,14 @@ class AggregationTests(unittest.TestCase):
             "pair-1",
             "resource-observer.jsonl",
             lambda rows: rows[0]["cpuAttribution"]["containers"]["app"].update(containerId="d" * 64),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_changed_cpu_quota_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[0]["cpuAttribution"]["app"].update(cpuMax={"quota": 50000, "periodUsec": 50000}),
         )
         self.assertFalse(self.aggregate())
 

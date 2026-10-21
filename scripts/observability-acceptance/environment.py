@@ -378,6 +378,8 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
             attribution_summary = window["cpuAttribution"]
             preparation = preparations_by_id[window_id]
             preparation_containers = {row["service"]: row for row in preparation["containers"]}
+            prepared_app = preparation_containers["app"]
+            prepared_cpu_max = prepared_app["cgroup"]["cpuMax"]
             expected_services = (
                 BASE_ATTRIBUTION_SERVICES
                 if pair_index is None
@@ -426,6 +428,7 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                     and attribution["app"]["pid"] > 0
                     and attribution["app"]["effectiveAffinity"] == [int(run_config["appCpuSet"])]
                     and set(attribution["app"]["cpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+                    and attribution["app"]["cpuMax"] == prepared_cpu_max
                     and set(observed_containers) == set(preparation_containers)
                 )
                 for service, prepared in preparation_containers.items():

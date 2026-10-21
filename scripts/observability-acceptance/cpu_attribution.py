@@ -230,6 +230,11 @@ def parse_cgroup_v2_path(text: str, source: str = "process.cgroup") -> str:
     return paths[0]
 
 
+def container_cgroup_matches(container_id: str, cgroup_path: str) -> bool:
+    parts = cgroup_path.strip("/").split("/")
+    return container_id in parts or f"docker-{container_id}.scope" in parts
+
+
 def _counter_delta(before: dict[str, int], after: dict[str, int], source: str) -> dict[str, int]:
     result: dict[str, int] = {}
     for key, old in before.items():
@@ -272,6 +277,7 @@ class PreparedCpuAttribution:
         self._containers: dict[str, dict[str, object]] = {}
         self._cgroup_paths: dict[str, Path] = {}
         self._app_cgroup_files: dict[str, Path] = {}
+        self._prepared_cpu_max: dict[str, int | str] | None = None
         self._first: dict[str, object] | None = None
         self._last: dict[str, object] | None = None
         self._last_usage: int | None = None
@@ -315,6 +321,8 @@ class PreparedCpuAttribution:
         if expected is not None:
             if stat["startTimeTicks"] != expected["startTimeTicks"] or cgroup != expected["cgroupPath"]:
                 _fail("pid_replaced", f"{service}.pid")
+            if not container_cgroup_matches(str(expected["containerId"]), cgroup):
+                _fail("cpu_metadata_mismatch", f"{service}.containerId")
         return {**stat, "pid": pid, "effectiveAffinity": affinity, "cgroupPath": cgroup}
 
     def _prepare(self, containers: list[dict[str, object]]) -> None:
@@ -333,6 +341,8 @@ class PreparedCpuAttribution:
             if not isinstance(container_id, str) or not re.fullmatch(r"[a-f0-9]{64}", container_id):
                 _fail("cpu_read_failed", f"{service}.containerId")
             info = self._read_process(service, pid)
+            if not container_cgroup_matches(container_id, str(info["cgroupPath"])):
+                _fail("cpu_metadata_mismatch", f"{service}.containerId")
             self._containers[service] = {
                 "service": service,
                 "containerId": container_id,
@@ -363,6 +373,13 @@ class PreparedCpuAttribution:
         cpu_max = parse_cpu_max(_read_text(self._app_cgroup_files["cpuMax"], "app.cpuMax"))
         if cpu_max["quota"] == "max" or cpu_max["quota"] != cpu_max["periodUsec"]:
             _fail("cpu_metadata_mismatch", "app.cpuMax")
+        self._prepared_cpu_max = cpu_max
+
+    def _read_app_cpu_max(self) -> dict[str, int | str]:
+        current = parse_cpu_max(_read_text(self._app_cgroup_files["cpuMax"], "app.cpuMax"))
+        if current != self._prepared_cpu_max:
+            _fail("cpu_metadata_mismatch", "app.cpuMax")
+        return current
 
     def metadata(self) -> dict[str, object]:
         containers = []
@@ -380,7 +397,7 @@ class PreparedCpuAttribution:
                 row["cgroup"] = {
                     "version": "v2",
                     "relativePath": info["cgroupPath"],
-                    "cpuMax": parse_cpu_max(_read_text(self._app_cgroup_files["cpuMax"], "app.cpuMax")),
+                    "cpuMax": self._read_app_cpu_max(),
                 }
             containers.append(row)
         return {
@@ -415,7 +432,7 @@ class PreparedCpuAttribution:
         try:
             app_stat = parse_cpu_stat(_read_text(self._app_cgroup_files["cpuStat"], "app.cpuStat"))
             app_pressure = parse_cpu_pressure(_read_text(self._app_cgroup_files["cpuPressure"], "app.cpuPressure"))
-            app_max = parse_cpu_max(_read_text(self._app_cgroup_files["cpuMax"], "app.cpuMax"))
+            app_max = self._read_app_cpu_max()
         except CpuAttributionError as error:
             errors.append({"code": error.code, "source": error.source})
         snapshot: dict[str, object] = {
@@ -474,6 +491,7 @@ class PreparedCpuAttribution:
 
     def cpu_usage_usec(self) -> int:
         current = self._read_process("app", int(self._containers["app"]["pid"]), expected=self._containers["app"])
+        self._read_app_cpu_max()
         stat = parse_cpu_stat(_read_text(self._app_cgroup_files["cpuStat"], "app.cpuStat"))
         usage = stat["usage_usec"]
         if self._last_usage is not None and usage < self._last_usage:
