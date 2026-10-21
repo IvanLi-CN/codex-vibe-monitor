@@ -578,39 +578,6 @@ pub(crate) fn build_pool_route_selection_failure_error(
     }
 }
 
-fn take_same_account_only_terminal_error(
-    last_error: &mut Option<PoolUpstreamError>,
-    attempt_count: usize,
-    distinct_account_count: usize,
-) -> PoolUpstreamError {
-    let mut final_error = last_error
-        .take()
-        .expect("same-account-only retry should retain a terminal error");
-    final_error.attempt_summary = pool_attempt_summary(
-        attempt_count,
-        distinct_account_count,
-        Some(final_error.failure_kind.to_string()),
-    );
-    final_error
-}
-
-pub(crate) fn pool_retry_delay_with_total_timeout(
-    retry_delay: Duration,
-    same_account_only_retry_active: bool,
-    responses_total_timeout: Option<Duration>,
-    attempt_total_timeout_started_at: Option<Instant>,
-) -> Duration {
-    if !same_account_only_retry_active {
-        return retry_delay;
-    }
-    pool_timeout_budget_with_total_limit(
-        retry_delay,
-        responses_total_timeout,
-        attempt_total_timeout_started_at,
-    )
-    .unwrap_or(Duration::ZERO)
-}
-
 fn build_pool_attempt_journal_failure_error(
     account: &PoolResolvedAccount,
     error: &str,
@@ -1973,13 +1940,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         });
         let mut first_response_attempt_started_at = None;
         let mut same_account_only_retry_active = false;
-        let mut same_account_only_forward_proxy: Option<(
-            ForwardProxyRouteScope,
-            SelectedForwardProxy,
-            reqwest::Client,
-        )> = None;
+        let mut same_account_only_forward_proxy: Option<PoolSelectedForwardProxy> = None;
 
-        for same_account_attempt in 0..same_account_attempt_loop_budget {
+        'same_account_attempt_loop: for same_account_attempt in 0..same_account_attempt_loop_budget
+        {
             if same_account_only_retry_active
                 && same_account_attempt >= overload_same_account_attempt_budget
             {
@@ -2007,6 +1971,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 }
             } else {
                 None
+            };
+            let apply_retry_delay_budget = |retry_delay| {
+                pool_retry_delay_with_total_timeout(
+                    retry_delay,
+                    same_account_only_retry_active,
+                    responses_total_timeout,
+                    attempt_total_timeout_started_at,
+                )
             };
             let Some(attempt_pre_first_byte_timeout) = pool_timeout_budget_with_total_limit(
                 pre_first_byte_timeout,
@@ -2205,11 +2177,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         }
                         exhausted_accounts_all_rate_limited = false;
                         if same_account_only_retry_active {
-                            return Err(take_same_account_only_terminal_error(
-                                &mut last_error,
-                                attempt_count,
-                                distinct_account_count,
-                            ));
+                            break 'same_account_attempt_loop;
                         }
                         continue 'account_loop;
                     }
@@ -2299,11 +2267,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                         &reservation_key,
                                     );
                                     if same_account_only_retry_active {
-                                        return Err(take_same_account_only_terminal_error(
-                                            &mut last_error,
-                                            attempt_count,
-                                            distinct_account_count,
-                                        ));
+                                        break 'same_account_attempt_loop;
                                     }
                                     continue 'account_loop;
                                 }
@@ -2318,11 +2282,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                         &reservation_key,
                                     );
                                     if same_account_only_retry_active {
-                                        return Err(take_same_account_only_terminal_error(
-                                            &mut last_error,
-                                            attempt_count,
-                                            distinct_account_count,
-                                        ));
+                                        break 'same_account_attempt_loop;
                                     }
                                     continue 'account_loop;
                                 }
@@ -2718,12 +2678,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     state.as_ref(),
                                     u32::from(same_account_attempt) + 1,
                                 );
-                                let retry_delay = pool_retry_delay_with_total_timeout(
-                                    retry_delay,
-                                    same_account_only_retry_active,
-                                    responses_total_timeout,
-                                    attempt_total_timeout_started_at,
-                                );
+                                let retry_delay = apply_retry_delay_budget(retry_delay);
                                 info!(
                                     account_id = account.account_id,
                                     retry_index = same_account_attempt + 1,
@@ -2826,11 +2781,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 return Err(final_error);
                             }
                             if same_account_only_retry_active {
-                                return Err(take_same_account_only_terminal_error(
-                                    &mut last_error,
-                                    attempt_count,
-                                    distinct_account_count,
-                                ));
+                                break 'same_account_attempt_loop;
                             }
                             continue 'account_loop;
                         }
@@ -3003,12 +2954,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     state.as_ref(),
                                     u32::from(same_account_attempt) + 1,
                                 );
-                                let retry_delay = pool_retry_delay_with_total_timeout(
-                                    retry_delay,
-                                    same_account_only_retry_active,
-                                    responses_total_timeout,
-                                    attempt_total_timeout_started_at,
-                                );
+                                let retry_delay = apply_retry_delay_budget(retry_delay);
                                 info!(
                                     account_id = account.account_id,
                                     retry_index = same_account_attempt + 1,
@@ -3112,11 +3058,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 return Err(final_error);
                             }
                             if same_account_only_retry_active {
-                                return Err(take_same_account_only_terminal_error(
-                                    &mut last_error,
-                                    attempt_count,
-                                    distinct_account_count,
-                                ));
+                                break 'same_account_attempt_loop;
                             }
                             continue 'account_loop;
                         }
@@ -3276,11 +3218,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                         &reservation_key,
                                     );
                                     if same_account_only_retry_active {
-                                        return Err(take_same_account_only_terminal_error(
-                                            &mut last_error,
-                                            attempt_count,
-                                            distinct_account_count,
-                                        ));
+                                        break 'same_account_attempt_loop;
                                     }
                                     continue 'account_loop;
                                 }
@@ -3295,11 +3233,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                         &reservation_key,
                                     );
                                     if same_account_only_retry_active {
-                                        return Err(take_same_account_only_terminal_error(
-                                            &mut last_error,
-                                            attempt_count,
-                                            distinct_account_count,
-                                        ));
+                                        break 'same_account_attempt_loop;
                                     }
                                     continue 'account_loop;
                                 }
@@ -3524,9 +3458,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     StatusCode::UNAUTHORIZED | StatusCode::PAYMENT_REQUIRED | StatusCode::FORBIDDEN
                 )
             {
+                let has_retry_budget = same_account_attempt + 1 < same_account_retry_budget;
                 let same_account_only_retry_has_budget = !same_account_only_retry_active
                     || same_account_attempt + 1 < overload_same_account_attempt_budget;
-                let has_retry_budget = same_account_attempt + 1 < same_account_retry_budget;
                 let has_upstream_413_retry_budget = pool_upstream_413_retry_allowed(
                     status,
                     priority_handoff_admitted,
@@ -4013,12 +3947,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 }
                 if has_group_upstream_429_retry_budget && !codex_imagegen_retest_claimed {
                     let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
-                    let retry_delay = pool_retry_delay_with_total_timeout(
-                        retry_delay,
-                        same_account_only_retry_active,
-                        responses_total_timeout,
-                        attempt_total_timeout_started_at,
-                    );
+                    let retry_delay = apply_retry_delay_budget(retry_delay);
                     let group_retry_index = group_upstream_429_retry_count + 1;
                     info!(
                         account_id = account.account_id,
@@ -4044,12 +3973,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         state.as_ref(),
                         u32::from(same_account_attempt) + 1,
                     );
-                    let retry_delay = pool_retry_delay_with_total_timeout(
-                        retry_delay,
-                        same_account_only_retry_active,
-                        responses_total_timeout,
-                        attempt_total_timeout_started_at,
-                    );
+                    let retry_delay = apply_retry_delay_budget(retry_delay);
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
@@ -4070,12 +3994,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 if let Some(retry_delay) = retry_delay
                     && !codex_imagegen_retest_claimed
                 {
-                    let retry_delay = pool_retry_delay_with_total_timeout(
-                        retry_delay,
-                        same_account_only_retry_active,
-                        responses_total_timeout,
-                        attempt_total_timeout_started_at,
-                    );
+                    let retry_delay = apply_retry_delay_budget(retry_delay);
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
@@ -4228,11 +4147,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     return Err(final_error);
                 }
                 if same_account_only_retry_active {
-                    return Err(take_same_account_only_terminal_error(
-                        &mut last_error,
-                        attempt_count,
-                        distinct_account_count,
-                    ));
+                    break 'same_account_attempt_loop;
                 }
                 continue 'account_loop;
             }
@@ -4397,12 +4312,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 state.as_ref(),
                                 u32::from(same_account_attempt) + 1,
                             );
-                            let retry_delay = pool_retry_delay_with_total_timeout(
-                                retry_delay,
-                                same_account_only_retry_active,
-                                responses_total_timeout,
-                                attempt_total_timeout_started_at,
-                            );
+                            let retry_delay = apply_retry_delay_budget(retry_delay);
                             info!(
                                 account_id = account.account_id,
                                 retry_index = same_account_attempt + 1,
@@ -4491,11 +4401,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             return Err(final_error);
                         }
                         if same_account_only_retry_active {
-                            return Err(take_same_account_only_terminal_error(
-                                &mut last_error,
-                                attempt_count,
-                                distinct_account_count,
-                            ));
+                            break 'same_account_attempt_loop;
                         }
                         continue 'account_loop;
                     }
@@ -4758,23 +4664,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         exhausted_accounts_all_rate_limited = false;
                         if same_account_only_retry_active {
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                            if let Some(final_error) = take_priority_handoff_terminal_error(
-                                &account,
+                            return Err(take_same_account_only_terminal_error(
                                 &mut last_error,
                                 attempt_count,
                                 distinct_account_count,
-                            ) {
-                                return Err(final_error);
-                            }
-                            let mut final_error = last_error
-                                .take()
-                                .expect("same-account-only overload stores a terminal error");
-                            final_error.attempt_summary = pool_attempt_summary(
-                                attempt_count,
-                                distinct_account_count,
-                                Some(final_error.failure_kind.to_string()),
-                            );
-                            return Err(final_error);
+                            ));
                         }
                         overload_required_upstream_route_key = Some(upstream_route_key.clone());
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
@@ -4899,11 +4793,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             return Err(final_error);
                         }
                         if same_account_only_retry_active {
-                            return Err(take_same_account_only_terminal_error(
-                                &mut last_error,
-                                attempt_count,
-                                distinct_account_count,
-                            ));
+                            break 'same_account_attempt_loop;
                         }
                         continue 'account_loop;
                     }
@@ -4984,6 +4874,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
                 reservation_guard: Some(reservation_guard),
             });
+        }
+        if same_account_only_retry_active {
+            return Err(take_same_account_only_terminal_error(
+                &mut last_error,
+                attempt_count,
+                distinct_account_count,
+            ));
         }
     }
 }
