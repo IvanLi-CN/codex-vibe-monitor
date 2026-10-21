@@ -62,7 +62,7 @@ def synthetic_attribution_services(enabled):
     return services
 
 
-def synthetic_attribution_row(identity, timestamp=0):
+def synthetic_attribution_row(identity, timestamp=0, baseline=False):
     host = {
         str(cpu): {
             "user": 100,
@@ -106,7 +106,8 @@ def synthetic_attribution_row(identity, timestamp=0):
             "cpuPressure": {"some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}, "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0, "total": 0}},
             "cpuMax": {"quota": 100000, "periodUsec": 100000},
         },
-        "counterDelta": {"hostCpu": {str(cpu): {"user": 0} for cpu in range(4)}, "appCpuStat": app_cpu},
+        "counterDelta": None if baseline else {"hostCpu": {str(cpu): {"user": 0} for cpu in range(4)}, "appCpuStat": app_cpu},
+        "counterDeltaStatus": "baseline" if baseline else "delta",
         "errorCodes": [],
         "errors": [],
     }
@@ -362,9 +363,12 @@ class ResourceAdmissionTests(unittest.TestCase):
         second = self.attribution.sample()
         summary = self.attribution.window_summary()
         self.assertEqual(first["status"], "passed")
+        self.assertIsNone(first["counterDelta"])
+        self.assertEqual(first["counterDeltaStatus"], "baseline")
         self.assertEqual(second["app"]["cpuStat"]["usage_usec"], 100)
         self.assertEqual(second["containers"]["app"]["effectiveAffinity"], [0])
         self.assertEqual(second["counterDelta"]["appCpuStat"]["usage_usec"], 0)
+        self.assertEqual(second["counterDeltaStatus"], "delta")
         self.assertEqual(summary["status"], "passed")
         self.assertEqual(summary["counterDelta"]["appCpuStat"]["nr_throttled"], 0)
 
@@ -888,7 +892,7 @@ class AggregationTests(unittest.TestCase):
             for elapsed in range(0, 61, 10):
                 rows.append({**identity, "phase": "measurement", "eligible": True, "hostPressure": psi(),
                              "monotonicSeconds": start + elapsed, "utcSeconds": start + elapsed,
-                             "cpuAttribution": synthetic_attribution_row(identity, start + elapsed)})
+                             "cpuAttribution": synthetic_attribution_row(identity, start + elapsed, baseline=elapsed == 0)})
             for consecutive in range(1, 4):
                 admissions.append({**identity, "phase": "admission", "consecutive": consecutive, "eligible": True,
                                    "hostPressure": psi(), "monotonicSeconds": start - 60 + consecutive * 20})
@@ -950,6 +954,14 @@ class AggregationTests(unittest.TestCase):
             "pair-1",
             "resource-observer.jsonl",
             lambda rows: rows[0]["cpuAttribution"]["app"].update(cpuMax={"quota": 50000, "periodUsec": 50000}),
+        )
+        self.assertFalse(self.aggregate())
+
+    def test_missing_cpu_counter_baseline_marker_cannot_pass(self):
+        self.change_jsonl(
+            "pair-1",
+            "resource-observer.jsonl",
+            lambda rows: rows[0]["cpuAttribution"].pop("counterDeltaStatus"),
         )
         self.assertFalse(self.aggregate())
 

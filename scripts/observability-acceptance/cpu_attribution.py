@@ -443,6 +443,8 @@ class PreparedCpuAttribution:
             "allowedCpus": self.allowed_cpus,
             "hostCpu": host_cpu,
             "containers": processes,
+            "counterDelta": None,
+            "counterDeltaStatus": "baseline" if self._last is None else "unavailable",
             "app": {
                 "pid": self._containers["app"]["pid"],
                 "startTimeTicks": self._containers["app"]["startTimeTicks"],
@@ -466,6 +468,7 @@ class PreparedCpuAttribution:
                     },
                     "appCpuStat": _counter_delta(self._last["app"]["cpuStat"], app_stat, "app.cpuStat"),
                 }
+                snapshot["counterDeltaStatus"] = "delta"
             except (CpuAttributionError, KeyError, TypeError) as error:
                 if isinstance(error, CpuAttributionError):
                     errors.append({"code": error.code, "source": error.source})
@@ -474,6 +477,7 @@ class PreparedCpuAttribution:
                 snapshot["status"] = "unavailable"
         if errors:
             snapshot["status"] = "unavailable"
+            snapshot["counterDeltaStatus"] = "unavailable"
             snapshot["errorCodes"] = sorted({item["code"] for item in errors})
             snapshot["errors"] = errors
         else:
@@ -488,6 +492,12 @@ class PreparedCpuAttribution:
             self._first = snapshot
         self._errors.update(snapshot["errorCodes"])
         return snapshot
+
+    def begin_window(self) -> None:
+        self._first = None
+        self._last = None
+        self._last_usage = None
+        self._errors.clear()
 
     def cpu_usage_usec(self) -> int:
         current = self._read_process("app", int(self._containers["app"]["pid"]), expected=self._containers["app"])

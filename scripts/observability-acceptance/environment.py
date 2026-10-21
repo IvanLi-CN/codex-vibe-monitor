@@ -251,6 +251,8 @@ class MeasurementObserver:
 
     def start(self):
         self.output = (self.root / "resource-observer.jsonl").open("a")
+        if self.attribution is not None:
+            self.attribution.begin_window()
         self._record_attribution_preparation()
         self.sample()
         if self.errors:
@@ -418,6 +420,8 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                 assert math.isfinite(row["monotonicSeconds"]) and math.isfinite(row["utcSeconds"])
                 attribution = row["cpuAttribution"]
                 observed_containers = attribution["containers"]
+                counter_delta = attribution.get("counterDelta")
+                counter_delta_status = attribution.get("counterDeltaStatus")
                 assert (
                     attribution["schemaVersion"] == 1
                     and attribution["status"] == "passed"
@@ -429,6 +433,16 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_ind
                     and attribution["app"]["effectiveAffinity"] == [int(run_config["appCpuSet"])]
                     and set(attribution["app"]["cpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
                     and attribution["app"]["cpuMax"] == prepared_cpu_max
+                    and (
+                        (index == 0 and counter_delta is None and counter_delta_status == "baseline")
+                        or (
+                            index > 0
+                            and counter_delta_status == "delta"
+                            and isinstance(counter_delta, dict)
+                            and set(counter_delta) >= {"hostCpu", "appCpuStat"}
+                            and set(counter_delta["appCpuStat"]) >= {"usage_usec", "user_usec", "system_usec", "nr_throttled", "throttled_usec"}
+                        )
+                    )
                     and set(observed_containers) == set(preparation_containers)
                 )
                 for service, prepared in preparation_containers.items():

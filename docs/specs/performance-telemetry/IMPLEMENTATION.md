@@ -229,7 +229,7 @@ CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 
 
 ## Validation
 
-验收使用三台隔离 runner 并行完成三轮同机配对，每轮三个模式各预热 60 秒、测量 60 秒、完成 300/300 请求；功能与 CPU attach 在第四台 runner 并行运行。测试阶段共享 15 分钟起始时刻，脚本在第 14 分钟中断，准备和等待计入预算，各 job 硬超时 15 分钟；汇总超出共享时限不能通过。每个窗口保留既有 PSI 阈值及连续三次安静样本，每窗口最多等 180 秒、每轮最多等 450 秒。原始窗口、初末与 10 秒压力样本、时钟、身份及真实 trace 均独立校验；`cpu-attribution.json` 固定每个窗口的容器/PID/cgroup v2 身份，要求 PID 的实际 cgroup 路径对应 Docker 容器 ID，并记录 runner 允许 CPU 的 `/proc/stat`、app cgroup `cpu.stat`/`cpu.pressure`/`cpu.max`、进程 affinity 与 counter delta；每个原始样本的 app `cpu.max` 必须等于准备阶段的一核配额，准备记录与原始样本逐服务交叉校验；缺失、替换、回退、配额变化或不支持均保持 unavailable。所有分支的镜像和合同必须一致，三台配对主机的 CPU 型号、核心数、内核、runner 镜像及版本必须逐项相同，按同机比值比较并保留 5% 开销及稳定性门槛。分支部分卡不能替代汇总经验卡；完整 hosted 实测尚待当前候选验证。
+验收使用三台隔离 runner 并行完成三轮同机配对，每轮三个模式各预热 60 秒、测量 60 秒、完成 300/300 请求；功能与 CPU attach 在第四台 runner 并行运行。测试阶段共享 15 分钟起始时刻，脚本在第 14 分钟中断，准备和等待计入预算，各 job 硬超时 15 分钟；汇总超出共享时限不能通过。每个窗口保留既有 PSI 阈值及连续三次安静样本，每窗口最多等 180 秒、每轮最多等 450 秒。原始窗口、初末与 10 秒压力样本、时钟、身份及真实 trace 均独立校验；`cpu-attribution.json` 固定每个窗口的容器/PID/cgroup v2 身份，要求 PID 的实际 cgroup 路径对应 Docker 容器 ID，并记录 runner 允许 CPU 的 `/proc/stat`、app cgroup `cpu.stat`/`cpu.pressure`/`cpu.max`、进程 affinity 与 counter delta；首个 CPU 归因样本显式标记 `counterDeltaStatus=baseline` 且不填充 delta，后续原始样本必须包含实际 counter delta；每个原始样本的 app `cpu.max` 必须等于准备阶段的一核配额，准备记录与原始样本逐服务交叉校验；缺失、替换、回退、配额变化或不支持均保持 unavailable。所有分支的镜像和合同必须一致，三台配对主机的 CPU 型号、核心数、内核、runner 镜像及版本必须逐项相同，按同机比值比较并保留 5% 开销及稳定性门槛。分支部分卡不能替代汇总经验卡；完整 hosted 实测尚待当前候选验证。
 
 CPU attach 的并发负载客户端也使用共享绝对截止时间，并提前 5 秒限制 Docker CLI 的子进程超时；主线程收到截止信号后，executor 不再等待原有 600 秒客户端上限。日志收集失败时仍通过 finally 清理本次 Compose project，超时或清理失败均不能借部分通过卡获得完整通过结论。
 
