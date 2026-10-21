@@ -4,7 +4,47 @@ use sha2_resumable::{
     Sha256 as ResumableSha256,
     digest::{Digest as ResumableDigest, common::hazmat::SerializableState},
 };
-use std::{thread, time::Duration};
+use std::{borrow::Cow, thread, time::Duration};
+
+#[derive(Debug)]
+struct FakeSummarySnapshotDatabaseError {
+    message: &'static str,
+    code: &'static str,
+}
+
+impl std::fmt::Display for FakeSummarySnapshotDatabaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for FakeSummarySnapshotDatabaseError {}
+
+impl sqlx::error::DatabaseError for FakeSummarySnapshotDatabaseError {
+    fn message(&self) -> &str {
+        self.message
+    }
+
+    fn code(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Borrowed(self.code))
+    }
+
+    fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+        self
+    }
+
+    fn kind(&self) -> sqlx::error::ErrorKind {
+        sqlx::error::ErrorKind::Other
+    }
+}
 
 #[test]
 fn historical_rollup_materialization_remaining_budget_clamps_to_zero_when_elapsed() {
@@ -113,6 +153,46 @@ fn summary_snapshot_hash_state_restarts_on_source_fingerprint_change() {
         matches!(actual, SummaryArchiveHashAdvance::Complete { sha256, .. } if sha256 == expected)
     );
     fs::remove_file(&path).expect("remove synthetic archive source");
+}
+
+#[test]
+fn summary_snapshot_storage_errors_are_not_misclassified_as_terminal_verification() {
+    let error = anyhow!("failed to persist Summary Snapshot page: disk I/O error");
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&error),
+        "unavailable:source_read_failed"
+    );
+
+    let misleading_message = anyhow!("permanent failure in locked archive path");
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&misleading_message),
+        "unavailable:source_read_failed"
+    );
+    let budget_word_in_message = anyhow!("permanent storage failure after deadline budget");
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&budget_word_in_message),
+        "unavailable:source_read_failed"
+    );
+
+    let sqlite_busy = anyhow::Error::new(sqlx::Error::Database(Box::new(
+        FakeSummarySnapshotDatabaseError {
+            message: "driver failure with an unrelated busy word",
+            code: "5",
+        },
+    )));
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&sqlite_busy),
+        "deferred:sqlite_busy_or_locked"
+    );
+
+    let verification_error = anyhow::Error::new(SummaryArchiveSnapshotVerificationError::new(
+        "row_count_mismatch",
+        "Summary Snapshot V2 row count mismatch while checking a locked source",
+    ));
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&verification_error),
+        "unavailable:row_count_mismatch"
+    );
 }
 
 #[tokio::test]
@@ -284,6 +364,165 @@ async fn summary_archive_snapshot_backfill_due_queue_bypasses_id_sweep_cursor() 
         .await
         .expect("due candidate outcome"),
         "missing_source"
+    );
+}
+
+#[tokio::test]
+async fn summary_archive_snapshot_backfill_due_cursor_advances_past_ineligible_window() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    for id in 1..=2047_i64 {
+        let sha256 = format!("settled-{id}");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+                  coverage_start_at, coverage_end_at) \
+                 VALUES (?1, 'codex_invocations', '2026-08', ?2, ?3, 1, \
+                         'completed', 'unknown', '2026-01-01 00:00:00', '2026-01-01 01:00:00')",
+        )
+        .bind(id)
+        .bind(format!("/legacy/settled-{id}.sqlite.gz"))
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed settled archive batch");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_backfill_outcome \
+                 (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at) \
+                 VALUES (?1, ?2, 'complete', '', datetime('now'))",
+        )
+        .bind(id)
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed settled outcome");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_v2_proof \
+                 (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256) \
+                 VALUES (?1, ?2, 1, 1, ?3)",
+        )
+        .bind(id)
+        .bind(&sha256)
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed settled proof");
+    }
+    sqlx::query(
+        "INSERT INTO archive_batches \
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+              coverage_start_at, coverage_end_at) \
+             VALUES (2048, 'codex_invocations', '2026-08', \
+                     '/legacy/due-after-window.sqlite.gz', 'due-after-window', 1, \
+                     'completed', 'unknown', datetime('now', '-2 days'), datetime('now', '-1 day'))",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed due archive batch after window");
+
+    let first = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("run first bounded Summary Snapshot backfill");
+    assert_eq!(first.scanned_archive_batches, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT next_archive_batch_id FROM summary_archive_snapshot_backfill_checkpoint \
+                 WHERE scope = 'summary-global:due'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load due cursor after first window"),
+        1024
+    );
+
+    let second = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("run second bounded Summary Snapshot backfill");
+    assert_eq!(second.scanned_archive_batches, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome \
+                 WHERE archive_batch_id = 2048 AND manifest_sha256 = 'due-after-window'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("due outcome after cursor advance"),
+        "missing_source"
+    );
+}
+
+#[tokio::test]
+async fn summary_archive_snapshot_due_cursor_keeps_full_fact_window_fair() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    for id in 1..=256_i64 {
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (?1, 'codex_invocations', '2026-09', ?2, ?3, 1,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .bind(id)
+        .bind(format!("/missing/fair-{id}.sqlite.gz"))
+        .bind(format!("fair-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed fair archive batch");
+    }
+
+    let (first, first_cursor) =
+        load_summary_archive_snapshot_backfill_due_candidates_with_cursor(&pool, 64, 0)
+            .await
+            .expect("load first fair due batch");
+    assert_eq!(first.len(), 64);
+    assert_eq!(
+        first_cursor, 0,
+        "a full fact batch must retain the window cursor"
+    );
+
+    for candidate in &first {
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_v2_proof
+             (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+             VALUES (?1, ?2, 1, 1, ?3)",
+        )
+        .bind(candidate.id)
+        .bind(&candidate.sha256)
+        .bind(format!("proof-{}", candidate.id))
+        .execute(&pool)
+        .await
+        .expect("settle first fair due batch");
+    }
+
+    let (second, second_cursor) =
+        load_summary_archive_snapshot_backfill_due_candidates_with_cursor(&pool, 64, first_cursor)
+            .await
+            .expect("load second fair due batch");
+    assert_eq!(
+        second
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+        (65_i64..=128).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        second_cursor, 0,
+        "a second full batch still retains the window cursor"
     );
 }
 
@@ -1099,9 +1338,9 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
         .expect("current schema");
 
     let explain_sql =
-        format!("EXPLAIN QUERY PLAN {SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL}");
+        format!("EXPLAIN QUERY PLAN {SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL}");
     let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain_sql)
-        .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+        .bind(0_i64)
         .bind(1_i64)
         .fetch_all(&pool)
         .await
@@ -1119,20 +1358,131 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
         }),
         "archive identity/order must use the existing bounded seek index: {details:?}"
     );
-    for alias in ["snapshot", "proof", "outcome"] {
-        assert!(
-            details
-                .iter()
-                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
-            "{alias} must use a bounded correlated lookup: {details:?}"
-        );
-        assert!(
-            details
-                .iter()
-                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
-            "{alias} must not be scanned for each promotion pass: {details:?}"
-        );
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("SCAN batches"))
+    );
+    assert!(!SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL.contains("proof"));
+    assert!(!SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL.contains("outcome"));
+}
+
+#[tokio::test]
+async fn summary_snapshot_v2_candidate_facts_use_bounded_values_plan() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    let plan = summary_snapshot::explain_summary_archive_snapshot_backfill_candidate_query(
+        &pool,
+        1,
+        "candidate-plan",
+        1,
+        false,
+        true,
+    )
+    .await
+    .expect("explain phase-two candidate facts query");
+    let details = plan
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("SEARCH batches USING INTEGER PRIMARY KEY")),
+        "phase-two candidate facts must join archive batches by the bounded VALUES identity: {details:?}"
+    );
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("SCAN batches")),
+        "phase-two candidate facts must not scan archive batches: {details:?}"
+    );
+}
+
+#[tokio::test]
+async fn summary_archive_snapshot_due_candidates_filter_before_limit_and_use_seek_plan() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+    for id in 1_i64..=257 {
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (?1, 'codex_invocations', '2026-09', ?2, ?3, 1,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .bind(id)
+        .bind(format!("/missing/due-{id}.sqlite.gz"))
+        .bind(format!("due-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed due archive");
+        if id <= 256 {
+            sqlx::query(
+                "INSERT INTO summary_archive_snapshot_v2_proof
+                 (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+                 VALUES (?1, ?2, 1, 1, ?3)",
+            )
+            .bind(id)
+            .bind(format!("due-{id}"))
+            .bind(format!("proof-{id}"))
+            .execute(&pool)
+            .await
+            .expect("seed completed proof");
+        }
     }
+
+    let candidates = load_summary_archive_snapshot_backfill_due_candidates(&pool, 1)
+        .await
+        .expect("load due candidates");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+        [257]
+    );
+
+    let explain_sql = format!(
+        "EXPLAIN QUERY PLAN {}",
+        summary_archive_snapshot_backfill_due_identity_sql()
+    );
+    let details = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain_sql)
+        .bind(0_i64)
+        .bind(1_i64)
+        .fetch_all(&pool)
+        .await
+        .expect("explain due candidate query")
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains(
+                "SEARCH batches USING INDEX idx_archive_batches_summary_rollup_repair_seek",
+            )
+        }),
+        "due archive identities must use the bounded seek index: {details:?}"
+    );
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("proof") && !detail.contains("outcome")),
+        "phase-one due identity lookup must defer proof and outcome checks: {details:?}"
+    );
 }
 
 #[tokio::test]

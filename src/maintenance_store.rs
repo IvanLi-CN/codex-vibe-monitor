@@ -25,6 +25,8 @@ const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
 const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
+const MANAGED_TASK_ENQUEUE_BATCH_SIZE: i64 = 32;
+const MANAGED_TASK_CLAIM_BATCH_SIZE: i64 = 32;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
@@ -1634,7 +1636,7 @@ async fn recent_runs_for_workload_compatibility(
     let mut query = if window.is_some() {
         sqlx::query_as::<_, TaskWorkloadLegacyRun>(
             "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
-             FROM managed_task_runs
+             FROM managed_task_runs INDEXED BY idx_managed_task_runs_task_started
              WHERE task_key=? AND status NOT IN ('requested','queued')
                AND started_at>=? AND started_at<=?
                AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
@@ -1644,7 +1646,7 @@ async fn recent_runs_for_workload_compatibility(
     } else {
         sqlx::query_as::<_, TaskWorkloadLegacyRun>(
             "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
-             FROM managed_task_runs
+             FROM managed_task_runs INDEXED BY idx_managed_task_runs_task_actual_started
              WHERE task_key=? AND status NOT IN ('requested','queued')
                AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
              ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 200",
@@ -2205,6 +2207,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           execution_uid TEXT, actual_started_at TEXT, actual_finished_at TEXT,
           actual_duration_ms INTEGER
         );
+        CREATE INDEX IF NOT EXISTS idx_managed_task_runs_requested_status
+          ON managed_task_runs(id)
+          WHERE status='requested';
+        CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_status
+          ON managed_task_runs(task_key,status,id);
         CREATE TABLE IF NOT EXISTS managed_task_work_runs (
           execution_uid TEXT NOT NULL,
           task_key TEXT NOT NULL,
@@ -2218,6 +2225,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_work_runs_task_attempted
           ON managed_task_work_runs(task_key,attempted_at DESC,execution_uid DESC);
+        CREATE INDEX IF NOT EXISTS idx_managed_task_work_runs_managed_run_id
+          ON managed_task_work_runs(managed_run_id);
         CREATE TABLE IF NOT EXISTS task_timeline_segments (
           segment_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
           task_key TEXT NOT NULL, title TEXT NOT NULL, started_at TEXT NOT NULL,
@@ -2294,6 +2303,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
         }
     }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_actual_started ON managed_task_runs(task_key, COALESCE(actual_started_at, started_at) DESC, id DESC)",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_managed_task_runs_execution_uid ON managed_task_runs(execution_uid)",
     )
@@ -3312,6 +3326,15 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
+        let has_requested_run: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM managed_task_runs WHERE status='requested')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if !has_requested_run {
+            record_store_write_event(StoreOperation::Run, WakeOutcome::Noop);
+            return Ok(None);
+        }
         let (claim, retired_requested_runs) = observe_store_write_with_outcome(
             StoreOperation::Run,
             self.claim_requested_run_inner(),
@@ -3349,6 +3372,12 @@ impl MaintenanceStore {
                    )
                    AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=?)
                      OR (next_catchup_at IS NOT NULL AND next_catchup_at<=?))
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM managed_task_runs active
+                       WHERE active.task_key=managed_tasks.task_key
+                         AND active.status IN ('running','requested')
+                   )
              )",
         )
         .bind(&now_text)
@@ -3368,13 +3397,20 @@ impl MaintenanceStore {
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary='任务已停用，未执行', error_detail=NULL
-             WHERE status='requested'
-               AND task_key IN (
-                   SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
-               ) AND NOT (trigger_kind='manual' AND task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
-               )",
+             WHERE id IN (
+                 SELECT candidate.id
+                 FROM managed_task_runs candidate
+                 WHERE candidate.status='requested'
+                   AND candidate.task_key IN (
+                       SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
+                   ) AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
+                   )
+                 ORDER BY candidate.id
+                 LIMIT ?
+             )",
         )
         .bind(&finished_at)
+        .bind(MANAGED_TASK_CLAIM_BATCH_SIZE)
         .execute(&mut *transaction)
         .await?
         .rows_affected()
@@ -3926,7 +3962,6 @@ impl MaintenanceStore {
     async fn enqueue_due_runs_inner(&self) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
-        let mut transaction = self.pool.begin().await?;
         let due_tasks = sqlx::query_as::<
             _,
             (
@@ -3944,17 +3979,52 @@ impl MaintenanceStore {
                AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>?)
                AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
                  OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
-             ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key",
+               AND NOT EXISTS(
+                   SELECT 1
+                   FROM managed_task_runs active
+                   WHERE active.task_key=managed_tasks.task_key
+                     AND active.status IN ('running','requested')
+               )
+             ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key
+             LIMIT ?",
         )
         .bind(&now_text)
         .bind(&now_text)
         .bind(&now_text)
-        .fetch_all(&mut *transaction)
+        .bind(MANAGED_TASK_ENQUEUE_BATCH_SIZE)
+        .fetch_all(&self.pool)
         .await?;
+        if due_tasks.is_empty() {
+            return Ok(0);
+        }
+        let mut transaction = self.pool.begin().await?;
         let mut enqueued = 0_u64;
-        for (task_key, interval_secs, cron_expr, current_trigger_at, current_catchup_at) in
-            due_tasks
-        {
+        for (task_key, _, _, _, _) in due_tasks {
+            // The read-only preflight is only an admission hint. Re-read the task inside the
+            // write transaction so disable/reschedule changes cannot turn into stale runs.
+            let Some((interval_secs, cron_expr, current_trigger_at, current_catchup_at)) =
+                sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>)>(
+                    "SELECT interval_secs,cron_expr,next_trigger_at,next_catchup_at
+                 FROM managed_tasks
+                 WHERE task_key=? AND enabled=1 AND is_manual=0
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM maintenance_owner_retry_state retry
+                       WHERE retry.task_key=managed_tasks.task_key
+                         AND retry.next_eligible_at>?
+                   )
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))",
+                )
+                .bind(&task_key)
+                .bind(&now_text)
+                .bind(&now_text)
+                .bind(&now_text)
+                .fetch_optional(&mut *transaction)
+                .await?
+            else {
+                continue;
+            };
             let inspection_due = current_trigger_at
                 .as_deref()
                 .is_some_and(|value| value <= now_text.as_str());
@@ -4012,7 +4082,14 @@ impl MaintenanceStore {
                 .await?;
             }
         }
-        transaction.commit().await?;
+        if enqueued > 0 {
+            transaction.commit().await?;
+        } else {
+            // A preflight candidate may become ineligible before the in-transaction
+            // revalidation. Roll back the deferred transaction so this race does not
+            // turn into an observable no-op write commit.
+            transaction.rollback().await?;
+        }
         if enqueued > 0 {
             self.sync_retention_progress_schedule().await?;
         }
@@ -7256,6 +7333,67 @@ mod tests {
         .expect("load retired requested run");
         assert_eq!(row.0, "failed");
         assert_eq!(row.1.as_deref(), Some("任务已停用，未执行"));
+    }
+
+    #[tokio::test]
+    async fn claim_retires_disabled_requested_runs_in_bounded_batches() {
+        const CLAIM_BATCH_SIZE: i64 = 32;
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore::from_pool(pool);
+        for index in 0..=CLAIM_BATCH_SIZE {
+            let task_key = format!("test.disabled.requested.{index}");
+            sqlx::query(
+                "INSERT INTO managed_tasks
+                 (task_key,title,description,trigger_mode,enabled,is_manual,updated_at)
+                 VALUES (?,?,?,?,0,0,?)",
+            )
+            .bind(&task_key)
+            .bind("Disabled requested test task")
+            .bind("Disabled requested test task")
+            .bind("event")
+            .bind("2026-01-01T00:00:00.000Z")
+            .execute(&store.pool)
+            .await
+            .expect("seed disabled test task");
+            sqlx::query(
+                "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status)
+                 VALUES (?,'schedule',?,'requested')",
+            )
+            .bind(&task_key)
+            .bind(format!("2026-01-01T00:00:{index:02}.000Z"))
+            .execute(&store.pool)
+            .await
+            .expect("seed disabled requested run");
+        }
+
+        assert!(store.claim_requested_run().await.unwrap().is_none());
+        let first_pass = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT
+                 SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
+                 SUM(CASE WHEN status='requested' THEN 1 ELSE 0 END)
+             FROM managed_task_runs
+             WHERE task_key LIKE 'test.disabled.requested.%'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("count first bounded retirement pass");
+        assert_eq!(first_pass, (CLAIM_BATCH_SIZE, 1));
+
+        assert!(store.claim_requested_run().await.unwrap().is_none());
+        let second_pass = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM managed_task_runs
+             WHERE task_key LIKE 'test.disabled.requested.%' AND status='requested'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("count second bounded retirement pass");
+        assert_eq!(second_pass, 0);
     }
 
     #[tokio::test]

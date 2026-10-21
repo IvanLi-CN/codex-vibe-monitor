@@ -1962,7 +1962,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     ensure_invocation_raw_codec_backfill(pool).await?;
-
+    ensure_timeline_snapshot_table(pool).await?;
     // Speed up time-range scans and ordering on the stats endpoints
     sqlx::query(
         r#"

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -33,6 +34,19 @@ def psi(cpu=0, io=0, memory=0):
 
 
 class ContainerMountTests(unittest.TestCase):
+    def test_client_failure_evidence_is_bounded_and_redacted(self):
+        result = acceptance.sanitize_client_failure(
+            "functional",
+            "Traceback (most recent call last):\n"
+            "AssertionError: ('scrape', 9091, 200)\n"
+            "Authorization: Bearer fixture-secret\n",
+        )
+        self.assertEqual(result["mode"], "functional")
+        self.assertEqual(result["exceptionType"], "AssertionError")
+        self.assertIn("9091", result["message"])
+        self.assertNotIn("fixture-secret", json.dumps(result))
+        self.assertLessEqual(len(result["message"]), 512)
+
     def test_candidate_does_not_receive_shared_tempo_ingest_credential(self):
         source = (SOURCE / "scripts/observability-acceptance/run.py").read_text()
         self.assertIn("tempo-runtime-token", source)
@@ -141,6 +155,14 @@ class ContainerMountTests(unittest.TestCase):
     def test_client_bootstrap_works_at_container_mount_depth(self):
         namespace = self.execute_mounted("client.py")
         self.assertTrue(callable(namespace["seed"]))
+
+    def test_client_expands_all_custom_variables_used_by_sqlite_dashboard(self):
+        namespace = self.execute_mounted("client.py")
+        expression = 'increase(cvm_retention_phase_duration_seconds_sum{operation=~"$operation"}[$__range] offset $compare_offset)'
+        expanded = namespace["expand_dashboard_expression"](expression)
+        self.assertNotIn("$", expanded)
+        self.assertIn('operation=~".*"', expanded)
+        self.assertIn("[30m] offset 1d", expanded)
 
     def test_tempo_trace_ids_restore_omitted_leading_zero(self):
         namespace = self.execute_mounted("client.py")
@@ -372,7 +394,7 @@ class AdmissionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.sha = "a" * 40
-        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_TEMP": str(self.root), "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_NAME": "Hosted Agent", "GITHUB_JOB": "observability-performance", "OBSERVABILITY_LANE": "pair-0", "RUNNER_TEMP": str(self.root), "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
 
     def context(self, root=None):
         with patch.object(environment.subprocess, "check_output", return_value=self.sha + "\n"), patch.object(Path, "read_text", return_value="model name: Fixture CPU\n"), patch.object(os, "sched_getaffinity", return_value={0, 1, 2, 3}, create=True):
@@ -400,6 +422,25 @@ class AdmissionTests(unittest.TestCase):
             context = self.context()
         self.assertEqual(context["evidenceLocator"], "https://github.com/owner/repo/actions/runs/123/attempts/2")
         self.assertEqual(context["candidate"], self.sha)
+        self.assertEqual(context["runnerIdentity"], "job:owner/repo:123:2:observability-performance:pair-0")
+        self.assertEqual(context["runnerJob"], "observability-performance")
+        self.assertEqual(context["runnerLane"], "pair-0")
+        self.assertEqual(context["runnerName"], "Hosted Agent")
+
+    def test_missing_runner_identity_cannot_certify_isolation(self):
+        with patch.dict(os.environ, {**self.env, "GITHUB_JOB": ""}, clear=True):
+            with self.assertRaisesRegex(ValueError, "runner identity"):
+                self.context()
+
+    def test_undocumented_runner_id_is_not_required(self):
+        with patch.dict(os.environ, {**self.env, "RUNNER_ID": ""}, clear=True):
+            context = self.context()
+        self.assertEqual(context["runnerIdentity"], "job:owner/repo:123:2:observability-performance:pair-0")
+
+    def test_matrix_lane_is_required_for_measurement_identity(self):
+        with patch.dict(os.environ, {**self.env, "OBSERVABILITY_LANE": ""}, clear=True):
+            with self.assertRaisesRegex(ValueError, "runner identity"):
+                self.context()
 
     def test_paired_suite_rejects_testbox_before_creating_state(self):
         args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="shared-testbox", suite="pair-0")
@@ -542,6 +583,46 @@ class BoundedAcceptanceTests(unittest.TestCase):
             run.checkpoint("deadline", execution_deadline.ExecutionDeadline().expired)
 
 
+class ActionsContextTests(unittest.TestCase):
+    def test_aggregate_context_does_not_require_measurement_runner_identity(self):
+        candidate = subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip()
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory).resolve()
+            run = (runner_temp / "run").resolve()
+            run.mkdir()
+            env = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_REPOSITORY": "IvanLi-CN/codex-vibe-monitor",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                with patch.object(Path, "read_text", return_value="model name : synthetic CPU\n"):
+                    with patch.object(os, "sched_getaffinity", return_value={0, 1, 2, 3}, create=True):
+                        context = environment.actions_context(SOURCE, run, candidate, require_runner_identity=False)
+            self.assertEqual(context["runnerIdentity"], "aggregate:123:1")
+
+    def test_measurement_context_still_requires_runner_identity(self):
+        candidate = subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip()
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory).resolve()
+            run = (runner_temp / "run").resolve()
+            run.mkdir()
+            env = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_REPOSITORY": "IvanLi-CN/codex-vibe-monitor",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(ValueError, "missing GitHub runner identity"):
+                    environment.actions_context(SOURCE, run, candidate)
+
+
 class AggregationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -632,8 +713,16 @@ class AggregationTests(unittest.TestCase):
         self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))
         self.assertFalse(self.aggregate())
 
-    def test_hardware_or_runner_reuse_cannot_be_hidden_by_good_cv(self):
-        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+    def test_heterogeneous_runners_are_valid_but_runner_reuse_is_rejected(self):
+        self.change("pair-2", "runner-context.json", lambda row: row.update(
+            cpuModel=["different CPU"],
+            cpuCount=64,
+            runnerImage="ubuntu24-different",
+            runnerImageVersion="different",
+            kernel="different-kernel",
+        ))
+        self.assertTrue(self.aggregate())
+        self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
         self.assertFalse(self.aggregate())
 
     def test_restarted_clock_or_exceeded_budget_cannot_pass(self):
@@ -693,6 +782,8 @@ class WorkflowGateTests(unittest.TestCase):
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+        self.assertIn("client-failures.json", step["with"]["path"])
+        self.assertNotIn("client.log", step["with"]["path"])
         step.pop("if")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 

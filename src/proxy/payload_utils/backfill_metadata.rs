@@ -1,5 +1,36 @@
 use super::*;
 
+async fn load_codex_invocation_id_window(
+    pool: &Pool<Sqlite>,
+    start_after_id: i64,
+    limit: i64,
+) -> Result<Vec<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM codex_invocations WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+    )
+    .bind(start_after_id)
+    .bind(limit.max(1))
+    .fetch_all(pool)
+    .await?)
+}
+
+fn payload_field_is_missing(payload: Option<&str>, field: &str) -> bool {
+    let Some(payload) = payload else {
+        return true;
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(payload) else {
+        return true;
+    };
+    let Some(value) = payload.get(field) else {
+        return true;
+    };
+    match value {
+        Value::Null => true,
+        Value::String(value) => value.trim().is_empty(),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn backfill_proxy_missing_costs(
     pool: &Pool<Sqlite>,
@@ -87,6 +118,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
 ) -> Result<BackfillBatchOutcome<ProxyPromptCacheKeyBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = ProxyPromptCacheKeyBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -96,42 +128,54 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
 
     let result = async {
         loop {
-            if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed)
-            {
+            if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
                 hit_budget = true;
                 break;
             }
 
+            let window_start_id = last_seen_id;
+            let window_ids = load_codex_invocation_id_window(
+                pool,
+                window_start_id,
+                startup_backfill_query_limit(examined, scan_limit),
+            )
+            .await?;
+            let Some(window_end_id) = window_ids.last().copied() else {
+                break;
+            };
+            examined = examined.saturating_add(window_ids.len() as u64);
+            summary.examined = examined;
+            last_seen_id = window_end_id;
             let candidates = sqlx::query_as::<_, ProxyPromptCacheKeyBackfillCandidate>(
                 r#"
-            SELECT id, request_raw_path
+            SELECT id, request_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
               AND request_raw_path IS NOT NULL
-              AND id > ?2
-              AND (
-                payload IS NULL
-                OR NOT json_valid(payload)
-                OR json_extract(payload, '$.promptCacheKey') IS NULL
-                OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
-              )
+              AND id > ?2 AND id <= ?3
             ORDER BY id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
             )
             .bind(SOURCE_PROXY)
-            .bind(last_seen_id)
-            .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+            .bind(window_start_id)
+            .bind(window_end_id)
+            .bind(window_ids.len() as i64)
             .fetch_all(pool)
             .await?;
 
             if candidates.is_empty() {
-                break;
+                committed_cursor_id = window_end_id;
+                committed_scanned = summary.scanned;
+                committed_updated = summary.updated;
+                continue;
             }
 
             let mut updates = Vec::new();
             for candidate in candidates {
-                last_seen_id = candidate.id;
+                if !payload_field_is_missing(candidate.payload.as_deref(), "promptCacheKey") {
+                    continue;
+                }
                 summary.scanned += 1;
 
                 let raw_request =
@@ -219,7 +263,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                         .await?;
                 }
                 tx.commit().await?;
-                committed_cursor_id = last_seen_id;
+                committed_cursor_id = window_end_id;
                 committed_scanned = summary.scanned;
                 committed_updated = summary.updated;
                 if !updated_prompt_cache_keys.is_empty() {
@@ -230,7 +274,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                     }
                 }
             }
-            committed_cursor_id = last_seen_id;
+            committed_cursor_id = window_end_id;
             committed_scanned = summary.scanned;
             committed_updated = summary.updated;
         }
@@ -274,6 +318,7 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
 ) -> Result<BackfillBatchOutcome<ProxyRequestedServiceTierBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = ProxyRequestedServiceTierBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -282,31 +327,47 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
     let mut samples = Vec::new();
 
     loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
+        if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
             hit_budget = true;
             break;
         }
 
+        let window_start_id = last_seen_id;
+        let window_ids = load_codex_invocation_id_window(
+            pool,
+            window_start_id,
+            startup_backfill_query_limit(examined, scan_limit),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error,
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
+        let Some(window_end_id) = window_ids.last().copied() else {
+            break;
+        };
+        examined = examined.saturating_add(window_ids.len() as u64);
+        summary.examined = examined;
+        last_seen_id = window_end_id;
         let candidates = sqlx::query_as::<_, ProxyRequestedServiceTierBackfillCandidate>(
             r#"
-            SELECT id, request_raw_path
+            SELECT id, request_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
               AND request_raw_path IS NOT NULL
-              AND id > ?2
-              AND (
-                payload IS NULL
-                OR NOT json_valid(payload)
-                OR json_extract(payload, '$.requestedServiceTier') IS NULL
-                OR TRIM(CAST(json_extract(payload, '$.requestedServiceTier') AS TEXT)) = ''
-              )
+              AND id > ?2 AND id <= ?3
             ORDER BY id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind(SOURCE_PROXY)
-        .bind(last_seen_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+        .bind(window_start_id)
+        .bind(window_end_id)
+        .bind(window_ids.len() as i64)
         .fetch_all(pool)
         .await
         .map_err(|error| {
@@ -319,12 +380,19 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
         })?;
 
         if candidates.is_empty() {
-            break;
+            committed_cursor_id = window_end_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
+            continue;
         }
 
+        let mut updates = Vec::new();
         for candidate in candidates {
-            last_seen_id = candidate.id;
+            if !payload_field_is_missing(candidate.payload.as_deref(), "requestedServiceTier") {
+                continue;
+            }
             summary.scanned += 1;
+
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
@@ -337,8 +405,6 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                                 candidate.id, candidate.request_raw_path
                             ),
                         );
-                        committed_cursor_id = candidate.id;
-                        committed_scanned = summary.scanned;
                         continue;
                     }
                 };
@@ -354,8 +420,6 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                             candidate.id, candidate.request_raw_path
                         ),
                     );
-                    committed_cursor_id = candidate.id;
-                    committed_scanned = summary.scanned;
                     continue;
                 }
             };
@@ -364,13 +428,24 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                 extract_requested_service_tier_from_request_body(&request_payload)
             else {
                 summary.skipped_missing_tier += 1;
-                committed_cursor_id = candidate.id;
-                committed_scanned = summary.scanned;
                 continue;
             };
 
-            let affected = sqlx::query(
-                r#"
+            updates.push((candidate.id, requested_service_tier));
+        }
+
+        if !updates.is_empty() {
+            let mut transaction = pool.begin().await.map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?;
+            for (candidate_id, requested_service_tier) in updates {
+                let affected = sqlx::query(
+                    r#"
                 UPDATE codex_invocations
                 SET payload = json_set(
                     CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
@@ -387,26 +462,35 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                     OR TRIM(CAST(json_extract(payload, '$.requestedServiceTier') AS TEXT)) = ''
                   )
                 "#,
-            )
-            .bind(requested_service_tier)
-            .bind(candidate.id)
-            .bind(SOURCE_PROXY)
-            .execute(pool)
-            .await
-            .map_err(|error| {
+                )
+                .bind(requested_service_tier)
+                .bind(candidate_id)
+                .bind(SOURCE_PROXY)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::BackfillPartialFailure {
+                        source: error.into(),
+                        next_cursor_id: committed_cursor_id,
+                        scanned: committed_scanned,
+                        updated: committed_updated,
+                    })
+                })?
+                .rows_affected();
+                summary.updated += affected;
+            }
+            transaction.commit().await.map_err(|error| {
                 anyhow::Error::new(crate::BackfillPartialFailure {
                     source: error.into(),
                     next_cursor_id: committed_cursor_id,
                     scanned: committed_scanned,
                     updated: committed_updated,
                 })
-            })?
-            .rows_affected();
-            summary.updated += affected;
-            committed_updated = summary.updated;
-            committed_cursor_id = candidate.id;
-            committed_scanned = summary.scanned;
+            })?;
         }
+        committed_cursor_id = window_end_id;
+        committed_scanned = summary.scanned;
+        committed_updated = summary.updated;
     }
 
     Ok(BackfillBatchOutcome {
@@ -442,6 +526,7 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
 ) -> Result<BackfillBatchOutcome<ProxyReasoningEffortBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = ProxyReasoningEffortBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -450,31 +535,47 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
     let mut samples = Vec::new();
 
     loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
+        if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
             hit_budget = true;
             break;
         }
 
+        let window_start_id = last_seen_id;
+        let window_ids = load_codex_invocation_id_window(
+            pool,
+            window_start_id,
+            startup_backfill_query_limit(examined, scan_limit),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error,
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
+        let Some(window_end_id) = window_ids.last().copied() else {
+            break;
+        };
+        examined = examined.saturating_add(window_ids.len() as u64);
+        summary.examined = examined;
+        last_seen_id = window_end_id;
         let candidates = sqlx::query_as::<_, ProxyReasoningEffortBackfillCandidate>(
             r#"
-            SELECT id, request_raw_path
+            SELECT id, request_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
               AND request_raw_path IS NOT NULL
-              AND id > ?2
-              AND (
-                payload IS NULL
-                OR NOT json_valid(payload)
-                OR json_extract(payload, '$.reasoningEffort') IS NULL
-                OR TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)) = ''
-              )
+              AND id > ?2 AND id <= ?3
             ORDER BY id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind(SOURCE_PROXY)
-        .bind(last_seen_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+        .bind(window_start_id)
+        .bind(window_end_id)
+        .bind(window_ids.len() as i64)
         .fetch_all(pool)
         .await
         .map_err(|error| {
@@ -487,12 +588,19 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
         })?;
 
         if candidates.is_empty() {
-            break;
+            committed_cursor_id = window_end_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
+            continue;
         }
 
+        let mut updates = Vec::new();
         for candidate in candidates {
-            last_seen_id = candidate.id;
+            if !payload_field_is_missing(candidate.payload.as_deref(), "reasoningEffort") {
+                continue;
+            }
             summary.scanned += 1;
+
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
@@ -505,8 +613,6 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                                 candidate.id, candidate.request_raw_path
                             ),
                         );
-                        committed_cursor_id = candidate.id;
-                        committed_scanned = summary.scanned;
                         continue;
                     }
                 };
@@ -522,8 +628,6 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                             candidate.id, candidate.request_raw_path
                         ),
                     );
-                    committed_cursor_id = candidate.id;
-                    committed_scanned = summary.scanned;
                     continue;
                 }
             };
@@ -533,13 +637,24 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                 &request_payload,
             ) else {
                 summary.skipped_missing_effort += 1;
-                committed_cursor_id = candidate.id;
-                committed_scanned = summary.scanned;
                 continue;
             };
 
-            let affected = sqlx::query(
-                r#"
+            updates.push((candidate.id, reasoning_effort));
+        }
+
+        if !updates.is_empty() {
+            let mut transaction = pool.begin().await.map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?;
+            for (candidate_id, reasoning_effort) in updates {
+                let affected = sqlx::query(
+                    r#"
                 UPDATE codex_invocations
                 SET payload = json_set(
                     CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
@@ -556,26 +671,35 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                     OR TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)) = ''
                   )
                 "#,
-            )
-            .bind(reasoning_effort)
-            .bind(candidate.id)
-            .bind(SOURCE_PROXY)
-            .execute(pool)
-            .await
-            .map_err(|error| {
+                )
+                .bind(reasoning_effort)
+                .bind(candidate_id)
+                .bind(SOURCE_PROXY)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::BackfillPartialFailure {
+                        source: error.into(),
+                        next_cursor_id: committed_cursor_id,
+                        scanned: committed_scanned,
+                        updated: committed_updated,
+                    })
+                })?
+                .rows_affected();
+                summary.updated += affected;
+            }
+            transaction.commit().await.map_err(|error| {
                 anyhow::Error::new(crate::BackfillPartialFailure {
                     source: error.into(),
                     next_cursor_id: committed_cursor_id,
                     scanned: committed_scanned,
                     updated: committed_updated,
                 })
-            })?
-            .rows_affected();
-            summary.updated += affected;
-            committed_updated = summary.updated;
-            committed_cursor_id = candidate.id;
-            committed_scanned = summary.scanned;
+            })?;
         }
+        committed_cursor_id = window_end_id;
+        committed_scanned = summary.scanned;
+        committed_updated = summary.updated;
     }
 
     Ok(BackfillBatchOutcome {
