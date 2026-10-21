@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 29,
-    "suppression_entries": 125
+    "inventory_entries": 28,
+    "suppression_entries": 124
   },
   "loc_targets": {
     "production": 2500,
@@ -17,12 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/proxy/dispatch.rs",
-      "role": "production",
-      "line_budget": 4134,
-      "next_module_workstream": "Split proxy dispatch body capture, streaming, routing, and request entry coordination."
     },
     {
       "path": "src/proxy/failover.rs",
@@ -351,16 +345,10 @@
       "reason": "Retain this targeted allow for the archive manifest refresh model kept for compatibility."
     },
     {
-      "path": "src/proxy/dispatch.rs",
+      "path": "src/proxy/dispatch/capture_errors.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/dispatch.rs; remove it when the listed boundary split is complete."
-    },
-    {
-      "path": "src/proxy/dispatch.rs",
-      "kind": "allow",
-      "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/dispatch.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the pre-attempt persistence adapter until the capture error context becomes a dedicated value."
     },
     {
       "path": "src/proxy/failover.rs",
