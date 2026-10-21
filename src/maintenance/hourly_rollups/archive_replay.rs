@@ -110,41 +110,7 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_budget(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> Result<bool> {
-    let input = fs::File::open(source)
-        .with_context(|| format!("failed to open archive batch {}", source.display()))?;
-    let mut decoder = GzDecoder::new(input);
-    let output = fs::File::create(destination)
-        .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
-    let mut writer = io::BufWriter::new(output);
-    let mut buffer = vec![0_u8; HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES];
-
-    loop {
-        let read = decoder.read(&mut buffer).with_context(|| {
-            format!(
-                "failed to decompress archive batch {} into {}",
-                source.display(),
-                destination.display()
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        writer.write_all(&buffer[..read]).with_context(|| {
-            format!(
-                "failed to decompress archive batch {} into {}",
-                source.display(),
-                destination.display()
-            )
-        })?;
-        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            writer.flush()?;
-            return Ok(false);
-        }
-        tokio::task::yield_now().await;
-    }
-
-    writer.flush()?;
-    Ok(true)
+    inflate_gzip_sqlite_file_with_elapsed_budget(source, destination, started_at, max_elapsed).await
 }
 
 pub(crate) async fn open_historical_rollup_archive_pool(

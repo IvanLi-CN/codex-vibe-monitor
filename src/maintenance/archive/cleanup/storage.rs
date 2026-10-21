@@ -35,9 +35,24 @@ pub(crate) fn cleanup_stale_archive_temp_files(
         if !archive_file_is_stale_temp(&file_path) || !archive_temp_file_is_old_enough(&file_path) {
             continue;
         }
-        if dry_run && crate::is_archive_file_operation_active(&file_path) {
+        if dry_run
+            && (crate::is_archive_file_operation_active(&file_path)
+                || crate::task_work_artifact_is_active(&file_path))
+        {
             continue;
         }
+        let _task_work_fence = if dry_run {
+            None
+        } else {
+            match crate::try_acquire_task_work_artifact_fence(&file_path) {
+                Ok(crate::TaskWorkArtifactFence::Active) => continue,
+                Ok(fence) => Some(fence),
+                Err(err) => {
+                    warn!(error = %err, "failed to inspect task-local archive work owner");
+                    continue;
+                }
+            }
+        };
         let archive_operation_lease = if dry_run {
             None
         } else {

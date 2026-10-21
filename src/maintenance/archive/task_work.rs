@@ -12,6 +12,12 @@ pub(crate) struct TaskWorkOwner {
     work_path: PathBuf,
 }
 
+pub(crate) enum TaskWorkArtifactFence {
+    Unowned,
+    Active,
+    Held(File),
+}
+
 impl Drop for TaskWorkOwner {
     fn drop(&mut self) {
         drop(self.file.take());
@@ -64,6 +70,72 @@ pub(super) fn create_task_work_file(final_path: &Path, work_path: &Path) -> Resu
 
 fn task_work_owner_path(work_path: &Path) -> PathBuf {
     work_path.with_extension("owner")
+}
+
+fn task_work_path_for_artifact(path: &Path) -> Option<PathBuf> {
+    let path_string = path.to_string_lossy();
+    for suffix in [".source-meta", "-journal", "-wal", "-shm"] {
+        if let Some(base) = path_string.strip_suffix(suffix) {
+            return Some(PathBuf::from(base));
+        }
+    }
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("owner" | "tmp" | "partial") => Some(path.with_extension("sqlite")),
+        Some("sqlite") => Some(path.to_path_buf()),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn try_acquire_task_work_artifact_fence(path: &Path) -> Result<TaskWorkArtifactFence> {
+    let Some(work_path) = task_work_path_for_artifact(path) else {
+        return Ok(TaskWorkArtifactFence::Unowned);
+    };
+    let owner_path = task_work_owner_path(&work_path);
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&owner_path)
+    {
+        Ok(file) => {
+            return if try_lock_task_work(&file)? {
+                Ok(TaskWorkArtifactFence::Held(file))
+            } else {
+                Ok(TaskWorkArtifactFence::Active)
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("inspect task-local archive work owner"),
+    }
+
+    let work_file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&work_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TaskWorkArtifactFence::Unowned);
+        }
+        Err(error) => return Err(error).context("inspect task-local archive work"),
+    };
+    if try_lock_task_work(&work_file)? {
+        Ok(TaskWorkArtifactFence::Held(work_file))
+    } else {
+        Ok(TaskWorkArtifactFence::Active)
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn try_acquire_task_work_artifact_fence(_path: &Path) -> Result<TaskWorkArtifactFence> {
+    Ok(TaskWorkArtifactFence::Unowned)
+}
+
+pub(crate) fn task_work_artifact_is_active(path: &Path) -> bool {
+    matches!(
+        try_acquire_task_work_artifact_fence(path),
+        Ok(TaskWorkArtifactFence::Active) | Err(_)
+    )
 }
 
 pub(crate) fn create_retention_identity_work_file(

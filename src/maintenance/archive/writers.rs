@@ -428,6 +428,8 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             let suffix = retention_temp_suffix();
             let work_path = PathBuf::from(format!("{}.{}.sqlite", batch.file_path, suffix));
             let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", batch.file_path, suffix));
+            let _work_cleanup = TempSqliteCleanup::new(work_path.clone());
+            let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
             remove_temp_sqlite_artifacts(&work_path);
             remove_temp_sqlite_artifacts(&temp_gzip_path);
 
