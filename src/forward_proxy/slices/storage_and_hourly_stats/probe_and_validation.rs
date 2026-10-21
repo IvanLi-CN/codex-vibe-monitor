@@ -580,6 +580,8 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
         };
         match route_result {
             Ok((endpoint_url, temporary_xray_key)) => {
+                let mut temporary_route =
+                    TemporaryXrayRouteGuard::new(state.xray_supervisor.clone(), temporary_xray_key);
                 let client_result = state
                     .http_clients
                     .client_for_forward_proxy(endpoint_url.as_ref());
@@ -644,10 +646,10 @@ pub(crate) async fn run_forward_proxy_latency_test_round(
                         codex_responses.error = Some(safe_error);
                     }
                 }
-                if let Some(temp_key) = temporary_xray_key {
-                    let mut supervisor = state.xray_supervisor.lock().await;
-                    supervisor.remove_instance(&temp_key).await;
-                }
+                let cleanup_budget =
+                    remaining_timeout_budget(round_timeout, round_started.elapsed())
+                        .unwrap_or_default();
+                temporary_route.cleanup_with_budget(cleanup_budget).await;
             }
             Err(err) => {
                 let safe_error = super::sanitize_forward_proxy_error_detail(&err);
@@ -1264,6 +1266,57 @@ impl Drop for ProbeCancellationGuard {
     }
 }
 
+struct TemporaryXrayRouteGuard {
+    supervisor: Arc<Mutex<XraySupervisor>>,
+    key: Option<String>,
+}
+
+impl TemporaryXrayRouteGuard {
+    fn new(supervisor: Arc<Mutex<XraySupervisor>>, key: Option<String>) -> Self {
+        Self { supervisor, key }
+    }
+
+    async fn cleanup(&mut self) {
+        let Some(key) = self.key.as_ref().cloned() else {
+            return;
+        };
+        let mut supervisor = self.supervisor.lock().await;
+        supervisor.remove_instance(&key).await;
+        self.key = None;
+    }
+
+    async fn cleanup_with_budget(&mut self, budget: Duration) {
+        if budget.is_zero() {
+            self.schedule_cleanup();
+            return;
+        }
+        if timeout(budget, self.cleanup()).await.is_err() {
+            self.schedule_cleanup();
+        }
+    }
+
+    fn schedule_cleanup(&mut self) {
+        let Some(key) = self.key.take() else {
+            return;
+        };
+        let supervisor = self.supervisor.clone();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            warn!("temporary xray route was dropped outside a tokio runtime");
+            return;
+        };
+        handle.spawn(async move {
+            let mut supervisor = supervisor.lock().await;
+            supervisor.remove_instance(&key).await;
+        });
+    }
+}
+
+impl Drop for TemporaryXrayRouteGuard {
+    fn drop(&mut self) {
+        self.schedule_cleanup();
+    }
+}
+
 pub(crate) async fn probe_subscription_endpoint_with_retries(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
@@ -1360,6 +1413,8 @@ pub(crate) async fn probe_forward_proxy_endpoint(
                 return Err(err);
             }
         };
+    let mut temporary_route =
+        TemporaryXrayRouteGuard::new(state.xray_supervisor.clone(), temporary_xray_key);
 
     let probe_result = async {
         let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
@@ -1407,10 +1462,9 @@ pub(crate) async fn probe_forward_proxy_endpoint(
     }
     .await;
 
-    if let Some(temp_key) = temporary_xray_key {
-        let mut supervisor = state.xray_supervisor.lock().await;
-        supervisor.remove_instance(&temp_key).await;
-    }
+    let cleanup_budget =
+        remaining_timeout_budget(validation_timeout, started.elapsed()).unwrap_or_default();
+    temporary_route.cleanup_with_budget(cleanup_budget).await;
 
     probe_result
 }
@@ -1502,7 +1556,7 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
     let route_url = {
         let mut supervisor = state.xray_supervisor.lock().await;
         supervisor
-            .ensure_instance_with_ready_timeout(
+            .ensure_temporary_instance_with_ready_timeout(
                 &probe_endpoint,
                 validation_timeout,
                 &validation_shutdown,
@@ -1696,6 +1750,46 @@ mod tests {
                 .expect("native proxy endpoint url")
                 .as_str(),
             "http://synthetic-user:synthetic-password@proxy.example.com:8080/"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn temporary_xray_route_guard_cleans_up_when_dropped() {
+        let supervisor = Arc::new(Mutex::new(XraySupervisor::new(
+            "/path/to/non-existent-xray".to_string(),
+            std::env::temp_dir().join("codex-vless-xhttp-route-guard"),
+        )));
+        let key = "__validate_xray__synthetic".to_string();
+        let child = Command::new("python3")
+            .arg("-c")
+            .arg("import time; time.sleep(30)")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn temporary xray guard child");
+        supervisor.lock().await.instances.insert(
+            key.clone(),
+            XrayInstance {
+                local_proxy_url: Url::parse("socks5://127.0.0.1:1082")
+                    .expect("valid local proxy url"),
+                config_path: std::env::temp_dir().join("codex-vless-xhttp-route-guard.json"),
+                child,
+                temporary: true,
+            },
+        );
+
+        drop(TemporaryXrayRouteGuard::new(supervisor.clone(), Some(key)));
+        for _ in 0..20 {
+            if supervisor.lock().await.instances.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            supervisor.lock().await.instances.is_empty(),
+            "dropping a validation route guard must schedule route cleanup"
         );
     }
 }

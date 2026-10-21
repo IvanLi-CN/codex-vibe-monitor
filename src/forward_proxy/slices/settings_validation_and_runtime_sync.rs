@@ -160,7 +160,7 @@ pub(crate) async fn fetch_subscription_proxy_urls(
     let response = timeout(request_timeout, client.get(subscription_url).send())
         .await
         .map_err(|_| anyhow!("subscription request timed out"))?
-        .with_context(|| format!("failed to request subscription ref: {subscription_url_ref}"))?;
+        .map_err(|_| anyhow!("subscription request failed"))?;
     if !response.status().is_success() {
         bail!(
             "subscription ref {subscription_url_ref} returned status {}",
@@ -170,7 +170,7 @@ pub(crate) async fn fetch_subscription_proxy_urls(
     let body = timeout(request_timeout, response.text())
         .await
         .map_err(|_| anyhow!("subscription body read timed out"))?
-        .context("failed to read subscription body")?;
+        .map_err(|_| anyhow!("subscription body read failed"))?;
     Ok(parse_proxy_urls_from_subscription_body(&body))
 }
 
@@ -187,7 +187,7 @@ pub(crate) async fn fetch_subscription_proxy_urls_with_validation_budget(
     let response = timeout(request_timeout, client.get(subscription_url).send())
         .await
         .map_err(|_| timeout_error_for_duration(total_timeout))?
-        .with_context(|| format!("failed to request subscription ref: {subscription_url_ref}"))?;
+        .map_err(|_| anyhow!("subscription request failed"))?;
     if !response.status().is_success() {
         bail!(
             "subscription ref {subscription_url_ref} returned status {}",
@@ -200,7 +200,7 @@ pub(crate) async fn fetch_subscription_proxy_urls_with_validation_budget(
     let body = timeout(read_timeout, response.text())
         .await
         .map_err(|_| timeout_error_for_duration(total_timeout))?
-        .context("failed to read subscription body")?;
+        .map_err(|_| anyhow!("subscription body read failed"))?;
     Ok(parse_proxy_urls_from_subscription_body(&body))
 }
 

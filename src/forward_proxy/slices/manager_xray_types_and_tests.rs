@@ -28,7 +28,7 @@ pub(crate) struct XrayInstance {
     pub(crate) local_proxy_url: Url,
     pub(crate) config_path: PathBuf,
     pub(crate) child: Child,
-    pub(crate) diagnostic_task: Option<JoinHandle<Vec<u8>>>,
+    pub(crate) temporary: bool,
 }
 
 const XRAY_PREFLIGHT_DIAGNOSTIC_BYTES: usize = 4096;
@@ -74,7 +74,13 @@ impl XraySupervisor {
         let stale_keys = self
             .instances
             .keys()
-            .filter(|key| !desired_keys.contains(*key))
+            .filter(|key| {
+                !desired_keys.contains(*key)
+                    && self
+                        .instances
+                        .get(*key)
+                        .is_some_and(|instance| !instance.temporary)
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -143,6 +149,27 @@ impl XraySupervisor {
         ready_timeout: Duration,
         shutdown: &CancellationToken,
     ) -> Result<Url> {
+        self.ensure_instance_with_ready_timeout_kind(endpoint, ready_timeout, shutdown, false)
+            .await
+    }
+
+    pub(crate) async fn ensure_temporary_instance_with_ready_timeout(
+        &mut self,
+        endpoint: &ForwardProxyEndpoint,
+        ready_timeout: Duration,
+        shutdown: &CancellationToken,
+    ) -> Result<Url> {
+        self.ensure_instance_with_ready_timeout_kind(endpoint, ready_timeout, shutdown, true)
+            .await
+    }
+
+    async fn ensure_instance_with_ready_timeout_kind(
+        &mut self,
+        endpoint: &ForwardProxyEndpoint,
+        ready_timeout: Duration,
+        shutdown: &CancellationToken,
+        temporary: bool,
+    ) -> Result<Url> {
         if let Some(instance) = self.instances.get_mut(&endpoint.key) {
             match instance.child.try_wait() {
                 Ok(None) => return Ok(instance.local_proxy_url.clone()),
@@ -164,7 +191,8 @@ impl XraySupervisor {
         }
 
         self.remove_instance(&endpoint.key).await;
-        self.spawn_instance(endpoint, ready_timeout, shutdown).await
+        self.spawn_instance(endpoint, ready_timeout, shutdown, temporary)
+            .await
     }
 
     pub(crate) async fn spawn_instance(
@@ -172,6 +200,7 @@ impl XraySupervisor {
         endpoint: &ForwardProxyEndpoint,
         ready_timeout: Duration,
         shutdown: &CancellationToken,
+        temporary: bool,
     ) -> Result<Url> {
         let outbound = build_xray_outbound_for_endpoint(endpoint).map_err(|err| {
             wrap_xray_error(
@@ -281,7 +310,7 @@ impl XraySupervisor {
             .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
         {
@@ -294,11 +323,6 @@ impl XraySupervisor {
                 )));
             }
         };
-        let mut diagnostic_task = child
-            .stderr
-            .take()
-            .map(|stderr| tokio::spawn(read_bounded_xray_diagnostic(stderr)));
-
         if let Err(err) =
             wait_for_xray_proxy_ready(&mut child, local_port, remaining_ready_timeout, shutdown)
                 .await
@@ -309,10 +333,6 @@ impl XraySupervisor {
                 &forward_proxy_log_ref(&endpoint.key),
             )
             .await;
-            if let Some(task) = diagnostic_task.take() {
-                finish_xray_diagnostic_task(task, &forward_proxy_log_ref(&endpoint.key), "startup")
-                    .await;
-            }
             let _ = fs::remove_file(&config_path);
             return Err(wrap_xray_error(
                 err,
@@ -327,9 +347,6 @@ impl XraySupervisor {
                 let proxy_key_ref = forward_proxy_log_ref(&endpoint.key);
                 let _ = terminate_child_process(&mut child, Duration::from_secs(2), &proxy_key_ref)
                     .await;
-                if let Some(task) = diagnostic_task.take() {
-                    finish_xray_diagnostic_task(task, &proxy_key_ref, "startup").await;
-                }
                 let _ = fs::remove_file(&config_path);
                 return Err(wrap_xray_error(
                     anyhow!(err),
@@ -344,7 +361,7 @@ impl XraySupervisor {
                 local_proxy_url: local_proxy_url.clone(),
                 config_path,
                 child,
-                diagnostic_task,
+                temporary,
             },
         );
 
@@ -354,16 +371,16 @@ impl XraySupervisor {
     pub(crate) async fn remove_instance(&mut self, key: &str) {
         if let Some(mut instance) = self.instances.remove(key) {
             let proxy_key_ref = forward_proxy_log_ref(key);
-            let diagnostic_task = instance.diagnostic_task.take();
             let _ = terminate_child_process(
                 &mut instance.child,
-                Duration::from_secs(2),
+                if instance.temporary {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(2)
+                },
                 &proxy_key_ref,
             )
             .await;
-            if let Some(task) = diagnostic_task {
-                finish_xray_diagnostic_task(task, &proxy_key_ref, "shutdown").await;
-            }
             if let Err(err) = fs::remove_file(&instance.config_path)
                 && err.kind() != io::ErrorKind::NotFound
             {
@@ -434,7 +451,7 @@ async fn run_xray_config_preflight(
                 task.abort();
             }
             return Err(anyhow!(ForwardProxyValidationError::new(
-                ForwardProxyValidationErrorCode::XrayStartupError,
+                ForwardProxyValidationErrorCode::ProxyTimeout,
                 "xray configuration preflight timed out",
             )));
         }
@@ -451,14 +468,16 @@ async fn read_bounded_xray_diagnostic(mut stderr: tokio::process::ChildStderr) -
 
     let mut retained = Vec::with_capacity(XRAY_PREFLIGHT_DIAGNOSTIC_BYTES);
     let mut buffer = [0u8; 1024];
-    while let Ok(read) = stderr.read(&mut buffer).await {
+    while retained.len() < XRAY_PREFLIGHT_DIAGNOSTIC_BYTES {
+        let read = match stderr.read(&mut buffer).await {
+            Ok(read) => read,
+            Err(_) => break,
+        };
         if read == 0 {
             break;
         }
-        let remaining = XRAY_PREFLIGHT_DIAGNOSTIC_BYTES.saturating_sub(retained.len());
-        if remaining > 0 {
-            retained.extend_from_slice(&buffer[..read.min(remaining)]);
-        }
+        let remaining = XRAY_PREFLIGHT_DIAGNOSTIC_BYTES - retained.len();
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
     }
     retained
 }
@@ -473,40 +492,6 @@ fn summarize_xray_diagnostic(diagnostic: &[u8]) -> &'static str {
         "xray rejected proxy configuration without diagnostics"
     } else {
         "xray rejected proxy configuration"
-    }
-}
-
-async fn finish_xray_diagnostic_task(
-    mut task: JoinHandle<Vec<u8>>,
-    proxy_key_ref: &str,
-    phase: &'static str,
-) {
-    match timeout(Duration::from_secs(1), &mut task).await {
-        Ok(Ok(diagnostic)) if !diagnostic.is_empty() => {
-            warn!(
-                proxy_key_ref,
-                phase,
-                diagnostic = summarize_xray_runtime_diagnostic(&diagnostic),
-                "xray process emitted a bounded diagnostic"
-            );
-        }
-        Ok(Ok(_)) | Ok(Err(_)) => {}
-        Err(_) => task.abort(),
-    }
-}
-
-fn summarize_xray_runtime_diagnostic(diagnostic: &[u8]) -> &'static str {
-    let lower = String::from_utf8_lossy(diagnostic).to_ascii_lowercase();
-    if lower.contains("address already in use") || lower.contains("listen") {
-        "xray failed to bind a local listener"
-    } else if lower.contains("reality") {
-        "xray reported a Reality transport diagnostic"
-    } else if lower.contains("xhttp") || lower.contains("splithttp") {
-        "xray reported an XHTTP transport diagnostic"
-    } else if lower.contains("unknown") || lower.contains("invalid") || lower.contains("parse") {
-        "xray reported an invalid runtime configuration"
-    } else {
-        "xray reported a bounded runtime diagnostic"
     }
 }
 
@@ -1718,6 +1703,80 @@ mod tests {
                 .code,
             ForwardProxyValidationErrorCode::UnsupportedTransport
         );
+    }
+
+    #[test]
+    fn legacy_outbound_builder_preserves_transport_shapes() {
+        let tcp = build_vless_xray_outbound(
+            "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&type=tcp&security=none",
+        )
+        .expect("vless tcp outbound should build");
+        assert_eq!(tcp["protocol"], "vless");
+        assert!(tcp.get("streamSettings").is_none());
+
+        let ws = build_vless_xray_outbound(
+            "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&type=ws&security=tls&host=cdn.example.com&path=%2Fws&sni=edge.example.com&alpn=h2",
+        )
+        .expect("vless websocket outbound should build");
+        assert_eq!(ws["streamSettings"]["network"], "ws");
+        assert_eq!(ws["streamSettings"]["wsSettings"]["path"], "/ws");
+        assert_eq!(
+            ws["streamSettings"]["wsSettings"]["headers"]["Host"],
+            "cdn.example.com"
+        );
+        assert_eq!(ws["streamSettings"]["tlsSettings"]["alpn"], json!(["h2"]));
+
+        let grpc = build_vless_xray_outbound(
+            "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&type=grpc&security=tls&serviceName=chat&sni=edge.example.com",
+        )
+        .expect("vless grpc outbound should build");
+        assert_eq!(grpc["streamSettings"]["network"], "grpc");
+        assert_eq!(
+            grpc["streamSettings"]["grpcSettings"]["serviceName"],
+            "chat"
+        );
+
+        let http_upgrade = build_vless_xray_outbound(
+            "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&type=httpupgrade&security=none&host=cdn.example.com&path=%2Fupgrade",
+        )
+        .expect("vless httpupgrade outbound should build");
+        assert_eq!(http_upgrade["streamSettings"]["network"], "httpupgrade");
+        assert_eq!(
+            http_upgrade["streamSettings"]["httpupgradeSettings"]["host"],
+            "cdn.example.com"
+        );
+        assert_eq!(
+            http_upgrade["streamSettings"]["httpupgradeSettings"]["path"],
+            "/upgrade"
+        );
+
+        let trojan = build_trojan_xray_outbound(
+            "trojan://fixture-password@edge.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fws&sni=edge.example.com",
+        )
+        .expect("trojan websocket outbound should build");
+        assert_eq!(trojan["protocol"], "trojan");
+        assert_eq!(trojan["streamSettings"]["network"], "ws");
+        assert_eq!(trojan["streamSettings"]["security"], "tls");
+
+        let vmess_payload = json!({
+            "add": "edge.example.com",
+            "port": 443,
+            "id": "11111111-1111-1111-1111-111111111111",
+            "net": "ws",
+            "type": "none",
+            "tls": "tls",
+            "host": "cdn.example.com",
+            "path": "/ws"
+        })
+        .to_string();
+        let vmess = build_vmess_xray_outbound(&format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload)
+        ))
+        .expect("vmess websocket outbound should build");
+        assert_eq!(vmess["protocol"], "vmess");
+        assert_eq!(vmess["streamSettings"]["network"], "ws");
+        assert_eq!(vmess["streamSettings"]["wsSettings"]["path"], "/ws");
     }
 
     #[test]

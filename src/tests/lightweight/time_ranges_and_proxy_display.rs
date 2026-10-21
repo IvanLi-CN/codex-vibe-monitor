@@ -1421,6 +1421,26 @@ fn parse_proxy_urls_from_subscription_body_supports_xray_links() {
     assert!(parsed.iter().any(|item| item.starts_with("vless://")));
 }
 
+#[tokio::test]
+async fn subscription_fetch_error_does_not_retain_credentials_or_url() {
+    let subscription_url =
+        "http://synthetic-user:synthetic-password@127.0.0.1:1/sub?token=synthetic-token";
+    let error = fetch_subscription_proxy_urls(
+        &reqwest::Client::new(),
+        subscription_url,
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("unreachable subscription should fail");
+    let message = format!("{error:#}");
+
+    assert_eq!(message, "subscription request failed");
+    assert!(!message.contains("synthetic-user"));
+    assert!(!message.contains("synthetic-password"));
+    assert!(!message.contains("synthetic-token"));
+    assert!(!message.contains(subscription_url));
+}
+
 #[test]
 fn parse_shadowsocks_share_link_decodes_percent_encoded_credentials() {
     let link = format!(
@@ -2046,6 +2066,119 @@ async fn validate_single_forward_proxy_candidate_keeps_xray_startup_running_duri
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires an installed Xray binary; run explicitly with XRAY_BINARY"]
+async fn vless_xhttp_validation_pipeline_reaches_local_upstream() {
+    let xray_binary = env::var("XRAY_BINARY").unwrap_or_else(|_| "/opt/homebrew/bin/xray".into());
+    if !Path::new(&xray_binary).is_file() {
+        eprintln!("skipping XHTTP validation smoke: Xray binary is unavailable");
+        return;
+    }
+
+    let temp_root = make_temp_test_dir("xhttp-validation-pipeline");
+    let runtime_dir = temp_root.join("runtime");
+    let upstream_app = Router::new().route("/v1/models", any(|| async { StatusCode::NOT_FOUND }));
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind synthetic validation upstream");
+    let upstream_addr = upstream_listener
+        .local_addr()
+        .expect("read synthetic validation upstream address");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("synthetic validation upstream should run");
+    });
+
+    let server_port = pick_unused_local_port().expect("allocate synthetic XHTTP server port");
+    let server_config_path = temp_root.join("xhttp-server.json");
+    let server_config = json!({
+        "log": { "loglevel": "none" },
+        "inbounds": [{
+            "listen": "127.0.0.1",
+            "port": server_port,
+            "protocol": "vless",
+            "settings": {
+                "clients": [{ "id": "11111111-1111-1111-1111-111111111111" }],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "xhttpSettings": {
+                    "path": "/xp-xhttp",
+                    "mode": "stream-one"
+                }
+            }
+        }],
+        "outbounds": [{ "protocol": "freedom" }]
+    });
+    fs::write(
+        &server_config_path,
+        serde_json::to_vec_pretty(&server_config).expect("serialize synthetic XHTTP server config"),
+    )
+    .expect("write synthetic XHTTP server config");
+    let mut server_child = Command::new(&xray_binary)
+        .arg("run")
+        .arg("-c")
+        .arg(&server_config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("start synthetic XHTTP server");
+
+    let server_addr = format!("127.0.0.1:{server_port}");
+    let mut server_ready = false;
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(&server_addr).await.is_ok() {
+            server_ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(server_ready, "synthetic XHTTP server did not become ready");
+
+    let mut config = test_config();
+    config.xray_binary = xray_binary;
+    config.xray_runtime_dir = runtime_dir;
+    config.openai_upstream_base_url = Url::parse(&format!("http://{upstream_addr}/"))
+        .expect("valid synthetic validation upstream base url");
+    let state = test_state_from_config(config, false).await;
+    let endpoint = ForwardProxyEndpoint {
+        key: "xhttp-validation-pipeline".to_string(),
+        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+        display_name: "xhttp-validation-pipeline".to_string(),
+        protocol: ForwardProxyProtocol::Vless,
+        endpoint_url: None,
+        raw_url: Some(format!(
+            "vless://11111111-1111-1111-1111-111111111111@{server_addr}?encryption=none&security=none&type=xhttp&path=%2Fxp-xhttp&mode=stream-one"
+        )),
+    };
+
+    let result =
+        probe_forward_proxy_endpoint(state.as_ref(), &endpoint, Duration::from_secs(10), None)
+            .await
+            .expect("actual XHTTP validation route should complete");
+    assert!(
+        result.is_some(),
+        "actual XHTTP route should reach the upstream"
+    );
+    assert!(
+        state.xray_supervisor.lock().await.instances.is_empty(),
+        "validation should clean the temporary Xray route"
+    );
+
+    server_child
+        .kill()
+        .await
+        .expect("stop synthetic XHTTP server");
+    let _ = server_child.wait().await;
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&temp_root);
+}
+
 #[tokio::test]
 async fn xray_supervisor_sync_endpoints_keeps_stale_instances_alive_when_shutdown_starts() {
     let temp_root = make_temp_test_dir("xray-sync-stale-shutdown");
@@ -2071,7 +2204,7 @@ time.sleep(30)
             local_proxy_url: Url::parse("socks5://127.0.0.1:1080").expect("valid local proxy url"),
             config_path: config_path.clone(),
             child,
-            diagnostic_task: None,
+            temporary: false,
         },
     );
     let shutdown = CancellationToken::new();
@@ -2113,6 +2246,52 @@ time.sleep(30)
         ),
         "test cleanup should terminate the preserved stale child"
     );
+}
+
+#[tokio::test]
+async fn xray_supervisor_sync_endpoints_keeps_active_temporary_instances() {
+    let temp_root = make_temp_test_dir("xray-sync-temporary-route");
+    let runtime_dir = temp_root.join("runtime");
+    let mut supervisor = XraySupervisor::new("/path/to/non-existent-xray".to_string(), runtime_dir);
+    let config_path = temp_root.join("temporary-xray.json");
+    fs::write(&config_path, "{}").expect("write temporary xray config placeholder");
+    let child = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import time
+	time.sleep(30)
+",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn temporary xray child");
+    supervisor.instances.insert(
+        "temporary-xray".to_string(),
+        XrayInstance {
+            local_proxy_url: Url::parse("socks5://127.0.0.1:1081").expect("valid local proxy url"),
+            config_path: config_path.clone(),
+            child,
+            temporary: true,
+        },
+    );
+
+    supervisor
+        .sync_endpoints(&mut [], &CancellationToken::new())
+        .await
+        .expect("sync should preserve active temporary routes");
+    assert!(
+        supervisor.instances.contains_key("temporary-xray"),
+        "route sync must not remove an active validation route"
+    );
+
+    supervisor.remove_instance("temporary-xray").await;
+    assert!(
+        !config_path.exists(),
+        "temporary xray config should be removed"
+    );
+    cleanup_temp_test_dir(&temp_root);
 }
 
 #[tokio::test]
