@@ -468,7 +468,7 @@ async fn read_bounded_xray_diagnostic(mut stderr: tokio::process::ChildStderr) -
 
     let mut retained = Vec::with_capacity(XRAY_PREFLIGHT_DIAGNOSTIC_BYTES);
     let mut buffer = [0u8; 1024];
-    while retained.len() < XRAY_PREFLIGHT_DIAGNOSTIC_BYTES {
+    loop {
         let read = match stderr.read(&mut buffer).await {
             Ok(read) => read,
             Err(_) => break,
@@ -476,8 +476,10 @@ async fn read_bounded_xray_diagnostic(mut stderr: tokio::process::ChildStderr) -
         if read == 0 {
             break;
         }
-        let remaining = XRAY_PREFLIGHT_DIAGNOSTIC_BYTES - retained.len();
-        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        if retained.len() < XRAY_PREFLIGHT_DIAGNOSTIC_BYTES {
+            let remaining = XRAY_PREFLIGHT_DIAGNOSTIC_BYTES - retained.len();
+            retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
     }
     retained
 }
