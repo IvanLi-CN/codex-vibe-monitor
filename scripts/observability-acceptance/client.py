@@ -23,6 +23,29 @@ import urllib.request
 
 ROOT=Path("/private")
 POOL_TOKEN="pool-integration-fixture-token"
+DASHBOARD_VARIABLES=(
+    ("$__rate_interval", "1m"),
+    ("$__range_s", "1800"),
+    ("$__range", "30m"),
+    ("$service", "codex-vibe-monitor"),
+    ("$environment", "production"),
+    ("$instance", "primary"),
+    ("$endpoint", "responses|chat_completions"),
+    ("$phase", "request_read"),
+    ("$resource", "sqlite_coordinator"),
+    ("$task_key", ".*"),
+    ("$lock_label", ".*"),
+    ("$page", ".*"),
+    ("$device", ".*"),
+    ("$compare_offset", "1d"),
+    ("$operation", ".*"),
+)
+
+def expand_dashboard_expression(expression):
+    for name, value in DASHBOARD_VARIABLES:
+        expression=expression.replace(name,value)
+    return expression
+
 def request(base,path,method="GET",payload=None,token=None,basic=None,extra_headers=None):
     headers={"Accept":"application/json"}
     headers.update(extra_headers or {})
@@ -116,8 +139,7 @@ def functional():
         assert dashboard["uid"]=="cvm-"+uid
         for panel in dashboard["panels"]:
             for target in panel.get("targets",[]):
-                expression=target["expr"]
-                for name,value in [("$__rate_interval","1m"),("$__range_s","1800"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$endpoint","responses|chat_completions"),("$phase","request_read"),("$resource","sqlite_coordinator"),("$task_key",".*"),("$lock_label",".*"),("$page",".*"),("$device",".*")]: expression=expression.replace(name,value)
+                expression=expand_dashboard_expression(target["expr"])
                 result=ok("https://entry:8443","/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?"+urllib.parse.urlencode({"query":expression}),token=viewer_token)
                 assert result["status"]=="success",expression
                 if uid=="web":

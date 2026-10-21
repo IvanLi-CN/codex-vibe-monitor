@@ -167,6 +167,7 @@ jobs:
         continue-on-error: true
         env:
           CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+          OBSERVABILITY_LANE: ${{ matrix.lane }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 trusted/scripts/observability-acceptance/run.py \
@@ -198,6 +199,7 @@ jobs:
             ${{ runner.temp }}/observability-acceptance/runtime-card.json
             ${{ runner.temp }}/observability-acceptance/part-outcome.json
             ${{ runner.temp }}/observability-acceptance/scenarios.json
+            ${{ runner.temp }}/observability-acceptance/client-failures.json
             ${{ runner.temp }}/observability-acceptance/ab-samples.json
             ${{ runner.temp }}/observability-acceptance/run-config.json
             ${{ runner.temp }}/observability-acceptance/image-identity.json

@@ -44,7 +44,9 @@ def verify_part(root, lane, expected):
 
 def aggregate(source, candidate_source, root, parts, candidate):
     root.mkdir(parents=True, exist_ok=True)
-    context = actions_context(candidate_source, root, candidate)
+    # The result job verifies identities from each measurement part; it is not
+    # itself a measurement runner and does not need a job-scoped identity.
+    context = actions_context(candidate_source, root, candidate, require_runner_identity=False)
     expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three isolated same-runner paired experiments; each test job is bounded to 15 minutes.")
     scenarios = {name: {"status": "unavailable", "error": "required part evidence missing or invalid"}
                  for name in RUNTIME_SCENARIOS | {"default-observability-ab"}}
@@ -63,11 +65,9 @@ def aggregate(source, candidate_source, root, parts, candidate):
         if len({item[0] for item in verified}) != 1:
             raise ValueError("parts used different candidate images")
         pairs = [item[1] for item in verified[1:]]
-        # CPU model and runner image must match; raw machine-dependent timings
-        # are never paired across hosts. No fallback to a subset of the jobs.
-        for key in ("cpuModel", "cpuCount", "runnerImage", "runnerImageVersion", "kernel"):
-            if any(pair[key] != pairs[0][key] for pair in pairs[1:]):
-                raise ValueError("paired runners have incompatible hardware/runtime")
+        # Each pair owns its off/metrics/full windows on one isolated runner.
+        # GitHub-hosted runners may legitimately differ across pairs, so raw
+        # machine-dependent timings are never compared across hosts.
         if len({pair["runnerIdentity"] for pair in pairs}) != 3:
             raise ValueError("paired experiments did not use isolated runners")
         scenarios = dict(verified[0][2])

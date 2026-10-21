@@ -55,3 +55,17 @@ A forward proxy node that satisfies the validation policy and may be offered for
 
 **Node Identity**:
 The stable identifier used to recognize the same forward proxy node across normalization, deduplication, bindings, history, and runtime state.
+
+## Proxy Routing Language
+
+**Same-account retry**:
+Repeating the current request on the already selected upstream account without selecting another account, route, or channel.
+_Avoid_: upstream switch, account failover.
+
+**Upstream switch**:
+Selecting a different upstream account or route/channel after the current upstream attempt is no longer used for the request.
+_Avoid_: same-account retry.
+
+**Responses overload signal**:
+A structured Responses failure that matches a recognized upstream overload code or a narrowly defined overload message under the relevant error code.
+_Avoid_: every `server_error`, generic overload text.

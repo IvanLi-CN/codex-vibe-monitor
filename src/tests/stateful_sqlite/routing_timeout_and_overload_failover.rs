@@ -1526,6 +1526,1003 @@ async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_befo
 }
 
 #[test]
+fn pool_responses_classify_server_error_overload_with_narrow_message_boundary() {
+    assert_eq!(
+        classify_pool_responses_overload(
+            StatusCode::OK,
+            Some("SERVER_ERROR"),
+            Some(" Our servers are currently overloaded!!! Please try again later. "),
+        ),
+        Some(PoolResponsesOverloadRetryPolicy::SameAccountOnly),
+    );
+    assert_eq!(
+        classify_pool_responses_overload(
+            StatusCode::OK,
+            Some("server_error"),
+            Some("Our.servers\tare\ncurrently overloaded. Please try again later."),
+        ),
+        Some(PoolResponsesOverloadRetryPolicy::SameAccountOnly),
+    );
+    assert_eq!(
+        classify_pool_responses_overload(
+            StatusCode::OK,
+            Some("server_error"),
+            Some("Our servers are overloaded. Please try again later."),
+        ),
+        None,
+    );
+    assert_eq!(
+        classify_pool_responses_overload(StatusCode::OK, Some("server_error"), Some("overloaded")),
+        None,
+    );
+    assert_eq!(
+        classify_pool_responses_overload(
+            StatusCode::BAD_GATEWAY,
+            Some("server_error"),
+            Some("Our servers are currently overloaded."),
+        ),
+        None,
+    );
+    assert_eq!(
+        classify_pool_responses_overload(
+            StatusCode::OK,
+            Some(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED),
+            Some("Our servers are currently overloaded."),
+        ),
+        Some(PoolResponsesOverloadRetryPolicy::LegacyFailover),
+    );
+}
+
+#[test]
+fn pool_responses_same_account_retry_backoff_is_capped_by_total_timeout() {
+    let started_at = Instant::now() - Duration::from_millis(50);
+    let capped = pool_retry_delay_with_total_timeout(
+        Duration::from_secs(5),
+        true,
+        Some(Duration::from_millis(100)),
+        Some(started_at),
+    );
+    assert!(capped <= Duration::from_millis(50));
+    assert_eq!(
+        pool_retry_delay_with_total_timeout(
+            Duration::from_secs(5),
+            false,
+            Some(Duration::from_millis(1)),
+            Some(started_at),
+        ),
+        Duration::from_secs(5)
+    );
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_retries_server_error_overload_same_account_before_forwarding() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_metadata_prefixed_response_failed_retry_upstream_with_error(
+            &[("Bearer route-one", 3)],
+            "server_error",
+            "Our servers are currently overloaded. Please try again later.",
+        )
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Server Error Retry Route",
+        "route-one",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-server-error-retry-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read server_error overload retry response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode server_error overload success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-one"),
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load server_error overload retry attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.status.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        ]
+    );
+
+    let attempts = attempts
+        .lock()
+        .expect("lock server_error overload retry attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(4));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_does_not_switch_after_budget_exhaustion() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
+        status: String,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationFailureRow {
+        status: String,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        error_message: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct ModelRouteFailureRow {
+        state: String,
+        last_failure_kind: Option<String>,
+        cooldown_until: Option<String>,
+    }
+
+    let (same_route_base, same_route_attempts, same_route_handle) =
+        spawn_pool_metadata_prefixed_response_failed_retry_upstream_with_error(
+            &[
+                ("Bearer route-one-primary", 10),
+                ("Bearer route-one-secondary", 10),
+            ],
+            "server_error",
+            "Our servers are currently overloaded. Please try again later.",
+        )
+        .await;
+    let (same_route_proxy_base, same_route_proxy_connects, same_route_proxy_handle) =
+        spawn_test_http_connect_proxy(&same_route_base).await;
+    let (alternate_proxy_base, alternate_proxy_connects, alternate_proxy_handle) =
+        spawn_test_http_connect_proxy(&same_route_base).await;
+    let (alternate_base, alternate_attempts, alternate_handle) =
+        spawn_pool_retry_upstream(&[]).await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&same_route_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
+            proxy_urls: vec![same_route_proxy_base.clone(), alternate_proxy_base.clone()],
+            ..ForwardProxySettings::default()
+        },
+    )
+    .await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Server Error Primary",
+        "route-one-primary",
+        None,
+        None,
+        Some(same_route_base.as_str()),
+    )
+    .await;
+    let bound_proxy_keys = [
+        same_route_proxy_base.as_str(),
+        alternate_proxy_base.as_str(),
+    ]
+    .into_iter()
+    .map(|proxy_url| normalize_single_proxy_key(proxy_url).expect("normalize proxy key"))
+    .collect::<Vec<_>>();
+    sqlx::query("UPDATE pool_upstream_accounts SET bound_proxy_keys_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&bound_proxy_keys).expect("serialize bound proxy keys"))
+        .bind(primary_id)
+        .execute(&state.pool)
+        .await
+        .expect("bind two forward proxy nodes to primary account");
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Server Error Secondary",
+        "route-one-secondary",
+        None,
+        None,
+        Some(same_route_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Server Error Alternate",
+        "route-two",
+        None,
+        None,
+        Some(alternate_base.as_str()),
+    )
+    .await;
+    record_pool_route_success(
+        &state.pool,
+        primary_id,
+        Utc::now(),
+        Some("sticky-server-error-exhausted"),
+        None,
+    )
+    .await
+    .expect("seed server_error sticky route");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-server-error-exhausted"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read exhausted server_error overload response");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 exhausted response body");
+    assert!(body_text.contains("upstream_response_failed"));
+    assert!(body_text.contains("server_error"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let invocation = sqlx::query_as::<_, InvocationFailureRow>(
+        r#"
+        SELECT status, failure_kind, failure_class, error_message
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load exhausted server_error overload invocation");
+    assert_eq!(invocation.status, "failed");
+    assert_eq!(
+        invocation.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    );
+    assert_eq!(invocation.failure_class.as_deref(), Some("service_failure"));
+    assert!(
+        invocation
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("server_error"))
+    );
+    let model_route = sqlx::query_as::<_, ModelRouteFailureRow>(
+        r#"
+        SELECT state, last_failure_kind, cooldown_until
+        FROM pool_upstream_account_model_routes
+        WHERE account_id = ?1 AND model = ?2
+        "#,
+    )
+    .bind(primary_id)
+    .bind("gpt-5.4")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load exhausted server_error overload model route");
+    assert_eq!(model_route.state, "degraded");
+    assert_eq!(
+        model_route.last_failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    );
+    assert!(model_route.cooldown_until.is_none());
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load exhausted server_error overload attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    let same_route_attempts = same_route_attempts
+        .lock()
+        .expect("lock exhausted server_error overload attempts");
+    let same_route_proxy_connects = same_route_proxy_connects.load(Ordering::SeqCst);
+    let alternate_proxy_connects = alternate_proxy_connects.load(Ordering::SeqCst);
+    assert_eq!(same_route_proxy_connects + alternate_proxy_connects, 4);
+    assert!(
+        same_route_proxy_connects == 4 || alternate_proxy_connects == 4,
+        "same-account retries must stay on one forward-proxy channel: primary={same_route_proxy_connects}, alternate={alternate_proxy_connects}"
+    );
+    assert!(
+        same_route_attempts
+            .get("Bearer route-one-secondary")
+            .is_none()
+    );
+    drop(same_route_attempts);
+
+    let alternate_attempts = alternate_attempts
+        .lock()
+        .expect("lock alternate server_error overload attempts");
+    assert!(alternate_attempts.get("Bearer route-two").is_none());
+    drop(alternate_attempts);
+
+    same_route_handle.abort();
+    same_route_proxy_handle.abort();
+    alternate_proxy_handle.abort();
+    alternate_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_mixed_overload_failures_share_same_account_budget() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
+        status: String,
+    }
+
+    let (same_route_base, same_route_attempts, same_route_handle) =
+        spawn_pool_metadata_prefixed_response_failed_sequence_upstream(&[(
+            "Bearer mixed-overload",
+            &[
+                (
+                    "server_error",
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+                (
+                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+                (
+                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+                (
+                    UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+                    "Our servers are currently overloaded. Please try again later.",
+                ),
+            ],
+        )])
+        .await;
+    let (alternate_base, alternate_attempts, alternate_handle) =
+        spawn_pool_retry_upstream(&[]).await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&same_route_base).expect("valid mixed base url"))
+            .await;
+    let state =
+        clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Mixed Overload Primary",
+        "mixed-overload",
+        None,
+        None,
+        Some(same_route_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Mixed Overload Alternate",
+        "mixed-overload-alternate",
+        None,
+        None,
+        Some(alternate_base.as_str()),
+    )
+    .await;
+    record_pool_route_success(
+        &state.pool,
+        primary_id,
+        Utc::now(),
+        Some("sticky-mixed-overload"),
+        None,
+    )
+    .await
+    .expect("seed mixed overload sticky route");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-mixed-overload"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read mixed overload response");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 mixed overload response");
+    assert!(body_text.contains("upstream_response_failed"));
+    assert!(body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load mixed overload attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    let same_route_attempts = same_route_attempts
+        .lock()
+        .expect("lock mixed overload attempts");
+    assert_eq!(
+        same_route_attempts.get("Bearer mixed-overload").copied(),
+        Some(4)
+    );
+    drop(same_route_attempts);
+
+    let alternate_attempts = alternate_attempts
+        .lock()
+        .expect("lock mixed overload alternate attempts");
+    assert!(
+        alternate_attempts
+            .get("Bearer mixed-overload-alternate")
+            .is_none()
+    );
+    drop(alternate_attempts);
+
+    same_route_handle.abort();
+    alternate_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_caps_mixed_413_and_429_attempts() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        http_status: Option<i64>,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer mixed-413-and-429-budget",
+            &[
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+                PoolResponsesRetrySequenceStep::PayloadTooLarge,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Mixed 413 and 429 Budget",
+        "mixed-413-and-429-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 3 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable mixed 413 and 429 account retry settings");
+    let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+        .await
+        .expect("load mixed 413 and 429 account retry settings");
+    assert!(effective_rule.upstream_429_retry_enabled);
+    assert_eq!(effective_rule.upstream_429_max_retries, 3);
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-mixed-413-and-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let _body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read mixed 413 and 429 budget failure body");
+    let attempts = attempts
+        .lock()
+        .expect("lock mixed 413 and 429 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer mixed-413-and-429-budget").copied(),
+        Some(4)
+    );
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT distinct_account_index, same_account_retry_index,
+               http_status, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load mixed 413 and 429 budget attempts");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert_eq!(attempt_rows[0].http_status, Some(200));
+    assert_eq!(attempt_rows[1].http_status, Some(413));
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .skip(2)
+            .map(|row| row.http_status)
+            .collect::<Vec<_>>(),
+        vec![Some(429), Some(429)]
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_caps_preceding_429_attempts() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer preceding-429-budget",
+            &[
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Preceding 429 Budget",
+        "preceding-429-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 5 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable preceding 429 account retry settings");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-preceding-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read preceding 429 budget failure body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 preceding 429 budget body");
+    assert!(body_text.contains("server_error"));
+
+    let attempts = attempts.lock().expect("lock preceding 429 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer preceding-429-budget").copied(),
+        Some(4)
+    );
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_statuses = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load preceding 429 budget attempt statuses");
+    assert_eq!(attempt_statuses.len(), 4);
+    assert!(
+        attempt_statuses
+            .iter()
+            .all(|status| status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_server_error_overload_caps_preceding_413_attempts() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        http_status: Option<i64>,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer preceding-413-budget",
+            &[
+                PoolResponsesRetrySequenceStep::PayloadTooLarge,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+                PoolResponsesRetrySequenceStep::CanonicalOverload,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Preceding 413 Budget",
+        "preceding-413-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-preceding-413-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read preceding 413 budget failure body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 preceding 413 budget body");
+    assert!(body_text.contains("server_error"));
+
+    let attempts = attempts.lock().expect("lock preceding 413 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer preceding-413-budget").copied(),
+        Some(4)
+    );
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        "SELECT http_status, status FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load preceding 413 budget attempts");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.http_status)
+            .collect::<Vec<_>>(),
+        vec![Some(413), Some(200), Some(200), Some(200)]
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_legacy_overload_keeps_group_429_budget() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_responses_retry_sequence_upstream(&[(
+            "Bearer legacy-after-429-budget",
+            &[
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::RateLimited,
+                PoolResponsesRetrySequenceStep::LegacyOverload,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Legacy After 429 Budget",
+        "legacy-after-429-budget",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 5 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable legacy after 429 account retry settings");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-legacy-after-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read legacy after 429 budget body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 legacy after 429 budget body");
+    assert!(body_text.contains("server_is_overloaded"));
+
+    let attempts = attempts
+        .lock()
+        .expect("lock legacy after 429 budget attempts");
+    assert_eq!(
+        attempts.get("Bearer legacy-after-429-budget").copied(),
+        Some(5)
+    );
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[test]
 fn pool_responses_classify_account_concurrency_rate_limit_as_retryable_overload() {
     let payload = br#"event: response.failed
 data: {"type":"response.failed","response":{"id":"resp_concurrency_retry","model":"gpt-5.6-sol","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for account, please retry later"}}}
@@ -1535,10 +2532,15 @@ data: {"type":"response.failed","response":{"id":"resp_concurrency_retry","model
     let decision = classify_pool_initial_responses_sse_event(StatusCode::OK, payload);
     match decision {
         PoolInitialResponsesSseEventDecision::RetrySameAccount {
+            retry_policy,
             upstream_error_code,
             upstream_error_message,
             ..
         } => {
+            assert_eq!(
+                retry_policy,
+                PoolResponsesOverloadRetryPolicy::LegacyFailover
+            );
             assert_eq!(upstream_error_code.as_deref(), Some("rate_limit_exceeded"));
             assert_eq!(
                 upstream_error_message.as_deref(),
@@ -1579,10 +2581,15 @@ fn pool_responses_compact_gate_classifies_account_concurrency_rate_limit() {
     let outcome = gate_pool_initial_compact_response(StatusCode::OK, &headers, Some(&payload));
     match outcome {
         Some(PoolInitialResponseGateOutcome::RetrySameAccount {
+            retry_policy,
             upstream_error_code,
             upstream_error_message,
             ..
         }) => {
+            assert_eq!(
+                retry_policy,
+                PoolResponsesOverloadRetryPolicy::LegacyFailover
+            );
             assert_eq!(upstream_error_code.as_deref(), Some("rate_limit_exceeded"));
             assert_eq!(
                 upstream_error_message.as_deref(),
@@ -1601,6 +2608,26 @@ fn pool_responses_compact_gate_classifies_account_concurrency_rate_limit() {
         gate_pool_initial_compact_response(StatusCode::OK, &headers, Some(&generic_payload))
             .is_none()
     );
+}
+
+#[test]
+fn pool_responses_compact_gate_classifies_server_error_overload_as_same_account_only() {
+    let payload = Bytes::from_static(
+        br#"{"error":{"code":"server_error","message":"Our servers are currently overloaded! Please try again later."}}"#,
+    );
+    let headers = HeaderMap::new();
+    let outcome = gate_pool_initial_compact_response(StatusCode::OK, &headers, Some(&payload));
+    match outcome {
+        Some(PoolInitialResponseGateOutcome::RetrySameAccount { retry_policy, .. }) => {
+            assert_eq!(
+                retry_policy,
+                PoolResponsesOverloadRetryPolicy::SameAccountOnly
+            );
+        }
+        Some(PoolInitialResponseGateOutcome::Forward { .. }) | None => {
+            panic!("server_error canonical overload should enter same-account retry path")
+        }
+    }
 }
 
 #[test]
@@ -2100,6 +3127,141 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
 }
 
 #[tokio::test]
+async fn pool_openai_v1_compact_retries_server_error_overload_same_account_before_forwarding() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        proxy_binding_key_snapshot: Option<String>,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_compact_response_failed_retry_upstream_with_error(
+            &[("Bearer compact-server-error", 3)],
+            "server_error",
+            "Our servers are currently overloaded. Please try again later.",
+        )
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid compact base url"))
+            .await;
+    let state =
+        clone_state_with_fallback_proxy_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Compact Server Error Retry Route",
+        "compact-server-error",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4-mini","input":"hello","stickyKey":"sticky-compact-server-error-retry"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact server_error overload retry response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode compact server_error overload success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer compact-server-error"),
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT upstream_route_key, distinct_account_index, same_account_retry_index,
+               proxy_binding_key_snapshot, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load compact server_error overload retry attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.same_account_retry_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(attempt_rows.iter().all(|row| {
+        row.upstream_route_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(attempt_rows.iter().all(|row| {
+        row.proxy_binding_key_snapshot
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    }));
+    assert!(
+        attempt_rows
+            .windows(2)
+            .all(|rows| rows[0].upstream_route_key == rows[1].upstream_route_key)
+    );
+    assert!(
+        attempt_rows.windows(2).all(|rows| {
+            rows[0].proxy_binding_key_snapshot == rows[1].proxy_binding_key_snapshot
+        })
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.status.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        ]
+    );
+
+    let attempts = attempts
+        .lock()
+        .expect("lock compact server_error overload retry attempts");
+    assert_eq!(
+        attempts.get("Bearer compact-server-error").copied(),
+        Some(4)
+    );
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_body_forward() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
@@ -2279,6 +3441,57 @@ async fn gate_pool_initial_response_stream_keeps_non_overload_response_failed_on
     assert!(body_text.contains("response.created"));
     assert!(body_text.contains("server_error"));
     assert!(!body_text.contains("server_is_overloaded"));
+}
+
+#[tokio::test]
+async fn gate_pool_initial_response_stream_keeps_canonical_server_error_after_forward_event() {
+    let payload = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_gate_canonical_late_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+        "event: response.output_text.delta\n",
+        r#"data: {"type":"response.output_text.delta","delta":"answer"}"#,
+        "\n\n",
+        "event: response.failed\n",
+        r#"data: {"type":"response.failed","response":{"id":"resp_gate_canonical_late_test","model":"gpt-5.4","status":"failed","error":{"code":"server_error","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+        "\n\n",
+    ]
+    .concat();
+    let response = ProxyUpstreamResponseBody::Axum(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(payload))
+            .expect("build canonical late gate response"),
+    );
+
+    let outcome =
+        gate_pool_initial_response_stream(response, None, Duration::from_secs(1), Instant::now())
+            .await
+            .expect("gate canonical late response stream");
+
+    let PoolInitialResponseGateOutcome::Forward {
+        response,
+        prefetched_bytes,
+        ..
+    } = outcome
+    else {
+        panic!("canonical response.failed after a business event must stay on the stream");
+    };
+
+    let mut full_body = prefetched_bytes
+        .expect("canonical late stream should keep prefetched event")
+        .to_vec();
+    full_body.extend_from_slice(
+        response
+            .into_bytes()
+            .await
+            .expect("read canonical late gate response")
+            .as_ref(),
+    );
+    let body_text = String::from_utf8(full_body).expect("utf8 canonical late gate body");
+    assert!(body_text.contains("response.output_text.delta"));
+    assert!(body_text.contains("Our servers are currently overloaded"));
 }
 
 #[tokio::test]

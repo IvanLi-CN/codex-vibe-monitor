@@ -12,7 +12,7 @@ import threading
 import time
 
 
-def actions_context(source, run, candidate):
+def actions_context(source, run, candidate, *, require_runner_identity=True):
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         raise ValueError("performance acceptance requires a GitHub-hosted Actions runner")
     temporary = os.environ.get("RUNNER_TEMP", "")
@@ -26,6 +26,17 @@ def actions_context(source, run, candidate):
     head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if head != candidate:
         raise ValueError("checked-out source does not match performance Candidate SHA")
+    # GitHub documents GITHUB_JOB as the job identifier. Matrix cells share
+    # that id, so the workflow supplies its lane explicitly; RUNNER_NAME is
+    # retained only as metadata because hosted names may repeat.
+    job = os.environ.get("GITHUB_JOB", "").strip()
+    lane = os.environ.get("OBSERVABILITY_LANE", "").strip()
+    if require_runner_identity and (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+", job)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", lane)
+    ):
+        raise ValueError("missing GitHub runner identity")
+    runner_id = f"job:{repo}:{run_id}:{attempt}:{job}:{lane}" if job and lane else f"aggregate:{run_id}:{attempt}"
     models = [line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")]
     return {
         "candidate": candidate,
@@ -33,7 +44,11 @@ def actions_context(source, run, candidate):
         "runId": run_id,
         "attempt": attempt,
         "runnerEnvironment": "github-hosted",
-        "runnerIdentity": platform.node(),
+        "runnerIdentity": runner_id,
+        "runnerJob": job,
+        "runnerLane": lane,
+        "runnerName": os.environ.get("RUNNER_NAME", "").strip(),
+        "runnerNode": platform.node(),
         "runnerImage": os.environ.get("ImageOS"),
         "runnerImageVersion": os.environ.get("ImageVersion"),
         "kernel": platform.release(),

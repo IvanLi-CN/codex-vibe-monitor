@@ -1,5 +1,11 @@
 use super::*;
 
+pub(crate) type PoolSelectedForwardProxy = (
+    ForwardProxyRouteScope,
+    SelectedForwardProxy,
+    reqwest::Client,
+);
+
 pub(crate) fn no_candidate_next_eligible_delay(
     audit: &PoolRoutingNoCandidateAudit,
 ) -> Option<Duration> {
@@ -48,4 +54,37 @@ pub(crate) fn normalize_pool_attempt_group_name(group_name: Option<String>) -> O
     group_name
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn take_same_account_only_terminal_error(
+    last_error: &mut Option<PoolUpstreamError>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    let mut final_error = last_error
+        .take()
+        .expect("same-account-only retry should retain a terminal error");
+    final_error.attempt_summary = pool_attempt_summary(
+        attempt_count,
+        distinct_account_count,
+        Some(final_error.failure_kind.to_string()),
+    );
+    final_error
+}
+
+pub(crate) fn pool_retry_delay_with_total_timeout(
+    retry_delay: Duration,
+    same_account_only_retry_active: bool,
+    responses_total_timeout: Option<Duration>,
+    attempt_total_timeout_started_at: Option<Instant>,
+) -> Duration {
+    if !same_account_only_retry_active {
+        return retry_delay;
+    }
+    pool_timeout_budget_with_total_limit(
+        retry_delay,
+        responses_total_timeout,
+        attempt_total_timeout_started_at,
+    )
+    .unwrap_or(Duration::ZERO)
 }

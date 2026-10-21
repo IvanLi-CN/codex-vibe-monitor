@@ -100,6 +100,7 @@
 | -     | 有预算、可恢复的 Retention 运行与任务观测                                 | active    | `bounded-retention-runs/SPEC.md`                           | `bounded-retention-runs/IMPLEMENTATION.md`                           | topic anchor: retention / bounded runs / task observation                |
 | -     | Dashboard 用量明细自适应数值显示                                          | active    | `usage-breakdown-adaptive-values/SPEC.md`                  | `usage-breakdown-adaptive-values/IMPLEMENTATION.md`                  | topic anchor: dashboard / usage breakdown / adaptive metrics             |
 | -     | 数据保留维护的独立任务归属与触发控制                                      | active    | `retention-maintenance-task-ownership/SPEC.md`             | `retention-maintenance-task-ownership/IMPLEMENTATION.md`             | 已实现；PR 验证与审查收敛中                                              |
+| -     | Responses `server_error` 过载特征与同账号重试                             | active    | `responses-server-error-overload-retry/SPEC.md`            | `responses-server-error-overload-retry/IMPLEMENTATION.md`            | topic anchor: proxy / Responses / overload classification                |
 | -     | VLESS XHTTP Forward Proxy Support                                         | active    | `forward-proxy-vless-xhttp-support/SPEC.md`                | `forward-proxy-vless-xhttp-support/IMPLEMENTATION.md`                | topic anchor: forward proxy / Xray / XHTTP                               |
 
 ## Archived Sources
