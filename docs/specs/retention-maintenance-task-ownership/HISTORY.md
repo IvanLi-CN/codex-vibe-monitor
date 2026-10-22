@@ -35,6 +35,7 @@
 
 - 主人继续授权解决第十六批问题。对 1371a7da 的正式复核发现独立详情裁剪绕过分钟聚合覆盖门禁、重试事实写回存在编译错误、证明加载取消可能误报完成、失败退避可被正常周期绕过、旧 finalizer 缺少代际保护，以及 shutdown quarantine 丢失完整 observation；第十六批候选 95b95759 已补齐这些边界，并把暂停回归扩展到全部新增 v2 owner。旧头三次 exact-head CI 运行均失败；新头的 exact-head CI、迁移回放和 fresh formal review 仍待完成。
 - 主人继续授权解决第十七批问题。对 026e37d9 的 fresh 五 lane 复核发现重试排期的 move 后借用编译错误、同步归档 I/O 缺少外部 no-progress watchdog、后续批次失败丢失 raw 文件删除计量、安全退避被 work_remaining 清理、租约冲突排期失败无法重放重试意图，以及 dry-run 归档产生一秒循环接续；第十七批候选 f28248f6 已修复这些边界。当前候选的 exact-head CI、迁移回放和新的 fresh formal review 仍待完成。
+- 主人继续授权解决第十八批问题。对 f28248f6 的 fresh 审查发现 watchdog 错误分类、native worker 排空、历史解压进度、retry/finalization 调度窗口、失败 hasMore 事实、dry-run 文件计量和 dry-run owner catch-up 清理缺口；第十八批候选 370be26c 已修复这些边界。当前候选的 exact-head CI、迁移回放、fresh formal review 和 dry-run UI 视觉证据仍待完成。
 
 ## References
 

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量与 dry-run 接续约束已补齐，当前代码候选为 f28248f6，PR #1162 的 exact-head CI、迁移回放与新的正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
+- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量、dry-run 接续约束、预演文件计量和 native worker 排空已补齐，当前代码候选为 370be26c，PR #1162 的 exact-head CI、迁移回放与新的正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
 
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
@@ -21,6 +21,7 @@
 
 - REQ-RMO-005、REQ-RMO-011、REQ-RMO-013、REQ-RMO-014：第十六批让独立 invocation_detail_prune owner 复用 parallel-work minute coverage gate，在证明加载取消或预算停止时写入 deferred facts；失败 retry state 同时约束 catch-up 与正常周期触发，旧 finalizer 和 shutdown journal 均按 run generation 与完整 observation 保持重试意图。
 - REQ-RMO-005、REQ-RMO-011、REQ-RMO-013、REQ-RMO-014：第十七批修复重试排期的 move 后借用编译错误；为同步归档 worker 增加外部 no-progress watchdog 并保留 lease drain；把 raw 文件删除计量写入批次 observation；保留 identity/raw 的安全退避；在租约冲突排期失败时持久化重试意图；并让 dry-run 不生成真实清理 catch-up。
+- REQ-RMO-005、REQ-RMO-011、REQ-RMO-013、REQ-RMO-014：第十八批让 retry state 在释放 active-run 约束前持久化；让失败事实保留已知或未知的 hasMore；将预演 raw 文件计量拆为 `rawFilesPlanned` 与实际 `rawFilesRemoved`；历史解压刷新进度并在 watchdog 后等待 native worker 排空；归档哈希统一经过外部文件 watchdog；前端按预演或实际运行显示对应字段。
 
 ## Verification
 
@@ -39,7 +40,7 @@
 - 第十三批 CI 修复前的 PR head 在测试目标编译阶段暴露 `.shared()` 缺少 `FutureExt` 导入；新增显式测试导入后，失败归档重试与租约冲突事实回归均绑定到新的代码候选。随后 docs carrier `989b044e` 的 exact-head CI 暴露轻量迁移夹具仍期待 schema 隐式删除 5 条样本，以及 Clippy 的 `.bind(&finished_at)` 无必要借用；第十四批代码候选 `cb4c1bef` 已修复两项。其后 c55 的 exact-head stateful CI 暴露暂停测试仍只停用旧四项任务，第十五批代码候选 `cfe996f5` 已扩展到七个 v2 owner；本地允许的格式与差异检查通过，远端 CI、迁移回放和正式复审仍待验证。
 
 - 第十六批代码候选 95b95759 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付。1371a7da 的三次匹配 CI PR 运行均失败，不能作为当前候选证据；新头的 exact-head CI、迁移回放、fresh formal review 与当前 head 证据刷新仍待验证。
-- 第十七批代码候选 f28248f6 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付；026e37d9 的两次匹配 CI PR 运行均因 `at` move 后借用编译错误失败，不能作为当前候选证据。新头的 exact-head CI、迁移回放、fresh formal review 与当前 head 证据刷新仍待验证。
+- 第十七批代码候选 f28248f6 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付；026e37d9 的两次匹配 CI PR 运行均因 `at` move 后借用编译错误失败，不能作为当前候选证据。其后第十八批代码候选 370be26c 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付；当前 exact-head CI、迁移回放、fresh formal review 与 current-head UI evidence 仍待验证。
 
 ## Visual Evidence
 

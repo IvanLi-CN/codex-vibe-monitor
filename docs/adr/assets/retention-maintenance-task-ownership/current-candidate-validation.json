@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-  "codeCandidateSha": "f28248f6c45c6822a4d8fa289a5273258069251a",
+  "codeCandidateSha": "370be26c0053419000ff199796dffa0ba3376cf2",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -11,7 +11,7 @@
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 17,
+    "repairBatchesUsed": 18,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -115,9 +115,9 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "026e37d92c4268add981327f758f6f18e80bff71",
-    "reviewedHead": "026e37d92c4268add981327f758f6f18e80bff71",
-    "status": "superseded-by-code-repair",
+    "candidateSha": "370be26c0053419000ff199796dffa0ba3376cf2",
+    "reviewedHead": "370be26c0053419000ff199796dffa0ba3376cf2",
+    "status": "pending",
     "lanes": [
       "contract",
       "state-concurrency",
@@ -125,30 +125,8 @@
       "test-platform",
       "database-migration"
     ],
-    "findings": [
-      "P2: model-route owner completion used the probe hasMore flag instead of the remaining-row count.",
-      "P2: task-run history cleanup discarded previously committed legacy rows when a later bounded batch failed.",
-      "P2: retry-plan persistence failure discarded otherwise valid owner execution facts.",
-      "P2: a stale finalizer could clear a newer retention owner catch-up schedule without a run-generation guard.",
-      "P2: new retention owners were absent from the actual-work observation marker.",
-      "P2: owner backoff reasons could be overridden by a one-second hasMore retry.",
-      "P2: v2 retention_archive records could be mislabeled as old combined-scope history in the UI.",
-      "P2: v2 owner records did not expose the already-collected archive batch metrics.",
-      "P2: the stateful pause contract test did not disable the six newly seeded v2 owners.",
-      "P1: the independent invocation_detail_prune owner bypassed the parallel-work minute coverage gate before irreversible detail pruning.",
-      "P1: the owner retry-plan failure path attempted to mutate an immutable execution binding and blocked compilation.",
-      "P2: cancellation during timestamped archive proof loading could return complete with selected facts but no committed rows or defer reason.",
-      "P2: owner_failed catch-up scheduling did not block an independently due normal schedule trigger.",
-      "P2: a legacy identity/raw finalizer path could clear a newer owner catch-up schedule without a run-generation guard.",
-      "P2: shutdown quarantine dropped completion/details and could not replay a deferred owner retry schedule.",
-      "P1: the owner retry-plan transaction moved the schedule timestamp before borrowing it for retry state, causing an E0382 compile failure.",
-      "P2: synchronous archive I/O only checked no-progress before and after read/write calls, so a blocked call could hold the file lease without an external watchdog.",
-      "P2: a later batch failure reported rawFilesRemoved as zero even after an earlier committed batch removed raw files.",
-      "P2: work_remaining scheduling deleted an independently recorded identity/raw safety retry before its eligibility deadline.",
-      "P2: a lease-conflict schedule write failure did not persist enough retry intent for the finalizer or journal replay to restore it.",
-      "P2: automatic dry-run retention_archive runs could schedule one-second catch-up loops despite committing no rows."
-    ],
-    "note": "The five-lane read-only review of 026e37d9 found the listed contract, concurrency, failure-data, migration, and test-platform findings. Repair batch 17 is bound to f28248f6 and addresses each finding; a fresh review is required for the current code candidate."
+    "findings": [],
+    "note": "Repair batch 18 is bound to 370be26c and addresses the fresh review findings from f28248f6; the five-lane read-only review for the current candidate is pending."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -162,11 +140,11 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "ownerAuthorizedRepairBatch": 17,
+    "ownerAuthorizedRepairBatch": 18,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "026e37d92c4268add981327f758f6f18e80bff71",
-    "fixedFinding": "Repair batch 17 fixes the retry timestamp move-after-bind compile error, adds an external no-progress watchdog while preserving archive lease drain, carries raw-file deletion counts through batch observations after partial failure, preserves independent identity/raw safety retry state, persists lease-conflict schedule intent for finalizer and journal replay, and prevents automatic dry-run catch-up loops.",
-    "newFocusedRegression": "Rust format and diff checks pass. Code candidate f28248f6 is committed and signed; exact-head CI, migration replay, fresh formal review, and any current-head UI evidence refresh remain pending.",
+    "previousCandidateSha": "f28248f6c45c6822a4d8fa289a5273258069251a",
+    "fixedFinding": "Repair batch 18 schedules retry state before releasing active-run finalization, preserves unknown versus known hasMore facts, separates planned raw files from actual removals, prevents dry-run owner catch-up clearing, drains no-progress native workers, carries progress through historical inflate, and puts archive hashing behind the external file watchdog.",
+    "newFocusedRegression": "Rust format and diff checks pass. Code candidate 370be26c is committed and signed; exact-head CI, migration replay, fresh formal review, and current-head UI evidence refresh remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -174,10 +152,10 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "headSha": "f28248f6c45c6822a4d8fa289a5273258069251a",
+    "headSha": "370be26c0053419000ff199796dffa0ba3376cf2",
     "requiredCi": null,
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the implementation commit f28248f6; this validation record is carried by a subsequent documentation-only commit. Older retained evidence, the failed CI for 026e37d9, and the superseded 1371a7da review are historical and cannot substitute for current-head review or the CI run after this repair."
+    "note": "candidate_head_sha binds the implementation commit 370be26c; this validation record is carried by a subsequent documentation-only commit. Older retained evidence and the failed CI for prior heads are historical and cannot substitute for current-head review or the CI run after this repair."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
