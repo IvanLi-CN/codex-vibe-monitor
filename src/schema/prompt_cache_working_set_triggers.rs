@@ -1,6 +1,10 @@
+use super::compatibility::{
+    PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME,
+    record_schema_refresh_completion_in_transaction,
+};
 use super::*;
 
-pub(super) async fn rebuild_prompt_cache_working_set_live_triggers(
+pub(crate) async fn rebuild_prompt_cache_working_set_live_triggers(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     let refresh_started = Instant::now();
