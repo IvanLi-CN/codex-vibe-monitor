@@ -191,19 +191,19 @@ Actions job 执行，或在默认分支上通过 `workflow_dispatch` 输入完�
 共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
-`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用候选 SHA 构建生产镜像，并传输镜像 ID、revision 与 archive checksum；四个 `Observability Acceptance` 分支在独立的 `ubuntu-24.04` runner 上加载同一镜像，三轮同机配对与功能/CPU attach 并行执行，`Observability Performance Budget` 只校验和汇总证据。
+`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用候选 SHA 构建生产镜像，并传输镜像 ID、revision 与 archive checksum；一个显式 `Observability Acceptance (serial bundle)` job 在单台 `ubuntu-24.04` runner 上加载同一镜像，依次完成 runtime、三轮同 runner 配对和 CPU attach，`Observability Performance Budget` 只校验和汇总证据。
 PR 标签路径仍从默认分支控制的 `pull_request_target` 读取 base harness；合并后手动路径必须从 `main` 启动，以 `github.sha` 作为 trusted harness，并以输入的 `candidate_sha` 作为候选。每个分支记录 trusted harness SHA、trusted/candidate harness digest，汇总器拒绝 harness 漂移并要求合并后复测。
 测量和诊断脚本只从受信任 checkout 执行，候选 checkout 用于确认 SHA 和计算 harness 漂移；候选代码作为隔离容器镜像运行。因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
 首次引入该 workflow 的 PR 也不能从自己的新增文件触发它；合并到默认分支后，后续候选 PR 才能通过一次性标签启动。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
-默认 5 req/s、3 次同机配对、每窗口 60 秒与 60 秒预热，三轮轮换模式顺序，每窗口须完成 300/300 请求；保留原始窗口及配对比值 CV ≤5%、CPU 非饱和、无尾部积压以及 CPU/完成请求与成功请求 p95 增幅 ≤5% 的门槛。三台配对 runner 的硬件和 runtime 必须兼容，不能跨机器直接配对，也不能筛掉失败分支。
+默认 5 req/s、3 次同 runner 配对、每窗口 60 秒与 60 秒预热，三轮轮换模式顺序，每窗口须完成 300/300 请求；保留原始窗口及配对比值 CV ≤5%、CPU 非饱和、无尾部积压以及 CPU/完成请求与成功请求 p95 增幅 ≤5% 的门槛。三轮必须记录相同的 `runnerIdentity`、`runnerScope=serial-bundle` 和五项硬件字段，不能筛掉失败分支。
 资源准入不满足时标记 unavailable；窗口不稳定时不输出已接受的增幅结论。
 
 资源准入使用 PSI `some avg10/avg60`：CPU <2%、IO <5%、memory <0.1%。每轮
 预热后按 20 秒间隔取得连续三次安静样本；每窗口额外等待最多 180 秒、每轮三窗口累计最多 450 秒，同时受共享总时限约束。
 正式窗口记录开关、配对编号、UTC/单调起止与初末压力，随后每 10 秒采样；首样本不满足准入、样本缺失/非法、采集错误或间隔超过 20 秒标记 unavailable。后续负载压力超限保留原始 PSI 和计数，不伪装成采集故障。仅环境不可用的
 结果由分类器保留证据并作为中性辅助结果；功能失败或真实预算超限仍使这次显式验收失败。
-测试阶段从镜像交接起共享 15 分钟时钟，包含 checkout、下载装载、准备、预热、等待、测量及清理；第 14 分钟中断脚本，各测试 job 硬超时 15 分钟，汇总超时不能通过。镜像构建独立计时且上限为 15 分钟，不宣称构建加测试总计只需 15 分钟。等待或时限耗尽不自动重跑，不增加等待预算；短窗口导致样本不足或不稳定时仍报告未验证。
+测试阶段从串行测量 job 开始共享 60 分钟时钟，包含 checkout、下载装载、准备、runtime、三轮预热、等待、测量及清理；第 59 分钟中断脚本，job 硬超时 60 分钟，汇总超时不能通过。镜像构建独立计时且上限为 15 分钟，不宣称构建加测试总计只需 15 分钟。等待或时限耗尽不自动重跑，不增加等待预算；短窗口导致样本不足或不稳定时仍报告未验证。
 `measurement-windows.json` 保存逐窗口判定，`resource-observer.jsonl` 与
 `environment-admission.jsonl` 保存带窗口身份的原始证据，失败时也按白名单上传。
 

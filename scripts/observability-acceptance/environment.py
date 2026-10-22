@@ -36,16 +36,20 @@ def actions_context(source, run, candidate, *, require_runner_identity=True):
     if head != candidate:
         raise ValueError("checked-out source does not match performance Candidate SHA")
     # GitHub documents GITHUB_JOB as the job identifier. Matrix cells share
-    # that id, so the workflow supplies its lane explicitly; RUNNER_NAME is
-    # retained only as metadata because hosted names may repeat.
+    # that id, so the workflow supplies its lane explicitly; a serial bundle
+    # supplies a stable scope to prove that all suites ran in one job. RUNNER_NAME
+    # is retained only as metadata because hosted names may repeat.
     job = os.environ.get("GITHUB_JOB", "").strip()
     lane = os.environ.get("OBSERVABILITY_LANE", "").strip()
+    scope = os.environ.get("OBSERVABILITY_RUNNER_SCOPE", "").strip()
     if require_runner_identity and (
         not re.fullmatch(r"[A-Za-z0-9_.-]+", job)
         or not re.fullmatch(r"[A-Za-z0-9_.-]+", lane)
+        or (scope and not re.fullmatch(r"[A-Za-z0-9_.-]+", scope))
     ):
         raise ValueError("missing GitHub runner identity")
-    runner_id = f"job:{repo}:{run_id}:{attempt}:{job}:{lane}" if job and lane else f"aggregate:{run_id}:{attempt}"
+    runner_scope = scope or lane
+    runner_id = f"job:{repo}:{run_id}:{attempt}:{job}:{runner_scope}" if job and runner_scope else f"aggregate:{run_id}:{attempt}"
     models = [line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")]
     return {
         "candidate": candidate,
@@ -56,6 +60,7 @@ def actions_context(source, run, candidate, *, require_runner_identity=True):
         "runnerIdentity": runner_id,
         "runnerJob": job,
         "runnerLane": lane,
+        "runnerScope": scope or "matrix-lane",
         "runnerName": os.environ.get("RUNNER_NAME", "").strip(),
         "runnerNode": platform.node(),
         "runnerImage": os.environ.get("ImageOS"),
