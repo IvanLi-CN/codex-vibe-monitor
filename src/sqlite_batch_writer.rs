@@ -428,6 +428,7 @@ pub(crate) struct BatchedAccountSelectedTouch {
 #[derive(Debug, Clone)]
 pub(crate) struct BatchedSystemTaskFinish {
     pub(crate) run_id: i64,
+    pub(crate) task_key: String,
     pub(crate) task_kind: SystemTaskKind,
     pub(crate) trigger_kind: String,
     pub(crate) status: SystemTaskStatus,
@@ -435,6 +436,9 @@ pub(crate) struct BatchedSystemTaskFinish {
     pub(crate) detail: Option<String>,
     pub(crate) finished_at: String,
     pub(crate) duration_ms: i64,
+    pub(crate) completion: Option<String>,
+    pub(crate) core_completion: Option<String>,
+    pub(crate) details: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -4733,13 +4737,16 @@ pub(crate) async fn flush_pending_batch_inner(
     if let Some(store) = maintenance_store {
         for finish in batch.system_task_finishes.values() {
             if let Err(error) = store
-                .finish_run(
+                .finish_run_with_observation(
                     finish.run_id,
                     finish.status.as_str(),
                     &finish.finished_at,
                     finish.duration_ms,
                     finish.summary.as_deref(),
                     finish.detail.as_deref(),
+                    finish.completion.as_deref(),
+                    finish.core_completion.as_deref(),
+                    finish.details.as_ref(),
                 )
                 .await
             {
@@ -4749,6 +4756,25 @@ pub(crate) async fn flush_pending_batch_inner(
                     "failed to finalize task history in maintenance database"
                 );
                 return Err(error);
+            }
+            if let Some(details) = finish.details.as_ref()
+                && let (Some(seconds), Some(reason)) = (
+                    details
+                        .get("scheduleRetryAfterSecs")
+                        .and_then(serde_json::Value::as_i64),
+                    details
+                        .get("scheduleRetryReason")
+                        .and_then(serde_json::Value::as_str),
+                )
+            {
+                store
+                    .schedule_owned_work_for_run(
+                        &finish.task_key,
+                        finish.run_id,
+                        seconds,
+                        reason,
+                    )
+                    .await?;
             }
         }
     }
@@ -6296,6 +6322,7 @@ mod tests {
             vec![SqliteBatchWrite::SystemTaskFinish(
                 BatchedSystemTaskFinish {
                     run_id: handle.id,
+                    task_key: handle.task_kind.as_str().to_string(),
                     task_kind: handle.task_kind,
                     trigger_kind: handle.trigger_kind.clone(),
                     status: SystemTaskStatus::Success,
@@ -6303,6 +6330,9 @@ mod tests {
                     detail: None,
                     finished_at: "2026-07-01T10:00:05Z".to_string(),
                     duration_ms: 125,
+                    completion: None,
+                    core_completion: None,
+                    details: None,
                 },
             )],
         )

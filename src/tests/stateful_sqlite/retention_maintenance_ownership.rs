@@ -237,6 +237,12 @@ async fn ownership_pause_preserves_accepted_manual_requests_and_blocks_new_autom
     store.apply_initial_task_defaults().await.unwrap();
     for key in [
         "retention_archive",
+        "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive",
+        "invocation_detail_prune",
+        "quota_snapshot_compaction",
+        "model_route_expiry",
+        "task_run_history_cleanup",
         "prompt_cache_materialization",
         "invocation_identity_cleanup",
         "raw_orphan_sweep",

@@ -27,6 +27,7 @@ impl RetentionDiagnosticRecorder {
     }
 
     fn mark_budget(&mut self) {
+        retention_record_defer("retention_batch", "retention_work_budget");
         self.mark(RecoveryDiagnostic::RetentionBudgetExhausted);
     }
 
@@ -35,19 +36,30 @@ impl RetentionDiagnosticRecorder {
     }
 
     fn mark_stop(&mut self) {
-        let outcome =
+        let (outcome, reason) =
             if retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled()) {
-                RecoveryDiagnostic::RetentionCancelled
+                (
+                    RecoveryDiagnostic::RetentionCancelled,
+                    "shutdown".to_string(),
+                )
             } else if retention_run_budget_expired()
                 || matches!(
                     retention_run_defer_reason().as_deref(),
                     Some("retention_work_budget") | Some("archive_design_budget")
                 )
             {
-                RecoveryDiagnostic::RetentionBudgetExhausted
+                (
+                    RecoveryDiagnostic::RetentionBudgetExhausted,
+                    "retention_work_budget".to_string(),
+                )
             } else {
-                RecoveryDiagnostic::RetentionPressureDeferred
+                (
+                    RecoveryDiagnostic::RetentionPressureDeferred,
+                    retention_run_defer_reason()
+                        .unwrap_or_else(|| "retention_write_admission".to_string()),
+                )
             };
+        retention_record_defer("retention_batch", reason);
         self.mark(outcome);
     }
 

@@ -594,6 +594,23 @@ async fn run_invocation_detail_prune_owner(
         "codex_invocation_details:retention_policy",
         "invocation rows",
     );
+    let payload_loss_days = config
+        .invocation_success_full_days
+        .min(config.invocation_max_days);
+    if !dry_run
+        && !parallel_work_minute_coverage_ready_for_payload_retention(
+            pool,
+            shanghai_retention_cutoff(payload_loss_days).timestamp(),
+        )
+        .await
+        .context(
+            "failed to verify parallel-work minute coverage before invocation detail pruning",
+        )?
+    {
+        summary.completion = "deferred";
+        summary.wait_reason = Some("parallel_work_minute_coverage".to_string());
+        return Ok(summary.finish(started_at));
+    }
     match prune_old_invocation_details(pool, config, config.database_path.parent(), dry_run).await {
         Ok((selected, batches, raw_files_removed)) => {
             let (discovered, selected_scope, committed) =

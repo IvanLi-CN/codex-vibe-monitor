@@ -2499,6 +2499,7 @@ async fn drain_managed_task_finishes_on_shutdown(
             // Replay resolves the maintenance row by run_id; task_kind is legacy journal metadata.
             let recovery = BatchedSystemTaskFinish {
                 run_id: finish.run_id,
+                task_key: finish.task_key.clone(),
                 task_kind: SystemTaskKind::StartupBackfill,
                 trigger_kind: "managed_dispatcher".to_string(),
                 status: finish.status,
@@ -2506,6 +2507,9 @@ async fn drain_managed_task_finishes_on_shutdown(
                 detail: finish.detail.clone(),
                 finished_at: finish.finished_at.clone(),
                 duration_ms: finish.duration_ms,
+                completion: finish.completion.clone(),
+                core_completion: finish.core_completion.clone(),
+                details: finish.details.clone(),
             };
             let quarantined = state.sqlite_batch_writer.quarantine_system_task_finish(
                 &recovery,
@@ -2752,7 +2756,7 @@ async fn run_managed_task_once_with_scoped_observation(
     ) {
         let options = maintenance_execution_options();
         let raw_traversal = managed_raw_traversal();
-        let execution = Box::pin(execute_owned_maintenance(
+        let mut execution = Box::pin(execute_owned_maintenance(
             OwnedMaintenanceContext {
                 pool: &state.pool,
                 config: &state.config,

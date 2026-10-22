@@ -3817,7 +3817,8 @@ impl MaintenanceStore {
         reason: &str,
     ) -> Result<()> {
         let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
-        sqlx::query(
+        let mut transaction = self.pool.begin().await?;
+        let result = sqlx::query(
             "UPDATE managed_tasks
              SET next_catchup_at=?,catchup_reason=?
              WHERE task_key=? AND enabled!=0
@@ -3828,8 +3829,32 @@ impl MaintenanceStore {
         .bind(key)
         .bind(key)
         .bind(run_id)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        if result.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(());
+        }
+        if matches!(reason, "owner_failed" | "task_execution_active") {
+            sqlx::query(
+                "INSERT INTO maintenance_owner_retry_state(task_key,failure_count,next_eligible_at,reason)
+                 VALUES(?,1,?,?)
+                 ON CONFLICT(task_key) DO UPDATE SET
+                     next_eligible_at=excluded.next_eligible_at,
+                     reason=excluded.reason",
+            )
+            .bind(key)
+            .bind(&at)
+            .bind(reason)
+            .execute(&mut *transaction)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM maintenance_owner_retry_state WHERE task_key=?")
+                .bind(key)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -4699,9 +4724,13 @@ impl MaintenanceStore {
             .bind(key)
             .fetch_one(&self.pool)
             .await?;
-            sqlx::query("UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL WHERE task_key=? AND enabled!=0")
+            sqlx::query("UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL WHERE task_key=? AND enabled!=0 AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?")
                 .bind(next_trigger_at(plan.0, plan.1.as_deref()))
-                .bind(key).execute(&self.pool).await?;
+                .bind(key)
+                .bind(key)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
         }
         Ok(())
     }

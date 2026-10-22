@@ -222,6 +222,8 @@ struct SystemTaskRecoveryLine {
     #[serde(default)]
     task_kind: String,
     #[serde(default)]
+    task_key: String,
+    #[serde(default)]
     trigger_kind: String,
     #[serde(default)]
     status: String,
@@ -233,6 +235,12 @@ struct SystemTaskRecoveryLine {
     finished_at: String,
     #[serde(default)]
     duration_ms: i64,
+    #[serde(default)]
+    completion: Option<String>,
+    #[serde(default)]
+    core_completion: Option<String>,
+    #[serde(default)]
+    details: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -394,12 +402,16 @@ impl TerminalJournal {
         struct QuarantineEntry<'a> {
             run_id: i64,
             task_kind: &'static str,
+            task_key: &'a str,
             trigger_kind: &'a str,
             status: &'static str,
             summary: &'a Option<String>,
             detail: &'a Option<String>,
             finished_at: &'a str,
             duration_ms: i64,
+            completion: &'a Option<String>,
+            core_completion: &'a Option<String>,
+            details: &'a Option<serde_json::Value>,
             error: &'a str,
         }
 
@@ -422,12 +434,16 @@ impl TerminalJournal {
             let entry = QuarantineEntry {
                 run_id: finish.run_id,
                 task_kind: finish.task_kind.as_str(),
+                task_key: &finish.task_key,
                 trigger_kind: &finish.trigger_kind,
                 status: finish.status.as_str(),
                 summary: &finish.summary,
                 detail: &finish.detail,
                 finished_at: &finish.finished_at,
                 duration_ms: finish.duration_ms,
+                completion: &finish.completion,
+                core_completion: &finish.core_completion,
+                details: &finish.details,
                 error,
             };
             if let Err(err) = serde_json::to_writer(&mut file, &entry) {
@@ -543,12 +559,16 @@ impl TerminalJournal {
                     run_id: finish.run_id,
                     acknowledged: false,
                     task_kind: finish.task_kind.as_str().to_string(),
+                    task_key: finish.task_key.clone(),
                     trigger_kind: finish.trigger_kind.clone(),
                     status: finish.status.as_str().to_string(),
                     summary: finish.summary.clone(),
                     detail: finish.detail.clone(),
                     finished_at: finish.finished_at.clone(),
                     duration_ms: finish.duration_ms,
+                    completion: finish.completion.clone(),
+                    core_completion: finish.core_completion.clone(),
+                    details: finish.details.clone(),
                     error: None,
                 },
             )
@@ -636,12 +656,16 @@ impl TerminalJournal {
         struct SystemTaskEntry<'a> {
             run_id: i64,
             task_kind: &'static str,
+            task_key: &'a str,
             trigger_kind: &'a str,
             status: &'static str,
             summary: &'a Option<String>,
             detail: &'a Option<String>,
             finished_at: &'a str,
             duration_ms: i64,
+            completion: &'a Option<String>,
+            core_completion: &'a Option<String>,
+            details: &'a Option<serde_json::Value>,
             error: &'a str,
         }
 
@@ -707,12 +731,16 @@ impl TerminalJournal {
                     &SystemTaskEntry {
                         run_id: finish.run_id,
                         task_kind: finish.task_kind.as_str(),
+                        task_key: &finish.task_key,
                         trigger_kind: &finish.trigger_kind,
                         status: finish.status.as_str(),
                         summary: &finish.summary,
                         detail: &finish.detail,
                         finished_at: &finish.finished_at,
                         duration_ms: finish.duration_ms,
+                        completion: &finish.completion,
+                        core_completion: &finish.core_completion,
+                        details: &finish.details,
                         error,
                     },
                 )
@@ -2271,6 +2299,11 @@ fn load_system_task_finishes(paths: &[PathBuf]) -> VecDeque<BatchedSystemTaskFin
                 (
                     Some(BatchedSystemTaskFinish {
                         run_id: value.run_id,
+                        task_key: if value.task_key.is_empty() {
+                            task_kind.as_str().to_string()
+                        } else {
+                            value.task_key
+                        },
                         task_kind,
                         trigger_kind: value.trigger_kind,
                         status,
@@ -2278,6 +2311,9 @@ fn load_system_task_finishes(paths: &[PathBuf]) -> VecDeque<BatchedSystemTaskFin
                         detail: value.detail,
                         finished_at: value.finished_at,
                         duration_ms: value.duration_ms,
+                        completion: value.completion,
+                        core_completion: value.core_completion,
+                        details: value.details,
                     }),
                     false,
                 ),
@@ -2961,6 +2997,7 @@ mod tests {
         let database_path = root.join("monitor.db");
         let finish = BatchedSystemTaskFinish {
             run_id: 701,
+            task_key: "invocation_detail_prune".to_string(),
             task_kind: SystemTaskKind::StartupBackfill,
             trigger_kind: "startup".to_string(),
             status: SystemTaskStatus::Skipped,
@@ -2968,6 +3005,14 @@ mod tests {
             detail: Some("shutdown requested".to_string()),
             finished_at: "2026-07-29T00:00:01Z".to_string(),
             duration_ms: 25,
+            completion: Some("deferred".to_string()),
+            core_completion: Some("partial".to_string()),
+            details: Some(serde_json::json!({
+                "ownershipVersion": 2,
+                "waitReason": "schedule_retry",
+                "scheduleRetryAfterSecs": 300,
+                "scheduleRetryReason": "owner_failed"
+            })),
         };
 
         let mut journal = TerminalJournal::open(&database_path).expect("open journal");
@@ -2981,6 +3026,10 @@ mod tests {
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].run_id, finish.run_id);
         assert_eq!(replay[0].status, finish.status);
+        assert_eq!(replay[0].task_key, finish.task_key);
+        assert_eq!(replay[0].completion, finish.completion);
+        assert_eq!(replay[0].core_completion, finish.core_completion);
+        assert_eq!(replay[0].details, finish.details);
         recovered
             .acknowledge_system_task_finishes(&[finish.run_id])
             .expect("acknowledge system-task recovery");
@@ -3004,6 +3053,7 @@ mod tests {
         let database_path = root.join("monitor.db");
         let finish = BatchedSystemTaskFinish {
             run_id: 702,
+            task_key: SystemTaskKind::HourlyRollupBootstrap.as_str().to_string(),
             task_kind: SystemTaskKind::HourlyRollupBootstrap,
             trigger_kind: "startup".to_string(),
             status: SystemTaskStatus::Skipped,
@@ -3011,6 +3061,9 @@ mod tests {
             detail: None,
             finished_at: "2026-07-29T00:00:02Z".to_string(),
             duration_ms: 40,
+            completion: None,
+            core_completion: None,
+            details: None,
         };
         TerminalJournal::quarantine_shutdown_batch_at_database_path(
             &database_path,
@@ -3044,6 +3097,7 @@ mod tests {
         let database_path = root.join("monitor.db");
         let finish = BatchedSystemTaskFinish {
             run_id: 702,
+            task_key: SystemTaskKind::HourlyRollupBootstrap.as_str().to_string(),
             task_kind: SystemTaskKind::HourlyRollupBootstrap,
             trigger_kind: "startup".to_string(),
             status: SystemTaskStatus::Skipped,
@@ -3051,6 +3105,9 @@ mod tests {
             detail: None,
             finished_at: "2026-07-29T00:00:02Z".to_string(),
             duration_ms: 40,
+            completion: None,
+            core_completion: None,
+            details: None,
         };
         TerminalJournal::quarantine_shutdown_batch_at_database_path(
             &database_path,

@@ -1767,6 +1767,7 @@ pub(crate) async fn finish_system_task_run_reliably(
             .min(i64::MAX as u128) as i64;
         let recovery_finish = BatchedSystemTaskFinish {
             run_id: handle.id,
+            task_key: handle.task_kind.as_str().to_string(),
             task_kind: handle.task_kind,
             trigger_kind: handle.trigger_kind.clone(),
             status,
@@ -1774,6 +1775,9 @@ pub(crate) async fn finish_system_task_run_reliably(
             detail: detail.clone(),
             finished_at: finished_at.clone(),
             duration_ms,
+            completion: None,
+            core_completion: None,
+            details: None,
         };
         let status_text = status.as_str();
         let mut last_error = None;
@@ -1896,6 +1900,7 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .enqueue(SqliteBatchWrite::SystemTaskFinish(
             BatchedSystemTaskFinish {
                 run_id: handle.id,
+                task_key: handle.task_kind.as_str().to_string(),
                 task_kind: handle.task_kind,
                 trigger_kind: handle.trigger_kind.clone(),
                 status,
@@ -1903,6 +1908,9 @@ pub(crate) fn try_enqueue_system_task_run_finish(
                 detail,
                 finished_at,
                 duration_ms,
+                completion: None,
+                core_completion: None,
+                details: None,
             },
         ))
 }
