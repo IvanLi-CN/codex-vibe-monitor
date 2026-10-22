@@ -179,7 +179,7 @@ def parse_cpu_stat(text: str, source: str = "app.cpuStat") -> dict[str, int]:
     values: dict[str, int] = {}
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) != 2 or not re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*", parts[0]):
+        if len(parts) != 2 or not re.fullmatch(r"[a-z0-9_]+(?:\.[a-z0-9_]+)*", parts[0]):
             _fail("cpu_read_failed", source)
         key = parts[0]
         if key in values:

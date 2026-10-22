@@ -307,9 +307,11 @@ class CpuStatParserTests(unittest.TestCase):
     required = "".join(f"{key} 1\n" for key in ("usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec"))
 
     def test_linux_cpu_stat_extensions_are_accepted_without_relaxing_required_fields(self):
-        parsed = parse_cpu_stat(self.required + "core_sched.force_idle_usec 0\nnr_bursts 2\n")
+        parsed = parse_cpu_stat(self.required + "core_sched.force_idle_usec 0\nnr_bursts 2\n_future.counter 3\nfuture.2_count 4\n")
         self.assertEqual(parsed["core_sched.force_idle_usec"], 0)
         self.assertEqual(parsed["nr_bursts"], 2)
+        self.assertEqual(parsed["_future.counter"], 3)
+        self.assertEqual(parsed["future.2_count"], 4)
         self.assertTrue({"usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec"}.issubset(parsed))
         with self.assertRaisesRegex(CpuAttributionError, "cpu_attribution_unsupported:app.cpuStat"):
             parse_cpu_stat(self.required.replace("usage_usec", "usage_missing"))
