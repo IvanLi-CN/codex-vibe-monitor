@@ -17,6 +17,7 @@
 
 - 文档在签名提交中保留；实现位于 `th/retention-maintenance-boundaries`，同一 [PR #1092](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092) 交付至 merge-ready。
 - 主人明确继续解决审查问题。第十三批修复补上归档 owner 失败后的有界 catch-up 重试，租约冲突的 `failed` 与 owner v2 事实、`task_execution_active` 重试原因，以及测试目标所需的显式 `FutureExt` 导入；本地格式、差异和 JSON 检查通过，PR #1162 的新 head CI 与五 lane 正式复审待完成。
+- 主人继续授权解决 exact-head CI 问题。第十四批修复将迁移夹具从旧的 schema 隐式清理预期更新为保留 205 条工作量样本，并移除 owner catch-up 更新中的无必要借用；本地格式与差异检查通过，代码候选为 `cb4c1bef`，新的 exact-head CI、迁移回放和五 lane 正式复审待完成。
 - 直接兼容验证按独立发布来源执行；覆盖 v4.0.0–v4.0.6、v4.1.0–v4.1.3、v4.2.0 至 v4.2.2，不依据格式猜测合并来源，最终候选结果见 IMPLEMENTATION.md。
 - PR Linux CI 暴露首次启动后 inode 补锁排序与路由不一致，修复统一排序，并保留初始化／离线 CLI 角色，避免数据库对锁提前发布 ready；新增 raw dry-run 回归移至独立批次测试文件，遵守既有源文件预算。
 
