@@ -87,10 +87,10 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
 ];
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-fn push_task_key_exclusion(
-    query: &mut QueryBuilder<'_, Sqlite>,
+fn push_task_key_exclusion<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
     column: &str,
-    excluded_task_keys: &[String],
+    excluded_task_keys: &'a [String],
 ) {
     if excluded_task_keys.is_empty() {
         return;
