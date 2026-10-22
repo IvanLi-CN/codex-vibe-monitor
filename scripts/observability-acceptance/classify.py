@@ -26,6 +26,7 @@ RESOURCE_UNAVAILABLE_ERRORS = frozenset(
 )
 HARDWARE_COMPARABILITY_ERROR_PREFIX = "hardware metadata "
 UNSTABLE_MEASUREMENT_ERROR = "unstable measurement windows"
+BUDGET_EXCEEDED_ERROR = "5% observability budget exceeded"
 
 
 class ClassificationError(RuntimeError):
@@ -100,12 +101,16 @@ def classify_result(root: Path, step_outcome: str) -> str:
 
     if step_outcome != "failure":
         raise ClassificationError(f"acceptance step ended with unsupported outcome {step_outcome!r}")
-    if evidence_status != "unavailable":
-        raise ClassificationError("failed acceptance step did not produce an unavailable evidence card")
 
     default = scenarios["default-observability-ab"]
     if any(scenarios[name].get("status") != "passed" for name in EXPECTED_SCENARIOS - {"default-observability-ab"}):
         raise ClassificationError("a functional or CPU acceptance scenario failed")
+    if evidence_status == "failed":
+        if default.get("status") == "failed" and default.get("error") == BUDGET_EXCEEDED_ERROR:
+            raise ClassificationError("observability performance budget exceeded")
+        raise ClassificationError("failed acceptance step produced an unclassified blocking result")
+    if evidence_status != "unavailable":
+        raise ClassificationError("failed acceptance step did not produce an unavailable evidence card")
     if default.get("status") != "unavailable":
         raise ClassificationError("unavailable evidence did not identify an environmental limitation")
     error = default.get("error")

@@ -743,6 +743,17 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "runner identity"):
                 self.context()
 
+    def test_serial_scope_keeps_all_suites_on_one_runner_identity(self):
+        contexts = []
+        for lane in ("pair-0", "pair-1", "pair-2"):
+            with patch.dict(os.environ, {**self.env, "OBSERVABILITY_LANE": lane, "OBSERVABILITY_RUNNER_SCOPE": "serial-bundle"}, clear=True):
+                contexts.append(self.context())
+        self.assertEqual({context["runnerIdentity"] for context in contexts}, {
+            "job:owner/repo:123:2:observability-performance:serial-bundle"
+        })
+        self.assertEqual({context["runnerLane"] for context in contexts}, {"pair-0", "pair-1", "pair-2"})
+        self.assertEqual({context["runnerScope"] for context in contexts}, {"serial-bundle"})
+
     def test_paired_suite_rejects_testbox_before_creating_state(self):
         args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="shared-testbox", suite="pair-0")
         with self.assertRaisesRegex(ValueError, "GitHub Actions"):
@@ -864,13 +875,13 @@ class BoundedAcceptanceTests(unittest.TestCase):
              patch.object(execution_deadline.signal, "signal", return_value="previous"), \
              patch.object(execution_deadline.signal, "setitimer") as timer:
             with execution_deadline.ExecutionDeadline() as deadline:
-                self.assertEqual(deadline.remaining, 750)
-            self.assertEqual(timer.call_args_list[0].args[1], 750)
+                self.assertEqual(deadline.remaining, 3450)
+            self.assertEqual(timer.call_args_list[0].args[1], 3450)
             self.assertEqual(timer.call_args_list[-1].args[1], 0)
 
     def test_late_queued_job_cannot_start_load_or_extend_deadline(self):
         with patch.dict(os.environ, {"OBSERVABILITY_TEST_STARTED_UTC": "100"}), \
-             patch.object(execution_deadline.time, "time", return_value=941), \
+             patch.object(execution_deadline.time, "time", return_value=3641), \
              patch.object(execution_deadline.signal, "setitimer") as timer:
             with self.assertRaises(execution_deadline.AcceptanceDeadlineExceeded):
                 with execution_deadline.ExecutionDeadline():
@@ -935,12 +946,14 @@ class AggregationTests(unittest.TestCase):
         self.context = {"candidate": self.candidate, "runnerEnvironment": "github-hosted", "runId": "123", "attempt": "1",
                         "evidenceLocator": "https://github.com/test/repo/actions/runs/123/attempts/1",
                         "cpuModel": ["synthetic CPU"], "cpuCount": 4, "cpuAffinity": [0, 1, 2, 3],
-                        "runnerImage": "ubuntu24", "runnerImageVersion": "fixed", "kernel": "fixed"}
+                        "runnerImage": "ubuntu24", "runnerImageVersion": "fixed", "kernel": "fixed",
+                        "runnerIdentity": "job:test/repo:123:1:observability-performance:serial-bundle",
+                        "runnerScope": "serial-bundle"}
         self.card = acceptance.certificate(SOURCE, self.candidate, self.context, "passed", "partial only")
         for lane in aggregation.LANES:
             part = self.part(lane)
             part.mkdir()
-            context = {**self.context, "runnerIdentity": lane}
+            context = {**self.context, "runnerLane": lane}
             config = {"candidate": self.candidate, "harnessSha": acceptance.source_revision(SOURCE),
                       "acceptanceContractDigest": acceptance.acceptance_contract_digest(SOURCE),
                       "candidateAcceptanceContractDigest": acceptance.acceptance_contract_digest(SOURCE),
@@ -1114,7 +1127,7 @@ class AggregationTests(unittest.TestCase):
         self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))
         self.assertFalse(self.aggregate())
 
-    def test_heterogeneous_runners_are_unavailable_but_runner_reuse_is_rejected(self):
+    def test_heterogeneous_hardware_is_unavailable_but_different_runner_is_rejected(self):
         self.change("pair-2", "runner-context.json", lambda row: row.update(
             cpuModel=["different CPU"],
             cpuCount=64,
@@ -1127,9 +1140,12 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata incompatible: cpuModel")
         self.assertTrue(all(scenarios[name]["status"] == "passed" for name in aggregation.RUNTIME_SCENARIOS))
         self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
-        self.change("pair-2", "runner-context.json", lambda row: row.update(**self.context, runnerIdentity="pair-2"))
-        self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
+        self.change("pair-2", "runner-context.json", lambda row: row.update(**self.context, runnerLane="pair-2"))
+        self.assertTrue(self.aggregate())
+        self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="different-runner"))
         self.assertFalse(self.aggregate())
+        scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
+        self.assertEqual(scenario["error"], "hardware metadata incompatible: runner identity")
 
     def test_hardware_mismatch_preserves_pair_preparation_diagnostic(self):
         self.change(
@@ -1233,7 +1249,7 @@ class AggregationTests(unittest.TestCase):
 
     def test_expired_shared_phase_cannot_pass_with_complete_samples(self):
         with patch.object(aggregation, "actions_context", return_value=self.context), \
-             patch.object(aggregation.time, "time", return_value=1001):
+             patch.object(aggregation.time, "time", return_value=3701):
             self.assertFalse(aggregation.aggregate(SOURCE, SOURCE, self.output, self.parts, self.candidate))
 
 
@@ -1271,7 +1287,7 @@ class WorkflowGateTests(unittest.TestCase):
 
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)
-        step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+        step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload pair-0 acceptance evidence")
         self.assertIn("client-failures.json", step["with"]["path"])
         self.assertNotIn("client.log", step["with"]["path"])
         step.pop("if")
@@ -1297,16 +1313,16 @@ class WorkflowGateTests(unittest.TestCase):
     def test_window_evidence_is_required_and_sensitive_artifacts_are_refused(self):
         for required in ["measurement-windows.json", "cpu-attribution.json"]:
             workflow = copy.deepcopy(self.workflow)
-            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
-            upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/" + required, "")
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload pair-0 acceptance evidence")
+            upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/pair-0/" + required, "")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
         for extra in [False, True]:
             workflow = copy.deepcopy(self.workflow)
-            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload pair-0 acceptance evidence")
             if extra:
-                upload["with"]["path"] += "\n${{ runner.temp }}/observability-acceptance/private/*"
+                upload["with"]["path"] += "\n${{ runner.temp }}/observability-acceptance/pair-0/private/*"
             else:
-                upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/measurement-windows.json", "")
+                upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/pair-0/measurement-windows.json", "")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_unbounded_or_changed_windows_are_rejected(self):
@@ -1315,7 +1331,7 @@ class WorkflowGateTests(unittest.TestCase):
         step["run"] = step["run"].replace("--seconds 60", "--seconds 300")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
-    def test_time_limit_and_parallel_isolation_cannot_be_removed(self):
+    def test_time_limit_and_single_runner_bundle_cannot_be_removed(self):
         for job in ("observability-performance", "observability-performance-image", "observability-diagnostics"):
             workflow = copy.deepcopy(self.workflow)
             workflow["jobs"][job]["timeout-minutes"] = 16
@@ -1324,7 +1340,7 @@ class WorkflowGateTests(unittest.TestCase):
             else:
                 with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["observability-performance"]["strategy"]["max-parallel"] = 1
+        workflow["jobs"]["observability-performance"]["strategy"] = {"matrix": {"lane": ["pair-0", "pair-1", "pair-2"]}}
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_each_job_cannot_restart_its_wall_clock(self):
@@ -1339,7 +1355,7 @@ class WorkflowGateTests(unittest.TestCase):
             step.pop("timeout-minutes")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["observability-performance"]["steps"][0]["run"] = workflow["jobs"]["observability-performance"]["steps"][0]["run"].replace('-le 60', '-le 900')
+        workflow["jobs"]["observability-performance"]["steps"][0]["run"] = workflow["jobs"]["observability-performance"]["steps"][0]["run"].replace('started="$(date +%s)"', 'started="$(date +%s); sleep 1"')
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_download_preparation_cannot_bypass_shared_deadline(self):
@@ -1381,6 +1397,16 @@ class PerformanceDispositionTests(unittest.TestCase):
         scenarios["https-auth-query"] = {"status": "failed", "error": "query mismatch"}
         self.write_case("failed", scenarios)
         with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
+    def test_measured_budget_failure_remains_blocking_with_specific_reason(self):
+        scenarios = {name: {"status": "passed"} for name in self.passed_scenarios()}
+        scenarios["default-observability-ab"] = {
+            "status": "failed",
+            "error": "5% observability budget exceeded",
+        }
+        self.write_case("failed", scenarios)
+        with self.assertRaisesRegex(ClassificationError, "performance budget exceeded"):
+            classify_result(self.root, "failure")
 
     def test_missing_or_invalid_measurement_evidence_remains_blocking(self):
         scenarios = self.passed_scenarios()
