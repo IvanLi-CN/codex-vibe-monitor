@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-  "codeCandidateSha": "4c0d27383b2afdae636a8ecd71099e767f5b8d0b",
+  "codeCandidateSha": "0180a6fec0cfea10a2c7e83c4bcd97b691bff39c",
   "documentationCarrier": {
-    "codeCandidateSha": "4c0d27383b2afdae636a8ecd71099e767f5b8d0b",
+    "codeCandidateSha": "0180a6fec0cfea10a2c7e83c4bcd97b691bff39c",
     "identity": "the signed documentation-only commit containing this record",
     "scope": "This record is a documentation carrier for the immediately preceding signed code candidate; the carrier contains exactly the four documentation records listed by CI, including IMPLEMENTATION.md, and does not change the validated source tree. CI binds documentationCarrierSha to the current checkout, asserts its parent is codeCandidateSha, and verifies the carrier diff is documentation-only."
   },
@@ -23,7 +23,7 @@
   "currentHeadCi": {
     "workflow": "CI PR",
     "runId": null,
-    "headSha": "4c0d27383b2afdae636a8ecd71099e767f5b8d0b",
+    "headSha": "0180a6fec0cfea10a2c7e83c4bcd97b691bff39c",
     "status": "pending"
   },
   "passed": {
@@ -126,8 +126,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "4c0d27383b2afdae636a8ecd71099e767f5b8d0b",
-    "reviewedHead": "4c0d27383b2afdae636a8ecd71099e767f5b8d0b",
+    "candidateSha": "0180a6fec0cfea10a2c7e83c4bcd97b691bff39c",
+    "reviewedHead": "0180a6fec0cfea10a2c7e83c4bcd97b691bff39c",
     "status": "pending",
     "lanes": [],
     "findings": [],
@@ -149,7 +149,7 @@
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
     "previousCandidateSha": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
     "fixedFinding": "The required PR and merge-queue migration gate now runs both released-source upgrade validation and the online runtime ownership validator for every retention owner, with binary identity binding.",
-    "newFocusedRegression": "The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, assert one new manual run for the requested owner, compare business/file snapshots for previews, and bind owner-v2 facts to 4c0d2738. Owner-v2 run finalization and catch-up cleanup now commit in one transaction, with a regression covering the current run generation. Release fixtures now pull manifest-pinned image digests and verify docker inspect RepoDigests before execution. CI also asserts the documentation carrier is the direct parent of this code candidate, includes this implementation record, and both result files match the current checkout and candidate binary SHA-256. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
+    "newFocusedRegression": "The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, assert one new manual run for the requested owner, compare business/file snapshots for previews, and bind owner-v2 facts to 0180a6fe. Owner-v2 finalization, including retention_archive, and catch-up cleanup now commit in one transaction, with regressions covering both current run generations. Release fixtures now pull manifest-pinned image digests and verify docker inspect RepoDigests before execution. CI compares the carrier file set as a sorted set, asserts the documentation carrier is the direct parent of this code candidate, includes this implementation record, and binds both result files to the current checkout and candidate binary SHA-256. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -157,14 +157,14 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-    "headSha": "4c0d27383b2afdae636a8ecd71099e767f5b8d0b",
+    "headSha": "0180a6fec0cfea10a2c7e83c4bcd97b691bff39c",
     "requiredCi": {
       "workflow": "CI PR",
       "runId": null,
       "status": "pending"
     },
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the signed code candidate 4c0d2738 after the b67bc3ae main sync. The current checkout is the documentation carrier identity; CI records its exact SHA, asserts its parent is codeCandidateSha, verifies the carrier diff is exactly the four documentation records including IMPLEMENTATION.md, and binds both validator result digests to its checkout and binary identity artifact."
+    "note": "candidate_head_sha binds the signed code candidate 0180a6fe after the b67bc3ae main sync. The current checkout is the documentation carrier identity; CI records its exact SHA, asserts its parent is codeCandidateSha, verifies the carrier diff is exactly the four documentation records including IMPLEMENTATION.md, and binds both validator result digests to its checkout and binary identity artifact."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
