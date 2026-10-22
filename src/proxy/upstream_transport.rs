@@ -140,6 +140,7 @@ pub(crate) struct UpstreamTrafficReporter {
     upstream_account_id: Option<i64>,
     upstream_base_url_host: Option<String>,
     endpoint: &'static str,
+    proxy_metrics: Option<Arc<crate::observability::ProxyMetricHandles>>,
 }
 
 impl UpstreamTrafficReporter {
@@ -151,13 +152,19 @@ impl UpstreamTrafficReporter {
         upstream_base_url_host: Option<&str>,
         endpoint: &str,
     ) -> Self {
+        let endpoint = crate::observability::endpoint_from_path(endpoint);
+        let proxy_metrics = state
+            .observability
+            .enabled
+            .then(|| state.observability.proxy_metrics(endpoint));
         Self {
             state,
             invoke_id: invoke_id.into(),
             occurred_at: occurred_at.into(),
             upstream_account_id,
             upstream_base_url_host: upstream_base_url_host.map(str::to_string),
-            endpoint: crate::observability::endpoint_from_path(endpoint),
+            endpoint,
+            proxy_metrics,
         }
     }
 
@@ -167,11 +174,11 @@ impl UpstreamTrafficReporter {
             ("download", delta.download_bytes),
         ] {
             if value > 0 {
-                self.state.observability.counter(
-                    "cvm_proxy_transfer_bytes_total",
-                    &[("endpoint", self.endpoint), ("direction", direction)],
-                    value as u64,
-                );
+                if let Some(handles) = &self.proxy_metrics {
+                    handles
+                        .transfer(&self.state.observability, self.endpoint, direction)
+                        .increment(value as u64);
+                }
             }
         }
         let mut recorded = false;
@@ -770,13 +777,14 @@ pub(crate) async fn send_counted_upstream_http_request(
             .is_some_and(|reporter| reporter.state.observability.enabled),
         "send_counted_upstream_http_request",
         async move {
+            let endpoint = crate::observability::endpoint_from_path(target_url.path());
             let diagnostic_attempt = crate::observability::diagnostics::phase(
                 crate::observability::diagnostics::Phase::Attempt,
             );
             let mut attempt = reporter.as_ref().map(|reporter| {
                 crate::observability::UpstreamAttempt::new(
                     reporter.state.observability.clone(),
-                    target_url.path(),
+                    endpoint,
                 )
             });
             let meter = UpstreamSocketByteMeter::default();
@@ -785,14 +793,8 @@ pub(crate) async fn send_counted_upstream_http_request(
             let connect_span = reporter.as_ref().map(|reporter| {
                 crate::observability::ObservationSpan::new(
                     reporter.state.observability.clone(),
-                    "cvm_proxy_phase_duration_seconds",
-                    vec![
-                        (
-                            "endpoint",
-                            crate::observability::endpoint_from_path(target_url.path()),
-                        ),
-                        ("phase", "transport_connect"),
-                    ],
+                    endpoint,
+                    "transport_connect",
                 )
             });
             let stream = crate::observability::diagnostics::measure_phase(
@@ -812,14 +814,8 @@ pub(crate) async fn send_counted_upstream_http_request(
             let head_span = reporter.as_ref().map(|reporter| {
                 crate::observability::ObservationSpan::new(
                     reporter.state.observability.clone(),
-                    "cvm_proxy_phase_duration_seconds",
-                    vec![
-                        (
-                            "endpoint",
-                            crate::observability::endpoint_from_path(target_url.path()),
-                        ),
-                        ("phase", "transport_head"),
-                    ],
+                    endpoint,
+                    "transport_head",
                 )
             });
             let (mut sender, connection) = http1::Builder::new()
