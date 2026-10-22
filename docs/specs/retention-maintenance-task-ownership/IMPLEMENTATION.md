@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量、dry-run 接续约束、预演文件计量和 native worker 排空已补齐；合入主干 `e956d1a8` 后的签名最终 head 为 `e2144679`，PR #1162 的 CI PR run `39764651636`、Docs Pages `39764651482`、Review Policy `39764651536`、Label Gate `39764651670` 与五 lane 正式复审均通过；迁移回放和当前 head dry-run UI 主人确认仍待完成，生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
+- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量、dry-run 接续约束、预演文件计量、native worker 排空和 task-run history 的 SQLite 压力延期事实已补齐；当前签名修复 head 为 `ba4a74a9`，基于主干 `b67bc3ae`，PR #1162 的远端 CI、迁移回放和新一轮正式复审仍待刷新；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
 
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
@@ -15,7 +15,7 @@
 - `REQ-RMO-010`：CLI 在业务初始化和启动恢复前选择在线请求或离线独占路由。运行态锁同时绑定规范化数据库路径对、当前数据库 inode 对与两个数据库文件本身；在线请求保留服务就绪标记文件和数据库描述符证明，使用同一受保护 VFS 打开维护库，并在请求写入及轮询期间持续复核，路径替换或服务锁释放均在 SQLite 写入前拒绝。初始化、离线 CLI、混配数据库对、替换 inode 与 hard-link 别名均在打开 SQLite 前拒绝。离线多链接数据库返回不可用，避免不同日志路径写同一数据库。在线不初始化控制或回收活跃运行，离线只执行指定任务并在释放锁前关闭连接池。三个预演使用局部扫描状态，不改业务删除、正式游标或释放事实。
 - SQLite 连接固定到持锁文件的规范化路径，在原生 Unix VFS 的路径解析和实际打开边界重查路径／描述符身份及单链接证明，并使用 `SQLITE_FCNTL_HAS_MOVED` 检查 SQLite 打开的真实文件。校验发生在 journal／schema 初始化前；连接池后续连接继承同一 VFS 入口。归档 ATTACH 沿用原生实现。VFS 注册对象随进程保留以满足 SQLite 指针寿命，正确性证明使用弱引用，不延长数据库锁寿命；连接池关闭后才能释放运行态锁，包括初始化失败路径。活动连接的数据库、journal／WAL 与共享内存回调持续检查证明和文件身份；mmap 禁用以保证访问经过校验，原生文件保持独立布局及方法表。新实例取得每个协议锁时立即清除旧就绪标记。
 - `REQ-RMO-011`, `REQ-RMO-012`：新记录包含职责版本、scope 与 dry-run，计量分离调用行、对话、小时、文件及字节，缺测保持未知。新增目录和详情、自动触发文案、暂停时立即运行、归档关联入口及旧组合历史标识。资源等待与实际开始分开记录，保留旧历史口径。
-- `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。直接升级来源逐一覆盖 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2，不以版本等价假设共用来源。最终 Linux 二进制的十四来源升级和进程安全验证已通过，生产字节一致；同步 `e956d1a8` 后的最终 head `e2144679` 的 CI 与 Tier 4 复审已通过，迁移回放仍待完成。
+- `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。直接升级来源逐一覆盖 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2，不以版本等价假设共用来源。最终 Linux 二进制的十四来源升级和进程安全验证已通过，生产字节一致；当前 `ba4a74a9` 修复 head 的远端 CI、Tier 4 复审和迁移回放仍待完成。
 - `REQ-RMO-005`, `REQ-RMO-011`, `REQ-RMO-014`：自动归档失败在维护库 finalizer 中保留不确定性并安排 300 秒 owner_failed catch-up，即使失败前的 backlog 快照为零；同一 owner 的执行租约冲突写入明确 `failed`、ownershipVersion=2、`task_execution_active` 和有界重试资格，避免缺少 completion/details 的不可解释失败。历史清理由 `task_run_history_cleanup` owner 分批执行，schema 初始化不再隐式删除工作量样本。新增 stateful SQLite 失败重试回归与 dispatcher 事实构造回归。
 - `REQ-RMO-011`, `REQ-RMO-013`, `REQ-RMO-014`：模型路由 owner 以真实剩余量决定接续，历史清理在后续批次失败时保留已提交行数，重试计划写入失败时 finalizer 继续使用已持久化的业务事实并按 run generation 保护 catch-up；七个 v2 owner 的实际工作观测、压力退避、归档批次明细和旧版范围显示均与独立 task key 对齐。暂停回归覆盖全部 v2 owner，避免新增默认任务绕过暂停契约。
 
@@ -32,7 +32,7 @@
 - [实际进程验证](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json) 使用 v4.2.2 来源及同一二进制，八项声明全部通过：在线 CLI 不初始化不可用维护库、三种只读职责、归档独占范围、四项暂停后的手动运行、CLI／页面竞争、无启动恢复、无手动自动接续及优雅关闭后的锁释放。Linux 命名运行态锁与 raw 预演释放计量回归包含在通过的 archive/file-I/O 组中。
 - Linux 三个共享资源组在第六批按顺序执行，本轮刷新轻量组。轻量组把共享 runner 及进程树固定到一个来宾 CPU；SQLite 与归档组维持原 profile 并行度，通过标准 Cargo target runner 为每个真实测试进程租用独立来宾 CPU，保留原二进制、argv 和退出状态。projection 与统计检查点夹具使用已有独占槽；测试计时前的 CPU 槽等待上限为 30 秒。权限夹具移除 root DAC override，生产阈值和断言未放宽。
 - 主干的公平统计队列、分页、实时 overlay、单样本 workload marker 与整页 Storybook 清理均已保留。整页状态与交互由 mock-only demo 覆盖，吞吐、时间线及 workload marker 由组件 Storybook 覆盖。六张页面图片已获主人确认；主干同步后核对相关产品组件、路由、样式和 demo 输入，当前视觉比较一致；最终 head 的 dry-run 变体仍待主人确认。
-- `VER-RMO-001` 至 `VER-RMO-008` 的证据映射、各输入指纹与日志摘要见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。第六批修复覆盖初始化失败时关闭连接池、活动 SQLite／sidecar 替换及锁接管期间旧就绪标记撤销；九项命名回归、全部后端资源组、十四来源升级和八项实际进程声明通过。主干同步至 `e956d1a8` 后，最终 head `e2144679` 的 CI PR run `39764651636` 及 Docs Pages、Review Policy、Label Gate 同头 workflow 全部通过，五 lane 正式复审均为 clear；迁移回放和当前 head dry-run UI 主人确认仍待完成，不将旧 PR head 的成功结果视为当前交付证明。
+- `VER-RMO-001` 至 `VER-RMO-008` 的证据映射、各输入指纹与日志摘要见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。第六批修复覆盖初始化失败时关闭连接池、活动 SQLite／sidecar 替换及锁接管期间旧就绪标记撤销；九项命名回归、全部后端资源组、十四来源升级和八项实际进程声明通过。当前候选 `ba4a74a9` 额外覆盖 task-run history 在 SQLite 压力下保留 owner deferred/retry facts；远端 CI、fresh Tier 4 复审和迁移回放仍待刷新，不将旧 PR head 的成功结果视为当前交付证明。
 
 - 本轮 CI 修复的常规时点、上海 00:00／00:01／00:03／12:00／23:59:50 及从 23:59:58 跨午夜的进程偏移验证全部通过；CLOCK_MONOTONIC 与系统时钟未改变。修复前同一二进制在 00:01 稳定复现 `today` 1 对 2，00:03 通过。预期独立按记录日期计算，不复用实现中的窗口选择函数，不增加跳过、重试或放宽限制。机制及结果见 [时钟验证](../../adr/assets/retention-maintenance-task-ownership/summary-clock-validation.json)。
 - 本轮默认 feature 的生产构建 SHA-256 与第六批逐字节一致，因此十四来源升级与八项进程结果按其原执行来源保留，结果卡明确记录当前候选与原执行候选。未把保留结果写成重新执行。额外完整工具夹具 wrapper 因快照资源未完成；必需的质量声明检查与后端 runner 合同通过，工具源码未改变，未宣称完整 wrapper 成功。
@@ -58,7 +58,7 @@
 - 发布影响按 Minor 记录：主人明确临时环境开关不属于兼容承诺；旧部署文档将一次性 CLI 描述为归档入口，未承诺附带孤儿清理。保留归档命令、任务标识、URL 和旧历史，新增独立清理入口及自动触发控制。旧命令不再附带孤儿清理是明确披露的行为变化，不宣称执行范围完全相同；持久状态单独按可加性 Minor 验证。
 - 直接来源逐一为 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2；各来源由对应发布镜像独立生成，来源与镜像摘要保存在 [released-state-sources.json](../../adr/assets/retention-maintenance-task-ownership/released-state-sources.json)。更早 Major 必须先中间升级，不支持多版本同时写入。
 - 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `ed00c68fed0975aaf0617981db8ad7fd75ce1a1f`，保留主干统计公平队列及其回归，不重写已发布历史。
-- 最终候选工程检查、十四来源升级与进程验证已完成；最终 head `e2144679` 的 Tier 4 只读审查及必要 CI 已通过，仍需完成迁移回放和当前 head dry-run UI 主人确认，才可宣告 Step 5C Ready。
+- 最终候选工程检查、十四来源升级与进程验证已完成；当前修复 head `ba4a74a9` 的本地 owner/retention 回归已通过，仍需完成远端 CI、fresh Tier 4 只读审查和迁移回放，才可宣告 Step 5C Ready。
 
 ## References
 

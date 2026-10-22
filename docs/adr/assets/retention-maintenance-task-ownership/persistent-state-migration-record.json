@@ -5,7 +5,7 @@
     "description": "Introduce independent cleanup task controls without importing retired environment enablement",
     "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
     "version_impact": "minor",
-    "status": "implemented-current-head-ci-passed-migration-replay-pending"
+    "status": "implemented-current-head-validation-pending-migration-replay-pending"
   },
   "durable_state": {
     "description": "Existing archive/materialization controls, additive identity/raw cleanup controls, separate inspection/catch-up/safety retry eligibility, ownership initialization marker, durable hourly cleanup scope, and existing archive/raw correctness proofs.",
@@ -27,7 +27,7 @@
         "v4.2.1",
         "v4.2.2"
       ],
-      "to_program_version": "signed final head e2144679edee9f813a494d92567018d6434dfe1e after main e956d1a89b589a2d9cd0a8df69b018eefa94590c (CI passed; migration replay pending)",
+      "to_program_version": "signed repair head ba4a74a93654a550e2ed1c371620b446bcb4d2ef after main b67bc3aeb4f03285a715810d5e8762d7f0eaa826 (remote validation and migration replay pending)",
       "direct_major_skips_supported": false
     }
   },
@@ -135,14 +135,14 @@
     ]
   },
   "classification_status": "pending-migration-replay",
-  "source_program_compatibility_range": "Fourteen individual released sources v4.0.0..v4.0.6, v4.1.0..v4.1.3, v4.2.0..v4.2.2; base ed00c68fed0975aaf0617981db8ad7fd75ce1a1f; current final head e2144679 after main e956d1a8; binary pending migration replay.",
+  "source_program_compatibility_range": "Fourteen individual released sources v4.0.0..v4.0.6, v4.1.0..v4.1.3, v4.2.0..v4.2.2; base ed00c68fed0975aaf0617981db8ad7fd75ce1a1f; current repair head ba4a74a9 after main b67bc3ae; binary pending migration replay.",
   "verified_at": null,
   "follow_up_change": {
     "description": "Add six independent retention-policy task rows, initialize their default schedules without overwriting operator overrides, persist ownership-version-2 result facts, retain bounded retry facts for failed or lease-conflicted owner runs, guard detail pruning behind parallel-work coverage, and keep history cleanup under the bounded cleanup owner instead of schema initialization.",
     "candidate_branch": "th/retention-maintenance-ownership",
-    "candidate_base_sha": "e956d1a89b589a2d9cd0a8df69b018eefa94590c",
-  "candidate_head_sha": "e2144679edee9f813a494d92567018d6434dfe1e",
-    "status": "current-head-ci-and-formal-review-passed-migration-replay-pending",
+    "candidate_base_sha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
+    "candidate_head_sha": "ba4a74a93654a550e2ed1c371620b446bcb4d2ef",
+    "status": "current-head-validation-pending-migration-replay-pending",
     "ddl_structural_changes": [],
     "dml_changes": [
       "Insert six managed-task catalog rows and apply retention_owner_schedule_v2 once only when their interval and cron fields are unset.",
@@ -156,8 +156,8 @@
     "durable_state_policy": "Additive only; no business-table schema change, no deletion or rewrite of deployed migration facts, and no synthetic historical owner runs.",
     "required_validation": [
       "Replay new and existing maintenance-store initialization with disabled controls and schedule overrides.",
-      "Run lightweight, stateful-sqlite, and archive-file-io CI profiles plus format/check/clippy gates; CI PR run 39764651636 passed all required checks at final head e2144679.",
-    "Complete read-only formal review; five lanes reviewed e2144679 after the e956d1a8 main sync with no actionable P0-P2 findings.",
+      "Run lightweight, stateful-sqlite, and archive-file-io CI profiles plus format/check/clippy gates for current head ba4a74a9.",
+    "Complete fresh read-only Tier 4 formal review for current head ba4a74a9 after the b67bc3ae main sync.",
     "Replay released-source migration fixtures before marking this follow-up validated."
     ]
   }
