@@ -1972,18 +1972,25 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let Some(execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution(&task_key)
                     else {
-                        queue_managed_task_finish(&mut pending_finishes, ManagedTaskFinish {
-                            run_id,
-                            task_key,
-                            status: SystemTaskStatus::Failed,
-                            finished_at: format_utc_iso_millis(Utc::now()),
-                            duration_ms: 0,
-                            summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
-                            detail: None,
-                            completion: None,
-                            core_completion: None,
-                            details: None,
-                        });
+                        if is_retention_owner_v2_task(&task_key)
+                            && let Err(error) = store
+                                .schedule_owned_work(&task_key, 300, "task_execution_active")
+                                .await
+                        {
+                            warn!(
+                                task = %task_key,
+                                error = %error,
+                                "retention owner lease-conflict retry could not be scheduled"
+                            );
+                        }
+                        queue_managed_task_finish(
+                            &mut pending_finishes,
+                            managed_task_lease_conflict_finish(
+                                run_id,
+                                task_key,
+                                &trigger_kind,
+                            ),
+                        );
                         continue;
                     };
                     let initial_stages = (task_key == "retention_archive").then(|| {
@@ -2062,6 +2069,66 @@ fn managed_task_requires_heavy_file_operation(task_key: &str) -> bool {
             | "prune_archive_batches"
             | "prune_legacy_archive_batches"
     )
+}
+
+fn is_retention_owner_v2_task(task_key: &str) -> bool {
+    matches!(
+        task_key,
+        "retention_archive"
+            | "pool_upstream_attempt_archive"
+            | "forward_proxy_attempt_archive"
+            | "invocation_detail_prune"
+            | "quota_snapshot_compaction"
+            | "model_route_expiry"
+            | "task_run_history_cleanup"
+    )
+}
+
+fn managed_task_lease_conflict_finish(
+    run_id: i64,
+    task_key: String,
+    trigger_kind: &str,
+) -> ManagedTaskFinish {
+    let details = is_retention_owner_v2_task(&task_key).then(|| {
+        json!({
+            "ownershipVersion": 2,
+            "ownerScope": task_key.as_str(),
+            "manual": trigger_kind == "manual",
+            "result": "failed",
+            "globalBacklogTotal": null,
+            "total": null,
+            "backlogRemaining": null,
+            "discovered": 0,
+            "selected": 0,
+            "committed": 0,
+            "processedCount": 0,
+            "completed": 0,
+            "selectedScope": {
+                "scope": task_key.as_str(),
+                "unit": "unknown",
+                "selected": 0,
+                "committed": 0,
+                "batches": 0,
+                "rawFilesRemoved": 0,
+                "hasMore": true,
+            },
+            "waitReason": "task_execution_active",
+            "fatalError": "同一任务已有执行实例",
+            "elapsedMs": 0,
+        })
+    });
+    ManagedTaskFinish {
+        run_id,
+        task_key,
+        status: SystemTaskStatus::Failed,
+        finished_at: format_utc_iso_millis(Utc::now()),
+        duration_ms: 0,
+        summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
+        detail: Some("同一任务已有执行实例".to_string()),
+        completion: Some("failed".to_string()),
+        core_completion: None,
+        details,
+    }
 }
 
 fn queue_managed_task_finish(
@@ -4249,6 +4316,24 @@ pub(crate) mod managed_task_dispatch_tests {
             );
         }
         assert!(managed_startup_backfill_task("unknown_child").is_err());
+    }
+}
+
+#[cfg(test)]
+mod managed_task_lease_conflict_tests {
+    use super::*;
+
+    #[test]
+    fn retention_owner_lease_conflict_is_a_failed_v2_run_with_retry_facts() {
+        let finish =
+            managed_task_lease_conflict_finish(7, "retention_archive".to_string(), "schedule");
+        assert_eq!(finish.status, SystemTaskStatus::Failed);
+        assert_eq!(finish.completion.as_deref(), Some("failed"));
+        let details = finish.details.expect("retention owner facts");
+        assert_eq!(details["ownershipVersion"], 2);
+        assert_eq!(details["result"], "failed");
+        assert_eq!(details["waitReason"], "task_execution_active");
+        assert_eq!(details["selectedScope"]["hasMore"], true);
     }
 }
 

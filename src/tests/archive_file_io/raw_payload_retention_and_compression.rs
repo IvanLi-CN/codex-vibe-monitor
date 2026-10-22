@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::FutureExt;
 use serde_json::json;
 
 #[tokio::test]

@@ -79,6 +79,51 @@ async fn ownership_v2_persists_committed_as_processed_count() {
 }
 
 #[tokio::test]
+async fn failed_retention_archive_run_schedules_bounded_retry() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "schedule",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            run_id,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("retention_archive 执行失败"),
+            Some("owner failed after the invocation snapshot"),
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": "retention_archive",
+                "result": "failed",
+                "globalBacklogTotal": 0,
+                "committed": 0,
+                "selectedScope": {"committed": 0},
+                "waitReason": null
+            })),
+        )
+        .await
+        .unwrap();
+    let scheduled: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(scheduled.0.is_some());
+    assert_eq!(scheduled.1.as_deref(), Some("owner_failed"));
+}
+
+#[tokio::test]
 async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();

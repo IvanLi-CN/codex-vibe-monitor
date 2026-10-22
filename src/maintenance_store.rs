@@ -4735,12 +4735,19 @@ impl MaintenanceStore {
         now: &str,
     ) -> Result<()> {
         let completed = completed.min(i64::MAX as usize) as i64;
+        if completion.is_none() {
+            return Ok(());
+        }
+        let failed = completion == Some("failed");
         // Missing observation is not an empty backlog. Requalify after the consumed claim
         // with the same reason-specific backoff, retaining uncertainty in the displayed total.
-        let wait_reason =
-            wait_reason.or_else(|| backlog_total.is_none().then_some("backlog_unknown"));
+        let wait_reason = if failed {
+            wait_reason.or(Some("owner_failed"))
+        } else {
+            wait_reason.or_else(|| backlog_total.is_none().then_some("backlog_unknown"))
+        };
         let pending = backlog_total.map(|total| total.saturating_sub(completed));
-        if pending.is_some_and(|value| value <= 0) {
+        if !failed && pending.is_some_and(|value| value <= 0) {
             sqlx::query(
                 "UPDATE managed_tasks
                  SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
@@ -4751,13 +4758,13 @@ impl MaintenanceStore {
             .await?;
             return Ok(());
         }
-        if matches!(completion, Some("failed") | None) {
-            return Ok(());
-        }
         let delay_secs = match wait_reason {
             Some("retention_work_budget") => 1,
             Some("retention_write_admission") | Some("sqlite_pressure") => 30,
-            Some("retention_recovery_failure") | Some("retry_backoff") => 300,
+            Some("retention_recovery_failure") | Some("owner_failed") | Some("retry_backoff") => {
+                300
+            }
+            Some("task_execution_active") => 300,
             Some(_) => 15,
             None => 1,
         };
