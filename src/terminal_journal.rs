@@ -1781,6 +1781,20 @@ impl TerminalJournal {
         self.recovery_dispatch_started
     }
 
+    pub(crate) fn system_task_recovery_pending(&self) -> bool {
+        !self.deferred_system_task_finishes.is_empty() || !self.replayed_system_task_ids.is_empty()
+    }
+
+    pub(crate) fn system_task_recovery_pending_for(&self, run_id: i64) -> bool {
+        self.replayed_system_task_ids.contains(&run_id)
+    }
+
+    pub(crate) fn forget_system_task_recovery_for_runs(&mut self, run_ids: &[i64]) {
+        let run_ids = run_ids.iter().copied().collect::<HashSet<_>>();
+        self.replayed_system_task_ids
+            .retain(|run_id| !run_ids.contains(run_id));
+    }
+
     fn queue_shutdown_recovery_for_dispatch(&mut self, max_writes: usize) {
         if max_writes == 0 {
             return;
@@ -3022,6 +3036,7 @@ mod tests {
         drop(journal);
 
         let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
+        assert!(recovered.system_task_recovery_pending());
         let replay = recovered.take_system_task_finishes(1);
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].run_id, finish.run_id);
@@ -3033,6 +3048,7 @@ mod tests {
         recovered
             .acknowledge_system_task_finishes(&[finish.run_id])
             .expect("acknowledge system-task recovery");
+        assert!(!recovered.system_task_recovery_pending());
         assert!(recovered.take_system_task_finishes(1).is_empty());
         drop(recovered);
 

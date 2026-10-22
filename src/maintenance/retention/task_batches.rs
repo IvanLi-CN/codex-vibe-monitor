@@ -261,6 +261,14 @@ fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
             .contains("retention archive identity proof inflate exceeded the operation deadline")
 }
 
+fn archive_identity_proof_load_timed_out(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains("retention archive identity proof inflate exceeded the operation deadline")
+    })
+}
+
 fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {
     retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
         || is_retention_write_deferred(error)
@@ -858,6 +866,9 @@ pub(crate) async fn prune_old_invocation_details(
                         break;
                     }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        if archive_identity_proof_load_timed_out(&error) {
+                            batch_observation.mark_timeout();
+                        }
                         retention_record_defer(
                             "archive_identity_proof",
                             RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
@@ -1474,6 +1485,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             break;
                         }
                         Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                            if archive_identity_proof_load_timed_out(&error) {
+                                batch_observation.mark_timeout();
+                            }
                             retention_record_defer(
                                 "archive_identity_proof",
                                 RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
@@ -1908,6 +1922,8 @@ pub(crate) async fn archive_timestamped_dataset(
             .into_iter()
             .take(candidate_limit)
             .collect::<Vec<_>>();
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
         let raw_files_planned = if spec.dataset == "pool_upstream_request_attempts" {
             let ids = candidates
                 .iter()
@@ -1931,8 +1947,6 @@ pub(crate) async fn archive_timestamped_dataset(
                 archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
             *by_month.entry(month_key).or_default() += 1;
         }
-        batch_plan::record_discovered_rows(spec.dataset, discovered);
-        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
         for (month_key, rows) in &by_month {
             info!(
                 dataset = spec.dataset,
@@ -2137,6 +2151,9 @@ pub(crate) async fn archive_timestamped_dataset(
                         break;
                     }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        if archive_identity_proof_load_timed_out(&error) {
+                            batch_observation.mark_timeout();
+                        }
                         retention_record_defer(
                             "archive_identity_proof",
                             RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,

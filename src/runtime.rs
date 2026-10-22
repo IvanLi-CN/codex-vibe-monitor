@@ -1872,6 +1872,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
         };
         let mut pending_finishes = VecDeque::new();
         let mut workers = tokio::task::JoinSet::new();
+        let mut heavy_waiters = tokio::task::JoinSet::new();
         let mut finalizers = tokio::task::JoinSet::new();
         let heavy_file_gate = Arc::new(Semaphore::new(1));
         loop {
@@ -1890,6 +1891,11 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     // operation permit. Await every worker so cancellation cannot publish a
                     // false idle state while a blocking archive worker is still draining.
                     while let Some(joined) = workers.join_next().await {
+                        if let Ok(finish) = joined {
+                            queue_managed_task_finish(&mut pending_finishes, finish);
+                        }
+                    }
+                    while let Some(joined) = heavy_waiters.join_next().await {
                         if let Ok(finish) = joined {
                             queue_managed_task_finish(&mut pending_finishes, finish);
                         }
@@ -1924,6 +1930,17 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         Err(error) => warn!(error = %error, "managed task worker panicked"),
                     }
                 },
+                Some(joined) = heavy_waiters.join_next(), if !heavy_waiters.is_empty() => {
+                    match joined {
+                        Ok(finish) => queue_managed_task_finalizer(
+                            &mut finalizers,
+                            &mut pending_finishes,
+                            &store,
+                            finish,
+                        ),
+                        Err(error) => warn!(error = %error, "managed heavy-file task waiter panicked"),
+                    }
+                },
                 Some(joined) = finalizers.join_next(), if !finalizers.is_empty() => {
                     match joined {
                         Ok((_finish, Ok(()))) => {}
@@ -1941,8 +1958,14 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                             .len()
                             .saturating_add(finalizers.len())
                             .saturating_add(workers.len())
+                            .saturating_add(heavy_waiters.len())
                             >= MANAGED_TASK_MAX_PENDING_FINISHES
                     {
+                        continue;
+                    }
+                    // Replayed system-task finishes can carry the only durable retry intent for
+                    // an interrupted generation, so resolve them before admitting new work.
+                    if state.sqlite_batch_writer.system_task_recovery_pending() {
                         continue;
                     }
                     let has_dispatch_work = match store.probe_due_or_requested_runs().await {
@@ -2053,7 +2076,8 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let worker_file_gate =
                         managed_task_requires_heavy_file_operation(&task_key)
                             .then(|| heavy_file_gate.clone());
-                    workers.spawn(run_managed_task_worker_guarded(
+                    let heavy_file_operation = managed_task_requires_heavy_file_operation(&task_key);
+                    let worker = run_managed_task_worker_guarded(
                         state.clone(),
                         task_key,
                         run_id,
@@ -2063,7 +2087,14 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         execution_lease,
                         worker_file_gate,
                         initial_stages,
-                    ));
+                    );
+                    if heavy_file_operation {
+                        // Waiting for the single native-file permit must not consume one of the
+                        // worker slots reserved for light maintenance tasks.
+                        heavy_waiters.spawn(worker);
+                    } else {
+                        workers.spawn(worker);
+                    }
                 }
             }
         }
@@ -2083,6 +2114,10 @@ fn managed_task_requires_heavy_file_operation(task_key: &str) -> bool {
             | "archive_upstream_activity_manifest"
             | "materialize_historical_rollups"
             | "startup_backfill"
+            | "startup_backfill.pool_attempt_public_id_archives"
+            | "startup_backfill.upstream_activity_archives"
+            | "startup_backfill.pool_upstream_node_health_archives"
+            | "startup_backfill.legacy_detail_mirrors"
             | "startup_backfill.historical_rollups"
             | "verify_archive_storage"
             | "prune_archive_batches"
@@ -4406,6 +4441,22 @@ mod managed_task_lease_conflict_tests {
         assert_eq!(details["result"], "failed");
         assert_eq!(details["waitReason"], "task_execution_active");
         assert_eq!(details["selectedScope"]["hasMore"], true);
+    }
+
+    #[test]
+    fn archive_backfill_file_tasks_use_heavy_file_gate() {
+        for task_key in [
+            "startup_backfill.pool_attempt_public_id_archives",
+            "startup_backfill.upstream_activity_archives",
+            "startup_backfill.pool_upstream_node_health_archives",
+            "startup_backfill.legacy_detail_mirrors",
+            "startup_backfill.historical_rollups",
+        ] {
+            assert!(
+                managed_task_requires_heavy_file_operation(task_key),
+                "archive backfill task {task_key} must use the heavy-file gate"
+            );
+        }
     }
 }
 

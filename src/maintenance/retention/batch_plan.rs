@@ -142,6 +142,9 @@ impl BatchObservation {
     pub(crate) fn summary_proof_finished(&mut self, elapsed: Duration) {
         self.metrics.summary_proof_ms = Some(elapsed.as_millis() as u64);
     }
+    pub(crate) fn mark_timeout(&mut self) {
+        self.metrics.timeout_count = self.metrics.timeout_count.max(1);
+    }
 
     pub(crate) fn phase(&self, phase: RetentionPhase) -> RetentionPhaseGuard {
         self.retention.phase(phase)
@@ -167,9 +170,9 @@ impl Drop for BatchObservation {
     fn drop(&mut self) {
         // Attribute the run deadline only to an unfinished selected batch. A batch
         // committed before settlement is not a timeout merely because Drop is late.
-        self.metrics.timeout_count = u64::from(
+        self.metrics.timeout_count = self.metrics.timeout_count.max(u64::from(
             self.metrics.committed_rows < self.metrics.batch_rows && retention_run_budget_expired(),
-        );
+        ));
         self.metrics.elapsed_ms = self.started.elapsed().as_millis() as u64;
         if !self.retention.has_outcome() {
             let outcome = if super::retention_run_shutdown_token()

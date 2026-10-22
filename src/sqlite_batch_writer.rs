@@ -1841,6 +1841,18 @@ impl SqliteBatchWriter {
             })
     }
 
+    pub(crate) fn system_task_recovery_pending(&self) -> bool {
+        self.terminal_journal
+            .lock()
+            .ok()
+            .and_then(|journal| {
+                journal
+                    .as_ref()
+                    .map(TerminalJournal::system_task_recovery_pending)
+            })
+            .unwrap_or(true)
+    }
+
     pub(crate) fn start_terminal_journal_recovery(&self) -> TerminalJournalStats {
         let stats = self.terminal_journal.lock().ok().and_then(|mut journal| {
             journal.as_mut().map(|journal| {
@@ -3518,12 +3530,25 @@ fn quarantine_system_task_batch(
         .ok_or_else(|| anyhow::anyhow!("terminal journal unavailable for quarantine"))?;
     let error = format!("{error:#}");
     let finishes = batch.system_task_finishes.values().collect::<Vec<_>>();
-    journal.quarantine_system_task_finishes(&finishes, &error)?;
     let run_ids = finishes
         .iter()
         .map(|finish| finish.run_id)
         .collect::<Vec<_>>();
+    let already_replayed_run_ids = run_ids
+        .iter()
+        .copied()
+        .filter(|run_id| journal.system_task_recovery_pending_for(*run_id))
+        .collect::<Vec<_>>();
+    journal.quarantine_system_task_finishes(&finishes, &error)?;
     journal.remove_deferred_system_task_finishes(&run_ids);
+    // A fresh deterministic failure is deferred to the next restart, while a replayed finish
+    // must remain marked pending so the dispatcher cannot admit a newer generation first.
+    let newly_quarantined_run_ids = run_ids
+        .iter()
+        .copied()
+        .filter(|run_id| !already_replayed_run_ids.contains(run_id))
+        .collect::<Vec<_>>();
+    journal.forget_system_task_recovery_for_runs(&newly_quarantined_run_ids);
     Ok(batch.system_task_finishes.len())
 }
 

@@ -147,6 +147,11 @@ fn retention_owner_execution(
             summary.task_key, summary.committed, summary.unit, summary.batches
         )
     };
+    let timeout_count = summary
+        .archive_batches
+        .iter()
+        .map(|batch| batch.timeout_count)
+        .sum::<u64>();
     OwnedMaintenanceExecution {
         summary: summary_text,
         completion,
@@ -176,6 +181,7 @@ fn retention_owner_execution(
                 "hasMore": summary.has_more,
             },
             "archiveBatches": summary.archive_batches,
+            "timeoutCount": timeout_count,
             "sourceMaxInvocationId": summary.source_max_id,
             "waitReason": summary.wait_reason,
             "fatalError": summary.fatal_error,
