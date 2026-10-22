@@ -27,7 +27,7 @@ for (const width of [1280, 393]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       width,
     );
-    await page.goto("/#/system/tasks/retention_archive?demoTheme=light");
+    await page.goto("/#/system/tasks?demoTheme=light");
     for (const key of [
       "retention_archive",
       "pool_upstream_attempt_archive",
@@ -40,8 +40,9 @@ for (const width of [1280, 393]) {
       "raw_orphan_sweep",
       "prompt_cache_materialization",
     ]) {
-      await expect(page.locator(`a[href="#/system/tasks/${key}"]`)).toBeVisible();
+      await expect(page.locator(`a[href="#/system/tasks/${key}"]`).first()).toBeVisible();
     }
+    await page.goto("/#/system/tasks/retention_archive?demoTheme=light");
     await expect(page.getByText(/旧版组合范围/)).toBeVisible();
   });
 }
