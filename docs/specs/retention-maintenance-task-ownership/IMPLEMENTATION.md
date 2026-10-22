@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格和 shutdown observation 重放已补齐，当前代码候选为 95b95759，PR #1162 的 exact-head CI、迁移回放与正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
+- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量与 dry-run 接续约束已补齐，当前代码候选为 f28248f6，PR #1162 的 exact-head CI、迁移回放与新的正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
 
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
@@ -20,6 +20,7 @@
 - `REQ-RMO-011`, `REQ-RMO-013`, `REQ-RMO-014`：模型路由 owner 以真实剩余量决定接续，历史清理在后续批次失败时保留已提交行数，重试计划写入失败时 finalizer 继续使用已持久化的业务事实并按 run generation 保护 catch-up；七个 v2 owner 的实际工作观测、压力退避、归档批次明细和旧版范围显示均与独立 task key 对齐。暂停回归覆盖全部 v2 owner，避免新增默认任务绕过暂停契约。
 
 - REQ-RMO-005、REQ-RMO-011、REQ-RMO-013、REQ-RMO-014：第十六批让独立 invocation_detail_prune owner 复用 parallel-work minute coverage gate，在证明加载取消或预算停止时写入 deferred facts；失败 retry state 同时约束 catch-up 与正常周期触发，旧 finalizer 和 shutdown journal 均按 run generation 与完整 observation 保持重试意图。
+- REQ-RMO-005、REQ-RMO-011、REQ-RMO-013、REQ-RMO-014：第十七批修复重试排期的 move 后借用编译错误；为同步归档 worker 增加外部 no-progress watchdog 并保留 lease drain；把 raw 文件删除计量写入批次 observation；保留 identity/raw 的安全退避；在租约冲突排期失败时持久化重试意图；并让 dry-run 不生成真实清理 catch-up。
 
 ## Verification
 
@@ -38,6 +39,7 @@
 - 第十三批 CI 修复前的 PR head 在测试目标编译阶段暴露 `.shared()` 缺少 `FutureExt` 导入；新增显式测试导入后，失败归档重试与租约冲突事实回归均绑定到新的代码候选。随后 docs carrier `989b044e` 的 exact-head CI 暴露轻量迁移夹具仍期待 schema 隐式删除 5 条样本，以及 Clippy 的 `.bind(&finished_at)` 无必要借用；第十四批代码候选 `cb4c1bef` 已修复两项。其后 c55 的 exact-head stateful CI 暴露暂停测试仍只停用旧四项任务，第十五批代码候选 `cfe996f5` 已扩展到七个 v2 owner；本地允许的格式与差异检查通过，远端 CI、迁移回放和正式复审仍待验证。
 
 - 第十六批代码候选 95b95759 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付。1371a7da 的三次匹配 CI PR 运行均失败，不能作为当前候选证据；新头的 exact-head CI、迁移回放、fresh formal review 与当前 head 证据刷新仍待验证。
+- 第十七批代码候选 f28248f6 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付；026e37d9 的两次匹配 CI PR 运行均因 `at` move 后借用编译错误失败，不能作为当前候选证据。新头的 exact-head CI、迁移回放、fresh formal review 与当前 head 证据刷新仍待验证。
 
 ## Visual Evidence
 

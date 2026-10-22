@@ -141,7 +141,7 @@
     "description": "Add six independent retention-policy task rows, initialize their default schedules without overwriting operator overrides, persist ownership-version-2 result facts, retain bounded retry facts for failed or lease-conflicted owner runs, guard detail pruning behind parallel-work coverage, and keep history cleanup under the bounded cleanup owner instead of schema initialization.",
     "candidate_branch": "th/retention-maintenance-ownership",
     "candidate_base_sha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "candidate_head_sha": "95b95759d3f574f7adfc4b95cf9e4ba4be4bbb58",
+  "candidate_head_sha": "f28248f6c45c6822a4d8fa289a5273258069251a",
     "status": "implemented-pending-validation",
     "ddl_structural_changes": [],
     "dml_changes": [
@@ -150,13 +150,14 @@
       "Keep old composite retention records readable and use committed owner facts for catch-up bookkeeping without reconstructing historical mixed counts.",
       "Expose collected archive batch metrics in v2 owner details and guard catch-up and retry-plan writes by the current managed-task run generation.",
       "Require parallel-work minute coverage before independent irreversible invocation detail pruning, and preserve committed/deferred facts when proof loading is cancelled.",
-      "Persist owner task keys and full completion observations through terminal shutdown quarantine so replay can restore retry intent; failure eligibility also blocks normal schedule triggers until the retry deadline."
+    "Persist owner task keys and full completion observations through terminal shutdown quarantine so replay can restore retry intent; failure eligibility also blocks normal schedule triggers until the retry deadline.",
+    "Keep raw-file deletion counts in batch observations after later-batch failure, preserve independent safety retry state, persist lease-conflict schedule intent when the first write fails, prevent dry-run catch-up loops, and use an external no-progress watchdog for synchronous archive I/O."
     ],
     "durable_state_policy": "Additive only; no business-table schema change, no deletion or rewrite of deployed migration facts, and no synthetic historical owner runs.",
     "required_validation": [
       "Replay new and existing maintenance-store initialization with disabled controls and schedule overrides.",
       "Run lightweight, stateful-sqlite, and archive-file-io CI profiles plus format/check/clippy gates.",
-      "Complete read-only formal review and record the final commit/CI evidence before marking this follow-up validated."
+    "Complete read-only formal review and record the final commit/CI evidence before marking this follow-up validated."
     ]
   }
 }
