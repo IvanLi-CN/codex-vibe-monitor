@@ -244,6 +244,7 @@ fn quarantine_system_task_batch(
         .collect::<Vec<_>>();
     journal.quarantine_system_task_finishes(&finishes, &error)?;
     journal.remove_deferred_system_task_finishes(&run_ids);
+    journal.requeue_system_task_finishes_for_retry(&finishes, &replayed_run_ids);
     // The quarantine is durable and will be retried after restart; there is no in-process retry
     // path for a fresh deterministic failure, so do not leave unrelated tasks behind a global
     // gate. A replayed finish retains its owner-specific recovery fence until it is acknowledged.

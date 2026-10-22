@@ -494,6 +494,25 @@ impl TerminalJournal {
             .retain(|finish| !run_ids.contains(&finish.run_id));
     }
 
+    pub(crate) fn requeue_system_task_finishes_for_retry(
+        &mut self,
+        finishes: &[&BatchedSystemTaskFinish],
+        run_ids: &[i64],
+    ) {
+        let run_ids = run_ids.iter().copied().collect::<HashSet<_>>();
+        for finish in finishes {
+            if run_ids.contains(&finish.run_id)
+                && !self
+                    .deferred_system_task_finishes
+                    .iter()
+                    .any(|queued| queued.run_id == finish.run_id)
+            {
+                self.deferred_system_task_finishes
+                    .push_back((*finish).clone());
+            }
+        }
+    }
+
     pub(crate) fn acknowledge_system_task_finishes(&mut self, run_ids: &[i64]) -> Result<()> {
         let acknowledged = run_ids
             .iter()
@@ -3108,6 +3127,10 @@ mod tests {
         assert_eq!(replay[0].completion, finish.completion);
         assert_eq!(replay[0].core_completion, finish.core_completion);
         assert_eq!(replay[0].details, finish.details);
+        recovered.requeue_system_task_finishes_for_retry(&[&replay[0]], &[finish.run_id]);
+        let retry = recovered.take_system_task_finishes(1);
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].run_id, finish.run_id);
         recovered.defer_system_task_acknowledgements(&[finish.run_id]);
         assert_eq!(
             recovered

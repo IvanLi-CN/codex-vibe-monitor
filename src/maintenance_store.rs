@@ -188,6 +188,19 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     )
 }
 
+fn is_retention_owner_v2_task(key: &str) -> bool {
+    matches!(
+        key,
+        "retention_archive"
+            | "pool_upstream_attempt_archive"
+            | "forward_proxy_attempt_archive"
+            | "invocation_detail_prune"
+            | "quota_snapshot_compaction"
+            | "model_route_expiry"
+            | "task_run_history_cleanup"
+    )
+}
+
 pub(crate) struct TaskExecutionLease {
     task_key: String,
 }
@@ -3611,19 +3624,80 @@ impl MaintenanceStore {
 
     async fn recover_incomplete_runs_inner(&self) -> Result<u64> {
         let finished_at = format_utc_iso_millis(Utc::now());
-        let result = sqlx::query(
-            "UPDATE managed_task_runs
-             SET status='failed', finished_at=?, duration_ms=0,
-                 summary=COALESCE(summary, ?),
-                 error_detail=COALESCE(error_detail, ?)
-             WHERE status='running'",
+        let runs: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id,task_key,trigger_kind
+             FROM managed_task_runs
+             WHERE status='running'
+             ORDER BY id",
         )
-        .bind(&finished_at)
-        .bind("服务重启前运行未完成，已标记为失败")
-        .bind("服务重启时回收未完成运行")
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        for (run_id, task_key, trigger_kind) in &runs {
+            let owner_v2 = is_retention_owner_v2_task(task_key);
+            let details = owner_v2.then(|| {
+                let mut details = serde_json::json!({
+                    "ownershipVersion": 2,
+                    "ownerScope": task_key,
+                    "manual": trigger_kind == "manual",
+                    "result": "failed",
+                    "globalBacklogTotal": null,
+                    "total": null,
+                    "backlogRemaining": null,
+                    "discovered": 0,
+                    "selected": 0,
+                    "committed": 0,
+                    "processedCount": 0,
+                    "completed": 0,
+                    "selectedScope": {
+                        "scope": task_key,
+                        "unit": "unknown",
+                        "selected": 0,
+                        "committed": 0,
+                        "batches": 0,
+                        "rawFilesRemoved": 0,
+                        "hasMore": true,
+                    },
+                    "waitReason": "owner_failed",
+                    "fatalError": "服务重启时回收未完成运行",
+                    "elapsedMs": 0,
+                });
+                if trigger_kind != "manual" {
+                    details["scheduleRetryAfterSecs"] = serde_json::json!(300);
+                    details["scheduleRetryReason"] = serde_json::json!("owner_failed");
+                }
+                details
+            });
+            if owner_v2 && trigger_kind != "manual" {
+                self.finish_run_with_observation_and_retry(
+                    *run_id,
+                    "failed",
+                    &finished_at,
+                    0,
+                    Some("服务重启前运行未完成，已标记为失败"),
+                    Some("服务重启时回收未完成运行"),
+                    Some("failed"),
+                    None,
+                    details.as_ref(),
+                    300,
+                    "owner_failed",
+                )
+                .await?;
+            } else {
+                self.finish_run_with_observation(
+                    *run_id,
+                    "failed",
+                    &finished_at,
+                    0,
+                    Some("服务重启前运行未完成，已标记为失败"),
+                    Some("服务重启时回收未完成运行"),
+                    owner_v2.then_some("failed"),
+                    None,
+                    details.as_ref(),
+                )
+                .await?;
+            }
+        }
+        Ok(runs.len() as u64)
     }
 
     pub(crate) async fn validate_schedule(
@@ -7723,6 +7797,22 @@ mod tests {
         assert_eq!(row.0, "failed");
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
+        let recovered_owner: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT details, next_catchup_at, catchup_reason
+                 FROM managed_tasks
+                 JOIN managed_task_runs ON managed_task_runs.task_key=managed_tasks.task_key
+                 WHERE managed_task_runs.task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load recovered owner retry state");
+        let details: serde_json::Value =
+            serde_json::from_str(recovered_owner.0.as_deref().expect("owner details"))
+                .expect("decode recovered owner details");
+        assert_eq!(details["ownershipVersion"], 2);
+        assert_eq!(details["scheduleRetryReason"], "owner_failed");
+        assert!(recovered_owner.1.is_some());
+        assert_eq!(recovered_owner.2.as_deref(), Some("owner_failed"));
         let fresh_status = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
         )
