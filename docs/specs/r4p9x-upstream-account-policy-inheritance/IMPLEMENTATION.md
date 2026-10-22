@@ -27,11 +27,13 @@ Readable tag surfaces stay narrow.
 The account-pool UI is reduced to group/account policy editing plus read-only system tag visibility.
 
 - `/account-pool/tags` route and module navigation entry are removed
+- `/account-pool` defaults to the API-key transit surface; explicit `/account-pool/pool` and legacy `/account-pool/upstream-accounts` links remain the OAuth/Session surface
 - create flows no longer render tag fields for OAuth, batch OAuth, imported OAuth, or API key onboarding
 - detail editing no longer renders tag pickers, create-tag actions, or delete-tag actions
 - bulk add/remove tag actions are removed from the roster
 - account cards and detail drawers still display system tags as read-only badges
 - roster filtering still uses `usePoolTags`, but only against the system-tag directory
+- account roster chips use localized `policyBadges` labels; ordinary account metadata uses neutral tones while enabled, active, retry, error, and proxy states retain semantic tones
 
 The account detail Routing tab exposes final effective rules as field-level inline account overrides.
 

@@ -20,7 +20,7 @@ export default function AccountPoolLayout() {
     requestedUpstreamAccountId > 0;
 
   if (location.pathname === "/account-pool") {
-    return <Navigate to="/account-pool/pool" replace />;
+    return <Navigate to="/account-pool/transits" replace />;
   }
 
   return (
