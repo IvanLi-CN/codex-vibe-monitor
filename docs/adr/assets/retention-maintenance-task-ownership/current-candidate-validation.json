@@ -13,7 +13,7 @@
     "stop": "merge-ready",
     "repairBatchesUsed": 11,
     "prCreated": false,
-    "currentFormalReviewLaunched": false
+    "currentFormalReviewLaunched": true
   },
   "passed": {
     "rustSourceQuality": true,
@@ -110,9 +110,21 @@
     "scopeProofLocator": ".codex/evidence/retention-maintenance/repair7/retained-scope-proof.json"
   },
   "pending": [
-    "formalTier4Review",
     "postEvidenceRefreshCi"
   ],
+  "formalReview": {
+    "candidateSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
+    "reviewedHead": "2d52a2f2aed1e3cd20432502737b24c7ae064633",
+    "status": "passed-no-findings",
+    "lanes": [
+      "contract",
+      "state-concurrency",
+      "failure-data",
+      "test-platform",
+      "database-migration"
+    ],
+    "note": "All five formal review lanes found no consequential implementation defect. CI profiles and migration replay remain required and were not run locally under the repository validation contract."
+  },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
     "generation": 12,
@@ -129,7 +141,7 @@
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
     "previousCandidateSha": "17fb046653f554f4636780f05dcc9def42122d6b",
     "fixedFinding": "Route model expiry now uses the shared maintenance write admission and records its committed purge metrics before the post-commit coverage probe.",
-    "newFocusedRegression": "Rust format and diff checks pass; the focused owner-facts regression covers post-commit probe failure; model-route purge now gates through maintenance write admission; Storybook owner-facts coverage and mobile visual evidence remain current; CI profiles, migration replay, and final formal review remain pending.",
+    "newFocusedRegression": "Rust format and diff checks pass; the focused owner-facts regression covers post-commit probe failure; model-route purge now gates through maintenance write admission; Storybook owner-facts coverage and mobile visual evidence remain current; the five-lane formal review passed with no findings; CI profiles and migration replay remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -139,7 +151,7 @@
     "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
     "headSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
     "requiredCi": null,
-    "formalTier4Review": "pending",
+    "formalTier4Review": "passed-no-findings",
     "note": "candidate_head_sha binds the implementation commit; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this documentation refresh."
   },
   "empiricalAcceptance": {
