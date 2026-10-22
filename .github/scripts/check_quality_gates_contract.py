@@ -1167,7 +1167,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         require_exact_if(
             smoke_artifact_job,
-            "github.event_name == 'pull_request'",
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
             "ci-pr.yml.jobs.build-pr-smoke-artifacts",
         )
         require_job_and_steps_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")

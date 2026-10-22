@@ -826,7 +826,7 @@ jobs:
 
   build-pr-smoke-artifacts:
     name: PR Smoke Artifact Producer
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -990,7 +990,7 @@ jobs:
   retention-migration-validation:
     name: Retention Migration Validation
     needs: build-pr-smoke-artifacts
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
