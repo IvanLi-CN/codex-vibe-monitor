@@ -1288,7 +1288,7 @@ pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result
     Ok(())
 }
 
-pub(crate) async fn legacy_raw_blob_link_seed_completed(
+pub(super) async fn legacy_raw_blob_link_seed_completed(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<bool> {
     let migration_table_exists = sqlx::query_scalar::<_, i64>(

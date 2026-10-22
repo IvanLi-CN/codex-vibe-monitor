@@ -20,7 +20,7 @@ The schema source-quality extraction starts from main `5e7b63aa6fa209ae3459e6e7c
 
 The facade preserves the existing crate-visible helper paths and `ensure_schema` phase order, including schema locking, startup recovery, invocation/live setup, archive/retention setup, rollup backfills, summary coverage, runtime system setup, and revision maintenance. SQL text, transaction boundaries, error contexts, lock ownership, and migration marker names remain unchanged.
 
-The final repair keeps helpers that were private to the original `schema` module at `pub(super)` visibility for sibling modules, while retaining only the original crate-visible re-exports and prompt-cache trigger visibility.
+The final repair keeps helpers that were private to the original `schema` module, including `legacy_raw_blob_link_seed_completed`, at `pub(super)` visibility for sibling modules, while retaining only the original crate-visible re-exports and prompt-cache trigger visibility.
 
 All schema production files are below the 2,500-line target, so `src/schema.rs` is removed from the explicit policy inventory. The current policy now contains 23 entries (6 production and 17 test/helper) and 124 suppression declarations; the immutable preparation baseline remains 32 production and 23 test/helper candidates.
 

@@ -416,4 +416,4 @@ The schema extraction replaces the 6,793-line flat source with a 68-line facade 
 
 The policy removes `src/schema.rs` from the explicit inventory, reducing the current policy to 23 entries with 6 production and 17 test/helper candidates. The suppression inventory increases from 123 to 124 for one reasoned facade `expect` that retains compatibility re-exports whose callers are conditional or outside the local module. SQL, transaction boundaries, migration markers, locks, error contexts, public crate paths, tests, and runtime behavior remain unchanged.
 
-The follow-up repair narrows extracted intra-schema helpers back to `pub(super)` and preserves the original crate-visible re-export and prompt-cache trigger visibility contract.
+The follow-up repair narrows extracted intra-schema helpers, including `legacy_raw_blob_link_seed_completed`, back to `pub(super)` and preserves the original crate-visible re-export and prompt-cache trigger visibility contract.
