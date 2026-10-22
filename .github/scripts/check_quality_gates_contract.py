@@ -932,6 +932,11 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
 
     extract = step_run(step_config(job, "Extract candidate binary", where), f"{where}.steps['Extract candidate binary']")
     for fragment in (
+        "set -euo pipefail",
+        "mkdir -p .ci-smoke",
+        "tar -C .ci-smoke -xf",
+        "test -x .ci-smoke/codex-vibe-monitor",
+        "binary_sha256",
         "git rev-parse HEAD",
         "documentation_carrier_sha",
         "git rev-parse \"${checkout_sha}^2\"",
@@ -973,11 +978,19 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         "candidate-identity.json",
         "retention-migration-results/candidate.json",
         "retention-runtime-results/results.json",
+        "import json",
+        "import sys",
+        "identity = json.loads",
+        "upgrade = json.loads",
+        "runtime = json.loads",
+        "documentation_carrier_sha = sys.argv[4]",
+        "implementation_sha = sys.argv[5]",
         'identity["githubSha"] == identity["checkoutSha"]',
         'identity["documentationCarrierSha"] == documentation_carrier_sha',
         'identity["implementationCandidateSha"] == implementation_sha',
         'upgrade["candidateSha256"] == identity["candidateSha256"]',
         'runtime["candidateSha256"] == identity["candidateSha256"]',
+        "print(json.dumps(identity, sort_keys=True))",
     ):
         require(fragment in verify_step, f"{where} evidence verification must contain {fragment!r}")
 
