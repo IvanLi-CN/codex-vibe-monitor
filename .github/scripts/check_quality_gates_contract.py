@@ -954,27 +954,43 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
     ):
         require(fragment in extract, f"{where} candidate extraction must bind {fragment!r}")
 
-    fixture_step = step_run(step_config(job, "Generate released-source fixtures", where), f"{where}.steps['Generate released-source fixtures']")
+    fixture_where = f"{where}.steps['Generate released-source fixtures']"
+    fixture_command = require_command(
+        step_config(job, "Generate released-source fixtures", where),
+        ["python3", "scripts/generate-retention-maintenance-release-fixtures.py"],
+        fixture_where,
+        f"{where} must execute released-source fixture generation",
+    )
     require(
-        "scripts/generate-retention-maintenance-release-fixtures.py" in fixture_step
-        and "$RUNNER_TEMP/retention-migration-fixtures" in fixture_step,
+        "$RUNNER_TEMP/retention-migration-fixtures" in fixture_command,
         f"{where} must generate manifest-pinned released-source fixtures",
     )
-    upgrade_step = step_run(step_config(job, "Run released-source migration validation", where), f"{where}.steps['Run released-source migration validation']")
+    upgrade_where = f"{where}.steps['Run released-source migration validation']"
+    upgrade_command = require_command(
+        step_config(job, "Run released-source migration validation", where),
+        ["python3", "scripts/validate-retention-maintenance-upgrade.py"],
+        upgrade_where,
+        f"{where} must execute released-source migration validation",
+    )
     require(
-        "scripts/validate-retention-maintenance-upgrade.py" in upgrade_step
-        and "--candidate" in upgrade_step
-        and ".ci-smoke/codex-vibe-monitor" in upgrade_step
-        and "$RUNNER_TEMP/retention-migration-results" in upgrade_step,
+        "--candidate" in upgrade_command
+        and any(".ci-smoke/codex-vibe-monitor" in token for token in upgrade_command)
+        and "$RUNNER_TEMP/retention-migration-results" in upgrade_command,
         f"{where} must run released-source migration validation against the candidate binary",
     )
-    runtime_step = step_run(step_config(job, "Run runtime ownership validation", where), f"{where}.steps['Run runtime ownership validation']")
+    runtime_where = f"{where}.steps['Run runtime ownership validation']"
+    runtime_command = require_command(
+        step_config(job, "Run runtime ownership validation", where),
+        ["python3", "scripts/validate-retention-maintenance-runtime.py"],
+        runtime_where,
+        f"{where} must execute online ownership validation",
+    )
     require(
-        "scripts/validate-retention-maintenance-runtime.py" in runtime_step
-        and "v4.2.2" in runtime_step
-        and "--candidate" in runtime_step
-        and ".ci-smoke/codex-vibe-monitor" in runtime_step
-        and "--http-port 60081" in runtime_step,
+        "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" in runtime_command
+        and "--candidate" in runtime_command
+        and "$PWD/.ci-smoke/codex-vibe-monitor" in runtime_command
+        and "--http-port" in runtime_command
+        and "60081" in runtime_command,
         f"{where} must run online ownership validation against the candidate binary",
     )
     verify_step = step_run(step_config(job, "Verify candidate-bound migration evidence", where), f"{where}.steps['Verify candidate-bound migration evidence']")

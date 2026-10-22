@@ -51,6 +51,54 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
+retention_command_repo="$baseline_repo"
+
+expect_retention_command_rejected() {
+  local name="$1"
+  local needle="$2"
+  local replacement="$3"
+  local expected_error="$4"
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" "$needle" "$replacement" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle, replacement = sys.argv[2:4]
+if text.count(needle) != 1:
+    raise SystemExit(f"expected one retention command fixture for {needle!r}")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/$name.log"; then
+    echo "expected $name retention command fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "$expected_error" "$tmp_dir/$name.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_retention_command_rejected \
+  retention-fixture-comment \
+  '        run: python3 scripts/generate-retention-maintenance-release-fixtures.py --output-dir "$RUNNER_TEMP/retention-migration-fixtures"' \
+  $'        run: |\n          # python3 scripts/generate-retention-maintenance-release-fixtures.py --output-dir "$RUNNER_TEMP/retention-migration-fixtures"' \
+  "must contain at least one shell command"
+
+expect_retention_command_rejected \
+  retention-upgrade-comment \
+  '        run: python3 scripts/validate-retention-maintenance-upgrade.py --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-migration-results"' \
+  $'        run: |\n          # python3 scripts/validate-retention-maintenance-upgrade.py --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-migration-results"' \
+  "must contain at least one shell command"
+
+expect_retention_command_rejected \
+  retention-runtime-true \
+  '        run: python3 scripts/validate-retention-maintenance-runtime.py --source-fixture "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-runtime-results" --http-port 60081' \
+  '        run: true' \
+  "must be a non-empty string"
+
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
 mkdir -p "$observability_artifact_repo"
 cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
