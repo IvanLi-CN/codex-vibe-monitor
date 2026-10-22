@@ -69,6 +69,7 @@
 - 缺少 ID token 的 sub2api 记录在身份和有效期完整时沿用 Session 的合成身份载体，进入既有真实服务端验证与导入流程；该载体只适配现有持久化格式，不替代 access token 授权或验活。前后端单账号解析必须保持相同归一化规则，显式成员 ID 不得因原 ID token 未携带该字段而丢失。
 - 缺少成员 ID 的导入记录只允许匹配同样缺少成员 ID 且邮箱相同的历史账号；批内去重在无成员 ID 时同时使用账号 ID 与邮箱，避免共享账号下不同成员互相覆盖或被丢弃。
 - 服务端验证缓存只能复用源 ID、文件名和原始内容摘要完全一致的记录；导入新账号时必须在写事务内再次按成员身份匹配，避免输入替换或并发请求绕过去重。
+- 导入批次按成员逐条验证、探测和处理；单行校验或探测失败只标记该行并继续处理其他行。加密、数据库事务、提交或其他请求级持久化错误可能发生在前序行已提交之后，接口会返回请求级失败而不宣称整批原子；客户端可安全重试，服务端通过成员匹配和写事务内重查避免重复创建。
 - OAuth pool 路由：主进程直接根据请求路径调用内联 adapter，adapter 使用当前 access token 调用 `https://chatgpt.com/backend-api/codex` 并产出 OpenAI-compatible 响应。
 - API Key pool 路由：继续使用现有 `OPENAI_UPSTREAM_BASE_URL` / 账号级 `upstreamBaseUrl` 直连 reqwest 请求路径。
 - pool 消费链：不再要求上游一定是 `reqwest::Response`；统一从“状态码 + headers + body stream”抽象读取首包、透传 headers、记录 timings 与错误。

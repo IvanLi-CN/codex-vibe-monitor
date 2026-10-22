@@ -20,6 +20,22 @@ fn import_text_values(record: &ImportRecord, keys: &[&str]) -> Vec<String> {
         .collect()
 }
 
+fn ensure_identity_field_types(
+    record: &ImportRecord,
+    keys: &[&str],
+    field: &str,
+) -> Result<(), String> {
+    for key in keys {
+        if record
+            .get(*key)
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return Err(format!("{field} must be a string"));
+        }
+    }
+    Ok(())
+}
+
 fn ensure_identity_values_agree(
     field: &str,
     values: impl IntoIterator<Item = String>,
@@ -88,6 +104,28 @@ pub(super) fn normalize_sub2api_oauth_account(record: &ImportRecord) -> Result<V
     }) {
         return Err("id_token must be a JWT string".to_string());
     }
+    ensure_identity_field_types(credentials, &["email"], "email")?;
+    ensure_identity_field_types(record, &["email"], "email")?;
+    ensure_identity_field_types(
+        credentials,
+        &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+        "account_id",
+    )?;
+    ensure_identity_field_types(
+        record,
+        &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+        "account_id",
+    )?;
+    ensure_identity_field_types(
+        credentials,
+        &["chatgpt_user_id", "user_id", "chatgptUserId"],
+        "chatgpt_user_id",
+    )?;
+    ensure_identity_field_types(
+        record,
+        &["chatgpt_user_id", "user_id", "chatgptUserId"],
+        "chatgpt_user_id",
+    )?;
     ensure_identity_values_agree(
         "email",
         import_text_values(credentials, &["email"])

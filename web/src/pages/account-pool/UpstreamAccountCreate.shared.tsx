@@ -1165,7 +1165,30 @@ function buildImportedOauthCandidateFromSub2apiAccount(
       .map((value) => (caseInsensitive ? value.trim().toLowerCase() : value.trim()));
     return normalized.some((value) => value !== normalized[0]);
   };
+  const hasWronglyTypedImportedValues = (values: unknown[]) =>
+    values.some((value) => value != null && typeof value !== "string");
   const sourceLabel = firstImportedNonEmptyString(account.name, account.email) ?? "account";
+  if (hasWronglyTypedImportedValues(explicitEmailValues)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.emailMismatch"),
+      sourceLabel,
+    };
+  }
+  if (hasWronglyTypedImportedValues(explicitAccountIdValues)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.accountIdMismatch"),
+      sourceLabel,
+    };
+  }
+  if (hasWronglyTypedImportedValues(explicitUserIdValues)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.userIdMismatch"),
+      sourceLabel,
+    };
+  }
   if (hasConflictingImportedValues(explicitEmailValues, true)) {
     return {
       ok: false as const,

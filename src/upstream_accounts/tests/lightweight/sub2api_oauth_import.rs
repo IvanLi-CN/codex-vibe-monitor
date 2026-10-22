@@ -175,6 +175,31 @@ fn sub2api_oauth_rejects_wrongly_typed_identity_claims() {
 }
 
 #[test]
+fn sub2api_oauth_rejects_wrongly_typed_explicit_identity_fields() {
+    for (in_credentials, field, value, expected) in [
+        (true, "email", json!(123), "email"),
+        (false, "email", json!([]), "email"),
+        (true, "chatgpt_account_id", json!({}), "account_id"),
+        (false, "account_id", json!(false), "account_id"),
+        (true, "user_id", json!([]), "chatgpt_user_id"),
+        (false, "chatgptUserId", json!(123), "chatgpt_user_id"),
+    ] {
+        let mut request = sub2api_request(sub2api_credentials());
+        let mut record: Value = serde_json::from_str(&request.content).expect("fixture JSON");
+        if in_credentials {
+            record["credentials"][field] = value;
+        } else {
+            record[field] = value;
+        }
+        request.content = record.to_string();
+        let error = normalize_imported_oauth_credentials(&request)
+            .expect_err("reject wrongly typed explicit identity field");
+        assert!(error.contains(expected), "{error}");
+        assert!(error.contains("must be a string"), "{error}");
+    }
+}
+
+#[test]
 fn sub2api_oauth_accepts_numeric_token_expiry() {
     for expiry in [
         json!(1893456000),

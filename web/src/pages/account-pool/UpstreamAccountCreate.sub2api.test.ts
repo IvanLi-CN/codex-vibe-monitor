@@ -181,6 +181,23 @@ describe("sub2api OAuth import compatibility", () => {
     }
   });
 
+  it("rejects wrongly typed explicit identity fields", () => {
+    for (const [source, field, value, errorKey] of [
+      ["credentials", "email", 123, "emailMismatch"],
+      ["account", "email", [], "emailMismatch"],
+      ["credentials", "chatgpt_account_id", {}, "accountIdMismatch"],
+      ["account", "account_id", false, "accountIdMismatch"],
+      ["credentials", "user_id", [], "userIdMismatch"],
+      ["account", "chatgptUserId", 123, "userIdMismatch"],
+    ] as const) {
+      const input =
+        source === "credentials" ? account({ [field]: value }) : { ...account(), [field]: value };
+      const result = parse(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(errorKey);
+    }
+  });
+
   it.each([
     1893456000,
     "1893456000",
