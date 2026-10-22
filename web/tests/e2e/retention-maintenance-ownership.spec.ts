@@ -38,3 +38,26 @@ for (const width of [1280, 393]) {
     await expect(page.getByText(/旧版组合范围/)).toBeVisible();
   });
 }
+
+for (const width of [1280, 393]) {
+  test(`renders owner v2 facts inside the task detail page at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 852 });
+    await page.goto("/#/system/tasks/pool_upstream_attempt_archive?demoTheme=light");
+
+    await expect(
+      page.getByRole("heading", { name: "连接池上游尝试归档", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "最近运行", exact: true })).toBeVisible();
+
+    const facts = page.getByRole("region", { name: "保留 owner 运行事实", exact: true });
+    await expect(facts).toBeVisible();
+    await expect(facts).toContainText("实际运行 · 结果：完成");
+    await expect(facts).toContainText("pool_upstream_request_attempts:retention_policy");
+    await expect(facts).toContainText("pool attempt rows");
+    await expect(facts).toContainText("12,480");
+    await expect(facts).toContainText("覆盖：本轮窗口未发现更多候选");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+  });
+}
