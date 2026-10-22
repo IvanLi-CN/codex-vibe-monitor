@@ -34,23 +34,42 @@ OWNER_VERSIONS = {key: 2 for key in RETENTION_OWNERS}
 OWNER_VERSIONS.update({key: 1 for key in LEGACY_OWNERS})
 
 OWNER_FIXTURE_PREFIX = "retention-owner-fixture"
+OWNER_RAW_PATHS = {
+    "retention_archive": (
+        "raw/retention-owner-fixture-archive-request.json",
+        "raw/retention-owner-fixture-archive-response.json",
+    ),
+    "pool_upstream_attempt_archive": ("raw/retention-owner-fixture-pool-response.json",),
+    "invocation_detail_prune": ("raw/retention-owner-fixture-detail-response.json",),
+}
+OWNER_ARCHIVE_DATASETS = {
+    "retention_archive": "codex_invocations",
+    "pool_upstream_attempt_archive": "pool_upstream_request_attempts",
+    "forward_proxy_attempt_archive": "forward_proxy_attempts",
+    "invocation_detail_prune": "codex_invocations",
+    "quota_snapshot_compaction": "codex_quota_snapshots",
+}
 
 
 def seed_owner_candidates(root):
     old_archive = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     old_retained = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    raw_dir = root / "raw"
+    raw_dir.mkdir(exist_ok=True)
+    for relative_path in {path for paths in OWNER_RAW_PATHS.values() for path in paths}:
+        (root / relative_path).write_text(json.dumps({"fixture": relative_path}))
     with sqlite3.connect(root / "business.sqlite") as connection:
         connection.execute(
-            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response,detail_level,created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (f"{OWNER_FIXTURE_PREFIX}-archive", old_archive, "proxy", "completed", "{}", "{}", "full", old_archive),
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response,request_raw_path,response_raw_path,detail_level,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-archive", old_archive, "proxy", "completed", "{}", "{}", OWNER_RAW_PATHS["retention_archive"][0], OWNER_RAW_PATHS["retention_archive"][1], "full", old_archive),
         )
         connection.execute(
-            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response,detail_level,created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (f"{OWNER_FIXTURE_PREFIX}-detail", old_retained, "proxy", "completed", "{}", "{}", "full", old_retained),
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response,response_raw_path,detail_level,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-detail", old_retained, "proxy", "completed", "{}", "{}", OWNER_RAW_PATHS["invocation_detail_prune"][0], "full", old_retained),
         )
         connection.execute(
-            "INSERT INTO pool_upstream_request_attempts (invoke_id,occurred_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status) VALUES (?,?,?,?,?,?,?,?)",
-            (f"{OWNER_FIXTURE_PREFIX}-pool", old_retained, "https://fixture.invalid", "fixture", 1, 1, 1, "success"),
+            "INSERT INTO pool_upstream_request_attempts (invoke_id,occurred_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status,response_raw_path) VALUES (?,?,?,?,?,?,?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-pool", old_retained, "https://fixture.invalid", "fixture", 1, 1, 1, "success", OWNER_RAW_PATHS["pool_upstream_attempt_archive"][0]),
         )
         connection.execute(
             "INSERT INTO forward_proxy_attempts (proxy_key,occurred_at,is_success) VALUES (?,?,?)",
@@ -144,6 +163,26 @@ def file_facts(root):
     return facts
 
 
+def archive_manifest_facts(root, dataset):
+    with sqlite3.connect(root / "business.sqlite") as connection:
+        return connection.execute(
+            "SELECT file_path,sha256,status,row_count FROM archive_batches WHERE dataset=? ORDER BY id",
+            (dataset,),
+        ).fetchall()
+
+
+def assert_new_archive_manifests(root, dataset, before):
+    before_by_path = {row[0]: row[1:] for row in before}
+    changed = [row for row in archive_manifest_facts(root, dataset) if before_by_path.get(row[0]) != row[1:]]
+    assert changed, (dataset, before)
+    for file_path, sha256, status, row_count in changed:
+        archive_path = Path(file_path)
+        if not archive_path.is_absolute():
+            archive_path = root / archive_path
+        assert status == "completed" and row_count > 0 and archive_path.is_file(), (dataset, file_path, status, row_count)
+        assert sha256 == hashlib.sha256(archive_path.read_bytes()).hexdigest(), (dataset, file_path, sha256)
+
+
 def retention_command(task_key, dry_run):
     if task_key == "retention_archive":
         return ("--retention-dry-run" if dry_run else "--retention-run-once",)
@@ -157,6 +196,8 @@ def run_scoped_command(candidate, root, task_key, dry_run):
     before_business = business_facts(root)
     before_files = file_facts(root)
     before_owner_state = owner_candidate_state(root, task_key)
+    archive_dataset = OWNER_ARCHIVE_DATASETS.get(task_key)
+    before_archives = archive_manifest_facts(root, archive_dataset) if not dry_run and archive_dataset else []
     command = retention_command(task_key, dry_run)
     execute(candidate, root, *command)
     with sqlite3.connect(root / "maintenance.sqlite") as connection:
@@ -174,10 +215,16 @@ def run_scoped_command(candidate, root, task_key, dry_run):
     if dry_run:
         assert parsed.get("committed") == 0, (task_key, parsed)
         assert owner_candidate_state(root, task_key) == before_owner_state, (task_key, parsed)
+        if task_key in OWNER_RAW_PATHS:
+            assert parsed.get("rawFilesPlanned", 0) > 0, (task_key, parsed)
     else:
         assert parsed.get("committed", 0) > 0, (task_key, parsed)
         assert parsed.get("completion") in {"complete", "partial"}, (task_key, parsed)
         assert owner_candidate_state(root, task_key) < before_owner_state, (task_key, parsed)
+        if archive_dataset:
+            assert_new_archive_manifests(root, archive_dataset, before_archives)
+        for relative_path in OWNER_RAW_PATHS.get(task_key, ()):
+            assert not (root / relative_path).exists(), (task_key, relative_path)
     if dry_run:
         assert business_facts(root) == before_business, command
         assert file_facts(root) == before_files, command
@@ -287,7 +334,7 @@ def validate_source(candidate, source, target):
         connection.execute("DROP TRIGGER interrupted_owner_marker")
     execute(candidate, target, "maintenance", "invocation-identity-cleanup", "--dry-run")
     execute(candidate, target, "maintenance", "invocation-identity-cleanup", "--dry-run")
-    return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "all-retention-owner-previews-read-only", "all-retention-owner-one-shots-mutated-owner-fixtures", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
+    return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "all-retention-owner-previews-read-only", "all-retention-owner-one-shots-mutated-owner-fixtures-with-archive-raw-proofs", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
 
 
 def main():

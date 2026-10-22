@@ -192,7 +192,7 @@ def main():
     candidate = args.candidate.resolve()
     validate_unavailable(candidate, args.source_fixture, args.output_dir / "unavailable")
     validate_online(candidate, args.source_fixture, args.output_dir / "online", args.http_port)
-    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-all-retention-owner-scopes-mutated-owner-fixtures", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
+    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-all-retention-owner-scopes-mutated-owner-fixtures-with-archive-raw-proofs", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
     (args.output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results), flush=True)
 
