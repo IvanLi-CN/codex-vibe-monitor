@@ -954,6 +954,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Download PR smoke artifacts
         uses: actions/download-artifact@v7
@@ -1001,6 +1003,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Download PR smoke artifacts
         uses: actions/download-artifact@v7

@@ -899,6 +899,96 @@ def require_storybook_browser_install(workflow, workflow_path: str) -> None:
     )
 
 
+def require_retention_migration_validation_contract(workflow: dict[str, Any], expected_jobs: set[str]) -> None:
+    where = "ci-pr.yml.jobs.retention-migration-validation"
+    job = named_job_config(workflow, "retention-migration-validation", expected_jobs, "ci-pr.yml")
+    require(
+        job.get("needs") == "build-pr-smoke-artifacts",
+        f"{where} must depend on build-pr-smoke-artifacts",
+    )
+    require_exact_if(
+        job,
+        "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+        where,
+    )
+    require(job.get("timeout-minutes") == 60, f"{where}.timeout-minutes must stay 60")
+    require_job_and_steps_fail_closed(job, where)
+
+    producer = step_config(job, "Verify smoke artifact producer", where)
+    producer_env = require_mapping(producer.get("env"), f"{where}.steps['Verify smoke artifact producer'].env")
+    require(
+        producer_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}"
+        and producer.get("run") == 'test "$PRODUCER_RESULT" = success',
+        f"{where} must fail when the smoke artifact producer fails",
+    )
+    checkout = checkout_step(job, "Checkout", where)
+    require(checkout.get("fetch-depth") == 0, f"{where} Checkout must fetch the carrier parent")
+    download = uses_step_config(job, "Download PR smoke artifacts", "actions/download-artifact@v7", where)
+    require(
+        download.get("with", {}).get("name") == "pr-smoke-artifacts-${{ github.run_id }}"
+        and download.get("with", {}).get("path") == "${{ runner.temp }}/pr-smoke-artifacts",
+        f"{where} must download the current run's smoke artifact",
+    )
+
+    extract = step_run(step_config(job, "Extract candidate binary", where), f"{where}.steps['Extract candidate binary']")
+    for fragment in (
+        "git rev-parse HEAD",
+        "git rev-parse \"${checkout_sha}^\"",
+        "git diff --name-only",
+        "expected_files=",
+        "| sort",
+        "implementation_sha",
+        "candidate-identity.json",
+    ):
+        require(fragment in extract, f"{where} candidate extraction must bind {fragment!r}")
+
+    fixture_step = step_run(step_config(job, "Generate released-source fixtures", where), f"{where}.steps['Generate released-source fixtures']")
+    require(
+        "scripts/generate-retention-maintenance-release-fixtures.py" in fixture_step
+        and "$RUNNER_TEMP/retention-migration-fixtures" in fixture_step,
+        f"{where} must generate manifest-pinned released-source fixtures",
+    )
+    upgrade_step = step_run(step_config(job, "Run released-source migration validation", where), f"{where}.steps['Run released-source migration validation']")
+    require(
+        "scripts/validate-retention-maintenance-upgrade.py" in upgrade_step
+        and "--candidate" in upgrade_step
+        and ".ci-smoke/codex-vibe-monitor" in upgrade_step
+        and "$RUNNER_TEMP/retention-migration-results" in upgrade_step,
+        f"{where} must run released-source migration validation against the candidate binary",
+    )
+    runtime_step = step_run(step_config(job, "Run runtime ownership validation", where), f"{where}.steps['Run runtime ownership validation']")
+    require(
+        "scripts/validate-retention-maintenance-runtime.py" in runtime_step
+        and "v4.2.2" in runtime_step
+        and "--candidate" in runtime_step
+        and ".ci-smoke/codex-vibe-monitor" in runtime_step
+        and "--http-port 60081" in runtime_step,
+        f"{where} must run online ownership validation against the candidate binary",
+    )
+    verify_step = step_run(step_config(job, "Verify candidate-bound migration evidence", where), f"{where}.steps['Verify candidate-bound migration evidence']")
+    for fragment in (
+        "candidate-identity.json",
+        "retention-migration-results/candidate.json",
+        "retention-runtime-results/results.json",
+        'identity["githubSha"] == identity["checkoutSha"]',
+        'identity["implementationCandidateSha"] == implementation_sha',
+        'upgrade["candidateSha256"] == identity["candidateSha256"]',
+        'runtime["candidateSha256"] == identity["candidateSha256"]',
+    ):
+        require(fragment in verify_step, f"{where} evidence verification must contain {fragment!r}")
+
+    upload = uses_step_config(job, "Upload retention migration evidence", "actions/upload-artifact@v7", where)
+    upload_with = require_mapping(upload.get("with"), f"{where}.steps['Upload retention migration evidence'].with")
+    require(
+        upload_with.get("name") == "retention-migration-validation-${{ github.run_id }}"
+        and "candidate-identity.json" in str(upload_with.get("path", ""))
+        and "retention-migration-results" in str(upload_with.get("path", ""))
+        and "retention-runtime-results" in str(upload_with.get("path", ""))
+        and upload_with.get("if-no-files-found") == "error",
+        f"{where} must upload candidate-bound migration evidence fail-closed",
+    )
+
+
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
     workflow_name = workflow.get("name")
@@ -908,6 +998,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
     require_storybook_browser_install(workflow, "ci-pr.yml")
+    require_retention_migration_validation_contract(workflow, expected_jobs)
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")

@@ -830,6 +830,58 @@ jobs:
   retention-migration-validation:
     name: Retention Migration Validation
     runs-on: ubuntu-24.04
+    needs: build-pr-smoke-artifacts
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    timeout-minutes: 60
     steps:
-      - name: Fixture retention migration validation
-        run: true
+      - name: Verify smoke artifact producer
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download PR smoke artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts
+
+      - name: Extract candidate binary
+        run: |
+          checkout_sha="$(git rev-parse HEAD)"
+          implementation_sha="$(git rev-parse "${checkout_sha}^")"
+          changed_files="$(git diff --name-only "$implementation_sha" "$checkout_sha")"
+          expected_files="$(printf '%s\n' expected-a expected-b | sort)"
+          printf '%s\n' "$changed_files" "$expected_files" > "$RUNNER_TEMP/candidate-identity.json"
+
+      - name: Generate released-source fixtures
+        run: python3 scripts/generate-retention-maintenance-release-fixtures.py --output-dir "$RUNNER_TEMP/retention-migration-fixtures"
+
+      - name: Run released-source migration validation
+        run: python3 scripts/validate-retention-maintenance-upgrade.py --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-migration-results"
+
+      - name: Run runtime ownership validation
+        run: python3 scripts/validate-retention-maintenance-runtime.py --source-fixture "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-runtime-results" --http-port 60081
+
+      - name: Verify candidate-bound migration evidence
+        run: |
+          python3 - "$RUNNER_TEMP/candidate-identity.json" "$RUNNER_TEMP/retention-migration-results/candidate.json" "$RUNNER_TEMP/retention-runtime-results/results.json" <<'PY'
+          identity["githubSha"] == identity["checkoutSha"]
+          identity["implementationCandidateSha"] == implementation_sha
+          upgrade["candidateSha256"] == identity["candidateSha256"]
+          runtime["candidateSha256"] == identity["candidateSha256"]
+          PY
+
+      - name: Upload retention migration evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-migration-validation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/candidate-identity.json
+            ${{ runner.temp }}/retention-migration-results
+            ${{ runner.temp }}/retention-runtime-results
+          if-no-files-found: error
