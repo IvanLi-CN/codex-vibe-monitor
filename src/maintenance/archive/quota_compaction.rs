@@ -33,6 +33,10 @@ async fn quota_compaction_candidates(
         .unwrap_or(super::super::retention::RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET)
         .min(super::super::retention::RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET);
     if query_budget.is_zero() {
+        super::super::retention::retention_record_defer(
+            "quota_compaction",
+            "retention_work_budget",
+        );
         return Ok(None);
     }
     let deadline = Instant::now() + query_budget;
@@ -41,6 +45,7 @@ async fn quota_compaction_candidates(
         .as_ref()
         .is_some_and(CancellationToken::is_cancelled)
     {
+        super::super::retention::retention_record_defer("quota_compaction", "shutdown");
         return Ok(None);
     }
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -52,7 +57,13 @@ async fn quota_compaction_candidates(
     let mut connection =
         match tokio::time::timeout(query_budget, SqliteConnection::connect_with(&options)).await {
             Ok(connection) => connection?,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                super::super::retention::retention_record_defer(
+                    "quota_compaction",
+                    "retention_sqlite_query_budget",
+                );
+                return Ok(None);
+            }
         };
     let lock_budget_ms = deadline
         .saturating_duration_since(Instant::now())
@@ -112,6 +123,10 @@ async fn quota_compaction_candidates(
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
     {
+        super::super::retention::retention_record_defer(
+            "quota_compaction",
+            "retention_sqlite_query_budget",
+        );
         return Ok(None);
     }
     let mut candidates = result?;
@@ -162,6 +177,10 @@ pub(crate) async fn compact_old_quota_snapshots(
 
     'work_unit: {
         if !super::super::retention::batch_plan::archive_batch_can_start() {
+            super::super::retention::retention_record_defer(
+                "quota_compaction",
+                "retention_work_budget",
+            );
             break 'work_unit;
         }
         let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
@@ -180,7 +199,7 @@ pub(crate) async fn compact_old_quota_snapshots(
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(has_more);
+        let mut candidate_remaining_hint = has_more;
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
@@ -189,15 +208,27 @@ pub(crate) async fn compact_old_quota_snapshots(
 
         for (month_key, group) in by_month {
             if super::super::retention::retention_run_budget_expired() {
+                super::super::retention::retention_record_defer(
+                    "quota_compaction",
+                    "retention_work_budget",
+                );
                 break;
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let sizes =
                 super::super::retention::archive_source_row_sizes(pool, spec, &candidate_ids)
                     .await?;
+            let group_candidate_count = group.len();
             let group = super::super::retention::batch_plan::select_archive_batch(group, |row| {
                 sizes.get(&row.id).copied().unwrap_or(512)
             });
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                super::super::retention::batch_plan::record_candidate_window_has_more(
+                    spec.dataset,
+                    true,
+                );
+            }
             let mut observation = super::super::retention::batch_plan::BatchObservation::begin(
                 spec.dataset,
                 &month_key,
@@ -249,7 +280,13 @@ pub(crate) async fn compact_old_quota_snapshots(
                 if let Some(remaining) = remaining {
                     match tokio::time::timeout(remaining, &mut archive_future).await {
                         Ok(result) => result,
-                        Err(_) => return Ok((rows_archived, archive_batches)),
+                        Err(_) => {
+                            super::super::retention::retention_record_defer(
+                                "quota_compaction",
+                                "retention_work_budget",
+                            );
+                            return Ok((rows_archived, archive_batches));
+                        }
                     }
                 } else {
                     archive_future.await
@@ -258,6 +295,12 @@ pub(crate) async fn compact_old_quota_snapshots(
             let Some(mut archive_outcome) =
                 super::super::retention::retention_prepared_batch_or_deferred(archive_result)?
             else {
+                if super::super::retention::retention_run_defer_reason().is_none() {
+                    super::super::retention::retention_record_defer(
+                        "quota_compaction",
+                        "retention_write_admission",
+                    );
+                }
                 return Ok((rows_archived, archive_batches));
             };
             if archive_outcome.source_identity_sha256.as_deref() != Some(identity.as_str()) {
@@ -272,6 +315,10 @@ pub(crate) async fn compact_old_quota_snapshots(
             let prepare_elapsed = prepare_started.elapsed();
             observation.file_prepared(prepare_elapsed);
             if super::super::retention::retention_run_budget_expired() {
+                super::super::retention::retention_record_defer(
+                    "quota_compaction",
+                    "retention_work_budget",
+                );
                 return Ok((rows_archived, archive_batches));
             }
             let _archive_lock = super::super::retention::retention_archive_file_lock_async(
@@ -283,10 +330,10 @@ pub(crate) async fn compact_old_quota_snapshots(
                 super::super::retention::retention_archive_file_operation_deadline(),
             ) {
                 Ok(value) => value,
-                Err(_) => return Ok((rows_archived, archive_batches)),
+                Err(error) => return Err(error),
             };
             if actual_sha256 != archive_outcome.sha256 {
-                return Ok((rows_archived, archive_batches));
+                bail!("quota task-local archive artifact changed before conversion");
             }
             let mut committed_rows = 0;
             for (group, identity) in group
@@ -301,6 +348,12 @@ pub(crate) async fn compact_old_quota_snapshots(
                     )
                     .await?
                 else {
+                    if super::super::retention::retention_run_defer_reason().is_none() {
+                        super::super::retention::retention_record_defer(
+                            "quota_compaction",
+                            "retention_write_admission",
+                        );
+                    }
                     return Ok((rows_archived, archive_batches));
                 };
                 let execute_started = Instant::now();
@@ -320,6 +373,10 @@ pub(crate) async fn compact_old_quota_snapshots(
                 {
                     tx.rollback().await?;
                     drop(admission);
+                    super::super::retention::retention_record_defer(
+                        "quota_compaction",
+                        "archive_cleanup_not_active",
+                    );
                     return Ok((rows_archived, archive_batches));
                 }
                 if super::super::retention::archive_table_source_identity_sha256(

@@ -667,7 +667,7 @@ pub(crate) async fn prune_old_invocation_details(
             .bind(DETAIL_LEVEL_FULL)
             .bind(&prune_cutoff)
             .bind(&archive_cutoff)
-            .bind(candidate_limit as i64)
+            .bind(candidate_limit.saturating_add(1) as i64)
             .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -680,17 +680,18 @@ pub(crate) async fn prune_old_invocation_details(
         } else {
             candidates_query.await?
         };
-        batch_plan::record_discovered_rows("codex_invocation_details", candidates.len());
-        batch_plan::record_candidate_window_has_more(
-            "codex_invocation_details",
-            candidates.len() >= candidate_limit,
-        );
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows("codex_invocation_details", discovered);
+        batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
 
         if candidates.is_empty() {
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
@@ -706,9 +707,14 @@ pub(crate) async fn prune_old_invocation_details(
                 recovery_diagnostic.mark_budget();
                 break;
             }
+            let group_candidate_count = group.len();
             let group = select_archive_batch(group, |candidate| {
                 candidate.estimated_write_bytes.max(1) as usize
             });
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
+            }
             let mut batch_observation = batch_plan::BatchObservation::begin(
                 "codex_invocation_details",
                 &group_key,
@@ -1211,7 +1217,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             pool,
             cutoff,
             source_max_invocation_id,
-            Some(candidate_limit),
+            Some(candidate_limit.saturating_add(1)),
         );
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -1224,11 +1230,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
         } else {
             candidates_query.await?
         };
-        batch_plan::record_discovered_rows(spec.dataset, candidates.len());
-        batch_plan::record_candidate_window_has_more(
-            spec.dataset,
-            candidates.len() >= candidate_limit,
-        );
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
 
         if candidates.is_empty() {
             break 'work_unit;
@@ -1237,7 +1244,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
         workload::record_discovered_count(discovered_ids.len());
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
@@ -1253,6 +1260,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 recovery_diagnostic.mark_budget();
                 break;
             }
+            let group_candidate_count = group.len();
             let selection = select_invocation_archive_group(pool, group).await;
             let (ids, group) = match selection {
                 Ok(selection) => selection,
@@ -1268,6 +1276,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     return Err(error);
                 }
             };
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                batch_plan::record_candidate_window_has_more(spec.dataset, true);
+            }
             if ids.is_empty() || retention_run_budget_expired() {
                 if retention_run_budget_expired() {
                     recovery_diagnostic.mark_budget();
@@ -1911,7 +1923,7 @@ pub(crate) async fn archive_timestamped_dataset(
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
             .bind(&cutoff)
-            .bind(candidate_limit as i64)
+            .bind(candidate_limit.saturating_add(1) as i64)
             .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -1924,17 +1936,18 @@ pub(crate) async fn archive_timestamped_dataset(
         } else {
             candidates_query.await?
         };
-        batch_plan::record_discovered_rows(spec.dataset, candidates.len());
-        batch_plan::record_candidate_window_has_more(
-            spec.dataset,
-            candidates.len() >= candidate_limit,
-        );
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
 
         if candidates.is_empty() {
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
@@ -1953,9 +1966,14 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
+            let group_candidate_count = group.len();
             let group = select_archive_batch(group, |candidate| {
                 row_sizes.get(&candidate.id).copied().unwrap_or(512)
             });
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                batch_plan::record_candidate_window_has_more(spec.dataset, true);
+            }
             let mut batch_observation =
                 batch_plan::BatchObservation::begin(spec.dataset, &month_key, group.len());
             let prepare_started = Instant::now();
