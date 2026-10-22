@@ -3983,6 +3983,27 @@ export const UpstreamAccountModelContext: Story = {
         '[data-testid="dashboard-upstream-account-recent-model-context"]',
       ),
     ).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
+
+    const upstreamGrid = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="dashboard-upstream-account-grid"]',
+    );
+    const upstreamCards = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="dashboard-upstream-account-card"]',
+      ),
+    );
+    if (!upstreamGrid || upstreamCards.length === 0) {
+      throw new Error("missing upstream account compact overflow geometry anchors");
+    }
+    const gridRect = upstreamGrid.getBoundingClientRect();
+    const cardOverflowRight = Math.max(
+      ...upstreamCards.map((card) => card.getBoundingClientRect().right - gridRect.right),
+    );
+    await expect(canvasElement.ownerDocument.documentElement.scrollWidth).toBeLessThanOrEqual(
+      canvasElement.ownerDocument.documentElement.clientWidth + 1,
+    );
+    await expect(upstreamGrid.scrollWidth).toBeLessThanOrEqual(upstreamGrid.clientWidth + 1);
+    await expect(cardOverflowRight).toBeLessThanOrEqual(1);
   },
   parameters: {
     docs: {
