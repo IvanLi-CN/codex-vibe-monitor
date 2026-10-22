@@ -69,6 +69,7 @@ export const Deferred: Story = {
         selected: 256,
         committed: 0,
         batches: 0,
+        rawFilesPlanned: 3,
         hasMore: true,
       },
       waitReason: "retention_work_budget",
@@ -77,6 +78,8 @@ export const Deferred: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("只读预演 · 结果：已延期")).toBeVisible();
+    await expect(canvas.getByText("计划文件")).toBeVisible();
+    await expect(canvas.getByText("3")).toBeVisible();
     await expect(canvas.getByText("全局积压")).toBeVisible();
     await expect(canvas.getAllByText("未知").length).toBeGreaterThan(0);
     await expect(canvas.getByText("覆盖：窗口后仍有候选")).toBeVisible();

@@ -34,6 +34,10 @@ export function RetentionOwnerRunFacts({
   if (details?.ownershipVersion !== 2) return null;
 
   const selectedScope = details.selectedScope;
+  const rawFileLabel = details.dryRun ? "计划文件" : "释放文件";
+  const rawFileCount = details.dryRun
+    ? selectedScope?.rawFilesPlanned
+    : selectedScope?.rawFilesRemoved;
   const coverage =
     selectedScope?.hasMore == null
       ? "覆盖：未知"
@@ -61,7 +65,7 @@ export function RetentionOwnerRunFacts({
           ["本轮选中", count(details.selected ?? selectedScope?.selected)],
           ["本轮提交", count(details.committed ?? selectedScope?.committed)],
           ["批次", count(selectedScope?.batches)],
-          ["释放文件", count(selectedScope?.rawFilesRemoved)],
+          [rawFileLabel, count(rawFileCount)],
         ].map(([label, value]) => (
           <div key={label}>
             <dt className="text-base-content/60">{label}</dt>

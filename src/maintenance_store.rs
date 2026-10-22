@@ -4701,7 +4701,12 @@ impl MaintenanceStore {
                 .and_then(|value| value.get("waitReason"))
                 .and_then(serde_json::Value::as_str)
                 .filter(|value| !value.is_empty());
-            if !has_more && wait_reason.is_none() {
+            let dry_run = owner_details
+                .as_ref()
+                .and_then(|value| value.get("dryRun"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if !dry_run && !has_more && wait_reason.is_none() {
                 sqlx::query(
                     "UPDATE managed_tasks
                      SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?

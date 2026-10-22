@@ -129,7 +129,7 @@ fn retention_owner_execution(
         None
     } else if let Some(retry_after_secs) = retry_after_secs {
         Some(retry_after_secs)
-    } else if summary.has_more {
+    } else if summary.has_more == Some(true) {
         Some(1)
     } else {
         None
@@ -172,6 +172,7 @@ fn retention_owner_execution(
                 "committed": summary.committed,
                 "batches": summary.batches,
                 "rawFilesRemoved": summary.raw_files_removed,
+                "rawFilesPlanned": summary.raw_files_planned,
                 "hasMore": summary.has_more,
             },
             "archiveBatches": summary.archive_batches,

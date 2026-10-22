@@ -25,6 +25,23 @@ use crate::{
 
 static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const ARCHIVE_FILE_NO_PROGRESS_GRACE: Duration = Duration::from_secs(30);
+
+struct ArchiveFileProgress {
+    last_progress_at: Instant,
+    processed_bytes: u64,
+    total_input_bytes: Option<u64>,
+}
+
+impl ArchiveFileProgress {
+    fn new(total_input_bytes: Option<u64>) -> Self {
+        Self {
+            last_progress_at: Instant::now(),
+            processed_bytes: 0,
+            total_input_bytes,
+        }
+    }
+}
+
 #[derive(Default)]
 struct ActiveArchiveFileOperations {
     writers: HashSet<PathBuf>,
@@ -193,7 +210,7 @@ pub(crate) fn normalize_path_for_compare(path: &Path) -> PathBuf {
     }
 }
 
-pub(crate) fn count_existing_proxy_raw_paths(
+pub(crate) fn count_planned_proxy_raw_paths(
     raw_paths: &[Option<String>],
     raw_path_fallback_root: Option<&Path>,
 ) -> usize {
@@ -511,13 +528,14 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_elapsed_budget(
             timeout,
             shutdown: super::retention::retention_run_shutdown_token(),
         },
-        move |operation_deadline, shutdown, cancellation, _progress| {
+        move |operation_deadline, shutdown, cancellation, progress| {
             inflate_gzip_sqlite_file_with_elapsed_limits(
                 &source,
                 &destination,
                 operation_deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
             )
         },
     )
@@ -530,7 +548,7 @@ fn inflate_gzip_sqlite_file_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
-    progress: Option<&Mutex<Instant>>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open archive batch {}", source.display()))?;
@@ -542,12 +560,14 @@ fn inflate_gzip_sqlite_file_with_limits(
     copy_archive_bytes_with_limits(
         &mut decoder,
         &mut writer,
-        destination,
-        operation_deadline,
-        shutdown,
-        cancellation,
-        total_input_bytes,
-        progress,
+        ArchiveCopyLimits {
+            destination,
+            operation_deadline,
+            shutdown,
+            cancellation,
+            total_input_bytes,
+            progress,
+        },
     )
     .with_context(|| {
         format!(
@@ -566,12 +586,14 @@ fn inflate_gzip_sqlite_file_with_elapsed_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<bool> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open archive batch {}", source.display()))?;
     let mut decoder = GzDecoder::new(input);
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
+    let total_input_bytes = fs::metadata(source).ok().map(|metadata| metadata.len());
     let mut writer = io::BufWriter::new(output);
     let completed = copy_archive_bytes_with_elapsed_budget(
         &mut decoder,
@@ -579,6 +601,8 @@ fn inflate_gzip_sqlite_file_with_elapsed_limits(
         operation_deadline,
         shutdown,
         cancellation,
+        total_input_bytes,
+        progress,
     )
     .with_context(|| {
         format!(
@@ -627,7 +651,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
-    progress: Option<&Mutex<Instant>>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open temp archive db {}", source.display()))?;
@@ -639,12 +663,14 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     copy_archive_bytes_with_limits(
         &mut reader,
         &mut encoder,
-        destination,
-        operation_deadline,
-        shutdown,
-        cancellation,
-        total_input_bytes,
-        progress,
+        ArchiveCopyLimits {
+            destination,
+            operation_deadline,
+            shutdown,
+            cancellation,
+            total_input_bytes,
+            progress,
+        },
     )
     .with_context(|| {
         format!(
@@ -673,7 +699,7 @@ where
             Option<Instant>,
             Option<CancellationToken>,
             Arc<AtomicBool>,
-            Arc<Mutex<Instant>>,
+            Arc<Mutex<ArchiveFileProgress>>,
         ) -> Result<()>
         + Send
         + 'static,
@@ -730,7 +756,7 @@ where
             Option<Instant>,
             Option<CancellationToken>,
             Arc<AtomicBool>,
-            Arc<Mutex<Instant>>,
+            Arc<Mutex<ArchiveFileProgress>>,
         ) -> Result<T>
         + Send
         + 'static,
@@ -753,10 +779,10 @@ where
     let timed_out = Arc::clone(&lease.timed_out);
     let worker_timed_out = Arc::clone(&timed_out);
     let worker_cancellation = Arc::clone(&timed_out);
-    let progress = Arc::new(Mutex::new(Instant::now()));
+    let progress = Arc::new(Mutex::new(ArchiveFileProgress::new(None)));
     let worker_progress = Arc::clone(&progress);
     let _cancellation_signal = ArchiveFileOperationCancellationSignal(Arc::clone(&timed_out));
-    let worker = tokio::task::spawn_blocking(move || {
+    let mut worker = tokio::task::spawn_blocking(move || {
         let _lease = lease;
         let cleanup_paths = |paths: &[PathBuf]| {
             for path in paths {
@@ -801,7 +827,7 @@ where
                 tokio::time::sleep(ARCHIVE_FILE_NO_PROGRESS_GRACE).await;
                 let stale = progress
                     .lock()
-                    .map(|last_progress| last_progress.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE)
+                    .map(|state| state.last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE)
                     .unwrap_or(true);
                 if stale {
                     timed_out.store(true, Ordering::Release);
@@ -821,12 +847,32 @@ where
         None => match watchdog {
             Some(mut watchdog) => {
                 tokio::select! {
-                    joined = worker => {
+                    joined = &mut worker => {
                         watchdog.abort();
-                        joined
+                        let joined = joined.with_context(|| {
+                            format!("retention archive {operation} worker panicked")
+                        })?;
+                        return joined;
                     }
                     _ = &mut watchdog => {
-                        return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+                        match worker.await {
+                            Ok(_) => {}
+                            Err(error) => {
+                                return Err(anyhow!(
+                                    "retention archive {operation} worker panicked after no-progress watchdog: {error}"
+                                ));
+                            }
+                        }
+                        let (processed_bytes, total_input_bytes) = progress
+                            .lock()
+                            .map(|state| (state.processed_bytes, state.total_input_bytes))
+                            .unwrap_or((0, None));
+                        return Err(
+                            super::retention::retention_archive_file_operation_no_progress(
+                                processed_bytes,
+                                total_input_bytes,
+                            ),
+                        );
                     }
                 }
             }
@@ -836,19 +882,37 @@ where
     joined.with_context(|| format!("retention archive {operation} worker panicked"))?
 }
 
+struct ArchiveCopyLimits<'a> {
+    destination: &'a Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&'a CancellationToken>,
+    cancellation: Option<&'a AtomicBool>,
+    total_input_bytes: Option<u64>,
+    progress: Option<&'a Mutex<ArchiveFileProgress>>,
+}
+
 fn copy_archive_bytes_with_limits(
     reader: &mut impl io::Read,
     writer: &mut impl io::Write,
-    destination: &Path,
-    operation_deadline: Option<Instant>,
-    shutdown: Option<&CancellationToken>,
-    cancellation: Option<&AtomicBool>,
-    total_input_bytes: Option<u64>,
-    progress: Option<&Mutex<Instant>>,
+    limits: ArchiveCopyLimits<'_>,
 ) -> Result<()> {
+    let ArchiveCopyLimits {
+        destination,
+        operation_deadline,
+        shutdown,
+        cancellation,
+        total_input_bytes,
+        progress,
+    } = limits;
     let mut buffer = [0_u8; 64 * 1024];
     let mut processed_bytes = 0_u64;
     let mut last_progress_at = Instant::now();
+    if let Some(progress) = progress
+        && let Ok(mut state) = progress.lock()
+    {
+        state.total_input_bytes = total_input_bytes;
+        state.last_progress_at = last_progress_at;
+    }
     loop {
         if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
             || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
@@ -888,9 +952,10 @@ fn copy_archive_bytes_with_limits(
         processed_bytes = processed_bytes.saturating_add(read as u64);
         last_progress_at = Instant::now();
         if let Some(progress) = progress
-            && let Ok(mut last_progress) = progress.lock()
+            && let Ok(mut state) = progress.lock()
         {
-            *last_progress = last_progress_at;
+            state.processed_bytes = processed_bytes;
+            state.last_progress_at = last_progress_at;
         }
     }
 }
@@ -901,8 +966,17 @@ fn copy_archive_bytes_with_elapsed_budget(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    total_input_bytes: Option<u64>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<bool> {
     let mut buffer = [0_u8; 64 * 1024];
+    let mut processed_bytes = 0_u64;
+    if let Some(progress) = progress
+        && let Ok(mut state) = progress.lock()
+    {
+        state.total_input_bytes = total_input_bytes;
+        state.last_progress_at = Instant::now();
+    }
     loop {
         if shutdown.is_some_and(CancellationToken::is_cancelled)
             || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
@@ -922,6 +996,13 @@ fn copy_archive_bytes_with_elapsed_budget(
             return Err(super::retention::retention_write_deferred(
                 "historical_rollup_archive_inflate",
             ));
+        }
+        processed_bytes = processed_bytes.saturating_add(read as u64);
+        if let Some(progress) = progress
+            && let Ok(mut state) = progress.lock()
+        {
+            state.processed_bytes = processed_bytes;
+            state.last_progress_at = Instant::now();
         }
         if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(false);
@@ -962,7 +1043,34 @@ pub(crate) fn sha256_hex_file_with_deadline(path: &Path, deadline: Instant) -> R
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(crate) fn sha256_hex_file_with_progress_guard(path: &Path) -> Result<String> {
+pub(crate) async fn sha256_hex_file_with_operation_budget(path: &Path) -> Result<String> {
+    let path = path.to_path_buf();
+    run_archive_file_work_with_operation_budget(
+        "archive_file_hash",
+        Vec::new(),
+        vec![path.clone()],
+        Vec::new(),
+        Vec::new(),
+        move |deadline, shutdown, cancellation, progress| {
+            sha256_hex_file_with_progress_guard(
+                &path,
+                deadline,
+                shutdown.as_ref(),
+                Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
+            )
+        },
+    )
+    .await
+}
+
+fn sha256_hex_file_with_progress_guard(
+    path: &Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&CancellationToken>,
+    cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
+) -> Result<String> {
     let mut file = fs::File::open(path)
         .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
     let total_input_bytes = file.metadata().ok().map(|metadata| metadata.len());
@@ -970,12 +1078,23 @@ pub(crate) fn sha256_hex_file_with_progress_guard(path: &Path) -> Result<String>
     let mut buf = [0_u8; 8192];
     let mut processed_bytes = 0_u64;
     let mut last_progress_at = Instant::now();
+    if let Some(progress) = progress
+        && let Ok(mut state) = progress.lock()
+    {
+        state.total_input_bytes = total_input_bytes;
+        state.last_progress_at = last_progress_at;
+    }
     loop {
-        if super::retention::retention_run_budget_expired() {
+        if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
+            || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
             return Err(super::retention::retention_archive_file_operation_budget_exhausted());
         }
-        if super::retention::retention_run_shutdown_token()
-            .is_some_and(|shutdown| shutdown.is_cancelled())
+        if shutdown.is_some_and(CancellationToken::is_cancelled)
+            || (shutdown.is_none()
+                && super::retention::retention_run_shutdown_token()
+                    .is_some_and(|shutdown| shutdown.is_cancelled()))
         {
             return Err(super::retention::retention_write_deferred(
                 "archive_file_hash",
@@ -996,6 +1115,12 @@ pub(crate) fn sha256_hex_file_with_progress_guard(path: &Path) -> Result<String>
         hasher.update(&buf[..read]);
         processed_bytes = processed_bytes.saturating_add(read as u64);
         last_progress_at = Instant::now();
+        if let Some(progress) = progress
+            && let Ok(mut state) = progress.lock()
+        {
+            state.processed_bytes = processed_bytes;
+            state.last_progress_at = last_progress_at;
+        }
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

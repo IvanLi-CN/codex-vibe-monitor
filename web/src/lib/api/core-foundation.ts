@@ -2991,6 +2991,7 @@ export interface ManagedTaskRunDetails {
     committed?: number | null;
     batches?: number | null;
     rawFilesRemoved?: number | null;
+    rawFilesPlanned?: number | null;
     hasMore?: boolean | null;
   } | null;
   conversationIdentitiesChecked?: number | null;

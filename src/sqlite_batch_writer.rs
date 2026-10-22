@@ -4736,6 +4736,25 @@ pub(crate) async fn flush_pending_batch_inner(
 
     if let Some(store) = maintenance_store {
         for finish in batch.system_task_finishes.values() {
+            if let Some(details) = finish.details.as_ref()
+                && let (Some(seconds), Some(reason)) = (
+                    details
+                        .get("scheduleRetryAfterSecs")
+                        .and_then(serde_json::Value::as_i64),
+                    details
+                        .get("scheduleRetryReason")
+                        .and_then(serde_json::Value::as_str),
+                )
+            {
+                store
+                    .schedule_owned_work_for_run(
+                        &finish.task_key,
+                        finish.run_id,
+                        seconds,
+                        reason,
+                    )
+                    .await?;
+            }
             if let Err(error) = store
                 .finish_run_with_observation(
                     finish.run_id,
@@ -4756,25 +4775,6 @@ pub(crate) async fn flush_pending_batch_inner(
                     "failed to finalize task history in maintenance database"
                 );
                 return Err(error);
-            }
-            if let Some(details) = finish.details.as_ref()
-                && let (Some(seconds), Some(reason)) = (
-                    details
-                        .get("scheduleRetryAfterSecs")
-                        .and_then(serde_json::Value::as_i64),
-                    details
-                        .get("scheduleRetryReason")
-                        .and_then(serde_json::Value::as_str),
-                )
-            {
-                store
-                    .schedule_owned_work_for_run(
-                        &finish.task_key,
-                        finish.run_id,
-                        seconds,
-                        reason,
-                    )
-                    .await?;
             }
         }
     }

@@ -137,10 +137,11 @@ pub(crate) struct RetentionOwnerRunSummary {
     pub(crate) batches: usize,
     pub(crate) archive_batches: Vec<RetentionBatchMetrics>,
     pub(crate) raw_files_removed: usize,
+    pub(crate) raw_files_planned: usize,
     pub(crate) completion: &'static str,
     pub(crate) wait_reason: Option<String>,
     pub(crate) fatal_error: Option<String>,
-    pub(crate) has_more: bool,
+    pub(crate) has_more: Option<bool>,
     pub(crate) elapsed_ms: u64,
 }
 
@@ -158,10 +159,11 @@ impl RetentionOwnerRunSummary {
             batches: 0,
             archive_batches: Vec::new(),
             raw_files_removed: 0,
+            raw_files_planned: 0,
             completion: "complete",
             wait_reason: None,
             fatal_error: None,
-            has_more: false,
+            has_more: None,
             elapsed_ms: 0,
         }
     }
@@ -233,7 +235,7 @@ fn apply_retention_owner_post_commit_error(
     summary.discovered = discovered;
     summary.selected = committed;
     summary.committed = committed;
-    summary.has_more = true;
+    summary.has_more = Some(true);
     apply_retention_owner_error(summary, error);
 }
 
@@ -311,7 +313,23 @@ fn apply_retention_owner_batch_error(
     error: &anyhow::Error,
 ) {
     record_retention_owner_batch_facts(summary, dataset);
+    if let Some(has_more) = batch_plan::candidate_window_has_more(dataset) {
+        summary.has_more = Some(has_more);
+    }
     apply_retention_owner_error(summary, error);
+}
+
+fn set_retention_owner_raw_file_facts(
+    summary: &mut RetentionOwnerRunSummary,
+    raw_files: usize,
+    dry_run: bool,
+) {
+    if dry_run {
+        summary.raw_files_planned = raw_files;
+        summary.raw_files_removed = 0;
+    } else {
+        summary.raw_files_removed = raw_files;
+    }
 }
 
 fn apply_retention_owner_success(
@@ -328,11 +346,11 @@ fn apply_retention_owner_success(
     summary.committed = committed;
     summary.batches = batches;
     summary.raw_files_removed = raw_files_removed;
-    summary.has_more = has_more;
+    summary.has_more = Some(has_more);
     if let Some(reason) = retention_run_defer_reason() {
         summary.wait_reason = Some(reason);
     }
-    summary.completion = if summary.wait_reason.is_some() || summary.has_more {
+    summary.completion = if summary.wait_reason.is_some() || summary.has_more == Some(true) {
         if summary.committed > 0 {
             "partial"
         } else {
@@ -514,10 +532,11 @@ async fn run_invocation_archive_owner_inner(
                 raw_files_removed,
                 has_more,
             );
+            set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
         Err(error) => {
             record_retention_owner_batch_facts(&mut summary, "codex_invocations");
-            summary.has_more =
+            summary.has_more = Some(
                 match remaining_invocation_archive_rows(pool, &cutoff, source_max_id).await {
                     Ok(remaining) => remaining > 0,
                     Err(observation_error) => {
@@ -527,12 +546,13 @@ async fn run_invocation_archive_owner_inner(
                         );
                         true
                     }
-                };
+                },
+            );
             apply_retention_owner_error(&mut summary, &error);
         }
     }
     if summary.wait_reason.is_some() && summary.completion == "complete" {
-        summary.completion = if summary.committed > 0 || summary.has_more {
+        summary.completion = if summary.committed > 0 || summary.has_more == Some(true) {
             "partial"
         } else {
             "deferred"
@@ -579,6 +599,7 @@ async fn run_timestamped_archive_owner(
                 raw_files_removed,
                 batch_plan::candidate_window_has_more(dataset).unwrap_or(false),
             );
+            set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
         Err(error) => apply_retention_owner_batch_error(&mut summary, dataset, &error),
     }
@@ -626,6 +647,7 @@ async fn run_invocation_detail_prune_owner(
                 raw_files_removed,
                 batch_plan::candidate_window_has_more("codex_invocation_details").unwrap_or(false),
             );
+            set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
         Err(error) => {
             apply_retention_owner_batch_error(&mut summary, "codex_invocation_details", &error)
@@ -790,7 +812,7 @@ async fn run_task_run_history_cleanup_owner(
             summary.batches = committed
                 .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS - 1)
                 / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS;
-            summary.has_more = true;
+            summary.has_more = Some(true);
             if let Some(partial) = error.downcast_ref::<SystemTaskRunRetentionPartialError>() {
                 apply_retention_owner_error(&mut summary, &partial.cause);
             } else {
@@ -918,7 +940,13 @@ pub(crate) async fn run_retention_owner_task(
                                     .await;
                                     let archive_batches = batch_plan::TASK_BATCH_METRICS
                                         .with(|metrics| metrics.borrow().clone());
-                                    (result, archive_batches)
+                                    let candidate_window_has_more =
+                                        batch_plan::TASK_CANDIDATE_WINDOWS.with(|windows| {
+                                            let windows = windows.borrow();
+                                            (!windows.is_empty())
+                                                .then(|| windows.values().any(|has_more| *has_more))
+                                        });
+                                    (result, archive_batches, candidate_window_has_more)
                                 }),
                             ),
                         ),
@@ -928,7 +956,7 @@ pub(crate) async fn run_retention_owner_task(
         )
         .await;
     match result {
-        (Ok(mut summary), archive_batches) => {
+        (Ok(mut summary), archive_batches, candidate_window_has_more) => {
             summary.archive_batches = archive_batches;
             summary.raw_files_removed = summary.raw_files_removed.max(
                 summary
@@ -937,6 +965,14 @@ pub(crate) async fn run_retention_owner_task(
                     .map(|batch| batch.raw_files_removed)
                     .sum(),
             );
+            if summary.has_more.is_none() {
+                summary.has_more = candidate_window_has_more;
+            }
+            if dry_run {
+                summary.raw_files_planned =
+                    summary.raw_files_planned.max(summary.raw_files_removed);
+                summary.raw_files_removed = 0;
+            }
             let run_seconds = started_at.elapsed().as_secs_f64();
             for batch in &mut summary.archive_batches {
                 batch.committed_rows_per_second =
@@ -944,7 +980,7 @@ pub(crate) async fn run_retention_owner_task(
             }
             Ok(summary.finish(started_at))
         }
-        (Err(error), archive_batches) => {
+        (Err(error), archive_batches, candidate_window_has_more) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
             summary.archive_batches = archive_batches;
             summary.raw_files_removed = summary
@@ -952,6 +988,7 @@ pub(crate) async fn run_retention_owner_task(
                 .iter()
                 .map(|batch| batch.raw_files_removed)
                 .sum();
+            summary.has_more = candidate_window_has_more;
             apply_retention_owner_error(&mut summary, &error);
             Ok(summary.finish(started_at))
         }
@@ -2321,8 +2358,23 @@ mod owner_fact_tests {
         assert_eq!(summary.discovered, 12);
         assert_eq!(summary.selected, 5);
         assert_eq!(summary.committed, 5);
-        assert!(summary.has_more);
+        assert_eq!(summary.has_more, Some(true));
         assert_eq!(summary.completion, "failed");
         assert!(summary.fatal_error.is_some());
+    }
+
+    #[test]
+    fn dry_run_raw_file_facts_are_planned_not_removed() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "invocation_detail_prune",
+            "codex_invocation_details",
+            "rows",
+        );
+
+        set_retention_owner_raw_file_facts(&mut summary, 3, true);
+
+        assert_eq!(summary.raw_files_removed, 0);
+        assert_eq!(summary.raw_files_planned, 3);
+        assert_eq!(summary.has_more, None);
     }
 }

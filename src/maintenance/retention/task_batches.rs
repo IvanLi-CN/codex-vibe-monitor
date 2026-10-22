@@ -645,7 +645,7 @@ pub(crate) async fn prune_old_invocation_details(
         return Ok((
             candidates.len(),
             by_group.len(),
-            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+            count_planned_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
         ));
     }
 
@@ -1205,7 +1205,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         return Ok((
             candidates.len(),
             by_group.len(),
-            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+            count_planned_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
             std::collections::HashSet::new(),
         ));
     }
