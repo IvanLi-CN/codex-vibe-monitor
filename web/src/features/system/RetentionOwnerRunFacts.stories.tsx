@@ -64,7 +64,7 @@ export const Deferred: Story = {
       selected: 256,
       committed: 0,
       selectedScope: {
-        scope: "expired quota snapshots",
+        scope: "pool_upstream_request_attempts:retention_policy",
         unit: "rows",
         selected: 256,
         committed: 0,
