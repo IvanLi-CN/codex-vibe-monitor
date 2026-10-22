@@ -4772,6 +4772,7 @@ impl MaintenanceStore {
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await?;
+        let mut transaction = self.pool.begin().await?;
         let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
             .bind(status)
             .bind(finished_at)
@@ -4783,7 +4784,7 @@ impl MaintenanceStore {
             .bind(core_completion)
             .bind(&details)
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow!("managed task run {id} was not found"));
@@ -4791,19 +4792,9 @@ impl MaintenanceStore {
         let automatic: bool =
             sqlx::query_scalar("SELECT trigger_kind!='manual' FROM managed_task_runs WHERE id=?")
                 .bind(id)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *transaction)
                 .await?;
-        if automatic && task_key.as_deref() == Some("retention_archive") {
-            self.update_retention_catchup_after_finish(
-                id,
-                completion,
-                details.as_deref(),
-                &format_utc_iso_millis(Utc::now()),
-            )
-            .await?;
-            self.sync_retention_progress_schedule().await?;
-        }
-        if automatic
+        let should_clear_owner_catchup = automatic
             && owner_v2
             && matches!(
                 task_key.as_deref(),
@@ -4817,40 +4808,49 @@ impl MaintenanceStore {
                 )
             )
             && matches!(completion, Some("complete") | Some("no-work"))
-        {
-            let owner_details = details
+            && details
                 .as_deref()
-                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
-            let has_more = owner_details
-                .as_ref()
-                .and_then(|value| value.get("selectedScope"))
-                .and_then(|scope| scope.get("hasMore"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let wait_reason = owner_details
-                .as_ref()
-                .and_then(|value| value.get("waitReason"))
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty());
-            let dry_run = owner_details
-                .as_ref()
-                .and_then(|value| value.get("dryRun"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if !dry_run && !has_more && wait_reason.is_none() {
-                sqlx::query(
-                    "UPDATE managed_tasks
-                     SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?
-                     WHERE task_key=? AND enabled!=0
-                       AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
-                )
-                .bind(finished_at)
-                .bind(task_key.as_deref().expect("matched retention owner"))
-                .bind(task_key.as_deref().expect("matched retention owner"))
-                .bind(id)
-                .execute(&self.pool)
-                .await?;
-            }
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .is_some_and(|owner_details| {
+                    let has_more = owner_details
+                        .get("selectedScope")
+                        .and_then(|scope| scope.get("hasMore"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let wait_reason = owner_details
+                        .get("waitReason")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty());
+                    let dry_run = owner_details
+                        .get("dryRun")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    !dry_run && !has_more && wait_reason.is_none()
+                });
+        if should_clear_owner_catchup {
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?
+                 WHERE task_key=? AND enabled!=0
+                   AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+            )
+            .bind(finished_at)
+            .bind(task_key.as_deref().expect("matched retention owner"))
+            .bind(task_key.as_deref().expect("matched retention owner"))
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        if automatic && task_key.as_deref() == Some("retention_archive") {
+            self.update_retention_catchup_after_finish(
+                id,
+                completion,
+                details.as_deref(),
+                &format_utc_iso_millis(Utc::now()),
+            )
+            .await?;
+            self.sync_retention_progress_schedule().await?;
         }
         if automatic
             && completion == Some("completed")

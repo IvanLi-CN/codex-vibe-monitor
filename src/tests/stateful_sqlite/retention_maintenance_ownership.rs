@@ -79,6 +79,60 @@ async fn ownership_v2_persists_committed_as_processed_count() {
 }
 
 #[tokio::test]
+async fn ownership_v2_finalization_clears_catchup_with_current_run_generation() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "pool_upstream_attempt_archive";
+    sqlx::query(
+        "UPDATE managed_tasks
+         SET next_catchup_at='2000-01-01T00:00:00.000Z',catchup_reason='backlog_remaining'
+         WHERE task_key=?",
+    )
+    .bind(task_key)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let run_id = store
+        .begin_run(task_key, "2026-10-01T00:00:00.000Z", "catchup", None)
+        .await
+        .unwrap();
+
+    store
+        .finish_run_with_observation(
+            run_id,
+            "success",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "committed": 0,
+                "selectedScope": {"committed": 0, "hasMore": false},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let state: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT runs.status,tasks.next_catchup_at,tasks.catchup_reason
+         FROM managed_task_runs runs
+         JOIN managed_tasks tasks ON tasks.task_key=runs.task_key
+         WHERE runs.id=?",
+    )
+    .bind(run_id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, ("success".to_string(), None, None));
+}
+
+#[tokio::test]
 async fn failed_retention_archive_run_schedules_bounded_retry() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();
