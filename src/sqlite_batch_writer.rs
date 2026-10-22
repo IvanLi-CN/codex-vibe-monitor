@@ -3415,15 +3415,14 @@ async fn flush_pending_batch_accounted(
     if !completed_system_task_ids.is_empty()
         && let Ok(mut guard) = terminal_journal.lock()
         && let Some(journal) = guard.as_mut()
+        && let Err(err) = journal.acknowledge_system_task_finishes(&completed_system_task_ids)
     {
-        if let Err(err) = journal.acknowledge_system_task_finishes(&completed_system_task_ids) {
-            journal.defer_system_task_acknowledgements(&completed_system_task_ids);
-            warn!(
-                error = %err,
-                completed_system_task_count = completed_system_task_ids.len(),
-                "failed to acknowledge recovered system-task finishes; scheduled retry"
-            );
-        }
+        journal.defer_system_task_acknowledgements(&completed_system_task_ids);
+        warn!(
+            error = %err,
+            completed_system_task_count = completed_system_task_ids.len(),
+            "failed to acknowledge recovered system-task finishes; scheduled retry"
+        );
     }
     let discard_non_retryable_p2 = result.as_ref().is_some_and(|retained| {
         retained.failed
