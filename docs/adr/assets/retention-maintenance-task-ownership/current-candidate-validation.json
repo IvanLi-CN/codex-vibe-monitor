@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-  "codeCandidateSha": "c509edd5a3f4f66b61ff248c091c9cb55382b4b1",
+  "codeCandidateSha": "c509edd5e916644b8118a288e9ee38f9f517d9b4",
   "documentationCarrier": {
-    "codeCandidateSha": "c509edd5a3f4f66b61ff248c091c9cb55382b4b1",
+    "codeCandidateSha": "c509edd5e916644b8118a288e9ee38f9f517d9b4",
     "identity": "the signed documentation-only commit containing this record",
     "scope": "This record is a documentation carrier for the immediately preceding signed code candidate; the carrier contains no source or workflow changes and does not change the validated source tree."
   },
@@ -23,7 +23,7 @@
   "currentHeadCi": {
     "workflow": "CI PR",
     "runId": null,
-    "headSha": "c509edd5a3f4f66b61ff248c091c9cb55382b4b1",
+    "headSha": "c509edd5e916644b8118a288e9ee38f9f517d9b4",
     "status": "pending"
   },
   "passed": {
@@ -126,8 +126,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "c509edd5a3f4f66b61ff248c091c9cb55382b4b1",
-    "reviewedHead": "c509edd5a3f4f66b61ff248c091c9cb55382b4b1",
+    "candidateSha": "c509edd5e916644b8118a288e9ee38f9f517d9b4",
+    "reviewedHead": "c509edd5e916644b8118a288e9ee38f9f517d9b4",
     "status": "pending",
     "lanes": [],
     "findings": [],
@@ -157,7 +157,7 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-    "headSha": "c509edd5a3f4f66b61ff248c091c9cb55382b4b1",
+    "headSha": "c509edd5e916644b8118a288e9ee38f9f517d9b4",
     "requiredCi": {
       "workflow": "CI PR",
       "runId": null,
