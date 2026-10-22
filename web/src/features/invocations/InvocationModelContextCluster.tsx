@@ -261,7 +261,7 @@ export function InvocationModelContextCluster({
         {fastIndicator ? (
           <span
             data-model-context-part="fast"
-            className="flex w-[7px] shrink-0 items-center justify-center overflow-hidden"
+            className="flex w-[7px] shrink-0 items-center justify-center"
           >
             {fastIndicator}
           </span>

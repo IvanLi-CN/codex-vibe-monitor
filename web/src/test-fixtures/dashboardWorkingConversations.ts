@@ -136,10 +136,12 @@ export function buildWorkingConversationsResponse({
   currentFirstTokenMs = 740,
   currentTtfbMs = null,
   gpt56Current = false,
+  mismatchCurrent = false,
 }: {
   currentFirstTokenMs?: number | null;
   currentTtfbMs?: number | null;
   gpt56Current?: boolean;
+  mismatchCurrent?: boolean;
 } = {}) {
   const conversations = [
     createConversation("wc-current-1", [
@@ -154,14 +156,21 @@ export function buildWorkingConversationsResponse({
         tUpstreamTtfbMs: currentTtfbMs,
         tUpstreamStreamMs: null,
         tTotalMs: null,
-        ...(gpt56Current
+        ...(mismatchCurrent
           ? {
-              model: "gpt-5.6-sol",
+              model: "gpt-6.1-luna",
               requestModel: "gpt-5.6-sol",
-              responseModel: "gpt-5.6-sol",
+              responseModel: "gpt-6.1-luna",
               reasoningEffort: "max",
             }
-          : {}),
+          : gpt56Current
+            ? {
+                model: "gpt-5.6-sol",
+                requestModel: "gpt-5.6-sol",
+                responseModel: "gpt-5.6-sol",
+                reasoningEffort: "max",
+              }
+            : {}),
       }),
       createPreview({
         id: 2,

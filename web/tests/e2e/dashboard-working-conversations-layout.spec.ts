@@ -326,6 +326,12 @@ test.describe("Dashboard working conversations responsive layout", () => {
           effortToFastGap: fastPartRect ? fastPartRect.left - effortTextRect.right : null,
           effortToFastVisibleGap:
             fastVisibleLeft == null ? null : fastVisibleLeft - effortTextRect.right,
+          fastVisibleWithinPart:
+            fastVisibleLeft != null &&
+            fastVisibleRight != null &&
+            fastPartRect != null &&
+            fastVisibleLeft >= fastPartRect.left - 0.5 &&
+            fastVisibleRight <= fastPartRect.right + 0.5,
           generationText: generation.textContent,
           modelIconCenterDelta:
             modelIconRect && modelIconContainerRect
@@ -424,7 +430,10 @@ test.describe("Dashboard working conversations responsive layout", () => {
   });
 
   test("keeps three slots and records inside a narrow viewport", async ({ page }) => {
-    await installDashboardRoutes(page, { gpt56Current: true });
+    await installDashboardRoutes(page, {
+      gpt56Current: true,
+      mismatchCurrent: true,
+    });
     await page.setViewportSize({ width: 393, height: 852 });
     await page.goto("/#/dashboard");
 
@@ -508,6 +517,12 @@ test.describe("Dashboard working conversations responsive layout", () => {
           fastPathBox && fastPathTransform
             ? new DOMPoint(fastPathBox.x, fastPathBox.y).matrixTransform(fastPathTransform).x
             : null;
+        const fastVisibleRight =
+          fastPathBox && fastPathTransform
+            ? new DOMPoint(fastPathBox.x + fastPathBox.width, fastPathBox.y).matrixTransform(
+                fastPathTransform,
+              ).x
+            : null;
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
           Math.max(
             Math.abs(
@@ -557,6 +572,11 @@ test.describe("Dashboard working conversations responsive layout", () => {
           effortToFastGap: fastPartRect.left - effortTextRect.right,
           effortToFastVisibleGap:
             fastVisibleLeft == null ? null : fastVisibleLeft - effortTextRect.right,
+          fastVisibleWithinPart:
+            fastVisibleLeft != null &&
+            fastVisibleRight != null &&
+            fastVisibleLeft >= fastPartRect.left - 0.5 &&
+            fastVisibleRight <= fastPartRect.right + 0.5,
           generationText: generation.textContent,
           modelIconCenterDelta:
             modelIconRect && modelIconContainerRect
@@ -639,6 +659,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           (context.effortToFastVisibleGap ?? Number.NEGATIVE_INFINITY) <= 4.5,
       ),
     ).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.fastVisibleWithinPart)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.internalDividerCount === 0)).toBe(
       true,
     );

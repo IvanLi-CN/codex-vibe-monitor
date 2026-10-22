@@ -327,7 +327,7 @@ export function renderFastIndicator(
     <span
       className={cn(
         "inline-flex flex-none items-center justify-center",
-        options?.compact ? "h-3.5 w-[7px] overflow-hidden" : "h-4 w-4",
+        options?.compact ? "h-3.5 w-[7px]" : "h-4 w-4",
         isEffective ? "text-amber-500" : "text-base-content/50",
       )}
       title={t(titleKey)}
