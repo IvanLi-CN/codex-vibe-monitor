@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 24,
-    "suppression_entries": 123
+    "inventory_entries": 23,
+    "suppression_entries": 124
   },
   "loc_targets": {
     "production": 2500,
@@ -17,12 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/schema.rs",
-      "role": "production",
-      "line_budget": 6793,
-      "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
       "path": "src/sqlite_batch_writer.rs",
@@ -158,6 +152,12 @@
     }
   ],
   "suppressions": [
+    {
+      "path": "src/schema.rs",
+      "kind": "expect",
+      "declaration": "#[expect( unused_imports, reason = \"Schema facade re-exports preserve crate-visible migration and query helper paths.\" )]",
+      "reason": "Retain this targeted expect for compatibility re-exports in the schema facade; remove it when all preserved helper paths have direct crate callers."
+    },
     {
       "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
       "kind": "expect",

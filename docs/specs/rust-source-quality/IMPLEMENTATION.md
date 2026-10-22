@@ -7,12 +7,22 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 24 current explicit file budgets (7 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 23 current explicit file budgets (6 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
   `.github/workflows/ci-main.yml` delegate Rust source quality to the same
   runner while retaining the existing lint job name and check topology.
+
+## Schema Extraction
+
+The schema source-quality extraction starts from main `5e7b63aa6fa209ae3459e6e7c943008ebaf40041` and replaces the 6,793-line `src/schema.rs` with a 68-line facade plus seven named modules: compatibility, invocation/live projections, archive/retention, rollups/statistics, runtime system, summary coverage, and the existing prompt-cache trigger module.
+
+The facade preserves the existing crate-visible helper paths and `ensure_schema` phase order, including schema locking, startup recovery, invocation/live setup, archive/retention setup, rollup backfills, summary coverage, runtime system setup, and revision maintenance. SQL text, transaction boundaries, error contexts, lock ownership, and migration marker names remain unchanged.
+
+The final repair keeps helpers that were private to the original `schema` module, including `legacy_raw_blob_link_seed_completed`, at `pub(super)` visibility for sibling modules, while retaining only the original crate-visible re-exports and prompt-cache trigger visibility.
+
+All schema production files are below the 2,500-line target, so `src/schema.rs` is removed from the explicit policy inventory. The current policy now contains 23 entries (6 production and 17 test/helper) and 124 suppression declarations; the immutable preparation baseline remains 32 production and 23 test/helper candidates.
 
 The prompt-cache conversation query governance extraction removes `src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs` from the selected inventory after reducing it to 10 lines, reuses the existing 1,402-line `snapshots.rs`, and assigns the other stateful tests to `metadata_and_history.rs` (1,536 lines), `statistics.rs` (617), `activity_windows.rs` (923), `pagination.rs` (681), `runtime_and_cache.rs` (903), and `test_support.rs` (16). It registers `response_payload_content_encodings.rs` (85 lines) in lightweight and `payload_metadata_backfills.rs` (591 lines) in archive/file I/O. The 60 existing tests remain exactly once with their identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup; the only fixture deduplication is the three identical count-mode row inserters, and the two parent wrappers now live in private `test_support.rs`. The final candidate also removes an unused archive-test import without changing behavior. That extraction stage left the policy at 36 entries (19 production and 17 test/helper) with 117 suppressions and immutable preparation counts 32/23; the current inventory is summarized above.
 
@@ -377,8 +387,8 @@ Formal validation of this proposed contract remains pending. Formal25's full lig
 
 ## Inventory Contract
 
-The policy has 10 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 27 paths; a long path absent from the inventory is
+The policy has 6 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
+The checker only reads those 23 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
