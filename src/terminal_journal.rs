@@ -319,6 +319,7 @@ pub(crate) struct TerminalJournal {
     pending_since: Option<Instant>,
     system_task_quarantine_ids: HashSet<i64>,
     replayed_system_task_ids: HashSet<i64>,
+    system_task_recovery_task_keys: HashMap<i64, String>,
     system_task_ack_retry_ids: HashSet<i64>,
     deferred_system_task_finishes: VecDeque<BatchedSystemTaskFinish>,
     last_sync_at: Instant,
@@ -431,6 +432,8 @@ impl TerminalJournal {
             }
             newly_indexed_ids.push(finish.run_id);
             self.replayed_system_task_ids.insert(finish.run_id);
+            self.system_task_recovery_task_keys
+                .insert(finish.run_id, finish.task_key.clone());
             newly_deferred_finishes.push((*finish).clone());
             let entry = QuarantineEntry {
                 run_id: finish.run_id,
@@ -451,6 +454,7 @@ impl TerminalJournal {
                 for run_id in newly_indexed_ids {
                     self.system_task_quarantine_ids.remove(&run_id);
                     self.replayed_system_task_ids.remove(&run_id);
+                    self.system_task_recovery_task_keys.remove(&run_id);
                 }
                 return Err(err).context("failed to append system-task quarantine");
             }
@@ -458,6 +462,7 @@ impl TerminalJournal {
                 for run_id in newly_indexed_ids {
                     self.system_task_quarantine_ids.remove(&run_id);
                     self.replayed_system_task_ids.remove(&run_id);
+                    self.system_task_recovery_task_keys.remove(&run_id);
                 }
                 return Err(err).context("failed to append system-task quarantine delimiter");
             }
@@ -467,6 +472,7 @@ impl TerminalJournal {
             for run_id in newly_indexed_ids {
                 self.system_task_quarantine_ids.remove(&run_id);
                 self.replayed_system_task_ids.remove(&run_id);
+                self.system_task_recovery_task_keys.remove(&run_id);
             }
             return Err(err).context("failed to sync system-task quarantine");
         }
@@ -509,6 +515,8 @@ impl TerminalJournal {
         let acknowledged_ids = acknowledged.into_iter().collect::<HashSet<_>>();
         self.replayed_system_task_ids
             .retain(|run_id| !acknowledged_ids.contains(run_id));
+        self.system_task_recovery_task_keys
+            .retain(|run_id, _| !acknowledged_ids.contains(run_id));
         self.system_task_ack_retry_ids
             .retain(|run_id| !acknowledged_ids.contains(run_id));
         self.deferred_system_task_finishes
@@ -978,6 +986,10 @@ impl TerminalJournal {
             .iter()
             .map(|finish| finish.run_id)
             .collect();
+        let system_task_recovery_task_keys = deferred_system_task_finishes
+            .iter()
+            .map(|finish| (finish.run_id, finish.task_key.clone()))
+            .collect();
         let mut journal = Self {
             directory,
             current_file: open_append_file(&current_path)?,
@@ -1004,6 +1016,7 @@ impl TerminalJournal {
             pending_since,
             system_task_quarantine_ids,
             replayed_system_task_ids,
+            system_task_recovery_task_keys,
             system_task_ack_retry_ids: HashSet::new(),
             deferred_system_task_finishes,
             last_sync_at: Instant::now(),
@@ -1789,10 +1802,31 @@ impl TerminalJournal {
         !self.deferred_system_task_finishes.is_empty() || !self.replayed_system_task_ids.is_empty()
     }
 
+    pub(crate) fn system_task_recovery_blocked_task_keys(&self) -> HashSet<String> {
+        let mut task_keys = self
+            .deferred_system_task_finishes
+            .iter()
+            .map(|finish| finish.task_key.clone())
+            .collect::<HashSet<_>>();
+        task_keys.extend(
+            self.replayed_system_task_ids
+                .iter()
+                .filter_map(|run_id| self.system_task_recovery_task_keys.get(run_id))
+                .cloned(),
+        );
+        task_keys
+    }
+
+    pub(crate) fn system_task_recovery_replayed(&self, run_id: i64) -> bool {
+        self.replayed_system_task_ids.contains(&run_id)
+    }
+
     pub(crate) fn forget_system_task_recovery_for_runs(&mut self, run_ids: &[i64]) {
         let run_ids = run_ids.iter().copied().collect::<HashSet<_>>();
         self.replayed_system_task_ids
             .retain(|run_id| !run_ids.contains(run_id));
+        self.system_task_recovery_task_keys
+            .retain(|run_id, _| !run_ids.contains(run_id));
         self.system_task_ack_retry_ids
             .retain(|run_id| !run_ids.contains(run_id));
     }
@@ -3061,6 +3095,11 @@ mod tests {
 
         let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
         assert!(recovered.system_task_recovery_pending());
+        assert!(
+            recovered
+                .system_task_recovery_blocked_task_keys()
+                .contains(&finish.task_key)
+        );
         let replay = recovered.take_system_task_finishes(1);
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].run_id, finish.run_id);
@@ -3077,6 +3116,11 @@ mod tests {
             1
         );
         assert!(!recovered.system_task_recovery_pending());
+        assert!(
+            recovered
+                .system_task_recovery_blocked_task_keys()
+                .is_empty()
+        );
         assert!(recovered.take_system_task_finishes(1).is_empty());
         drop(recovered);
 

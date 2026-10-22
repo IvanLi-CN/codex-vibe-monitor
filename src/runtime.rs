@@ -1964,11 +1964,19 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         continue;
                     }
                     // Replayed system-task finishes can carry the only durable retry intent for
-                    // an interrupted generation, so resolve them before admitting new work.
-                    if state.sqlite_batch_writer.system_task_recovery_pending() {
+                    // an interrupted generation. Keep those owner keys fenced while allowing
+                    // unrelated managed tasks to continue dispatching.
+                    let Some(blocked_task_keys) = state
+                        .sqlite_batch_writer
+                        .system_task_recovery_blocked_task_keys()
+                    else {
                         continue;
-                    }
-                    let has_dispatch_work = match store.probe_due_or_requested_runs().await {
+                    };
+                    let blocked_task_keys = blocked_task_keys.into_iter().collect::<Vec<_>>();
+                    let has_dispatch_work = match store
+                        .probe_due_or_requested_runs_excluding(&blocked_task_keys)
+                        .await
+                    {
                         Ok(has_work) => has_work,
                         Err(error) => {
                             warn!(error = %error, "managed task dispatcher failed to probe for work");
@@ -1978,10 +1986,16 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     if !has_dispatch_work {
                         continue;
                     }
-                    if let Err(error) = store.enqueue_due_runs().await {
+                    if let Err(error) = store
+                        .enqueue_due_runs_excluding(&blocked_task_keys)
+                        .await
+                    {
                         warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
                     }
-                    let claim = match store.claim_requested_run().await {
+                    let claim = match store
+                        .claim_requested_run_excluding(&blocked_task_keys)
+                        .await
+                    {
                         Ok(claim) => claim,
                         Err(error) => {
                             warn!(error = %error, "managed task dispatcher failed to claim a requested run");

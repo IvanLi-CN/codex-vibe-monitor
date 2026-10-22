@@ -46,7 +46,9 @@ def verify_part(
             or config.get("acceptanceContractDigest") != trusted_contract_digest
             or config.get("acceptanceHarnessDigest") != trusted_harness_digest):
         raise AcceptanceHarnessIdentityError("trusted acceptance harness identity mismatch")
-    if (config.get("candidateAcceptanceContractDigest") != candidate_contract_digest
+    if (candidate_contract_digest != trusted_contract_digest
+            or candidate_harness_digest != trusted_harness_digest
+            or config.get("candidateAcceptanceContractDigest") != candidate_contract_digest
             or config.get("candidateAcceptanceHarnessDigest") != candidate_harness_digest):
         raise AcceptanceHarnessIdentityError("candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
     if (context["runnerEnvironment"] != "github-hosted" or context["evidenceLocator"] != expected["evidence_locator"]

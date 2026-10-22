@@ -1841,16 +1841,12 @@ impl SqliteBatchWriter {
             })
     }
 
-    pub(crate) fn system_task_recovery_pending(&self) -> bool {
-        self.terminal_journal
-            .lock()
-            .ok()
-            .and_then(|journal| {
-                journal
-                    .as_ref()
-                    .map(TerminalJournal::system_task_recovery_pending)
-            })
-            .unwrap_or(true)
+    pub(crate) fn system_task_recovery_blocked_task_keys(&self) -> Option<HashSet<String>> {
+        self.terminal_journal.lock().ok().and_then(|journal| {
+            journal
+                .as_ref()
+                .map(TerminalJournal::system_task_recovery_blocked_task_keys)
+        })
     }
 
     pub(crate) fn start_terminal_journal_recovery(&self) -> TerminalJournalStats {
@@ -3540,11 +3536,22 @@ fn quarantine_system_task_batch(
         .iter()
         .map(|finish| finish.run_id)
         .collect::<Vec<_>>();
+    let replayed_run_ids = run_ids
+        .iter()
+        .copied()
+        .filter(|run_id| journal.system_task_recovery_replayed(*run_id))
+        .collect::<Vec<_>>();
     journal.quarantine_system_task_finishes(&finishes, &error)?;
     journal.remove_deferred_system_task_finishes(&run_ids);
     // The quarantine is durable and will be retried after restart; there is no in-process retry
-    // path for a deterministic failure, so do not leave unrelated tasks behind a global gate.
-    journal.forget_system_task_recovery_for_runs(&run_ids);
+    // path for a fresh deterministic failure, so do not leave unrelated tasks behind a global
+    // gate. A replayed finish retains its owner-specific recovery fence until it is acknowledged.
+    let fresh_run_ids = run_ids
+        .iter()
+        .copied()
+        .filter(|run_id| !replayed_run_ids.contains(run_id))
+        .collect::<Vec<_>>();
+    journal.forget_system_task_recovery_for_runs(&fresh_run_ids);
     Ok(batch.system_task_finishes.len())
 }
 

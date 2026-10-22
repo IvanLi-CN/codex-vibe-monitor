@@ -5,7 +5,7 @@ use crate::{AppConfig, OnceCell, Result, Utc, anyhow, format_utc_iso_millis};
 use chrono::{Datelike, Duration as ChronoDuration, Timelike};
 use serde::Serialize;
 use sqlx::{
-    FromRow, Pool, Sqlite,
+    FromRow, Pool, QueryBuilder, Sqlite,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
@@ -86,6 +86,22 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "prompt_cache_materialization",
 ];
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn push_task_key_exclusion(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    column: &str,
+    excluded_task_keys: &[String],
+) {
+    if excluded_task_keys.is_empty() {
+        return;
+    }
+    query.push(" AND ").push(column).push(" NOT IN (");
+    let mut separated = query.separated(", ");
+    for task_key in excluded_task_keys {
+        separated.push_bind(task_key);
+    }
+    query.push(")");
+}
 
 pub(crate) async fn observe_store_write<T>(
     operation: StoreOperation,
@@ -3421,18 +3437,29 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
-        let has_requested_run: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM managed_task_runs WHERE status='requested')",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        if !has_requested_run {
+        self.claim_requested_run_excluding(&[]).await
+    }
+
+    pub(crate) async fn claim_requested_run_excluding(
+        &self,
+        excluded_task_keys: &[String],
+    ) -> Result<Option<(i64, String, String, String)>> {
+        let mut requested_query = QueryBuilder::<Sqlite>::new(
+            "SELECT EXISTS(SELECT 1 FROM managed_task_runs WHERE status='requested'",
+        );
+        push_task_key_exclusion(&mut requested_query, "task_key", excluded_task_keys);
+        requested_query.push(")");
+        let has_requested_run: i64 = requested_query
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
+        if has_requested_run == 0 {
             record_store_write_event(StoreOperation::Run, WakeOutcome::Noop);
             return Ok(None);
         }
         let (claim, retired_requested_runs) = observe_store_write_with_outcome(
             StoreOperation::Run,
-            self.claim_requested_run_inner(),
+            self.claim_requested_run_inner(excluded_task_keys),
             |(claim, _)| {
                 if claim.is_some() {
                     WakeOutcome::Committed
@@ -3449,24 +3476,49 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn probe_due_or_requested_runs(&self) -> Result<bool> {
+        self.probe_due_or_requested_runs_excluding(&[]).await
+    }
+
+    pub(crate) async fn probe_due_or_requested_runs_excluding(
+        &self,
+        excluded_task_keys: &[String],
+    ) -> Result<bool> {
         let now_text = format_utc_iso_millis(Utc::now());
-        let has_work = sqlx::query_scalar::<_, i64>(
+        let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT EXISTS(
                  SELECT 1
                  FROM managed_task_runs
-                 WHERE status='requested'
-                 UNION ALL
+                 WHERE status='requested'",
+        );
+        push_task_key_exclusion(&mut query, "task_key", excluded_task_keys);
+        query.push(
+            " UNION ALL
                  SELECT 1
                  FROM managed_tasks
-                 WHERE enabled=1 AND is_manual=0
+                 WHERE enabled=1 AND is_manual=0",
+        );
+        push_task_key_exclusion(&mut query, "managed_tasks.task_key", excluded_task_keys);
+        query.push(
+            "
                    AND NOT EXISTS(
                        SELECT 1
                        FROM maintenance_owner_retry_state retry
                        WHERE retry.task_key=managed_tasks.task_key
-                         AND retry.next_eligible_at>?
-                   )
-                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=?)
-                     OR (next_catchup_at IS NOT NULL AND next_catchup_at<=?))
+                         AND retry.next_eligible_at>",
+        );
+        query.push_bind(&now_text);
+        query.push(
+            ")
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=",
+        );
+        query.push_bind(&now_text);
+        query.push(
+            ")
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at<=",
+        );
+        query.push_bind(&now_text);
+        query.push(
+            "))
                    AND NOT EXISTS(
                        SELECT 1
                        FROM managed_task_runs active
@@ -3474,21 +3526,21 @@ impl MaintenanceStore {
                          AND active.status IN ('running','requested')
                    )
              )",
-        )
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(&now_text)
-        .fetch_one(&self.pool)
-        .await?;
+        );
+        let has_work = query
+            .build_query_scalar::<i64>()
+            .fetch_one(&self.pool)
+            .await?;
         Ok(has_work != 0)
     }
 
     async fn claim_requested_run_inner(
         &self,
+        excluded_task_keys: &[String],
     ) -> Result<(Option<(i64, String, String, String)>, bool)> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
-        let retired_requested_runs = sqlx::query(
+        let mut retire_query = QueryBuilder::<Sqlite>::new(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary='任务已停用，未执行', error_detail=NULL
@@ -3498,24 +3550,32 @@ impl MaintenanceStore {
                  WHERE candidate.status='requested'
                    AND candidate.task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
-                   ) AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
-                   )
-                 ORDER BY candidate.id
-                 LIMIT ?
-             )",
-        )
-        .bind(&finished_at)
-        .bind(MANAGED_TASK_CLAIM_BATCH_SIZE)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected()
+                   )",
+        );
+        retire_query.push_bind(&finished_at);
+        retire_query
+            .push(" AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization'))");
+        push_task_key_exclusion(&mut retire_query, "candidate.task_key", excluded_task_keys);
+        retire_query
+            .push(" ORDER BY candidate.id LIMIT ")
+            .push_bind(MANAGED_TASK_CLAIM_BATCH_SIZE)
+            .push(")");
+        let retired_requested_runs = retire_query
+            .build()
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected()
             > 0;
-        let claimed = sqlx::query_as::<_, (i64, String, String, String)>(
+        let mut claim_query = QueryBuilder::<Sqlite>::new(
             "UPDATE managed_task_runs
              SET status='running'
              WHERE id = (
                  SELECT id FROM managed_task_runs
-                 WHERE status='requested'
+                 WHERE status='requested'",
+        );
+        push_task_key_exclusion(&mut claim_query, "task_key", excluded_task_keys);
+        claim_query.push(
+            "
                    AND ((trigger_kind='manual' AND task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')) OR task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled!=0 OR is_manual!=0
                    ))
@@ -3524,9 +3584,11 @@ impl MaintenanceStore {
              )
              AND status='requested'
              RETURNING id,task_key,started_at,trigger_kind",
-        )
-        .fetch_optional(&mut *transaction)
-        .await?;
+        );
+        let claimed = claim_query
+            .build_query_as::<(i64, String, String, String)>()
+            .fetch_optional(&mut *transaction)
+            .await?;
         let Some((id, task_key, started_at, trigger_kind)) = claimed else {
             transaction.commit().await?;
             return Ok((None, retired_requested_runs));
@@ -4169,9 +4231,16 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
+        self.enqueue_due_runs_excluding(&[]).await
+    }
+
+    pub(crate) async fn enqueue_due_runs_excluding(
+        &self,
+        excluded_task_keys: &[String],
+    ) -> Result<u64> {
         observe_store_write_with_outcome(
             StoreOperation::Wake,
-            self.enqueue_due_runs_inner(),
+            self.enqueue_due_runs_inner(excluded_task_keys),
             |enqueued| {
                 if *enqueued > 0 {
                     WakeOutcome::Committed
@@ -4183,26 +4252,38 @@ impl MaintenanceStore {
         .await
     }
 
-    async fn enqueue_due_runs_inner(&self) -> Result<u64> {
+    async fn enqueue_due_runs_inner(&self, excluded_task_keys: &[String]) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
-        let due_tasks = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<i64>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
+        let mut due_tasks_query = QueryBuilder::<Sqlite>::new(
             "SELECT task_key,interval_secs,cron_expr
                     ,next_trigger_at,next_catchup_at
              FROM managed_tasks
              WHERE enabled=1 AND is_manual=0
-               AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>?)
-               AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
-                 OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
+            ",
+        );
+        push_task_key_exclusion(
+            &mut due_tasks_query,
+            "managed_tasks.task_key",
+            excluded_task_keys,
+        );
+        due_tasks_query.push(
+            "
+               AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>",
+        );
+        due_tasks_query.push_bind(&now_text);
+        due_tasks_query.push(
+            ")
+               AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ",
+        );
+        due_tasks_query.push_bind(&now_text);
+        due_tasks_query.push(
+            ")
+                 OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ",
+        );
+        due_tasks_query.push_bind(&now_text);
+        due_tasks_query.push(
+            "))
                AND NOT EXISTS(
                    SELECT 1
                    FROM managed_task_runs active
@@ -4210,14 +4291,19 @@ impl MaintenanceStore {
                      AND active.status IN ('running','requested')
                )
              ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key
-             LIMIT ?",
-        )
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(MANAGED_TASK_ENQUEUE_BATCH_SIZE)
-        .fetch_all(&self.pool)
-        .await?;
+             LIMIT ",
+        );
+        due_tasks_query.push_bind(MANAGED_TASK_ENQUEUE_BATCH_SIZE);
+        let due_tasks = due_tasks_query
+            .build_query_as::<(
+                String,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>()
+            .fetch_all(&self.pool)
+            .await?;
         if due_tasks.is_empty() {
             return Ok(0);
         }
@@ -4226,26 +4312,48 @@ impl MaintenanceStore {
         for (task_key, _, _, _, _) in due_tasks {
             // The read-only preflight is only an admission hint. Re-read the task inside the
             // write transaction so disable/reschedule changes cannot turn into stale runs.
-            let Some((interval_secs, cron_expr, current_trigger_at, current_catchup_at)) =
-                sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>)>(
-                    "SELECT interval_secs,cron_expr,next_trigger_at,next_catchup_at
+            let mut current_task_query = QueryBuilder::<Sqlite>::new(
+                "SELECT interval_secs,cron_expr,next_trigger_at,next_catchup_at
                  FROM managed_tasks
-                 WHERE task_key=? AND enabled=1 AND is_manual=0
+                 WHERE task_key=",
+            );
+            current_task_query.push_bind(&task_key);
+            current_task_query.push(" AND enabled=1 AND is_manual=0");
+            push_task_key_exclusion(
+                &mut current_task_query,
+                "managed_tasks.task_key",
+                excluded_task_keys,
+            );
+            current_task_query.push(
+                "
                    AND NOT EXISTS(
                        SELECT 1
                        FROM maintenance_owner_retry_state retry
                        WHERE retry.task_key=managed_tasks.task_key
-                         AND retry.next_eligible_at>?
-                   )
-                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
-                     OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))",
-                )
-                .bind(&task_key)
-                .bind(&now_text)
-                .bind(&now_text)
-                .bind(&now_text)
-                .fetch_optional(&mut *transaction)
-                .await?
+                         AND retry.next_eligible_at>",
+            );
+            current_task_query.push_bind(&now_text);
+            current_task_query.push(
+                ")
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ",
+            );
+            current_task_query.push_bind(&now_text);
+            current_task_query.push(
+                ")
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ",
+            );
+            current_task_query.push_bind(&now_text);
+            current_task_query.push("))");
+            let Some((interval_secs, cron_expr, current_trigger_at, current_catchup_at)) =
+                current_task_query
+                    .build_query_as::<(
+                        Option<i64>,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                    )>()
+                    .fetch_optional(&mut *transaction)
+                    .await?
             else {
                 continue;
             };
