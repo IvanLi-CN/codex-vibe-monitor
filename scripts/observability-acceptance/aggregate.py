@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cpu_attribution import cpu_attribution_diagnostic
 from environment import actions_context, comparison_report, verify_measurement_evidence
-from run import certificate
+from run import acceptance_contract_digest, acceptance_harness_digest, certificate, source_revision
 
 RUNTIME_SCENARIOS = {"https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu"}
 LANES = ("runtime", "pair-0", "pair-1", "pair-2")
@@ -18,17 +18,37 @@ class HardwareCompatibilityError(ValueError):
     """A stable reason for evidence that cannot support a cross-runner comparison."""
 
 
+class AcceptanceHarnessIdentityError(ValueError):
+    """Evidence was produced with a different trusted or candidate harness."""
+
+
 def read(root, name):
     return json.loads((root / name).read_text())
 
 
-def verify_part(root, lane, expected):
+def verify_part(
+    root,
+    lane,
+    expected,
+    trusted_harness_sha,
+    trusted_contract_digest,
+    candidate_contract_digest,
+    trusted_harness_digest,
+    candidate_harness_digest,
+):
     card, config, context = (read(root, name) for name in ("runtime-card.json", "run-config.json", "runner-context.json"))
     image = read(root, "image-identity.json")
     outcome = read(root, "part-outcome.json")["outcome"]
     for key in ("empirical_candidate_sha", "acceptance_contract_digest", "scenario_set_digest", "evidence_locator"):
         if card[key] != expected[key]:
             raise ValueError("part certificate identity mismatch")
+    if (config.get("harnessSha") != trusted_harness_sha
+            or config.get("acceptanceContractDigest") != trusted_contract_digest
+            or config.get("acceptanceHarnessDigest") != trusted_harness_digest):
+        raise AcceptanceHarnessIdentityError("trusted acceptance harness identity mismatch")
+    if (config.get("candidateAcceptanceContractDigest") != candidate_contract_digest
+            or config.get("candidateAcceptanceHarnessDigest") != candidate_harness_digest):
+        raise AcceptanceHarnessIdentityError("candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
     if (context["runnerEnvironment"] != "github-hosted" or context["evidenceLocator"] != expected["evidence_locator"]
             or context["candidate"] != expected["empirical_candidate_sha"] or config["candidate"] != context["candidate"]
             or config["suite"] != lane or image["Config"]["Labels"]["org.opencontainers.image.revision"] != context["candidate"]):
@@ -119,6 +139,11 @@ def aggregate(source, candidate_source, root, parts, candidate):
     # itself a measurement runner and does not need a job-scoped identity.
     context = actions_context(candidate_source, root, candidate, require_runner_identity=False)
     expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three isolated same-runner paired experiments; each test job is bounded to 15 minutes.")
+    trusted_harness_sha = source_revision(source)
+    trusted_contract_digest = acceptance_contract_digest(source)
+    candidate_contract_digest = acceptance_contract_digest(candidate_source)
+    trusted_harness_digest = acceptance_harness_digest(source)
+    candidate_harness_digest = acceptance_harness_digest(candidate_source)
     scenarios = {name: {"status": "unavailable", "error": "required part evidence missing or invalid"}
                  for name in RUNTIME_SCENARIOS | {"default-observability-ab"}}
     status = "unavailable"
@@ -128,7 +153,16 @@ def aggregate(source, candidate_source, root, parts, candidate):
         prefix = f"observability-part-{context['runId']}-{context['attempt']}-"
         for lane in LANES:
             part = parts / (prefix + lane)
-            verified_part = verify_part(part, lane, expected)
+            verified_part = verify_part(
+                part,
+                lane,
+                expected,
+                trusted_harness_sha,
+                trusted_contract_digest,
+                candidate_contract_digest,
+                trusted_harness_digest,
+                candidate_harness_digest,
+            )
             verified.append(verified_part)
             if lane == "runtime":
                 scenarios = dict(verified_part[2])
@@ -171,6 +205,8 @@ def aggregate(source, candidate_source, root, parts, candidate):
         issues = [_pair_issue(index, scenario) for index, scenario in enumerate(pair_scenarios) if scenario.get("status") != "passed"]
         if issues:
             scenarios["default-observability-ab"]["pairIssues"] = issues
+    except AcceptanceHarnessIdentityError as error:
+        scenarios["default-observability-ab"] = {"status": "unavailable", "error": str(error)}
     except FileNotFoundError:
         scenarios["default-observability-ab"] = {
             "status": "unavailable",

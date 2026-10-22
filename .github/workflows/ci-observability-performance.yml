@@ -4,9 +4,15 @@ on:
   pull_request_target:
     types:
       - labeled
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full 40-character commit SHA to measure after the candidate is trusted
+        required: true
+        type: string
 
 concurrency:
-  group: observability-performance-${{ github.event.pull_request.number }}
+  group: observability-performance-${{ github.event.pull_request.number || inputs.candidate_sha || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -16,18 +22,49 @@ jobs:
   observability-performance-image:
     name: Observability Performance Image
     # Build once; test jobs consume this immutable image without compiling.
-    if: github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       candidate: ${{ steps.identity.outputs.candidate }}
+      candidate_repository: ${{ steps.refs.outputs.candidate_repository }}
+      trusted_ref: ${{ steps.refs.outputs.trusted_ref }}
       test-started: ${{ steps.test-clock.outputs.started }}
     steps:
+      - name: Resolve performance sources
+        id: refs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            test "$WORKFLOW_REF" = "refs/heads/main"
+            candidate_repository="$REPOSITORY"
+            candidate_ref="$INPUT_CANDIDATE_SHA"
+            trusted_ref="$WORKFLOW_SHA"
+          else
+            candidate_repository="$PR_HEAD_REPOSITORY"
+            candidate_ref="$PR_HEAD_SHA"
+            trusted_ref="$PR_BASE_SHA"
+          fi
+          [[ "$candidate_ref" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$trusted_ref" =~ ^[0-9a-f]{40}$ ]]
+          printf 'candidate_repository=%s\n' "$candidate_repository" >> "$GITHUB_OUTPUT"
+          printf 'candidate_ref=%s\n' "$candidate_ref" >> "$GITHUB_OUTPUT"
+          printf 'trusted_ref=%s\n' "$trusted_ref" >> "$GITHUB_OUTPUT"
+
       - name: Checkout performance candidate
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ steps.refs.outputs.candidate_repository }}
+          ref: ${{ steps.refs.outputs.candidate_ref }}
           path: candidate
           persist-credentials: false
 
@@ -86,7 +123,7 @@ jobs:
     name: Observability Acceptance (${{ matrix.lane }})
     needs: observability-performance-image
     # Add the run:observability-performance label to launch the one-shot hosted measurement.
-    if: github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
     # A fresh VM measures the prebuilt image; no compiler or parallel suite shares it.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -111,7 +148,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.observability-performance-image.outputs.trusted_ref }}
           path: trusted
           persist-credentials: false
 
@@ -119,10 +156,19 @@ jobs:
         timeout-minutes: 1
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          repository: ${{ needs.observability-performance-image.outputs.candidate_repository }}
           ref: ${{ needs.observability-performance-image.outputs.candidate }}
           path: candidate
           persist-credentials: false
+
+      - name: Verify acceptance source identities
+        env:
+          TRUSTED_REF: ${{ needs.observability-performance-image.outputs.trusted_ref }}
+          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_REF"
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE"
 
       - name: Download performance candidate image
         timeout-minutes: 1
@@ -225,14 +271,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.observability-performance-image.outputs.trusted_ref }}
           path: trusted
           persist-credentials: false
 
       - name: Checkout candidate identity
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          repository: ${{ needs.observability-performance-image.outputs.candidate_repository }}
           ref: ${{ needs.observability-performance-image.outputs.candidate }}
           path: candidate
           persist-credentials: false
@@ -288,14 +334,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.observability-performance-image.outputs.trusted_ref }}
           path: trusted
           persist-credentials: false
 
       - name: Checkout candidate identity
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          repository: ${{ needs.observability-performance-image.outputs.candidate_repository }}
           ref: ${{ needs.observability-performance-image.outputs.candidate }}
           path: candidate
           persist-credentials: false
