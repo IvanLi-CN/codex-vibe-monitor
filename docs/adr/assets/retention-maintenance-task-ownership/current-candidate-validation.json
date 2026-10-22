@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-  "codeCandidateSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
+  "codeCandidateSha": "7247aee72426a26cdc2be74a70a718ca837df273",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -11,9 +11,9 @@
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 11,
-    "prCreated": false,
-    "currentFormalReviewLaunched": true
+    "repairBatchesUsed": 12,
+    "prCreated": true,
+    "currentFormalReviewLaunched": false
   },
   "passed": {
     "rustSourceQuality": true,
@@ -110,12 +110,13 @@
     "scopeProofLocator": ".codex/evidence/retention-maintenance/repair7/retained-scope-proof.json"
   },
   "pending": [
+    "formalTier4Review",
     "postEvidenceRefreshCi"
   ],
   "formalReview": {
     "candidateSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
     "reviewedHead": "2d52a2f2aed1e3cd20432502737b24c7ae064633",
-    "status": "passed-no-findings",
+    "status": "superseded-by-ci-repair",
     "lanes": [
       "contract",
       "state-concurrency",
@@ -123,7 +124,7 @@
       "test-platform",
       "database-migration"
     ],
-    "note": "All five formal review lanes found no consequential implementation defect. CI profiles and migration replay remain required and were not run locally under the repository validation contract."
+    "note": "The previous five-lane review found no consequential implementation defect for the prior candidate; its evidence is retained for audit but is superseded by the build-contract repair and must not satisfy the current candidate review gate."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -136,22 +137,22 @@
     "guestContinuityVerifiedAfterLiveReduction": true
   },
   "currentRepair": {
-    "prUrl": null,
-    "ownerAuthorizedRepairBatch": 11,
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
+    "ownerAuthorizedRepairBatch": 12,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "17fb046653f554f4636780f05dcc9def42122d6b",
-    "fixedFinding": "Route model expiry now uses the shared maintenance write admission and records its committed purge metrics before the post-commit coverage probe.",
-    "newFocusedRegression": "Rust format and diff checks pass; the focused owner-facts regression covers post-commit probe failure; model-route purge now gates through maintenance write admission; Storybook owner-facts coverage and mobile visual evidence remain current; the five-lane formal review passed with no findings; CI profiles and migration replay remain pending.",
+    "previousCandidateSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
+    "fixedFinding": "CI exposed retention owner build-contract errors in candidate_remaining_hint types, an unwrapped SQLx result, numeric inference, an Option assertion, and an unused import; the repair restores the compile and lint contracts without changing runtime limits.",
+    "newFocusedRegression": "Rust format, diff, and JSON checks pass; CI failure evidence is bound to the repaired compiler diagnostics; the existing owner-facts regression, shared model-route write admission, Storybook owner-facts coverage, and mobile visual evidence remain current; the prior five-lane review is superseded by this build-contract repair, so fresh formal review, CI, and migration replay remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
   "currentCandidateBinding": {
-    "prNumber": null,
-    "prUrl": null,
+    "prNumber": 1162,
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "headSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
+    "headSha": "7247aee72426a26cdc2be74a70a718ca837df273",
     "requiredCi": null,
-    "formalTier4Review": "passed-no-findings",
+    "formalTier4Review": "pending",
     "note": "candidate_head_sha binds the implementation commit; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this documentation refresh."
   },
   "empiricalAcceptance": {

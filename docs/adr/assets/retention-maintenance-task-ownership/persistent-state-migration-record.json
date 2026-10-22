@@ -141,7 +141,7 @@
     "description": "Add six independent retention-policy task rows, initialize their default schedules without overwriting operator overrides, and persist ownership-version-2 result facts for the narrowed invocation archive owner.",
     "candidate_branch": "th/retention-maintenance-ownership",
     "candidate_base_sha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "candidate_head_sha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
+    "candidate_head_sha": "7247aee72426a26cdc2be74a70a718ca837df273",
     "status": "implemented-pending-validation",
     "ddl_structural_changes": [],
     "dml_changes": [
