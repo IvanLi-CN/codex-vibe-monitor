@@ -3482,6 +3482,73 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toContain("gpt-5.6-sol -> gpt-6-luna");
   });
 
+  it("keeps normalized-equivalent dated model aliases as one compact identity", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-normalized-model-alias", [
+          createPreview({
+            id: 6,
+            invokeId: "invoke-normalized-model-alias",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-6-luna",
+            requestModel: "gpt-6-luna-2026-04-04",
+            responseModel: "gpt-6-luna",
+            reasoningEffort: "medium",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing normalized model alias context cluster");
+    }
+
+    expect(cluster.querySelector('[data-model-context-part="routing"]')).toBeNull();
+    expect(cluster.querySelectorAll("[data-model-context-identity]")).toHaveLength(1);
+    expect(cluster.querySelector('[data-model-generation-segment="6"]')).not.toBeNull();
+    expect(cluster.getAttribute("title")).not.toContain(" -> ");
+  });
+
+  it("keeps a missing request or response model as one compact fallback identity", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-missing-routing-side", [
+          createPreview({
+            id: 7,
+            invokeId: "invoke-missing-routing-side",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-5.6-sol",
+            requestModel: "gpt-5.6-sol",
+            responseModel: null,
+            reasoningEffort: "medium",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing missing-side model context cluster");
+    }
+
+    expect(cluster.querySelector('[data-model-context-part="routing"]')).toBeNull();
+    expect(cluster.querySelectorAll("[data-model-context-identity]")).toHaveLength(1);
+    expect(cluster.querySelector('[data-model-generation-segment="5.6"]')).not.toBeNull();
+    expect(cluster.getAttribute("title")).toEqual(expect.stringContaining("gpt-5.6-sol · medium"));
+    expect(cluster.getAttribute("title")).not.toContain(" -> ");
+  });
+
   it.each([
     { label: "null", reasoningEffort: null },
     { label: "blank", reasoningEffort: " " },
