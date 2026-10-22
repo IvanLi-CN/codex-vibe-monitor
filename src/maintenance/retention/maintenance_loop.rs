@@ -679,6 +679,11 @@ async fn run_model_route_expiry_owner(
             }
         };
         summary.discovered = discovered;
+        let Some(admission) = acquire_retention_write_admission("model_route_purge").await else {
+            apply_retention_owner_success(&mut summary, discovered, 0, 0, 0, 0, true);
+            return Ok(summary.finish(started_at));
+        };
+        let execute_started = Instant::now();
         let committed =
             match crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit).await
             {
@@ -688,6 +693,20 @@ async fn run_model_route_expiry_owner(
                     return Ok(summary.finish(started_at));
                 }
             };
+        let commit_started = Instant::now();
+        retention_record_commit!(
+            "model_route_purge",
+            admission.admission_mode(),
+            committed,
+            committed.saturating_mul(128),
+            Duration::ZERO,
+            admission.lock_wait(),
+            commit_started.duration_since(execute_started),
+            commit_started.elapsed(),
+            admission.p1_waiter_count(),
+            usize::from(committed >= candidate_limit),
+        );
+        drop(admission);
         summary.selected = committed;
         summary.committed = committed;
         let has_more = match crate::upstream_accounts::inspect_expired_model_routes_bounded(
