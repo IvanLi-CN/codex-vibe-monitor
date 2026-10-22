@@ -6,10 +6,10 @@ import subprocess
 import sys
 import time
 
-TEST_JOB_SECONDS = 900
+TEST_JOB_SECONDS = 3600
 # Reserve one minute for cleanup and whitelisted evidence; Actions also enforces
-# the unconditional 900s job limit if a child or Docker cleanup is unresponsive.
-EXECUTION_SECONDS = 840
+# the unconditional 3600s job limit if a child or Docker cleanup is unresponsive.
+EXECUTION_SECONDS = TEST_JOB_SECONDS - 60
 
 
 class AcceptanceDeadlineExceeded(OSError):

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Verify all isolated parts before issuing the only full empirical certificate."""
+"""Verify all serial-bundle parts before issuing the only full empirical certificate."""
 import argparse
 import json
 import time
 from pathlib import Path
 
 from cpu_attribution import cpu_attribution_diagnostic
+from deadline import TEST_JOB_SECONDS
 from environment import actions_context, comparison_report, verify_measurement_evidence
 from run import acceptance_contract_digest, acceptance_harness_digest, certificate, source_revision
 
@@ -15,7 +16,7 @@ HARDWARE_KEYS = ("cpuModel", "cpuCount", "kernel", "runnerImage", "runnerImageVe
 
 
 class HardwareCompatibilityError(ValueError):
-    """A stable reason for evidence that cannot support a cross-runner comparison."""
+    """A stable reason for evidence that cannot support the paired comparison."""
 
 
 class AcceptanceHarnessIdentityError(ValueError):
@@ -59,7 +60,7 @@ def verify_part(
         raise ValueError("incomplete or unexpected part scenarios")
     passed = all(row["status"] == "passed" for row in scenarios.values())
     elapsed = config["executionFinishedUTCSeconds"] - config["executionStartedUTCSeconds"]
-    if not 0 <= elapsed <= 900 or (passed and outcome != "success"):
+    if not 0 <= elapsed <= TEST_JOB_SECONDS or (passed and outcome != "success"):
         raise ValueError("part exceeded its deadline or failed after writing evidence")
     if (card["empirical_evidence_status"] == "passed") != passed:
         raise ValueError("part disposition mismatch")
@@ -94,7 +95,11 @@ def hardware_signature(context):
 
 def verify_hardware_compatibility(contexts):
     if len(contexts) != 3:
-        raise HardwareCompatibilityError("hardware metadata unavailable: expected three paired runners")
+        raise HardwareCompatibilityError("hardware metadata unavailable: expected three paired suites")
+    if any(context.get("runnerScope") != "serial-bundle" for context in contexts):
+        raise HardwareCompatibilityError("hardware metadata unavailable: missing serial runner scope")
+    if len({context["runnerIdentity"] for context in contexts}) != 1:
+        raise HardwareCompatibilityError("hardware metadata incompatible: runner identity")
     reference = hardware_signature(contexts[0])
     for context in contexts[1:]:
         signature = hardware_signature(context)
@@ -138,7 +143,7 @@ def aggregate(source, candidate_source, root, parts, candidate):
     # The result job verifies identities from each measurement part; it is not
     # itself a measurement runner and does not need a job-scoped identity.
     context = actions_context(candidate_source, root, candidate, require_runner_identity=False)
-    expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three isolated same-runner paired experiments; each test job is bounded to 15 minutes.")
+    expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three sequential same-runner paired experiments in one job; the bundle is bounded to 60 minutes.")
     trusted_harness_sha = source_revision(source)
     trusted_contract_digest = acceptance_contract_digest(source)
     candidate_contract_digest = acceptance_contract_digest(candidate_source)
@@ -169,17 +174,15 @@ def aggregate(source, candidate_source, root, parts, candidate):
         starts = [read(parts / (prefix + lane), "run-config.json")["executionStartedUTCSeconds"] for lane in LANES]
         if len(set(starts)) != 1:
             raise ValueError("parts reset the shared test clock")
-        if not 0 <= time.time() - starts[0] <= 900:
+        if not 0 <= time.time() - starts[0] <= TEST_JOB_SECONDS:
             raise ValueError("shared test phase deadline exceeded")
         if len({item[0] for item in verified}) != 1:
             raise ValueError("parts used different candidate images")
         pairs = [item[1] for item in verified[1:]]
         pair_scenarios = [item[2]["default-observability-ab"] for item in verified[1:]]
-        # Each pair owns its off/metrics/full windows on one isolated runner.
-        # Paired comparisons require exact hardware/runtime metadata so raw
-        # machine-dependent timings are not compared across incompatible hosts.
-        if len({pair["runnerIdentity"] for pair in pairs}) != 3:
-            raise ValueError("paired experiments did not use isolated runners")
+        # The bundle owns all off/metrics/full windows on one Actions runner.
+        # Exact hardware/runtime metadata remains mandatory even though the job
+        # identity already proves that the three suites share one runner.
         verify_hardware_compatibility(pairs)
         bad = next((row for row in pair_scenarios if row["status"] == "failed"), None)
         bad = bad or next((row for row in pair_scenarios if row["status"] != "passed"), None)

@@ -134,6 +134,7 @@ def acceptance_contract_digest(source):
             source / "docs/adr/0033-external-request-diagnostic-traces.md",
             source / "docs/adr/0034-shared-tempo-request-tracing.md",
             source / "docs/adr/0046-observability-acceptance-hardware-admission.md",
+            source / "docs/adr/0047-observability-acceptance-single-runner-bundle.md",
             source / "docs/design/request-lifecycle-observability.md",
         ]
     )
