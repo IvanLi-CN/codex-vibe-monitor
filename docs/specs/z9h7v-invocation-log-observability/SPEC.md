@@ -653,6 +653,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/GPT56ModelContextCluster
+  evidence_bound_sha: c1201aa3d7b7bef82fbd6315b1e7783b61fc9f39
   state: light desktop compact working-conversation invocation slot
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
@@ -670,6 +671,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/GPT56ModelContextCluster
+  evidence_bound_sha: c1201aa3d7b7bef82fbd6315b1e7783b61fc9f39
   state: dark desktop compact working-conversation invocation slot
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
@@ -687,6 +689,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/GPT61ModelContextCluster
+  evidence_bound_sha: c1201aa3d7b7bef82fbd6315b1e7783b61fc9f39
   state: light desktop GPT-6.1 compact invocation slot with explicit none effort
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
@@ -704,6 +707,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/UpstreamAccountModelContext
+  evidence_bound_sha: c1201aa3d7b7bef82fbd6315b1e7783b61fc9f39
   state: upstream-account recent rows at source-managed 393x852 with request-to-response mismatch
   requested_viewport: 393x852
   viewport_strategy: storybook-viewport
