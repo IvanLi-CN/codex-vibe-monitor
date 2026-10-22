@@ -14,4 +14,9 @@ describe("upstreamAccountChips", () => {
       dataPlan: "k12",
     });
   });
+
+  it("keeps local and API plan metadata neutral", () => {
+    expect(upstreamPlanChipRecipe("local")).toMatchObject({ tone: "neutral" });
+    expect(upstreamPlanChipRecipe("api")).toMatchObject({ tone: "neutral" });
+  });
 });

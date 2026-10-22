@@ -44,4 +44,26 @@ describe("translations", () => {
       expect(translations.zh[key]).not.toBe(key);
     }
   });
+
+  it("keeps account policy chip labels localized in both locales", () => {
+    const keys = [
+      "accountPool.policyBadges.primary",
+      "accountPool.policyBadges.fallback",
+      "accountPool.policyBadges.fastFill",
+      "accountPool.policyBadges.fastAdd",
+      "accountPool.policyBadges.fastRemove",
+      "accountPool.policyBadges.forbidCutOut",
+      "accountPool.policyBadges.forbidCutIn",
+      "accountPool.policyBadges.forbidNew",
+      "accountPool.policyBadges.concurrency",
+      "accountPool.policyBadges.retry",
+    ] as const;
+
+    for (const key of keys) {
+      expect(translations.en[key]).toBeTruthy();
+      expect(translations.zh[key]).toBeTruthy();
+      expect(translations.en[key]).not.toBe(key);
+      expect(translations.zh[key]).not.toBe(key);
+    }
+  });
 });
