@@ -766,6 +766,44 @@ function extractImportedOauthJwtEmail(payload: Record<string, unknown>) {
   return null;
 }
 
+function findImportedOauthJwtIdentityConflict(payload: Record<string, unknown>) {
+  const profiles = [
+    getImportedObject(payload["https://api.openai.com/profile"]),
+    getImportedObject(payload.profile),
+  ].filter((value): value is Record<string, unknown> => value != null);
+  const authObjects = [
+    getImportedObject(payload["https://api.openai.com/auth"]),
+    getImportedObject(payload.auth),
+  ].filter((value): value is Record<string, unknown> => value != null);
+  const collect = (objects: Record<string, unknown>[], key: string) =>
+    objects.flatMap((object) => {
+      const value = object[key];
+      return typeof value === "string" && value.trim().length > 0 ? [value.trim()] : [];
+    });
+  const hasConflict = (values: string[], caseInsensitive = false) => {
+    const first = values[0];
+    if (!first) return false;
+    const normalizedFirst = caseInsensitive ? first.toLowerCase() : first;
+    return values
+      .slice(1)
+      .some((value) => (caseInsensitive ? value.toLowerCase() : value) !== normalizedFirst);
+  };
+  if (hasConflict(collect([payload, ...profiles], "email"), true)) return "email" as const;
+  if (
+    hasConflict(
+      collect(authObjects, "chatgpt_account_id").concat(collect(authObjects, "account_id")),
+    )
+  ) {
+    return "account_id" as const;
+  }
+  if (
+    hasConflict(collect(authObjects, "chatgpt_user_id").concat(collect(authObjects, "user_id")))
+  ) {
+    return "chatgpt_user_id" as const;
+  }
+  return null;
+}
+
 function extractImportedOauthJwtAuth(payload: Record<string, unknown>) {
   const namespaced = payload["https://api.openai.com/auth"];
   if (namespaced && typeof namespaced === "object") {
@@ -967,6 +1005,17 @@ function buildImportedOauthCandidateFromStandardRecord(
     ? parseImportedOauthJwtPayload(idTokenResult.value, "id_token", t)
     : null;
   if (idTokenPayload && !idTokenPayload.ok) errors.push(idTokenPayload.error);
+  const idTokenIdentityConflict =
+    idTokenPayload?.ok === true
+      ? findImportedOauthJwtIdentityConflict(idTokenPayload.payload)
+      : null;
+  if (idTokenIdentityConflict === "email") {
+    errors.push(t("accountPool.upstreamAccounts.import.local.emailMismatch"));
+  } else if (idTokenIdentityConflict === "account_id") {
+    errors.push(t("accountPool.upstreamAccounts.import.local.accountIdMismatch"));
+  } else if (idTokenIdentityConflict === "chatgpt_user_id") {
+    errors.push(t("accountPool.upstreamAccounts.import.local.userIdMismatch"));
+  }
 
   const jwtEmail =
     idTokenPayload?.ok === true ? extractImportedOauthJwtEmail(idTokenPayload.payload) : null;
@@ -1182,6 +1231,18 @@ function buildImportedOauthCandidateFromSub2apiAccount(
     error,
     sourceLabel: email ?? firstImportedNonEmptyString(account.name) ?? "account",
   });
+  for (const payload of [idPayload, accessPayload]) {
+    const identityConflict = payload ? findImportedOauthJwtIdentityConflict(payload) : null;
+    if (identityConflict === "email") {
+      return fail(t("accountPool.upstreamAccounts.import.local.emailMismatch"));
+    }
+    if (identityConflict === "account_id") {
+      return fail(t("accountPool.upstreamAccounts.import.local.accountIdMismatch"));
+    }
+    if (identityConflict === "chatgpt_user_id") {
+      return fail(t("accountPool.upstreamAccounts.import.local.userIdMismatch"));
+    }
+  }
   if (
     [credentials.id_token, credentials.idToken].some(
       (value) => value != null && typeof value !== "string",

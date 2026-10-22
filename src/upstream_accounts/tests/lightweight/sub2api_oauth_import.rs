@@ -94,6 +94,37 @@ fn sub2api_oauth_rejects_identity_conflict_when_unrelated_claim_has_wrong_type()
 }
 
 #[test]
+fn sub2api_oauth_rejects_conflicting_identity_claims_within_token() {
+    for payload in [
+        json!({
+            "email": "member@example.com",
+            "https://api.openai.com/profile": {"email": "other@example.com"},
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_shared",
+                "chatgpt_user_id": "user_member",
+            },
+            "exp": 1893456000,
+        }),
+        json!({
+            "email": "member@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_shared",
+                "chatgpt_user_id": "user_member",
+            },
+            "auth": {"user_id": "user_other"},
+            "exp": 1893456000,
+        }),
+    ] {
+        let token = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()));
+        let mut credentials = sub2api_credentials();
+        credentials["access_token"] = json!(token);
+        let error = normalize_imported_oauth_credentials(&sub2api_request(credentials))
+            .expect_err("reject contradictory JWT identity claims");
+        assert!(error.contains("conflicting JWT claims"), "{error}");
+    }
+}
+
+#[test]
 fn sub2api_oauth_accepts_numeric_token_expiry() {
     for expiry in [
         json!(1893456000),
@@ -135,6 +166,9 @@ fn sub2api_oauth_rejects_conflicting_duplicate_explicit_identity_fields() {
     ] {
         let mut credentials = sub2api_credentials();
         credentials[field] = json!("credential-value");
+        if field == "account_id" {
+            credentials["chatgpt_account_id"] = json!("credential-value");
+        }
         let mut request = sub2api_request(credentials);
         let mut record: Value = serde_json::from_str(&request.content).expect("fixture JSON");
         record[record_key] = json!("record-value");

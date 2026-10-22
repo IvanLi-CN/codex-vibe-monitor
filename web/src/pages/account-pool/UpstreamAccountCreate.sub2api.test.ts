@@ -105,6 +105,33 @@ describe("sub2api OAuth import compatibility", () => {
     if (!result.ok) expect(result.error).toContain("emailMismatch");
   });
 
+  it("rejects conflicting identity claims within a token", () => {
+    for (const payload of [
+      {
+        email: "member@example.com",
+        "https://api.openai.com/profile": { email: "other@example.com" },
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "acct_shared",
+          chatgpt_user_id: "user_member",
+        },
+        exp: 1893456000,
+      },
+      {
+        email: "member@example.com",
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "acct_shared",
+          chatgpt_user_id: "user_member",
+        },
+        auth: { user_id: "user_other" },
+        exp: 1893456000,
+      },
+    ]) {
+      const result = parse(account({ access_token: jwt(payload) }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/emailMismatch|userIdMismatch/);
+    }
+  });
+
   it.each([
     1893456000,
     "1893456000",
@@ -154,8 +181,12 @@ describe("sub2api OAuth import compatibility", () => {
     ["account_id", "account_id", "accountIdMismatch"],
     ["chatgpt_user_id", "chatgpt_user_id", "userIdMismatch"],
   ])("rejects conflicting duplicate explicit %s fields", (field, recordKey, errorKey) => {
+    const credentialValues =
+      field === "account_id"
+        ? { chatgpt_account_id: "credential-value", account_id: "credential-value" }
+        : { [field]: "credential-value" };
     const result = parse({
-      ...account({ [field]: "credential-value" }),
+      ...account(credentialValues),
       [recordKey]: "record-value",
     });
     expect(result.ok).toBe(false);

@@ -801,26 +801,72 @@ pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaim
     let claims = claims
         .as_object()
         .ok_or_else(|| anyhow!("failed to parse id_token payload as an object"))?;
-    let profile = claims
-        .get("https://api.openai.com/profile")
-        .or_else(|| claims.get("profile"))
-        .and_then(Value::as_object);
-    let auth = claims
-        .get("https://api.openai.com/auth")
-        .or_else(|| claims.get("auth"))
-        .and_then(Value::as_object);
-    let string_claim = |object: Option<&serde_json::Map<String, Value>>, key: &str| {
-        object
-            .and_then(|value| value.get(key))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+    let profiles = [
+        claims
+            .get("https://api.openai.com/profile")
+            .and_then(Value::as_object),
+        claims.get("profile").and_then(Value::as_object),
+    ];
+    let auths = [
+        claims
+            .get("https://api.openai.com/auth")
+            .and_then(Value::as_object),
+        claims.get("auth").and_then(Value::as_object),
+    ];
+    let string_claims = |objects: &[Option<&serde_json::Map<String, Value>>], key: &str| {
+        objects
+            .iter()
+            .filter_map(|object| {
+                object
+                    .as_ref()
+                    .and_then(|value| value.get(key))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>()
     };
+    let first_string_claim =
+        |field: &str, values: &[String], case_insensitive: bool| -> Result<Option<String>> {
+            let Some(first) = values.first() else {
+                return Ok(None);
+            };
+            let normalized_first = if case_insensitive {
+                first.to_ascii_lowercase()
+            } else {
+                first.clone()
+            };
+            if values.iter().skip(1).any(|value| {
+                let normalized = if case_insensitive {
+                    value.to_ascii_lowercase()
+                } else {
+                    value.clone()
+                };
+                normalized != normalized_first
+            }) {
+                return Err(anyhow!("{field} has conflicting JWT claims"));
+            }
+            Ok(Some(first.clone()))
+        };
+    let mut email_objects = vec![Some(claims)];
+    email_objects.extend(profiles);
+    let email = first_string_claim("email", &string_claims(&email_objects, "email"), true)?;
+    let account_id = first_string_claim(
+        "account_id",
+        &string_claims(&auths, "chatgpt_account_id"),
+        false,
+    )?;
+    let mut user_id_values = string_claims(&auths, "chatgpt_user_id");
+    user_id_values.extend(string_claims(&auths, "user_id"));
+    let user_id = first_string_claim("chatgpt_user_id", &user_id_values, false)?;
     Ok(ChatgptJwtClaims {
-        email: string_claim(Some(claims), "email").or_else(|| string_claim(profile, "email")),
-        chatgpt_plan_type: string_claim(auth, "chatgpt_plan_type"),
-        chatgpt_user_id: string_claim(auth, "chatgpt_user_id")
-            .or_else(|| string_claim(auth, "user_id")),
-        chatgpt_account_id: string_claim(auth, "chatgpt_account_id"),
+        email,
+        chatgpt_plan_type: string_claims(&auths, "chatgpt_plan_type")
+            .into_iter()
+            .next(),
+        chatgpt_user_id: user_id,
+        chatgpt_account_id: account_id,
     })
 }
 

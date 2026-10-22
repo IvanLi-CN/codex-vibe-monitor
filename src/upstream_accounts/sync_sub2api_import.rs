@@ -129,7 +129,13 @@ pub(super) fn normalize_sub2api_oauth_account(record: &ImportRecord) -> Result<V
             .map_err(|error| format!("failed to parse id_token: {error}"))?
             .unwrap_or_default(),
     );
-    let access_claims = import_claims(parse_chatgpt_jwt_claims(&access_token).unwrap_or_default());
+    let access_claims = match parse_chatgpt_jwt_claims(&access_token) {
+        Ok(claims) => import_claims(claims),
+        Err(error) if error.to_string().contains("conflicting JWT claims") => {
+            return Err(error.to_string());
+        }
+        Err(_) => ChatgptJwtClaims::default(),
+    };
     let email = import_text(credentials, &["email"])
         .or_else(|| import_text(record, &["email"]))
         .or_else(|| id_claims.email.clone())
