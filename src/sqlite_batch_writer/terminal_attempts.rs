@@ -1,7 +1,7 @@
 use super::*;
 
 impl SqliteBatchWriter {
-    pub(super) fn preserve_unconfirmed_runtime_terminal(
+    pub(crate) fn preserve_unconfirmed_runtime_terminal(
         &self,
         terminal: &BatchedTerminalInvocationWrite,
         accepted: bool,
