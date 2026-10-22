@@ -19,12 +19,6 @@
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
-      "path": "src/sqlite_batch_writer.rs",
-      "role": "production",
-      "line_budget": 6958,
-      "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
-    },
-    {
       "path": "src/stats/mod.rs",
       "role": "production",
       "line_budget": 7192,
@@ -465,28 +459,28 @@
       "reason": "Retain this targeted allow for the current argument bundle at src/runtime.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/sqlite_batch_writer.rs",
+      "path": "src/sqlite_batch_writer/runtime.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the current argument bundle at src/sqlite_batch_writer/runtime.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/sqlite_batch_writer.rs",
+      "path": "src/sqlite_batch_writer/flush.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"The accounting wrapper mirrors the single-writer ownership boundaries.\" )]",
-      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/sqlite_batch_writer.rs",
+      "path": "src/sqlite_batch_writer/flush.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Flush dependencies mirror the single-writer ownership boundaries.\" )]",
-      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/sqlite_batch_writer.rs",
+      "path": "src/sqlite_batch_writer/flush.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Flush dependencies mirror the single-writer ownership boundaries.\" )]",
-      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
     },
     {
       "path": "src/stats/mod.rs",

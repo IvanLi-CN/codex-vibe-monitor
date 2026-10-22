@@ -1446,6 +1446,16 @@ class PerformanceDispositionTests(unittest.TestCase):
         self.write_case("failed", scenarios)
         with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
 
+    def test_measured_budget_failure_remains_blocking_with_specific_reason(self):
+        scenarios = {name: {"status": "passed"} for name in self.passed_scenarios()}
+        scenarios["default-observability-ab"] = {
+            "status": "failed",
+            "error": "5% observability budget exceeded",
+        }
+        self.write_case("failed", scenarios)
+        with self.assertRaisesRegex(ClassificationError, "performance budget exceeded"):
+            classify_result(self.root, "failure")
+
     def test_missing_or_invalid_measurement_evidence_remains_blocking(self):
         scenarios = self.passed_scenarios()
         scenarios["default-observability-ab"] = {
