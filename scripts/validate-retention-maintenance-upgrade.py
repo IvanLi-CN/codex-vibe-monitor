@@ -39,9 +39,14 @@ OWNER_FIXTURE_PREFIX = "retention-owner-fixture"
 OWNER_RAW_PATHS = {
     "retention_archive": (
         "raw/retention-owner-fixture-archive-request.json",
-        "raw/retention-owner-fixture-archive-response.json",
+        "raw/retention-owner-fixture-shared-response.json",
     ),
-    "pool_upstream_attempt_archive": ("raw/retention-owner-fixture-pool-response.json",),
+    "pool_upstream_attempt_archive": ("raw/retention-owner-fixture-shared-response.json",),
+    "invocation_detail_prune": ("raw/retention-owner-fixture-detail-response.json",),
+}
+OWNER_RAW_RELEASED_PATHS = {
+    "retention_archive": ("raw/retention-owner-fixture-archive-request.json",),
+    "pool_upstream_attempt_archive": ("raw/retention-owner-fixture-shared-response.json",),
     "invocation_detail_prune": ("raw/retention-owner-fixture-detail-response.json",),
 }
 OWNER_ARCHIVE_DATASETS = {
@@ -213,24 +218,44 @@ def assert_archive_contains_fixture(root, dataset, changed, task_key):
             else:
                 shutil.copyfile(archive_path, sqlite_path)
             with sqlite3.connect(sqlite_path) as connection:
-                found = connection.execute(
-                    f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1",
+                fixture_count = connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {column}=?",
                     (value,),
-                ).fetchone() is not None
+                ).fetchone()[0]
+                found = fixture_count == 1
+                if found and task_key == "retention_archive":
+                    assert connection.execute(
+                        "SELECT request_raw_path,response_raw_path FROM codex_invocations WHERE invoke_id=?",
+                        (value,),
+                    ).fetchone() == OWNER_RAW_PATHS["retention_archive"], (task_key, file_path)
+                if found and task_key == "pool_upstream_attempt_archive":
+                    assert connection.execute(
+                        "SELECT response_raw_path FROM pool_upstream_request_attempts WHERE invoke_id=?",
+                        (value,),
+                    ).fetchone() == (OWNER_RAW_PATHS["pool_upstream_attempt_archive"][0],), (task_key, file_path)
         if found:
             break
     assert found, (task_key, dataset, changed)
 
 
 def assert_fixture_raw_references_released(root, task_key):
-    for relative_path in OWNER_RAW_PATHS.get(task_key, ()):
+    released_paths = OWNER_RAW_RELEASED_PATHS.get(task_key, ())
+    for relative_path in released_paths:
         assert not (root / relative_path).exists(), (task_key, relative_path)
     with sqlite3.connect(root / "business.sqlite") as connection:
         for table, column in OWNER_RAW_REFERENCES.get(task_key, ()):
             assert connection.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({','.join('?' for _ in OWNER_RAW_PATHS[task_key])})",
-                OWNER_RAW_PATHS[task_key],
+                f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({','.join('?' for _ in released_paths)})",
+                released_paths,
             ).fetchone()[0] == 0, (task_key, table, column)
+    if task_key == "retention_archive":
+        shared_path = OWNER_RAW_PATHS["pool_upstream_attempt_archive"][0]
+        assert (root / shared_path).is_file(), (task_key, shared_path)
+        with sqlite3.connect(root / "business.sqlite") as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM proxy_raw_payload_blob_links WHERE raw_path=?",
+                (shared_path,),
+            ).fetchone()[0] > 0, (task_key, shared_path)
 
 
 def retention_command(task_key, dry_run):
