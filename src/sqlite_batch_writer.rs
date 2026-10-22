@@ -43,25 +43,11 @@ use attempt_progress::{
 };
 use diagnostics::{append_terminal_journal, finish_committed_batch, reference_batch};
 pub(crate) use invocation_identity::TrackedTerminalJournal;
-#[cfg(test)]
-use queue::SQLITE_P2_COALESCE_INTERVAL;
-use queue::{
-    P1RetryState, P2ScheduleState, P2WakeReason, SQLITE_BATCH_CHANNEL_CAPACITY,
-    SQLITE_BATCH_FLUSH_INTERVAL, SQLITE_BATCH_MAX_AGE, SQLITE_BATCH_MAX_BYTES,
-    SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_STALE_WARN_AGE,
-    SQLITE_RELIABLE_ATTEMPT_PROGRESS_OVERFLOW_MAX_ROWS, SQLITE_SHUTDOWN_DRAIN_DEADLINE,
-    decrement_queued_p1_count, drain_queued_batch_writes, drain_queued_writes_before_dispatch,
-    drain_queued_writes_before_p2_dispatch, is_attempt_progress_write,
-    is_batch_writer_sqlite_lock_error, is_p1_terminal_write, p2_deadline_wait_armed,
-    take_next_bounded_batch, wait_for_p2_deadline,
-};
 use terminal_attempts::persist_runtime_attempt_snapshot_tx;
 
 pub(crate) use batch::*;
 pub(crate) use flush::*;
-pub(crate) use queue::{
-    PendingQueueAccounting, PendingQueueAccountingSnapshot, PendingQueueInvariantViolation,
-};
+pub(crate) use queue::*;
 pub(crate) use runtime::*;
 
 #[derive(Debug)]

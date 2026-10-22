@@ -10,7 +10,7 @@ pub(crate) enum FlushReason {
 }
 
 impl FlushReason {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::RowLimit => "row_limit",
             Self::Interval => "interval",
@@ -20,7 +20,7 @@ impl FlushReason {
         }
     }
 
-    pub(crate) fn bypass_pressure_gate(self) -> bool {
+    pub(super) fn bypass_pressure_gate(self) -> bool {
         false
     }
 }
@@ -129,31 +129,31 @@ pub(crate) enum SqliteBatchWriterControl {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PendingBatch {
-    pub(crate) terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
-    pub(crate) attempt_progress: HashMap<i64, BatchedAttemptProgress>,
-    pub(crate) invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
-    pub(crate) account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
-    pub(crate) system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
-    pub(crate) startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
-    pub(crate) enqueued_rows: usize,
-    pub(crate) coalesced_rows: usize,
-    pub(crate) attempt_progress_coalesced_rows: usize,
-    pub(crate) estimated_bytes: usize,
-    pub(crate) terminal_estimated_bytes: usize,
-    pub(crate) oldest_at: Option<Instant>,
-    pub(crate) retained_for_retry: bool,
-    pub(crate) recovery_replay: bool,
+    pub(super) terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
+    pub(super) attempt_progress: HashMap<i64, BatchedAttemptProgress>,
+    pub(super) invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
+    pub(super) account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
+    pub(super) system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
+    pub(super) startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
+    pub(super) enqueued_rows: usize,
+    pub(super) coalesced_rows: usize,
+    pub(super) attempt_progress_coalesced_rows: usize,
+    pub(super) estimated_bytes: usize,
+    pub(super) terminal_estimated_bytes: usize,
+    pub(super) oldest_at: Option<Instant>,
+    pub(super) retained_for_retry: bool,
+    pub(super) recovery_replay: bool,
 }
 
 impl PendingBatch {
-    pub(crate) fn add_estimate(&mut self, bytes: usize, is_terminal: bool) {
+    pub(super) fn add_estimate(&mut self, bytes: usize, is_terminal: bool) {
         self.estimated_bytes = self.estimated_bytes.saturating_add(bytes);
         if is_terminal {
             self.terminal_estimated_bytes = self.terminal_estimated_bytes.saturating_add(bytes);
         }
     }
 
-    pub(crate) fn replace_estimate(
+    pub(super) fn replace_estimate(
         &mut self,
         old_bytes: usize,
         new_bytes: usize,
@@ -171,7 +171,7 @@ impl PendingBatch {
         }
     }
 
-    pub(crate) fn recalculate_estimates(&mut self) {
+    pub(super) fn recalculate_estimates(&mut self) {
         self.estimated_bytes = self
             .terminal_invocations
             .values()
@@ -213,7 +213,7 @@ impl PendingBatch {
             .sum();
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.terminal_invocations.is_empty()
             && self.attempt_progress.is_empty()
             && self.invocation_derived.is_empty()
@@ -222,7 +222,7 @@ impl PendingBatch {
             && self.startup_backfill_wake_tasks.is_empty()
     }
 
-    pub(crate) fn has_p2(&self) -> bool {
+    pub(super) fn has_p2(&self) -> bool {
         !self.attempt_progress.is_empty()
             || !self.invocation_derived.is_empty()
             || !self.account_selected_touches.is_empty()
@@ -230,7 +230,7 @@ impl PendingBatch {
             || !self.startup_backfill_wake_tasks.is_empty()
     }
 
-    pub(crate) fn logical_rows(&self) -> usize {
+    pub(super) fn logical_rows(&self) -> usize {
         self.terminal_invocations.len()
             + self.attempt_progress.len()
             + self.invocation_derived.len()
@@ -239,13 +239,13 @@ impl PendingBatch {
             + usize::from(!self.startup_backfill_wake_tasks.is_empty())
     }
 
-    pub(crate) fn age(&self) -> Duration {
+    pub(super) fn age(&self) -> Duration {
         self.oldest_at
             .map(|oldest| oldest.elapsed())
             .unwrap_or_default()
     }
 
-    pub(crate) fn push(&mut self, write: SqliteBatchWrite) -> usize {
+    pub(super) fn push(&mut self, write: SqliteBatchWrite) -> usize {
         let now = Instant::now();
         let write_bytes = write.estimated_memory_bytes();
         self.oldest_at.get_or_insert(now);
@@ -376,7 +376,7 @@ impl PendingBatch {
         }
     }
 
-    pub(crate) fn push_accounted(
+    pub(super) fn push_accounted(
         &mut self,
         write: SqliteBatchWrite,
         accounting: &PendingQueueAccounting,
@@ -396,11 +396,11 @@ impl PendingBatch {
         );
     }
 
-    pub(crate) fn take(&mut self) -> Self {
+    pub(super) fn take(&mut self) -> Self {
         std::mem::take(self)
     }
 
-    pub(crate) fn take_p1_terminals(&mut self) -> Self {
+    pub(super) fn take_p1_terminals(&mut self) -> Self {
         let terminal_invocations = std::mem::take(&mut self.terminal_invocations);
         if terminal_invocations.is_empty() {
             return Self::default();
@@ -426,7 +426,7 @@ impl PendingBatch {
         }
     }
 
-    pub(crate) fn take_p1_terminal_chunk(&mut self, max_rows: usize, max_bytes: usize) -> Self {
+    pub(super) fn take_p1_terminal_chunk(&mut self, max_rows: usize, max_bytes: usize) -> Self {
         if self.terminal_invocations.is_empty() || max_rows == 0 || max_bytes == 0 {
             return Self::default();
         }
@@ -482,7 +482,7 @@ impl PendingBatch {
         chunk
     }
 
-    pub(crate) fn take_p2(&mut self) -> Self {
+    pub(super) fn take_p2(&mut self) -> Self {
         let mut p2 = std::mem::take(self);
         let terminal_invocations = std::mem::take(&mut p2.terminal_invocations);
         let terminal_estimated_bytes = p2.terminal_estimated_bytes;
@@ -497,7 +497,7 @@ impl PendingBatch {
         p2
     }
 
-    pub(crate) fn take_p2_chunk(&mut self, max_rows: usize, max_bytes: usize) -> Self {
+    pub(super) fn take_p2_chunk(&mut self, max_rows: usize, max_bytes: usize) -> Self {
         if !self.has_p2() || max_rows == 0 || max_bytes == 0 {
             return Self::default();
         }
@@ -594,7 +594,7 @@ impl PendingBatch {
         chunk
     }
 
-    pub(crate) fn add_startup_backfill_wake_tasks(&mut self, tasks: &[StartupBackfillTask]) {
+    pub(super) fn add_startup_backfill_wake_tasks(&mut self, tasks: &[StartupBackfillTask]) {
         for task in tasks {
             if !self.startup_backfill_wake_tasks.contains(task) {
                 self.startup_backfill_wake_tasks.push(*task);
@@ -603,7 +603,7 @@ impl PendingBatch {
         self.recalculate_estimates();
     }
 
-    pub(crate) fn merge_p2(&mut self, mut other: Self) {
+    pub(super) fn merge_p2(&mut self, mut other: Self) {
         self.recovery_replay |= other.recovery_replay;
         let attempt_progress = std::mem::take(&mut other.attempt_progress);
         for progress in attempt_progress.into_values() {
@@ -638,7 +638,7 @@ impl PendingBatch {
         };
     }
 
-    pub(crate) fn merge_all(&mut self, mut other: Self) {
+    pub(super) fn merge_all(&mut self, mut other: Self) {
         self.recovery_replay |= other.recovery_replay;
         let terminal_invocations = std::mem::take(&mut other.terminal_invocations);
         let terminal_count = terminal_invocations.len();
@@ -650,7 +650,7 @@ impl PendingBatch {
     }
 
     #[cfg(test)]
-    pub(crate) fn into_writes(self) -> Vec<SqliteBatchWrite> {
+    pub(super) fn into_writes(self) -> Vec<SqliteBatchWrite> {
         let mut writes = Vec::with_capacity(self.logical_rows());
         writes.extend(
             self.terminal_invocations
@@ -715,16 +715,16 @@ fn merge_terminal_attempts(
 
 #[derive(Debug)]
 pub(crate) struct RetainedBatch {
-    pub(crate) batch: PendingBatch,
-    pub(crate) failed: bool,
-    pub(crate) p2_retryable_failure: bool,
-    pub(crate) p2_lock_failure: bool,
-    pub(crate) p2_defer: Option<P2DeferReason>,
-    pub(crate) quarantined_system_task_ids: Vec<i64>,
+    pub(super) batch: PendingBatch,
+    pub(super) failed: bool,
+    pub(super) p2_retryable_failure: bool,
+    pub(super) p2_lock_failure: bool,
+    pub(super) p2_defer: Option<P2DeferReason>,
+    pub(super) quarantined_system_task_ids: Vec<i64>,
 }
 
 impl RetainedBatch {
-    pub(crate) fn new(mut batch: PendingBatch, failed: bool) -> Self {
+    pub(super) fn new(mut batch: PendingBatch, failed: bool) -> Self {
         batch.retained_for_retry = true;
         Self {
             batch,
@@ -736,7 +736,7 @@ impl RetainedBatch {
         }
     }
 
-    pub(crate) fn p2_deferred(mut batch: PendingBatch, reason: P2DeferReason) -> Self {
+    pub(super) fn p2_deferred(mut batch: PendingBatch, reason: P2DeferReason) -> Self {
         batch.retained_for_retry = true;
         Self {
             batch,
@@ -748,7 +748,7 @@ impl RetainedBatch {
         }
     }
 
-    pub(crate) fn p2_failed(
+    pub(super) fn p2_failed(
         mut batch: PendingBatch,
         retryable_failure: bool,
         lock_failure: bool,
@@ -764,19 +764,19 @@ impl RetainedBatch {
         }
     }
 
-    pub(crate) fn with_quarantined_system_task_ids(mut self, ids: Vec<i64>) -> Self {
+    pub(super) fn with_quarantined_system_task_ids(mut self, ids: Vec<i64>) -> Self {
         self.quarantined_system_task_ids = ids;
         self
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum P2DeferReason {
+pub(super) enum P2DeferReason {
     PressureCooldown(u64),
     BackgroundBusy { observed_generation: u64 },
 }
 
-pub(crate) fn estimated_option_string_bytes(value: &Option<String>) -> usize {
+pub(super) fn estimated_option_string_bytes(value: &Option<String>) -> usize {
     value.as_ref().map_or(0, String::capacity)
 }
 
@@ -822,7 +822,7 @@ fn estimated_system_task_finish_memory_bytes(finish: &BatchedSystemTaskFinish) -
 }
 
 impl PendingBatch {
-    pub(crate) fn estimated_memory_bytes(&self) -> usize {
+    pub(super) fn estimated_memory_bytes(&self) -> usize {
         self.estimated_bytes
     }
 }

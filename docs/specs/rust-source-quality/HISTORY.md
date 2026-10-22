@@ -420,6 +420,6 @@ The follow-up repair narrows extracted intra-schema helpers, including `legacy_r
 
 ## SQLite Batch Writer Extraction
 
-The SQLite batch writer extraction starts from verified main `e956d1a89b589a2d9cd0a8df69b018eefa94590c` and replaces the 6,901-line parent with a 93-line facade plus named batch, queue, writer, runtime, flush, and test modules. Existing attempt-progress, diagnostics, invocation-identity, queue-accounting, and terminal-attempts module paths remain intact; the extracted modules are 828, 326, 1,035, 1,034, 1,512, and 2,095 lines after rustfmt.
+The SQLite batch writer extraction starts from verified main `784152185a40afc8a162318a3bbf64d981a516d9` and replaces the 6,901-line parent with a 93-line facade plus named batch, queue, writer, runtime, flush, and test modules. Existing attempt-progress, diagnostics, invocation-identity, queue-accounting, and terminal-attempts module paths remain intact; the extracted modules are 828, 326, 1,035, 1,034, 1,512, and 2,095 lines after rustfmt.
 
 The explicit policy inventory decreases from 23 to 22 entries, from 6 production and 17 test/helper candidates to 5 production and 17 test/helper candidates, while the immutable preparation baseline remains 32/23 and the suppression inventory remains 124. Queue priority, batching, retry and pressure gates, journal durability, recovery replay, transaction boundaries, SQL, crate-visible paths, tests, and resource buckets remain unchanged.

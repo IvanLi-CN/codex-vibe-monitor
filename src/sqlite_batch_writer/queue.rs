@@ -1,12 +1,12 @@
 use super::*;
 
-pub(super) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
-pub(super) const SQLITE_P2_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
-pub(super) const SQLITE_BATCH_MAX_ROWS: usize = 32;
-pub(super) const SQLITE_BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
-pub(super) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
-pub(super) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
-pub(super) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
+pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
+pub(crate) const SQLITE_P2_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const SQLITE_BATCH_MAX_ROWS: usize = 32;
+pub(crate) const SQLITE_BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
+pub(crate) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
+pub(crate) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
 pub(super) const SQLITE_SHUTDOWN_DRAIN_DEADLINE: Duration = Duration::from_secs(5);
 pub(super) const SQLITE_RELIABLE_ATTEMPT_PROGRESS_OVERFLOW_MAX_ROWS: usize = SQLITE_BATCH_MAX_ROWS;
 const SQLITE_P1_RETRY_DELAYS: [Duration; 5] = [
@@ -292,7 +292,7 @@ pub(crate) struct PendingQueueAccounting {
     pub(crate) last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
 }
 
-pub(super) fn drain_queued_batch_writes(
+pub(crate) fn drain_queued_batch_writes(
     write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
     pending: &mut PendingBatch,
     accounting: &PendingQueueAccounting,

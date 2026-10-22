@@ -956,7 +956,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     }
 }
 
-pub(crate) async fn run_terminal_journal_sync(
+pub(super) async fn run_terminal_journal_sync(
     terminal_journal: Arc<TrackedTerminalJournal>,
     shutdown: CancellationToken,
 ) {
@@ -992,7 +992,7 @@ pub(crate) async fn run_terminal_journal_sync(
     }
 }
 
-pub(crate) fn drain_terminal_journal_deferred_writes(
+pub(super) fn drain_terminal_journal_deferred_writes(
     terminal_journal: &Arc<TrackedTerminalJournal>,
     pending: &mut PendingBatch,
     accounting: &PendingQueueAccounting,

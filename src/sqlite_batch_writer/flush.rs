@@ -48,7 +48,7 @@ async fn restore_sqlite_connection_busy_timeout(
     clippy::too_many_arguments,
     reason = "The accounting wrapper mirrors the single-writer ownership boundaries."
 )]
-pub(crate) async fn flush_pending_batch_accounted(
+pub(super) async fn flush_pending_batch_accounted(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
     pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
@@ -182,7 +182,7 @@ pub(crate) async fn flush_pending_batch_accounted(
     }
 }
 
-pub(crate) fn successfully_flushed_system_task_ids(
+pub(super) fn successfully_flushed_system_task_ids(
     submitted_ids: &[i64],
     result: Option<&RetainedBatch>,
 ) -> Vec<i64> {
@@ -241,7 +241,7 @@ fn quarantine_system_task_batch(
     Ok(batch.system_task_finishes.len())
 }
 
-pub(crate) fn shutdown_recovery_batch(batch: &PendingBatch) -> Option<PendingBatch> {
+pub(super) fn shutdown_recovery_batch(batch: &PendingBatch) -> Option<PendingBatch> {
     if batch.terminal_invocations.is_empty() && batch.system_task_finishes.is_empty() {
         return None;
     }
@@ -255,7 +255,7 @@ pub(crate) fn shutdown_recovery_batch(batch: &PendingBatch) -> Option<PendingBat
     Some(quarantine)
 }
 
-pub(crate) fn quarantine_shutdown_batch(
+pub(super) fn quarantine_shutdown_batch(
     terminal_journal: &Arc<TrackedTerminalJournal>,
     database_path: &std::path::Path,
     batch: &PendingBatch,
@@ -325,7 +325,7 @@ pub(crate) fn quarantine_shutdown_batch(
     }
 }
 
-pub(crate) fn release_shutdown_pending_batch(
+pub(super) fn release_shutdown_pending_batch(
     accounting: &PendingQueueAccounting,
     terminal_journal: &Arc<TrackedTerminalJournal>,
     database_path: &std::path::Path,
