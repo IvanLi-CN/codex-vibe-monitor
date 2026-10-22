@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-  "codeCandidateSha": "cb4c1bef30cb051ebcdf08f4c2bee45a2df4e70b",
+  "codeCandidateSha": "cfe996f5be4c68a2e1918e8a412ccfe7b2508a4c",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -11,7 +11,7 @@
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 14,
+    "repairBatchesUsed": 15,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -114,8 +114,8 @@
     "postEvidenceRefreshCi"
   ],
   "formalReview": {
-    "candidateSha": "989b044e66d946afd58460d2237666dcb8eb7188",
-    "reviewedHead": "989b044e66d946afd58460d2237666dcb8eb7188",
+    "candidateSha": "c55bf4c35e5cb94ec303fc1868e31009a189da89",
+    "reviewedHead": "c55bf4c35e5cb94ec303fc1868e31009a189da89",
     "status": "superseded-by-code-repair",
     "lanes": [
       "contract",
@@ -124,8 +124,18 @@
       "test-platform",
       "database-migration"
     ],
-    "findings": [],
-    "note": "The five-lane read-only review of docs carrier 989b044e found no P0-P2 findings. Code repair cb4c1bef supersedes that reviewed head after exact-head CI exposed a stale migration-count assertion and a needless borrow; a fresh review is required for the current code candidate."
+    "findings": [
+      "P2: model-route owner completion used the probe hasMore flag instead of the remaining-row count.",
+      "P2: task-run history cleanup discarded previously committed legacy rows when a later bounded batch failed.",
+      "P2: retry-plan persistence failure discarded otherwise valid owner execution facts.",
+      "P2: a stale finalizer could clear a newer retention owner catch-up schedule without a run-generation guard.",
+      "P2: new retention owners were absent from the actual-work observation marker.",
+      "P2: owner backoff reasons could be overridden by a one-second hasMore retry.",
+      "P2: v2 retention_archive records could be mislabeled as old combined-scope history in the UI.",
+      "P2: v2 owner records did not expose the already-collected archive batch metrics.",
+      "P2: the stateful pause contract test did not disable the six newly seeded v2 owners."
+    ],
+    "note": "The five-lane read-only review of c55bf4c3 found the listed P2 contract, state-concurrency, failure-data, observation, UI, metrics, and test-platform findings. Code repair cfe996f5 supersedes that reviewed head; a fresh review is required for the current code candidate."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -139,11 +149,11 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "ownerAuthorizedRepairBatch": 14,
+    "ownerAuthorizedRepairBatch": 15,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "989b044e66d946afd58460d2237666dcb8eb7188",
-    "fixedFinding": "Exact-head pull_request CI on docs carrier 989b044e failed the lightweight migration fixture because schema initialization no longer performs implicit history cleanup while the assertion still expected 200 rows, and Clippy rejected .bind(&finished_at) as a needless borrow. The repair updates the fixture to the owner-separated contract and removes the borrow without changing production limits.",
-    "newFocusedRegression": "Rust format and diff checks pass; the migration fixture now records the 205 rows retained by repeatable schema initialization, while the existing bounded owner cleanup remains the explicit cleanup path. The repair is code candidate cb4c1bef; fresh formal review, exact-head CI, and migration replay remain pending. UI visual evidence remains current.",
+    "previousCandidateSha": "c55bf4c35e5cb94ec303fc1868e31009a189da89",
+    "fixedFinding": "The five-lane review of c55bf4c3 found owner fact loss after model-route probes, partial history cleanup failures, retry-plan write errors, stale-finalizer catch-up clearing, missing actual-work markers, backoff starvation, a v2 UI legacy-scope label, and missing archive batch metrics; exact-head CI also exposed the pause test's six newly seeded owners. The repair preserves committed facts, adds run-generation guards and v2 metrics, updates observation/UI/test contracts, and keeps retry limits bounded.",
+    "newFocusedRegression": "Rust format and diff checks pass. The repair is code candidate cfe996f5; fresh formal review, exact-head CI, migration replay, and refreshed UI visual evidence remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -151,10 +161,10 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "headSha": "cb4c1bef30cb051ebcdf08f4c2bee45a2df4e70b",
+    "headSha": "cfe996f5be4c68a2e1918e8a412ccfe7b2508a4c",
     "requiredCi": null,
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the implementation commit; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this repair."
+    "note": "candidate_head_sha binds the implementation commit cfe996f5; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this repair."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
@@ -172,13 +182,13 @@
     "currentComparison": "consistent",
     "currentStory": "System/RetentionOwnerRunFacts/Mobile",
     "currentAsset": "docs/specs/retention-maintenance-task-ownership/assets/retention-owner-run-facts-mobile.png",
-    "currentSnapshot": "/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__53477e66/2026/10/22/20261022T050223Z-retention-owner-run-facts-mobile-20261022-93bbd3f0.png",
+    "currentSnapshot": "/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__53477e66/2026/10/22/20261022T063517Z-retention-owner-run-facts-mobile-20261022-49b15b08.png",
     "requestedViewport": "393x852",
     "viewportStrategy": "storybook-viewport",
     "captureScope": "element",
     "surfaceSelector": "[data-visual-evidence-surface]",
     "targetSelector": "[data-visual-evidence-target]",
-    "retentionProof": "The current implementation commit adds the owner v2 facts component and Storybook coverage, labels legacy retention_archive history as the old combined scope, preserves model-route purge facts after a post-commit probe failure, and gates that purge through shared maintenance write admission. The mobile source-managed surface rendered without overflow or overlap; the 24px margins were within the required 16-48px range, and the surface had no border, radius or shadow."
+    "retentionProof": "The controlled Storybook mobile capture was rerun after the UI condition-only change. The source-managed owner v2 facts surface rendered without overflow or overlap; the 24px margins were within the required 16-48px range, and the surface had no border, radius or shadow. The legacy retention_archive label is now restricted to non-v2 records in the system task detail view."
   },
   "productionBuildSettings": {
     "command": "cargo build --locked",

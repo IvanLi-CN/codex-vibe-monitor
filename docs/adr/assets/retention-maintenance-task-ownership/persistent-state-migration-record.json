@@ -141,13 +141,14 @@
     "description": "Add six independent retention-policy task rows, initialize their default schedules without overwriting operator overrides, persist ownership-version-2 result facts, retain bounded retry facts for failed or lease-conflicted owner runs, and keep history cleanup under the bounded cleanup owner instead of schema initialization.",
     "candidate_branch": "th/retention-maintenance-ownership",
     "candidate_base_sha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "candidate_head_sha": "cb4c1bef30cb051ebcdf08f4c2bee45a2df4e70b",
+    "candidate_head_sha": "cfe996f5be4c68a2e1918e8a412ccfe7b2508a4c",
     "status": "implemented-pending-validation",
     "ddl_structural_changes": [],
     "dml_changes": [
       "Insert six managed-task catalog rows and apply retention_owner_schedule_v2 once only when their interval and cron fields are unset.",
       "Persist ownershipVersion=2, ownerScope, globalBacklogTotal, selectedScope, discovered, selected, committed, and one of no-work/complete/partial/deferred/failed in the existing managed_task_runs.details JSON, including explicit task_execution_active lease-conflict facts.",
-      "Keep old composite retention records readable and use committed owner facts for catch-up bookkeeping without reconstructing historical mixed counts."
+      "Keep old composite retention records readable and use committed owner facts for catch-up bookkeeping without reconstructing historical mixed counts.",
+      "Expose collected archive batch metrics in v2 owner details and guard catch-up and retry-plan writes by the current managed-task run generation."
     ],
     "durable_state_policy": "Additive only; no business-table schema change, no deletion or rewrite of deployed migration facts, and no synthetic historical owner runs.",
     "required_validation": [
