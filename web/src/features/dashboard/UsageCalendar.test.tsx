@@ -2,7 +2,14 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { HISTORY_CALENDAR_BUCKET, HISTORY_CALENDAR_RANGE, UsageCalendar } from "./UsageCalendar";
+import {
+  HISTORY_CALENDAR_BUCKET,
+  HISTORY_CALENDAR_DAY_COUNT,
+  HISTORY_CALENDAR_RANGE,
+  resolveLocalDateRange,
+  transformTimeseriesToActivities,
+  UsageCalendar,
+} from "./UsageCalendar";
 
 vi.mock("react-activity-calendar", () => ({
   default: ({ data }: { data?: Array<{ date: string; count: number }> }) => (
@@ -143,5 +150,42 @@ describe("UsageCalendar", () => {
     });
     expect(host?.textContent).not.toContain("History");
     expect(host?.textContent).not.toContain("Timezone");
+  });
+
+  it("generates exactly 180 local dates ending today for every metric", () => {
+    const range = resolveLocalDateRange();
+    const today = `${range.endInclusive.getFullYear()}-${String(range.endInclusive.getMonth() + 1).padStart(2, "0")}-${String(range.endInclusive.getDate()).padStart(2, "0")}`;
+    const currentDayData = {
+      ...sampleData,
+      points: [
+        {
+          ...sampleData.points[0],
+          bucketStart: `${today} 00:00:00`,
+          bucketEnd: `${today} 01:00:00`,
+        },
+      ],
+    };
+    const countActivities = transformTimeseriesToActivities(currentDayData, "totalCount");
+    const tokenActivities = transformTimeseriesToActivities(currentDayData, "totalTokens");
+
+    expect(countActivities.activities).toHaveLength(HISTORY_CALENDAR_DAY_COUNT);
+    expect(countActivities.activities[0]?.date).toBe(
+      `${range.start.getFullYear()}-${String(range.start.getMonth() + 1).padStart(2, "0")}-${String(range.start.getDate()).padStart(2, "0")}`,
+    );
+    expect(countActivities.activities.at(-1)?.date).toBe(
+      `${range.endInclusive.getFullYear()}-${String(range.endInclusive.getMonth() + 1).padStart(2, "0")}-${String(range.endInclusive.getDate()).padStart(2, "0")}`,
+    );
+    expect(countActivities.totalValue).toBe(8);
+    expect(tokenActivities.totalValue).toBe(1500);
+  });
+
+  it("keeps the exact 180-day span across a calendar year boundary", () => {
+    const range = resolveLocalDateRange(new Date(2026, 0, 15, 12, 0, 0));
+    expect(range.start.getFullYear()).toBe(2025);
+    expect(range.start.getMonth()).toBe(6);
+    expect(range.start.getDate()).toBe(20);
+    expect(range.endInclusive.getFullYear()).toBe(2026);
+    expect(range.endInclusive.getMonth()).toBe(0);
+    expect(range.endInclusive.getDate()).toBe(15);
   });
 });

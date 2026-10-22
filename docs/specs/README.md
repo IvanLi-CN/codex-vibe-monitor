@@ -102,6 +102,7 @@
 | -     | 数据保留维护的独立任务归属与触发控制                                      | active    | `retention-maintenance-task-ownership/SPEC.md`             | `retention-maintenance-task-ownership/IMPLEMENTATION.md`             | 已实现；PR 验证与审查收敛中                                              |
 | -     | Responses `server_error` 过载特征与同账号重试                             | active    | `responses-server-error-overload-retry/SPEC.md`            | `responses-server-error-overload-retry/IMPLEMENTATION.md`            | topic anchor: proxy / Responses / overload classification                |
 | -     | VLESS XHTTP Forward Proxy Support                                         | active    | `forward-proxy-vless-xhttp-support/SPEC.md`                | `forward-proxy-vless-xhttp-support/IMPLEMENTATION.md`                | topic anchor: forward proxy / Xray / XHTTP                               |
+| -     | 活动总览时间范围与历史活动归位                                            | active    | `dashboard-activity-range-and-history/SPEC.md`             | `dashboard-activity-range-and-history/IMPLEMENTATION.md`             | 需求已确认；应用实现未开始                                               |
 
 ## Archived Sources
 

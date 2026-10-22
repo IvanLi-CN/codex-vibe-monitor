@@ -104,7 +104,7 @@ describe("dashboardOverviewSnapshots store", () => {
 
     await expect(readDashboardOverviewSnapshotEntry("today")).resolves.toBeNull();
     await expect(readDashboardOverviewSnapshotEntry("1d")).resolves.toBeNull();
-    await expect(listDashboardOverviewSnapshotRanges()).resolves.toEqual(["usage"]);
+    await expect(listDashboardOverviewSnapshotRanges()).resolves.toEqual([]);
   });
 });
 
@@ -129,34 +129,35 @@ describe("fetchDashboardOverviewSnapshotBundle", () => {
     await fetchDashboardOverviewSnapshotBundle("today");
     await fetchDashboardOverviewSnapshotBundle("yesterday");
     await fetchDashboardOverviewSnapshotBundle("1d");
-    await fetchDashboardOverviewSnapshotBundle("7d");
-    await fetchDashboardOverviewSnapshotBundle("usage");
 
     expect(apiMocks.fetchDashboardActivity.mock.calls).toEqual([
       ["today", expect.objectContaining({ includeAccounts: false, includeRecent: false })],
       ["yesterday", expect.objectContaining({ includeAccounts: false, includeRecent: false })],
       ["1d", expect.objectContaining({ includeAccounts: false, includeRecent: false })],
-      ["7d", expect.objectContaining({ includeAccounts: false, includeRecent: false })],
     ]);
     expect(apiMocks.fetchSummary.mock.calls).toEqual([
       ["yesterday", expect.any(Object)],
       ["previous7d", expect.any(Object)],
+      ["previous1d", expect.any(Object)],
       ["previous7d", expect.any(Object)],
       ["1d", expect.any(Object)],
-      ["7d", expect.any(Object)],
+      ["previous24h", expect.any(Object)],
     ]);
     expect(apiMocks.fetchTimeseries.mock.calls).toEqual([
       ["today", expect.objectContaining({ bucket: "1m" })],
       ["yesterday", expect.objectContaining({ bucket: "1m" })],
       ["yesterday", expect.objectContaining({ bucket: "1m" })],
+      ["previous1d", expect.objectContaining({ bucket: "1m" })],
       ["1d", expect.objectContaining({ bucket: "1m" })],
-      ["7d", expect.objectContaining({ bucket: "1h" })],
-      ["6mo", expect.objectContaining({ bucket: "1d" })],
+      ["previous24h", expect.objectContaining({ bucket: "1m" })],
     ]);
     expect(apiMocks.fetchParallelWorkStats.mock.calls).toEqual([
       [expect.objectContaining({ range: "today", bucket: "1m" })],
       [expect.objectContaining({ range: "yesterday", bucket: "1m" })],
       [expect.objectContaining({ range: "yesterday", bucket: "1m" })],
+      [expect.objectContaining({ range: "previous1d", bucket: "1m" })],
+      [expect.objectContaining({ range: "1d", bucket: "1m" })],
+      [expect.objectContaining({ range: "previous24h", bucket: "1m" })],
     ]);
     expect(apiMocks.fetchDashboardNetworkTimeseries.mock.calls).toEqual([
       ["today", expect.any(Object)],

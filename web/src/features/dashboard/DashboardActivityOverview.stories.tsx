@@ -473,9 +473,7 @@ const DASHBOARD_NETWORK_TIMESERIES_FIXTURES: Record<
   "1d:5m": buildDashboardNetworkPoints("1d"),
 };
 
-function buildSnapshotBundle(
-  range: "today" | "yesterday" | "1d" | "7d" | "usage",
-): DashboardOverviewSnapshotBundle {
+function buildSnapshotBundle(range: "today" | "yesterday" | "1d"): DashboardOverviewSnapshotBundle {
   if (range === "today") {
     return {
       range,
@@ -513,6 +511,8 @@ function buildSnapshotBundle(
         spendRate: 0.88,
       }),
       timeseries: TIMESERIES_FIXTURES["yesterday:1m"],
+      comparisonSummary: SUMMARY_FIXTURES.previous7d,
+      comparisonTimeseries: TIMESERIES_FIXTURES["today:1m"],
       previous7dSummary: SUMMARY_FIXTURES.previous7d,
       parallelWorkStats: buildParallelWorkResponse(
         [6, 7, 8, 7],
@@ -534,34 +534,19 @@ function buildSnapshotBundle(
       }),
       summary: SUMMARY_FIXTURES["1d"],
       timeseries: TIMESERIES_FIXTURES["1d:1m"],
+      comparisonSummary: SUMMARY_FIXTURES.previous7d,
+      comparisonTimeseries: TIMESERIES_FIXTURES["1d:1m"],
       networkTimeseries: DASHBOARD_NETWORK_TIMESERIES_FIXTURES["1d:5m"],
     };
   }
 
-  if (range === "7d") {
-    return {
-      range,
-      dashboardActivity: buildSnapshotDashboardActivityResponse({
-        range: "7d",
-        summary: SUMMARY_FIXTURES["7d"],
-        tokensPerMinute: 6840,
-        spendRate: 8.44,
-      }),
-      summary: SUMMARY_FIXTURES["7d"],
-      timeseries: TIMESERIES_FIXTURES["7d:1h"],
-    };
-  }
-
-  return {
-    range,
-    timeseries: TIMESERIES_FIXTURES["6mo:1d"],
-  };
+  throw new Error(`unsupported snapshot range: ${range}`);
 }
 
 const OFFLINE_SNAPSHOT_STATUS: DashboardOverviewSnapshotStatus = {
   mode: "cached-offline",
   cachedAt: "2026-04-09T12:26:00.000Z",
-  readyRanges: ["today", "yesterday", "1d", "7d", "usage"],
+  readyRanges: ["today", "yesterday", "1d"],
 };
 
 function buildActivityWeight(index: number, mode: "success" | "failure") {
@@ -1333,7 +1318,7 @@ export const OfflineCachedToday: Story = {
 export const OfflineRangeNotCachedYet: Story = {
   render: () => (
     <DashboardActivityOverview
-      activeRange="usage"
+      activeRange="1d"
       snapshotStatus={{
         mode: "not-cached-yet",
         cachedAt: null,

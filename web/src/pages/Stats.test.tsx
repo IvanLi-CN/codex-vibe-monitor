@@ -48,6 +48,10 @@ vi.mock("../hooks/useParallelWorkStats", () => ({
 
 vi.mock("../hooks/useLongTermStats", () => longTermHookMock);
 
+vi.mock("../features/dashboard/UsageCalendar", () => ({
+  UsageCalendar: () => <div data-testid="usage-calendar" />,
+}));
+
 vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
 }));

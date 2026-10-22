@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../components/ui/alert";
 import { SelectField } from "../components/ui/select-field";
+import { UsageCalendar } from "../features/dashboard/UsageCalendar";
 import { ErrorReasonDistribution } from "../features/stats/ErrorReasonDistribution";
 import { LongTermStatsSection } from "../features/stats/LongTermStatsSection";
 import { ParallelWorkStatsSection } from "../features/stats/ParallelWorkStatsSection";
@@ -92,6 +93,7 @@ export default function StatsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+      <UsageCalendar />
       <section className="surface-panel">
         <div className="surface-panel-body gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">

@@ -1,4 +1,9 @@
-import { ApiRequestError, type ParallelWorkStatsResponse } from "../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import {
+  ApiRequestError,
+  fetchParallelWorkStats,
+  type ParallelWorkStatsResponse,
+} from "../lib/api";
 import { buildTopicDescriptor } from "../lib/sse";
 import { getBrowserTimeZone } from "../lib/timeZone";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
@@ -47,23 +52,49 @@ export function useParallelWorkStats({
   upstreamAccountId,
   enabled = true,
 }: UseParallelWorkStatsOptions) {
-  const topic = enabled
-    ? buildTopicDescriptor("stats.parallel-work.current", {
+  const useHttp = enabled && (range === "previous1d" || range === "previous24h");
+  const topic =
+    enabled && !useHttp
+      ? buildTopicDescriptor("stats.parallel-work.current", {
+          range,
+          bucket,
+          upstreamAccountId,
+          timeZone: getBrowserTimeZone(),
+        })
+      : null;
+  const { data, isLoading, error, refresh } = useSubscriptionTopic<ParallelWorkStatsResponse>(
+    topic,
+    enabled && !useHttp,
+  );
+  const [httpData, setHttpData] = useState<ParallelWorkStatsResponse | null>(null);
+  const [httpLoading, setHttpLoading] = useState(useHttp);
+  const [httpError, setHttpError] = useState<string | null>(null);
+  const loadHttp = useCallback(async () => {
+    if (!useHttp) return;
+    setHttpLoading(true);
+    try {
+      const response = await fetchParallelWorkStats({
         range,
         bucket,
         upstreamAccountId,
         timeZone: getBrowserTimeZone(),
-      })
-    : null;
-  const { data, isLoading, error, refresh } = useSubscriptionTopic<ParallelWorkStatsResponse>(
-    topic,
-    enabled,
-  );
+      });
+      setHttpData(response);
+      setHttpError(null);
+    } catch (error) {
+      setHttpError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHttpLoading(false);
+    }
+  }, [bucket, range, upstreamAccountId, useHttp]);
+  useEffect(() => {
+    void loadHttp();
+  }, [loadHttp]);
 
   return {
-    data,
-    isLoading,
-    error,
-    refresh,
+    data: useHttp ? httpData : data,
+    isLoading: useHttp ? httpLoading : isLoading,
+    error: useHttp ? httpError : error,
+    refresh: useHttp ? loadHttp : refresh,
   };
 }

@@ -873,20 +873,11 @@ describe("DashboardPage", () => {
         ?.textContent,
     ).toBe("2048/4096");
 
-    const historyButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === "历史",
-    );
-    if (!(historyButton instanceof HTMLButtonElement)) {
-      throw new Error("missing history range button");
-    }
-
-    act(() => {
-      historyButton.click();
-    });
-
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalCount;surface:false;toggle:false;meta:false",
-    );
+    expect(
+      Array.from(host?.querySelectorAll('button[role="tab"]') ?? [])
+        .slice(0, 3)
+        .map((button) => button.textContent),
+    ).toEqual(["今日", "昨日", "24 小时"]);
 
     const yesterdayButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (button) => button.textContent === "昨日",
@@ -902,6 +893,23 @@ describe("DashboardPage", () => {
     expect(
       host
         ?.querySelector('[data-testid="dashboard-activity-range-yesterday"]')
+        ?.getAttribute("data-active"),
+    ).toBe("true");
+
+    const rolling24hButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (button) => button.textContent === "24 小时",
+    );
+    if (!(rolling24hButton instanceof HTMLButtonElement)) {
+      throw new Error("missing 24 hour range button");
+    }
+
+    act(() => {
+      rolling24hButton.click();
+    });
+
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-activity-range-1d"]')
         ?.getAttribute("data-active"),
     ).toBe("true");
   });

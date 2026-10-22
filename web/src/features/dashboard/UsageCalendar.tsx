@@ -63,7 +63,7 @@ export interface UsageCalendarProps {
   timeseriesResponse?: TimeseriesResponse | null;
 }
 
-export const HISTORY_CALENDAR_RANGE = "6mo";
+export const HISTORY_CALENDAR_RANGE = "recent180d";
 export const HISTORY_CALENDAR_BUCKET = "1d";
 export const HISTORY_CALENDAR_DAY_COUNT = 180;
 
@@ -468,12 +468,12 @@ interface CalendarComputation {
   monthMarkers: MonthMarker[];
 }
 
-function transformTimeseriesToActivities(
+export function transformTimeseriesToActivities(
   response: TimeseriesResponse | null,
   metric: MetricKey,
 ): CalendarComputation {
   const points = response?.points ?? [];
-  const range = resolveLocalDateRange(response);
+  const range = resolveLocalDateRange();
 
   const valuesByDate = new Map<string, number>();
   for (const point of points) {
@@ -543,24 +543,9 @@ function toLocalISODate(value: string) {
   return datePart ?? "";
 }
 
-function resolveLocalDateRange(response: TimeseriesResponse | null) {
-  // Daily time-series endpoints use [rangeStart, rangeEnd) where rangeEnd is the next local midnight.
-  // We keep the UI stable by always rendering a half-year calendar, even during the initial load.
-  const today = startOfLocalDay(new Date());
-
-  const rangeStart = response?.rangeStart;
-  const rangeEnd = response?.rangeEnd;
-  if (rangeStart && rangeEnd) {
-    const start = startOfLocalDay(new Date(rangeStart));
-    const endExclusive = startOfLocalDay(new Date(rangeEnd));
-    if (Number.isFinite(start.getTime()) && Number.isFinite(endExclusive.getTime())) {
-      const endInclusive = addLocalDays(endExclusive, -1);
-      if (start <= endInclusive) {
-        return { start, endInclusive };
-      }
-    }
-  }
-
+export function resolveLocalDateRange(now = new Date()) {
+  // The history contract is exactly 180 local calendar dates, including today.
+  const today = startOfLocalDay(now);
   const endInclusive = today;
   const start = addLocalDays(endInclusive, -(HISTORY_CALENDAR_DAY_COUNT - 1));
   return { start, endInclusive };

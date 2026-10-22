@@ -558,6 +558,60 @@ fn named_range_yesterday_end_respects_dst() {
 }
 
 #[test]
+fn named_range_previous_full_day_and_rolling_window_are_distinct() {
+    let tz = chrono_tz::Asia::Shanghai;
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 10, 6, 0, 0)
+        .single()
+        .expect("valid dt");
+
+    let (previous_day_start, previous_day_end) =
+        named_range_bounds("previous1d", now, tz).expect("previous full day bounds");
+    assert_eq!(
+        previous_day_start.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 4, 8).unwrap()
+    );
+    assert_eq!(
+        previous_day_end.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 4, 9).unwrap()
+    );
+
+    let (previous_window_start, previous_window_end) =
+        named_range_bounds("previous24h", now, tz).expect("previous rolling window bounds");
+    assert_eq!(
+        previous_window_end.signed_duration_since(previous_window_start),
+        chrono::Duration::hours(24)
+    );
+    assert_eq!(
+        now.signed_duration_since(previous_window_end),
+        chrono::Duration::hours(24)
+    );
+}
+
+#[test]
+fn named_range_recent_180_days_uses_local_calendar_boundaries() {
+    let tz = chrono_tz::America::Los_Angeles;
+    let now = Utc
+        .with_ymd_and_hms(2026, 11, 2, 18, 0, 0)
+        .single()
+        .expect("valid dt");
+
+    let (start, end) = named_range_bounds("recent180d", now, tz).expect("recent 180d bounds");
+    assert_eq!(
+        start.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 5, 7).unwrap()
+    );
+    assert_eq!(
+        end.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap()
+    );
+    assert_eq!(
+        end.signed_duration_since(start),
+        chrono::Duration::hours(4_321)
+    );
+}
+
+#[test]
 fn named_range_this_week_end_respects_dst() {
     let tz = chrono_tz::America::Los_Angeles;
     let now = Utc
@@ -628,6 +682,25 @@ fn parse_summary_window_accepts_yesterday_calendar_window() {
 }
 
 #[test]
+fn parse_summary_window_accepts_recent_180_day_calendar_window() {
+    let window = parse_summary_window(
+        &SummaryQuery {
+            window: Some("recent180d".to_string()),
+            limit: None,
+            time_zone: None,
+            upstream_account_id: None,
+        },
+        50,
+    )
+    .expect("parse recent 180 day summary window");
+
+    match window {
+        SummaryWindow::Calendar(value) => assert_eq!(value, "recent180d"),
+        other => panic!("expected calendar window, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_summary_window_accepts_previous_seven_full_days_window() {
     let window = parse_summary_window(
         &SummaryQuery {
@@ -643,6 +716,61 @@ fn parse_summary_window_accepts_previous_seven_full_days_window() {
     match window {
         SummaryWindow::PreviousFullDays(day_count) => assert_eq!(day_count, 7),
         other => panic!("expected previous full days window, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_summary_window_accepts_explicit_range_window() {
+    let window = parse_summary_window(
+        &SummaryQuery {
+            window: Some(format!(
+                "{}2026-04-29T00:00:00Z|2026-04-30T00:00:00Z",
+                crate::stats::EXPLICIT_RANGE_PREFIX
+            )),
+            limit: None,
+            time_zone: None,
+            upstream_account_id: None,
+        },
+        50,
+    )
+    .expect("parse explicit summary window");
+
+    match window {
+        SummaryWindow::Calendar(value) => {
+            assert!(value.starts_with(crate::stats::EXPLICIT_RANGE_PREFIX))
+        }
+        other => panic!("expected explicit calendar window, got {other:?}"),
+    }
+}
+
+#[test]
+fn explicit_query_bounds_require_a_valid_bounded_pair() {
+    let valid: TimeseriesQuery = serde_json::from_value(json!({
+        "from": "2026-04-29T00:00:00Z",
+        "to": "2026-04-30T00:00:00Z",
+        "bucket": "1m"
+    }))
+    .expect("valid explicit timeseries range");
+    assert!(valid.range.starts_with(crate::stats::EXPLICIT_RANGE_PREFIX));
+
+    for payload in [
+        json!({"from": "2026-04-29T00:00:00Z"}),
+        json!({
+            "window": "today",
+            "from": "2026-04-29T00:00:00Z",
+            "to": "2026-04-30T00:00:00Z"
+        }),
+        json!({
+            "from": "2026-04-30T00:00:00Z",
+            "to": "2026-04-29T00:00:00Z"
+        }),
+        json!({
+            "from": "2026-04-29T00:00:00Z",
+            "to": "2026-05-01T01:00:00Z"
+        }),
+    ] {
+        let result = serde_json::from_value::<SummaryQuery>(payload);
+        assert!(result.is_err(), "invalid explicit range should be rejected");
     }
 }
 

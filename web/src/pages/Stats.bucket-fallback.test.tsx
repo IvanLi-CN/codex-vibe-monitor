@@ -35,6 +35,10 @@ vi.mock("../hooks/useFailureSummary", () => ({
   useFailureSummary: hookMocks.useFailureSummary,
 }));
 
+vi.mock("../features/dashboard/UsageCalendar", () => ({
+  UsageCalendar: () => <div data-testid="usage-calendar" />,
+}));
+
 vi.mock("../components/ui/select", () => ({
   Select: ({
     value,

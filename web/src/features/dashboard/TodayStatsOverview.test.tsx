@@ -20,6 +20,7 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.responseTimeDescription":
           "TTFT and response time prefer the latest rolling 60-second success samples, then fall back to the latest valid result in the current range.",
         "dashboard.today.inProgressConversations": "In progress",
+        "dashboard.today.dailyAverageParallel": "Daily avg parallel",
         "dashboard.today.queuedInvocations": "Queued",
         "dashboard.today.parallelConversations": "Parallel conversations",
         "dashboard.today.todayCost": "Today cost",
@@ -44,6 +45,8 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.secondary.dayAverage": "Day avg",
         "dashboard.today.secondary.previous7dAverage": "7d daily avg",
         "dashboard.today.secondary.vsYesterday": "vs yesterday",
+        "dashboard.today.secondary.meanComparison": "vs average",
+        "dashboard.today.secondary.currentVsAverage": "vs avg",
         "dashboard.today.secondary.comparison": "Comparison",
         "dashboard.today.secondary.perConversation": "Per conversation",
         "dashboard.today.secondary.retry": "Retry",
@@ -57,6 +60,8 @@ vi.mock("../../i18n", () => ({
         "stats.cards.failures": "Failures",
         "stats.cards.totalCost": "Cost",
         "stats.cards.totalTokens": "Tokens",
+        "metric.totalCost": "Cost",
+        "metric.totalTokens": "Tokens",
       };
       return map[key] ?? key;
     },
@@ -416,8 +421,8 @@ describe("TodayStatsOverview", () => {
     expect(host?.textContent).toContain("Spend rate");
     expect(host?.textContent).toContain("TTFT");
     expect(host?.textContent).toContain("In progress");
-    expect(host?.textContent).toContain("Today cost");
-    expect(host?.textContent).toContain("Today Token");
+    expect(host?.textContent).toContain("Cost");
+    expect(host?.textContent).toContain("Tokens");
     expect(
       host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')
         ?.textContent,
@@ -466,8 +471,8 @@ describe("TodayStatsOverview", () => {
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6);
     expect(host?.textContent).not.toContain("In progress");
     expect(host?.textContent).toContain("TTFT");
-    expect(host?.textContent).toContain("Today cost");
-    expect(host?.textContent).toContain("Today Token");
+    expect(host?.textContent).toContain("Cost");
+    expect(host?.textContent).toContain("Tokens");
   });
 
   it("keeps the in-progress tile secondary slots visible when bucket comparisons are unavailable", () => {
@@ -541,7 +546,7 @@ describe("TodayStatsOverview", () => {
       />,
     );
 
-    expect(host?.textContent).toContain("Parallel conversations");
+    expect(host?.textContent).toContain("Daily avg parallel");
     expect(host?.textContent).not.toContain("In progress");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent,
@@ -549,7 +554,7 @@ describe("TodayStatsOverview", () => {
     expect(
       host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')
         ?.textContent,
-    ).toContain("—");
+    ).toContain("2");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')
         ?.textContent,
@@ -698,10 +703,10 @@ describe("TodayStatsOverview", () => {
     expect(host?.textContent).toContain("vs yesterday");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent,
-    ).toContain("-50%");
+    ).toContain("—");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent,
-    ).toContain("-50%");
+    ).toContain("—");
   });
 
   it("keeps the in-progress primary value from summary while secondary trend data comes from parallel buckets", () => {
@@ -960,7 +965,7 @@ describe("TodayStatsOverview", () => {
     ).toContain("$0.10");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-success-ratio"]')?.textContent,
-    ).toContain("1.5");
+    ).toContain("+50%");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent,
     ).toContain("2");
@@ -1230,7 +1235,7 @@ describe("TodayStatsOverview", () => {
     );
 
     const tokenTitle = [...(host?.querySelectorAll('[role="button"]') ?? [])].find(
-      (element) => element.textContent === "Today Token",
+      (element) => element.textContent === "Tokens",
     );
     expect(tokenTitle).toBeInstanceOf(HTMLElement);
 
@@ -1457,7 +1462,7 @@ describe("TodayStatsOverview", () => {
 
     const totalTokensLabel = host?.querySelector('[data-testid="today-stats-label-total-tokens"]');
     const labels = Array.from(host?.querySelectorAll('[role="button"] span') ?? []);
-    expect(totalTokensLabel?.textContent).toBe("Today Token");
+    expect(totalTokensLabel?.textContent).toBe("Tokens");
     expect(totalTokensLabel?.className).toContain("whitespace-nowrap");
     expect(totalTokensLabel?.className).toContain("normal-case");
     for (const label of labels) {

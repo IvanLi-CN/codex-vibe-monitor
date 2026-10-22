@@ -9,6 +9,8 @@ import {
   percentDelta,
   ratioOfCurrentToBaseline,
   sumCacheInputTokens,
+  trimParallelWorkWindowToSameProgress,
+  trimTimeseriesToSameProgress,
 } from "./dashboardKpiComparisons";
 
 describe("dashboard KPI comparison helpers", () => {
@@ -63,6 +65,78 @@ describe("dashboard KPI comparison helpers", () => {
     expect(averages.activeMinutes).toBe(2);
     expect(averages.tokensPerMinute).toBe(1500);
     expect(averages.spendRate).toBeCloseTo(0.15, 6);
+  });
+
+  it("trims a live comparison window to the same elapsed local progress", () => {
+    const comparison = {
+      rangeStart: "2026-04-09T00:00:00.000Z",
+      rangeEnd: "2026-04-10T00:00:00.000Z",
+      bucketSeconds: 60,
+      points: [0, 1, 2, 3].map((value, index) => ({
+        bucketStart: new Date(
+          Date.parse("2026-04-09T00:00:00.000Z") + index * 60_000,
+        ).toISOString(),
+        bucketEnd: new Date(Date.parse("2026-04-09T00:01:00.000Z") + index * 60_000).toISOString(),
+        totalCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        totalTokens: value * 100,
+        totalCost: value,
+      })),
+    };
+    const trimmed = trimTimeseriesToSameProgress(
+      {
+        rangeStart: "2026-04-10T00:00:00.000Z",
+        rangeEnd: "2026-04-10T00:03:00.000Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      comparison,
+    );
+
+    expect(trimmed?.points).toHaveLength(3);
+    expect(trimmed?.points.map((point) => point.totalCost)).toEqual([0, 1, 2]);
+  });
+
+  it("uses same-progress totals with same-progress active minutes for live rate comparisons", () => {
+    const current = {
+      rangeStart: "2026-04-10T00:00:00.000Z",
+      rangeEnd: "2026-04-10T00:02:00.000Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+    const comparison = {
+      rangeStart: "2026-04-09T00:00:00.000Z",
+      rangeEnd: "2026-04-10T00:00:00.000Z",
+      bucketSeconds: 60,
+      points: [0, 1, 99].map((value, index) => ({
+        bucketStart: new Date(
+          Date.parse("2026-04-09T00:00:00.000Z") + index * 60_000,
+        ).toISOString(),
+        bucketEnd: new Date(Date.parse("2026-04-09T00:01:00.000Z") + index * 60_000).toISOString(),
+        totalCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        totalTokens: value * 100,
+        totalCost: value,
+      })),
+    };
+    const sameProgress = buildSameProgressUsageSnapshot(current, comparison);
+    const trimmed = trimTimeseriesToSameProgress(current, comparison);
+    const averages = buildActiveMinuteAverages(
+      {
+        totalCount: 2,
+        successCount: 2,
+        failureCount: 0,
+        totalCost: sameProgress.totalCost ?? 0,
+        totalTokens: sameProgress.totalTokens ?? 0,
+      },
+      trimmed,
+    );
+
+    expect(sameProgress.totalTokens).toBe(100);
+    expect(averages.tokensPerMinute).toBe(50);
+    expect(averages.spendRate).toBe(0.5);
   });
 
   it("calculates ratios and signed deltas defensively", () => {
@@ -175,6 +249,118 @@ describe("dashboard KPI comparison helpers", () => {
 
     expect(snapshot.totalCost).toBe(3);
     expect(snapshot.totalTokens).toBe(300);
+  });
+
+  it("trims live comparison latency buckets by local progress across DST", () => {
+    const trimmed = trimTimeseriesToSameProgress(
+      {
+        rangeStart: "2026-03-08T05:00:00.000Z",
+        rangeEnd: "2026-03-08T07:30:00.000Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      {
+        rangeStart: "2026-03-07T05:00:00.000Z",
+        rangeEnd: "2026-03-08T05:00:00.000Z",
+        bucketSeconds: 60,
+        points: [
+          ["2026-03-07T05:00:00.000Z", 1],
+          ["2026-03-07T07:00:00.000Z", 2],
+          ["2026-03-07T08:00:00.000Z", 3],
+          ["2026-03-07T08:30:00.000Z", 99],
+        ].map(([bucketStart, value]) => ({
+          bucketStart: String(bucketStart),
+          bucketEnd: new Date(Date.parse(String(bucketStart)) + 60_000).toISOString(),
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: Number(value) * 100,
+          totalCost: Number(value),
+        })),
+      },
+      { timeZone: "America/New_York" },
+    );
+
+    expect(trimmed?.points.map((point) => point.totalCost)).toEqual([1, 2, 3]);
+  });
+
+  it("recomputes a same-progress parallel average instead of using the full-day baseline", () => {
+    const trimmed = trimParallelWorkWindowToSameProgress(
+      {
+        rangeStart: "2026-04-10T00:00:00.000Z",
+        rangeEnd: "2026-04-10T00:03:00.000Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      {
+        rangeStart: "2026-04-09T00:00:00.000Z",
+        rangeEnd: "2026-04-10T00:00:00.000Z",
+        bucketSeconds: 60,
+        completeBucketCount: 4,
+        activeBucketCount: 3,
+        activeMinuteCount: 3,
+        minCount: 1,
+        maxCount: 99,
+        avgCount: 34.333,
+        points: [
+          {
+            bucketStart: "2026-04-09T00:00:00.000Z",
+            bucketEnd: "2026-04-09T00:01:00.000Z",
+            parallelCount: 1,
+          },
+          {
+            bucketStart: "2026-04-09T00:01:00.000Z",
+            bucketEnd: "2026-04-09T00:02:00.000Z",
+            parallelCount: 3,
+          },
+          {
+            bucketStart: "2026-04-09T00:02:00.000Z",
+            bucketEnd: "2026-04-09T00:03:00.000Z",
+            parallelCount: 0,
+          },
+          {
+            bucketStart: "2026-04-09T00:03:00.000Z",
+            bucketEnd: "2026-04-09T00:04:00.000Z",
+            parallelCount: 99,
+          },
+        ],
+      },
+    );
+
+    expect(trimmed?.avgCount).toBe(2);
+    expect(trimmed?.points).toHaveLength(3);
+  });
+
+  it("keeps an unavailable parallel coverage baseline unavailable", () => {
+    const trimmed = trimParallelWorkWindowToSameProgress(
+      {
+        rangeStart: "2026-04-10T00:00:00.000Z",
+        rangeEnd: "2026-04-10T00:03:00.000Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      {
+        rangeStart: "2026-04-09T00:00:00.000Z",
+        rangeEnd: "2026-04-10T00:00:00.000Z",
+        bucketSeconds: 60,
+        completeBucketCount: 4,
+        activeBucketCount: 3,
+        activeMinuteCount: null,
+        minCount: 1,
+        maxCount: 99,
+        avgCount: null,
+        points: [
+          {
+            bucketStart: "2026-04-09T00:00:00.000Z",
+            bucketEnd: "2026-04-09T00:01:00.000Z",
+            parallelCount: 1,
+          },
+        ],
+      },
+    );
+
+    expect(trimmed?.avgCount).toBeNull();
+    expect(trimmed?.points).toEqual([]);
   });
 
   it("reuses one timezone formatter across a minute-scale comparison", () => {

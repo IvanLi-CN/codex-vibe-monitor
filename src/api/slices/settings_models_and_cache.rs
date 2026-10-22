@@ -1,6 +1,7 @@
 use super::*;
 use anyhow::anyhow;
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize, de};
 use sqlx::FromRow;
 use std::collections::{BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -1968,8 +1969,62 @@ pub(crate) struct PromptCacheConversationsQuery {
     pub(crate) blocked_binding_constraint_source: Option<String>,
 }
 
+const EXPLICIT_RANGE_MAX: Duration = Duration::hours(48);
+
+fn normalize_explicit_query_range<E: de::Error>(
+    range: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    field_name: &str,
+) -> Result<Option<String>, E> {
+    let from = from.filter(|value| !value.trim().is_empty());
+    let to = to.filter(|value| !value.trim().is_empty());
+    match (from, to) {
+        (None, None) => Ok(range),
+        (Some(_), None) | (None, Some(_)) => Err(E::custom(format!(
+            "{field_name} from and to must be provided together"
+        ))),
+        (Some(from), Some(to)) => {
+            if range.is_some() {
+                return Err(E::custom(format!(
+                    "{field_name} cannot combine range/window with from and to"
+                )));
+            }
+            let start = DateTime::parse_from_rfc3339(from.trim())
+                .map_err(|error| E::custom(format!("invalid from: {error}")))?
+                .with_timezone(&Utc);
+            let end = DateTime::parse_from_rfc3339(to.trim())
+                .map_err(|error| E::custom(format!("invalid to: {error}")))?
+                .with_timezone(&Utc);
+            let duration = end.signed_duration_since(start);
+            if duration <= Duration::zero() {
+                return Err(E::custom("from must be before to"));
+            }
+            if duration > EXPLICIT_RANGE_MAX {
+                return Err(E::custom("explicit range must not exceed 48 hours"));
+            }
+            Ok(Some(format!(
+                "{}{}|{}",
+                crate::stats::EXPLICIT_RANGE_PREFIX,
+                start.to_rfc3339(),
+                end.to_rfc3339()
+            )))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SummaryQueryWire {
+    window: Option<String>,
+    limit: Option<i64>,
+    time_zone: Option<String>,
+    upstream_account_id: Option<i64>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+#[derive(Debug)]
 pub(crate) struct SummaryQuery {
     pub(crate) window: Option<String>,
     pub(crate) limit: Option<i64>,
@@ -1977,10 +2032,36 @@ pub(crate) struct SummaryQuery {
     pub(crate) upstream_account_id: Option<i64>,
 }
 
+impl<'de> Deserialize<'de> for SummaryQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SummaryQueryWire::deserialize(deserializer)?;
+        Ok(Self {
+            window: normalize_explicit_query_range(wire.window, wire.from, wire.to, "window")?,
+            limit: wire.limit,
+            time_zone: wire.time_zone,
+            upstream_account_id: wire.upstream_account_id,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct TimeseriesQueryWire {
+    range: Option<String>,
+    bucket: Option<String>,
+    #[allow(dead_code)]
+    settlement_hour: Option<u8>,
+    time_zone: Option<String>,
+    upstream_account_id: Option<i64>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+#[derive(Debug)]
 pub(crate) struct TimeseriesQuery {
-    #[serde(default = "default_range")]
     pub(crate) range: String,
     pub(crate) bucket: Option<String>,
     #[allow(dead_code)]
@@ -1989,14 +2070,58 @@ pub(crate) struct TimeseriesQuery {
     pub(crate) upstream_account_id: Option<i64>,
 }
 
+impl<'de> Deserialize<'de> for TimeseriesQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TimeseriesQueryWire::deserialize(deserializer)?;
+        Ok(Self {
+            range: normalize_explicit_query_range(wire.range, wire.from, wire.to, "range")?
+                .or_else(|| Some(default_range()))
+                .expect("default range should be preserved"),
+            bucket: wire.bucket,
+            settlement_hour: wire.settlement_hour,
+            time_zone: wire.time_zone,
+            upstream_account_id: wire.upstream_account_id,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ParallelWorkStatsQueryWire {
+    pub(crate) range: Option<String>,
+    pub(crate) bucket: Option<String>,
+    pub(crate) time_zone: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) from: Option<String>,
+    pub(crate) to: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ParallelWorkStatsQuery {
-    #[serde(default = "default_range")]
     pub(crate) range: String,
     pub(crate) bucket: Option<String>,
     pub(crate) time_zone: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
+}
+
+impl<'de> Deserialize<'de> for ParallelWorkStatsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ParallelWorkStatsQueryWire::deserialize(deserializer)?;
+        Ok(Self {
+            range: normalize_explicit_query_range(wire.range, wire.from, wire.to, "range")?
+                .or_else(|| Some(default_range()))
+                .expect("default range should be preserved"),
+            bucket: wire.bucket,
+            time_zone: wire.time_zone,
+            upstream_account_id: wire.upstream_account_id,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]

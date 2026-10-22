@@ -16629,7 +16629,7 @@ impl SummaryBuildRoute {
 }
 
 fn summary_window_is_closed(window: &SummaryWindow) -> bool {
-    matches!(window, SummaryWindow::Calendar(spec) if spec == "yesterday")
+    matches!(window, SummaryWindow::Calendar(spec) if matches!(spec.as_str(), "yesterday" | "previous1d" | "previous24h"))
         || matches!(window, SummaryWindow::PreviousFullDays(_))
 }
 

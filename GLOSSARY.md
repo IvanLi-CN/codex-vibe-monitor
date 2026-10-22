@@ -69,3 +69,29 @@ _Avoid_: same-account retry.
 **Responses overload signal**:
 A structured Responses failure that matches a recognized upstream overload code or a narrowly defined overload message under the relevant error code.
 _Avoid_: every `server_error`, generic overload text.
+
+## Dashboard Statistics Language
+
+**Dashboard Live Reading**:
+A current performance or in-progress activity value used in both the Today and rolling 24-hour views, distinct from usage accumulated over the selected range.
+_Avoid_: range average, daily average.
+
+**Dashboard Historical Daily Average**:
+A whole-day average of yesterday's performance or concurrency readings, distinct from a reading at yesterday's final moment. TPM and spend rate use minutes with invocation activity as their denominator; first-token latency uses observed first-token samples.
+_Avoid_: last-minute reading, current state.
+
+**Dashboard Range Comparison**:
+A comparison against an equal-duration baseline: yesterday's matching elapsed period for Today, the preceding full day for Yesterday, and the immediately preceding 24 hours for the rolling 24-hour range. Changes are expressed as signed percentages.
+_Avoid_: comparing an incomplete Today with a complete Yesterday.
+
+**Dashboard Mean Comparison**:
+A percentage comparison between the selected statistics range's mean and its comparison range's mean, independent of a live reading displayed as the card's main value.
+_Avoid_: comparing the current minute with yesterday's matching minute.
+
+**Live Invocation Timeline**:
+Recent invocation activity shown in its own time viewport, independent of the selected statistics range and restricted to the current global or upstream-account scope.
+_Avoid_: yesterday's timeline when Yesterday is selected for statistics.
+
+**Historical Activity Calendar**:
+A daily view of global invocation counts, cost, or Token usage across 180 consecutive browser-local dates ending today.
+_Avoid_: six calendar months, a calendar controlled by the selected statistics range.

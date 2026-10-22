@@ -22,8 +22,6 @@ export const DASHBOARD_OVERVIEW_SNAPSHOT_RANGES = [
   "today",
   "yesterday",
   "1d",
-  "7d",
-  "usage",
 ] as const satisfies readonly DashboardActivityRangeKey[];
 
 export type DashboardOverviewSnapshotRange = (typeof DASHBOARD_OVERVIEW_SNAPSHOT_RANGES)[number];
@@ -65,13 +63,7 @@ let dashboardOverviewSnapshotTestDriver: DashboardOverviewSnapshotTestDriver | n
 let openDatabasePromise: Promise<IDBDatabase | null> | null = null;
 
 function isSnapshotRange(value: unknown): value is DashboardOverviewSnapshotRange {
-  return (
-    value === "today" ||
-    value === "yesterday" ||
-    value === "1d" ||
-    value === "7d" ||
-    value === "usage"
-  );
+  return value === "today" || value === "yesterday" || value === "1d";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -331,8 +323,11 @@ export async function fetchDashboardOverviewSnapshotBundle(
       const [
         dashboardActivity,
         timeseries,
+        comparisonSummary,
+        comparisonTimeseries,
         previous7dSummary,
         parallelWorkStats,
+        comparisonParallelWorkStats,
         networkTimeseries,
       ] = await Promise.all([
         fetchDashboardActivity("yesterday", {
@@ -341,21 +336,36 @@ export async function fetchDashboardOverviewSnapshotBundle(
           signal,
         }),
         fetchTimeseries("yesterday", { bucket: "1m", signal }),
+        fetchSummary("previous1d", { signal }),
+        fetchTimeseries("previous1d", { bucket: "1m", signal }),
         fetchSummary("previous7d", { signal }),
         fetchParallelWorkStats({ range: "yesterday", bucket: "1m", signal }),
+        fetchParallelWorkStats({ range: "previous1d", bucket: "1m", signal }),
         fetchDashboardNetworkTimeseries("yesterday", { signal }),
       ]);
       return {
         range,
         dashboardActivity,
         timeseries,
+        comparisonSummary,
+        comparisonTimeseries,
         previous7dSummary,
         parallelWorkStats,
+        comparisonParallelWorkStats,
         networkTimeseries,
       };
     }
     case "1d": {
-      const [dashboardActivity, summary, timeseries, networkTimeseries] = await Promise.all([
+      const [
+        dashboardActivity,
+        summary,
+        timeseries,
+        comparisonSummary,
+        comparisonTimeseries,
+        parallelWorkStats,
+        comparisonParallelWorkStats,
+        networkTimeseries,
+      ] = await Promise.all([
         fetchDashboardActivity("1d", {
           includeAccounts: false,
           includeRecent: false,
@@ -363,6 +373,10 @@ export async function fetchDashboardOverviewSnapshotBundle(
         }),
         fetchSummary("1d", { signal }),
         fetchTimeseries("1d", { bucket: "1m", signal }),
+        fetchSummary("previous24h", { signal }),
+        fetchTimeseries("previous24h", { bucket: "1m", signal }),
+        fetchParallelWorkStats({ range: "1d", bucket: "1m", signal }),
+        fetchParallelWorkStats({ range: "previous24h", bucket: "1m", signal }),
         fetchDashboardNetworkTimeseries("1d", { signal }),
       ]);
       return {
@@ -370,31 +384,11 @@ export async function fetchDashboardOverviewSnapshotBundle(
         dashboardActivity,
         summary,
         timeseries,
+        comparisonSummary,
+        comparisonTimeseries,
+        parallelWorkStats,
+        comparisonParallelWorkStats,
         networkTimeseries,
-      };
-    }
-    case "7d": {
-      const [dashboardActivity, summary, timeseries] = await Promise.all([
-        fetchDashboardActivity("7d", {
-          includeAccounts: false,
-          includeRecent: false,
-          signal,
-        }),
-        fetchSummary("7d", { signal }),
-        fetchTimeseries("7d", { bucket: "1h", signal }),
-      ]);
-      return {
-        range,
-        dashboardActivity,
-        summary,
-        timeseries,
-      };
-    }
-    case "usage": {
-      const timeseries = await fetchTimeseries("6mo", { bucket: "1d", signal });
-      return {
-        range,
-        timeseries,
       };
     }
   }

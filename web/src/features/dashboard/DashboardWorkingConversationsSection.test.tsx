@@ -672,7 +672,7 @@ afterEach(() => {
 function renderSection(
   response: PromptCacheConversationsResponse,
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -720,7 +720,7 @@ function renderSection(
 function renderSectionWithCards(
   cards: DashboardWorkingConversationCardModel[],
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -853,7 +853,7 @@ describe("DashboardWorkingConversationsSection model routing", () => {
 function rerenderSection(
   response: PromptCacheConversationsResponse,
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -899,7 +899,7 @@ function rerenderSection(
 function rerenderSectionWithCards(
   cards: DashboardWorkingConversationCardModel[],
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -2313,7 +2313,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toHaveLength(9);
   });
 
-  it("disables and falls back from the upstream account tab for usage range", () => {
+  it("keeps the upstream account tab available for yesterday range", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
     const response = createResponse([
@@ -2342,14 +2342,14 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.textContent).toContain("当前活动账号 1 个");
 
     act(() => {
-      rerenderSection(response, { activeRange: "usage" });
+      rerenderSection(response, { activeRange: "yesterday" });
     });
 
-    expect(host?.textContent).toContain("当前对话 1 条");
+    expect(host?.textContent).toContain("当前活动账号 1 个");
     const accountTabAfter = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (node) => node.textContent?.includes("上游账号"),
     );
-    expect(accountTabAfter?.disabled).toBe(true);
+    expect(accountTabAfter?.disabled).toBe(false);
   });
 
   it("persists the preferred workspace view and restores it on remount", () => {
@@ -2396,7 +2396,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountTab.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("preserves the upstream-account preference when usage temporarily forces conversations", () => {
+  it("preserves the upstream-account preference across historical range changes", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
     const response = createResponse([
@@ -2423,13 +2423,13 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    rerenderSection(response, { activeRange: "usage" });
-    expect(host?.textContent).toContain("当前对话 1 条");
+    rerenderSection(response, { activeRange: "yesterday" });
+    expect(host?.textContent).toContain("当前活动账号 1 个");
     expect(readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY)).toBe(
       "upstreamAccounts",
     );
 
-    rerenderSection(response, { activeRange: "today" });
+    rerenderSection(response, { activeRange: "1d" });
     expect(host?.textContent).toContain("当前活动账号 1 个");
     const restoredAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (node) => node.textContent?.includes("上游账号"),
