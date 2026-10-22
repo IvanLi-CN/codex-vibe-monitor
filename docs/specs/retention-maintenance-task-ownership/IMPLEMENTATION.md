@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；数据库替换竞态已修复，当前候选已修复 CI 的上海自然日测试预期，Linux 工程通过；生产二进制与十四来源升级和进程验证使用的二进制一致，受影响审查及 PR #1092 当前 head CI 在本证据快照时待完成。
+- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，当前 owner-ownership 候选的 PR #1162 新 head CI 与正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
 
@@ -15,6 +15,7 @@
 - SQLite 连接固定到持锁文件的规范化路径，在原生 Unix VFS 的路径解析和实际打开边界重查路径／描述符身份及单链接证明，并使用 `SQLITE_FCNTL_HAS_MOVED` 检查 SQLite 打开的真实文件。校验发生在 journal／schema 初始化前；连接池后续连接继承同一 VFS 入口。归档 ATTACH 沿用原生实现。VFS 注册对象随进程保留以满足 SQLite 指针寿命，正确性证明使用弱引用，不延长数据库锁寿命；连接池关闭后才能释放运行态锁，包括初始化失败路径。活动连接的数据库、journal／WAL 与共享内存回调持续检查证明和文件身份；mmap 禁用以保证访问经过校验，原生文件保持独立布局及方法表。新实例取得每个协议锁时立即清除旧就绪标记。
 - `REQ-RMO-011`, `REQ-RMO-012`：新记录包含职责版本、scope 与 dry-run，计量分离调用行、对话、小时、文件及字节，缺测保持未知。新增目录和详情、自动触发文案、暂停时立即运行、归档关联入口及旧组合历史标识。资源等待与实际开始分开记录，保留旧历史口径。
 - `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。直接升级来源逐一覆盖 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2，不以版本等价假设共用来源。最终 Linux 二进制的十四来源升级和进程安全验证已通过，生产字节一致；测试及证据相关 Tier 4 复审待完成。
+- `REQ-RMO-005`, `REQ-RMO-011`, `REQ-RMO-014`：自动归档失败在维护库 finalizer 中保留不确定性并安排 300 秒 owner_failed catch-up，即使失败前的 backlog 快照为零；同一 owner 的执行租约冲突写入明确 `failed`、ownershipVersion=2、`task_execution_active` 和有界重试资格，避免缺少 completion/details 的不可解释失败。新增 stateful SQLite 失败重试回归与 dispatcher 事实构造回归。
 
 ## Verification
 
@@ -29,6 +30,7 @@
 
 - 本轮 CI 修复的常规时点、上海 00:00／00:01／00:03／12:00／23:59:50 及从 23:59:58 跨午夜的进程偏移验证全部通过；CLOCK_MONOTONIC 与系统时钟未改变。修复前同一二进制在 00:01 稳定复现 `today` 1 对 2，00:03 通过。预期独立按记录日期计算，不复用实现中的窗口选择函数，不增加跳过、重试或放宽限制。机制及结果见 [时钟验证](../../adr/assets/retention-maintenance-task-ownership/summary-clock-validation.json)。
 - 本轮默认 feature 的生产构建 SHA-256 与第六批逐字节一致，因此十四来源升级与八项进程结果按其原执行来源保留，结果卡明确记录当前候选与原执行候选。未把保留结果写成重新执行。额外完整工具夹具 wrapper 因快照资源未完成；必需的质量声明检查与后端 runner 合同通过，工具源码未改变，未宣称完整 wrapper 成功。
+- 第十三批 CI 修复前的 PR head 在测试目标编译阶段暴露 `.shared()` 缺少 `FutureExt` 导入；新增显式测试导入后，失败归档重试与租约冲突事实回归均绑定到新的代码候选，当前 head 的后端资源组、Rust source quality、迁移回放和正式复审仍待远端验证。
 
 ## Visual Evidence
 

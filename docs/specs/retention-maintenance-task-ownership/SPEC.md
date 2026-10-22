@@ -49,7 +49,7 @@
 
 ### REQ-RMO-005 — 独立且有界的清理调度
 
-两个清理任务 MUST 在尚有候选需要检查或已提交恢复工作需要收尾时有界接续，批次间让行；耗尽本轮扫描后 MUST 回到五分钟空闲巡检。受保护候选不能形成忙循环。压力、资源准入拒绝和实际错误 MUST 使用原因明确的退避；检查时间、接续或重试资格与实际开始时间 MUST 分开呈现。身份清理 MUST 使用自身运行预算和有界查询，不消耗归档轮次的剩余预算；raw 清理 MUST 保留现有有界扫描、共享工作预算与可恢复退避语义，不将排队或收尾时间冒充工作预算。
+两个清理任务 MUST 在尚有候选需要检查或已提交恢复工作需要收尾时有界接续，批次间让行；耗尽本轮扫描后 MUST 回到五分钟空闲巡检。受保护候选不能形成忙循环。压力、资源准入拒绝和实际错误 MUST 使用原因明确的退避；检查时间、接续或重试资格与实际开始时间 MUST 分开呈现。实际 owner 失败和同一任务执行租约冲突 MUST 保留明确的失败事实并安排有界下一次资格；缺少完成观测不得清空 catch-up。身份清理 MUST 使用自身运行预算和有界查询，不消耗归档轮次的剩余预算；raw 清理 MUST 保留现有有界扫描、共享工作预算与可恢复退避语义，不将排队或收尾时间冒充工作预算。
 
 ### REQ-RMO-006 — 单实例与真实执行边界
 
@@ -91,7 +91,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 ### REQ-RMO-014 — Owner dispatcher 与固定事实
 
-七项 retention-policy owner MUST 通过有界 dispatcher 执行，每个任务同时最多一个运行实例；dispatcher 不得 inline-await 完整任务、不得无限启动 worker，并 MUST 使用有限 worker/finalizer、显式队列、结果写入失败的重试与下一次资格。等待重资源时必须释放数据库连接、写许可和文件 fence，准入后重新校验 owner identity 与 source fence；shutdown/cancel 只能在 native worker 已退出后释放执行 lease。
+七项 retention-policy owner MUST 通过有界 dispatcher 执行，每个任务同时最多一个运行实例；dispatcher 不得 inline-await 完整任务、不得无限启动 worker，并 MUST 使用有限 worker/finalizer、显式队列、结果写入失败的重试与下一次资格。等待重资源时必须释放数据库连接、写许可和文件 fence，准入后重新校验 owner identity 与 source fence；租约冲突不得以缺少 completion/details 的失败结束 owner 运行，必须写入 `failed` 与 `task_execution_active` 事实并安排有界重试；shutdown/cancel 只能在 native worker 已退出后释放执行 lease。
 
 ## Verification
 

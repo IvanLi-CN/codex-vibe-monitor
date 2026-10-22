@@ -94,13 +94,13 @@
     ]
   },
   "follow_up_change": {
-    "description": "Narrow retention_archive to fixed-fence invocation archival and add six independent retention-policy owners with bounded dispatcher execution and committed-fact results.",
+    "description": "Narrow retention_archive to fixed-fence invocation archival and add six independent retention-policy owners with bounded dispatcher execution, committed-fact results, and explicit failure/retry facts.",
     "candidate_branch": "th/retention-maintenance-ownership",
     "candidate_base_sha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "candidate_head_sha": "7247aee72426a26cdc2be74a70a718ca837df273",
+    "candidate_head_sha": "f806b5a57c4a92f443429b29fc81b3f8d0c9d407",
     "status": "implementation-pending-validation",
     "impact": "minor",
-    "reasoning": "The managed-task catalog and schedule marker changes are additive. New ownership-version-2 run details preserve old composite history, while each new owner exposes an independent scope, unit, result, and committed count. The existing public task-control surface remains compatible; CI, migration replay, and formal review are still required before verification can be claimed.",
+    "reasoning": "The managed-task catalog, schedule marker, and failure/retry facts are additive. New ownership-version-2 run details preserve old composite history, while each new owner exposes an independent scope, unit, result, committed count, and bounded retry reason. The existing public task-control surface remains compatible; CI, migration replay, and formal review are still required before verification can be claimed.",
     "durable_state": "Additive managed-task rows, retention_owner_schedule_v2 initialization marker, and ownership-version-2 JSON run facts; no business-table DDL change.",
     "required_validation": [
       "Run the lightweight, stateful-sqlite, and archive-file-io CI profiles.",

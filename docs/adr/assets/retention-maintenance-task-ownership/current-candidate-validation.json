@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-  "codeCandidateSha": "7247aee72426a26cdc2be74a70a718ca837df273",
+  "codeCandidateSha": "f806b5a57c4a92f443429b29fc81b3f8d0c9d407",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -11,7 +11,7 @@
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 12,
+    "repairBatchesUsed": 13,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -114,9 +114,9 @@
     "postEvidenceRefreshCi"
   ],
   "formalReview": {
-    "candidateSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
-    "reviewedHead": "2d52a2f2aed1e3cd20432502737b24c7ae064633",
-    "status": "superseded-by-ci-repair",
+    "candidateSha": "7247aee72426a26cdc2be74a70a718ca837df273",
+    "reviewedHead": "12ac95af4593011dd53e04b9867d60052ff869d5",
+    "status": "findings-repair-required",
     "lanes": [
       "contract",
       "state-concurrency",
@@ -124,7 +124,12 @@
       "test-platform",
       "database-migration"
     ],
-    "note": "The previous five-lane review found no consequential implementation defect for the prior candidate; its evidence is retained for audit but is superseded by the build-contract repair and must not satisfy the current candidate review gate."
+    "findings": [
+      "P1 state-concurrency: retention_archive failure catch-up could be cleared or omitted instead of receiving an explicit bounded retry.",
+      "P2 state-concurrency: task execution lease conflict finalized a run with status failed but without completion/details or a deliberate retry policy.",
+      "P1 test-platform: exact-head CI and migration evidence were still pending; this was a validation gate observation, not a production behavior finding."
+    ],
+    "note": "The five-lane review of the previous candidate found the two state-concurrency findings recorded above; the owner repair below addresses them. Its evidence cannot satisfy the current candidate review gate."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -138,11 +143,11 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "ownerAuthorizedRepairBatch": 12,
+    "ownerAuthorizedRepairBatch": 13,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "0d602df1e712dc7481bddc24c9112e0e505a5e57",
-    "fixedFinding": "CI exposed retention owner build-contract errors in candidate_remaining_hint types, an unwrapped SQLx result, numeric inference, an Option assertion, and an unused import; the repair restores the compile and lint contracts without changing runtime limits.",
-    "newFocusedRegression": "Rust format, diff, and JSON checks pass; CI failure evidence is bound to the repaired compiler diagnostics; the existing owner-facts regression, shared model-route write admission, Storybook owner-facts coverage, and mobile visual evidence remain current; the prior five-lane review is superseded by this build-contract repair, so fresh formal review, CI, and migration replay remain pending.",
+    "previousCandidateSha": "7247aee72426a26cdc2be74a70a718ca837df273",
+    "fixedFinding": "The PR head CI exposed a missing FutureExt import in an archive-file test target; the formal review also required bounded retry after retention_archive failure and explicit failed owner facts plus retry policy on execution-lease conflict. The repair restores the test-target compile contract and closes both runtime-state gaps without changing production work limits.",
+    "newFocusedRegression": "Rust format, diff, and JSON checks pass; the focused stateful SQLite regression covers failed archive catch-up even with an empty backlog snapshot, the runtime regression covers failed ownership-version-2 lease-conflict facts, and the archive-file test target imports FutureExt explicitly. UI visual evidence remains current; fresh formal review, exact-head CI, and migration replay remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -150,10 +155,10 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "headSha": "7247aee72426a26cdc2be74a70a718ca837df273",
+    "headSha": "f806b5a57c4a92f443429b29fc81b3f8d0c9d407",
     "requiredCi": null,
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the implementation commit; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this documentation refresh."
+    "note": "candidate_head_sha binds the implementation commit; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this repair."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
