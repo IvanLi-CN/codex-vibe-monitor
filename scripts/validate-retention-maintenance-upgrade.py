@@ -19,6 +19,14 @@ RETENTION_OWNERS = [
     "model_route_expiry",
     "task_run_history_cleanup",
 ]
+RETENTION_COMMANDS = {
+    "pool_upstream_attempt_archive": "pool-upstream-attempt-archive",
+    "forward_proxy_attempt_archive": "forward-proxy-attempt-archive",
+    "invocation_detail_prune": "invocation-detail-prune",
+    "quota_snapshot_compaction": "quota-snapshot-compaction",
+    "model_route_expiry": "model-route-expiry",
+    "task_run_history_cleanup": "task-run-history-cleanup",
+}
 LEGACY_OWNERS = ["invocation_identity_cleanup", "raw_orphan_sweep", "prompt_cache_materialization"]
 OWNERS = RETENTION_OWNERS + LEGACY_OWNERS
 OWNER_VERSIONS = {key: 2 for key in RETENTION_OWNERS}
@@ -43,6 +51,30 @@ def business_facts(root):
                 # Structure initialization may add a scope; subsequent previews must be strictly read-only.
                 facts[table] = connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
         return facts
+
+
+def file_facts(root):
+    facts = []
+    for directory_name in ["raw", "archives"]:
+        directory = root / directory_name
+        if not directory.exists():
+            continue
+        for path in sorted(path for path in directory.rglob("*") if path.is_file()):
+            facts.append(
+                (
+                    str(path.relative_to(root)),
+                    path.stat().st_size,
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                )
+            )
+    return facts
+
+
+def retention_command(task_key, dry_run):
+    if task_key == "retention_archive":
+        return ("--retention-dry-run" if dry_run else "--retention-run-once",)
+    command = ("maintenance", RETENTION_COMMANDS[task_key])
+    return command + (("--dry-run",) if dry_run else ())
 
 
 def validate_source(candidate, source, target):
@@ -80,12 +112,20 @@ def validate_source(candidate, source, target):
         assert connection.execute("SELECT value FROM maintenance_metadata WHERE key='retention_maintenance_ownership_v1'").fetchone() == ("applied",)
         connection.execute("UPDATE managed_tasks SET enabled=0,interval_secs=420,next_trigger_at=NULL WHERE task_key IN ('invocation_identity_cleanup','raw_orphan_sweep')")
     before = business_facts(target)
-    for command in [("--retention-dry-run",), ("maintenance", "invocation-identity-cleanup", "--dry-run"), ("maintenance", "raw-orphan-sweep", "--dry-run")]:
+    before_files = file_facts(target)
+    dry_run_commands = [retention_command(task_key, True) for task_key in RETENTION_OWNERS]
+    dry_run_commands.extend([
+        ("maintenance", "invocation-identity-cleanup", "--dry-run"),
+        ("maintenance", "raw-orphan-sweep", "--dry-run"),
+    ])
+    for command in dry_run_commands:
         execute(candidate, target, *command)
         assert business_facts(target) == before, command
-        assert raw.exists(), command
-    # Real archive is explicit even with RETENTION_DRY_RUN=true and leaves both orphan responsibilities alone.
-    execute(candidate, target, "--retention-run-once")
+        assert file_facts(target) == before_files and raw.exists(), command
+    # Real retention owners are explicit even with RETENTION_DRY_RUN=true. Each one-shot is scoped to its owner.
+    for task_key in RETENTION_OWNERS:
+        execute(candidate, target, *retention_command(task_key, False))
+    # The archive owner leaves both orphan responsibilities alone.
     with sqlite3.connect(target / "business.sqlite") as connection:
         assert connection.execute("SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key='upgrade-orphan'").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM hourly_invoke_prefixes WHERE utc_hour=1").fetchone()[0] == 1
@@ -102,10 +142,16 @@ def validate_source(candidate, source, target):
         rows = list(connection.execute("SELECT enabled,interval_secs FROM managed_tasks WHERE task_key IN ('invocation_identity_cleanup','raw_orphan_sweep')"))
         assert rows == [(0, 420), (0, 420)], rows
         records = connection.execute("SELECT task_key,details FROM managed_task_runs WHERE trigger_kind='manual' AND details IS NOT NULL").fetchall()
+        assert {key for key, _ in records}.issuperset(set(RETENTION_OWNERS)), records
         for key, details in records:
             parsed = json.loads(details)
             assert parsed.get("ownerScope") == key
             assert parsed.get("ownershipVersion") == OWNER_VERSIONS[key]
+            assert isinstance(parsed.get("dryRun"), bool)
+        for key in RETENTION_OWNERS:
+            owner_records = [json.loads(details) for record_key, details in records if record_key == key]
+            assert any(record.get("dryRun") is True for record in owner_records), key
+            assert any(record.get("dryRun") is False for record in owner_records), key
         observations = connection.execute("SELECT details,actual_started_at,actual_finished_at,actual_duration_ms FROM managed_task_runs WHERE trigger_kind='manual' AND details IS NOT NULL").fetchall()
         for details, actual_started, actual_finished, duration in observations:
             expected_start = json.loads(details).get("actualStartedAt")
@@ -122,7 +168,7 @@ def validate_source(candidate, source, target):
         connection.execute("DROP TRIGGER interrupted_owner_marker")
     execute(candidate, target, "maintenance", "invocation-identity-cleanup", "--dry-run")
     execute(candidate, target, "maintenance", "invocation-identity-cleanup", "--dry-run")
-    return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "three-preview-scopes-read-only", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
+    return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "all-retention-owner-previews-read-only", "all-retention-owner-one-shots-scoped", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
 
 
 def main():
