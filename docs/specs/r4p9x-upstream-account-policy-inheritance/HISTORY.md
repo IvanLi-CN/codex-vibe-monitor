@@ -4,6 +4,10 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-10-22: Changed the account-pool root route to default to the API-key transit surface while preserving explicit and legacy OAuth/Session account-pool links.
+
+2026-10-22: Corrected account-roster policy chip translations and separated neutral account metadata from semantic status tones across desktop and mobile pool views.
+
 2026-08-05: Added an API-key-only standalone search capability axis for exact `/v1/alpha/search` routing. Real successes learn support; bare `404`/`405` and explicit unsupported-route `400` responses learn non-support; persistent operator overrides take precedence. OAuth routing remains outside this capability gate.
 
 2026-08-06: Made `fallback` sticky accounts proactively compare against eligible `normal` / `primary` candidates on each subsequent request. The existing composite comparator remains authoritative, lower-priority candidates cannot displace the fallback source, and successful handoff rebinding continues through the generation-guarded sticky mutation path.

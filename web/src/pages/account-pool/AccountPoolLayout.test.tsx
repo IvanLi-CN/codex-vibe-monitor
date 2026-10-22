@@ -25,6 +25,7 @@ function render(initialEntry: string) {
           <Routes>
             <Route path="/account-pool" element={<AccountPoolLayout />}>
               <Route path="pool" element={<div data-testid="account-detail-outlet">detail</div>} />
+              <Route path="transits" element={<div data-testid="transit-outlet">transits</div>} />
               <Route path="groups" element={<div data-testid="groups-outlet">groups</div>} />
             </Route>
           </Routes>
@@ -48,6 +49,12 @@ describe("AccountPoolLayout", () => {
 
     expect(host.querySelector("h1")?.textContent).toBe("上游");
     expect(host.querySelector("[data-testid=groups-outlet]")).not.toBeNull();
+  });
+
+  it("defaults the account-pool layout to the transit route", () => {
+    const host = render("/account-pool");
+
+    expect(host.querySelector("[data-testid=transit-outlet]")).not.toBeNull();
   });
 
   it("removes the redundant title panel on compact account detail routes", () => {
