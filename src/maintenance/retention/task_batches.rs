@@ -262,11 +262,12 @@ fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
 }
 
 fn archive_identity_proof_load_timed_out(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .to_string()
-            .contains("retention archive identity proof inflate exceeded the operation deadline")
-    })
+    is_retention_archive_file_operation_budget_exhausted(error)
+        || error.chain().any(|cause| {
+            cause.to_string().contains(
+                "retention archive identity proof inflate exceeded the operation deadline",
+            )
+        })
 }
 
 fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {

@@ -319,6 +319,7 @@ pub(crate) struct TerminalJournal {
     pending_since: Option<Instant>,
     system_task_quarantine_ids: HashSet<i64>,
     replayed_system_task_ids: HashSet<i64>,
+    system_task_ack_retry_ids: HashSet<i64>,
     deferred_system_task_finishes: VecDeque<BatchedSystemTaskFinish>,
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
@@ -507,6 +508,8 @@ impl TerminalJournal {
         }
         let acknowledged_ids = acknowledged.into_iter().collect::<HashSet<_>>();
         self.replayed_system_task_ids
+            .retain(|run_id| !acknowledged_ids.contains(run_id));
+        self.system_task_ack_retry_ids
             .retain(|run_id| !acknowledged_ids.contains(run_id));
         self.deferred_system_task_finishes
             .retain(|finish| !acknowledged_ids.contains(&finish.run_id));
@@ -1001,6 +1004,7 @@ impl TerminalJournal {
             pending_since,
             system_task_quarantine_ids,
             replayed_system_task_ids,
+            system_task_ack_retry_ids: HashSet::new(),
             deferred_system_task_finishes,
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
@@ -1785,14 +1789,34 @@ impl TerminalJournal {
         !self.deferred_system_task_finishes.is_empty() || !self.replayed_system_task_ids.is_empty()
     }
 
-    pub(crate) fn system_task_recovery_pending_for(&self, run_id: i64) -> bool {
-        self.replayed_system_task_ids.contains(&run_id)
-    }
-
     pub(crate) fn forget_system_task_recovery_for_runs(&mut self, run_ids: &[i64]) {
         let run_ids = run_ids.iter().copied().collect::<HashSet<_>>();
         self.replayed_system_task_ids
             .retain(|run_id| !run_ids.contains(run_id));
+        self.system_task_ack_retry_ids
+            .retain(|run_id| !run_ids.contains(run_id));
+    }
+
+    pub(crate) fn defer_system_task_acknowledgements(&mut self, run_ids: &[i64]) {
+        self.system_task_ack_retry_ids.extend(
+            run_ids
+                .iter()
+                .copied()
+                .filter(|run_id| self.replayed_system_task_ids.contains(run_id)),
+        );
+    }
+
+    pub(crate) fn retry_system_task_acknowledgements(&mut self) -> Result<usize> {
+        let run_ids = self
+            .system_task_ack_retry_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        if run_ids.is_empty() {
+            return Ok(0);
+        }
+        self.acknowledge_system_task_finishes(&run_ids)
+            .map(|()| run_ids.len())
     }
 
     fn queue_shutdown_recovery_for_dispatch(&mut self, max_writes: usize) {
@@ -3045,9 +3069,13 @@ mod tests {
         assert_eq!(replay[0].completion, finish.completion);
         assert_eq!(replay[0].core_completion, finish.core_completion);
         assert_eq!(replay[0].details, finish.details);
-        recovered
-            .acknowledge_system_task_finishes(&[finish.run_id])
-            .expect("acknowledge system-task recovery");
+        recovered.defer_system_task_acknowledgements(&[finish.run_id]);
+        assert_eq!(
+            recovered
+                .retry_system_task_acknowledgements()
+                .expect("acknowledge system-task recovery"),
+            1
+        );
         assert!(!recovered.system_task_recovery_pending());
         assert!(recovered.take_system_task_finishes(1).is_empty());
         drop(recovered);

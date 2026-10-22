@@ -3252,16 +3252,20 @@ async fn run_terminal_journal_sync(
             _ = ticker.tick() => {
                 if let Ok(mut guard) = terminal_journal.lock()
                     && let Some(journal) = guard.as_mut()
-                    && let Some(group_commit_elapsed_ms) = journal.sync_if_due()
                 {
-                    let stats = journal.stats();
-                    debug!(
-                        group_commit_elapsed_ms,
-                        journal_pending_records = stats.pending_records,
-                        journal_pending_bytes = stats.pending_bytes,
-                        journal_segment_count = stats.segment_count,
-                        "terminal journal group commit completed"
-                    );
+                    if let Err(err) = journal.retry_system_task_acknowledgements() {
+                        warn!(error = %err, "failed to retry recovered system-task acknowledgements");
+                    }
+                    if let Some(group_commit_elapsed_ms) = journal.sync_if_due() {
+                        let stats = journal.stats();
+                        debug!(
+                            group_commit_elapsed_ms,
+                            journal_pending_records = stats.pending_records,
+                            journal_pending_bytes = stats.pending_bytes,
+                            journal_segment_count = stats.segment_count,
+                            "terminal journal group commit completed"
+                        );
+                    }
                 }
             }
         }
@@ -3415,13 +3419,15 @@ async fn flush_pending_batch_accounted(
     if !completed_system_task_ids.is_empty()
         && let Ok(mut guard) = terminal_journal.lock()
         && let Some(journal) = guard.as_mut()
-        && let Err(err) = journal.acknowledge_system_task_finishes(&completed_system_task_ids)
     {
-        warn!(
-            error = %err,
-            completed_system_task_count = completed_system_task_ids.len(),
-            "failed to acknowledge recovered system-task finishes"
-        );
+        if let Err(err) = journal.acknowledge_system_task_finishes(&completed_system_task_ids) {
+            journal.defer_system_task_acknowledgements(&completed_system_task_ids);
+            warn!(
+                error = %err,
+                completed_system_task_count = completed_system_task_ids.len(),
+                "failed to acknowledge recovered system-task finishes; scheduled retry"
+            );
+        }
     }
     let discard_non_retryable_p2 = result.as_ref().is_some_and(|retained| {
         retained.failed
@@ -3534,21 +3540,11 @@ fn quarantine_system_task_batch(
         .iter()
         .map(|finish| finish.run_id)
         .collect::<Vec<_>>();
-    let already_replayed_run_ids = run_ids
-        .iter()
-        .copied()
-        .filter(|run_id| journal.system_task_recovery_pending_for(*run_id))
-        .collect::<Vec<_>>();
     journal.quarantine_system_task_finishes(&finishes, &error)?;
     journal.remove_deferred_system_task_finishes(&run_ids);
-    // A fresh deterministic failure is deferred to the next restart, while a replayed finish
-    // must remain marked pending so the dispatcher cannot admit a newer generation first.
-    let newly_quarantined_run_ids = run_ids
-        .iter()
-        .copied()
-        .filter(|run_id| !already_replayed_run_ids.contains(run_id))
-        .collect::<Vec<_>>();
-    journal.forget_system_task_recovery_for_runs(&newly_quarantined_run_ids);
+    // The quarantine is durable and will be retried after restart; there is no in-process retry
+    // path for a deterministic failure, so do not leave unrelated tasks behind a global gate.
+    journal.forget_system_task_recovery_for_runs(&run_ids);
     Ok(batch.system_task_finishes.len())
 }
 
