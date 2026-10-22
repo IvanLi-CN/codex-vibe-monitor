@@ -417,3 +417,9 @@ The schema extraction replaces the 6,793-line flat source with a 68-line facade 
 The policy removes `src/schema.rs` from the explicit inventory, reducing the current policy to 23 entries with 6 production and 17 test/helper candidates. The suppression inventory increases from 123 to 124 for one reasoned facade `expect` that retains compatibility re-exports whose callers are conditional or outside the local module. SQL, transaction boundaries, migration markers, locks, error contexts, public crate paths, tests, and runtime behavior remain unchanged.
 
 The follow-up repair narrows extracted intra-schema helpers, including `legacy_raw_blob_link_seed_completed`, back to `pub(super)` and preserves the original crate-visible re-export and prompt-cache trigger visibility contract.
+
+## SQLite Batch Writer Extraction
+
+The SQLite batch writer extraction starts from verified main `784152185a40afc8a162318a3bbf64d981a516d9` and replaces the 6,901-line parent with a 93-line facade plus named batch, queue, writer, runtime, flush, and test modules. Existing attempt-progress, diagnostics, invocation-identity, queue-accounting, and terminal-attempts module paths remain intact; the extracted modules are 828, 326, 1,035, 1,034, 1,512, and 2,095 lines after rustfmt.
+
+The explicit policy inventory decreases from 23 to 22 entries, from 6 production and 17 test/helper candidates to 5 production and 17 test/helper candidates, while the immutable preparation baseline remains 32/23 and the suppression inventory remains 124. Queue priority, batching, retry and pressure gates, journal durability, recovery replay, transaction boundaries, SQL, crate-visible paths, tests, and resource buckets remain unchanged.
