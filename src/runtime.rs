@@ -2082,6 +2082,8 @@ fn managed_task_requires_heavy_file_operation(task_key: &str) -> bool {
             | "raw_compression"
             | "archive_upstream_activity_manifest"
             | "materialize_historical_rollups"
+            | "startup_backfill"
+            | "startup_backfill.historical_rollups"
             | "verify_archive_storage"
             | "prune_archive_batches"
             | "prune_legacy_archive_batches"
@@ -2823,7 +2825,19 @@ async fn run_managed_task_once_with_scoped_observation(
             let retry_reason = if execution.completion == "failed" {
                 "owner_failed"
             } else {
-                "work_remaining"
+                execution
+                    .details
+                    .get("waitReason")
+                    .and_then(Value::as_str)
+                    .filter(|reason| {
+                        matches!(
+                            *reason,
+                            "sqlite_pressure"
+                                | "retention_write_admission"
+                                | "task_execution_active"
+                        )
+                    })
+                    .unwrap_or("work_remaining")
             };
             if let Err(error) = store
                 .schedule_owned_work_for_run(task_key, run_id, retry, retry_reason)

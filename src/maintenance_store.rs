@@ -3818,24 +3818,44 @@ impl MaintenanceStore {
     ) -> Result<()> {
         let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
         let mut transaction = self.pool.begin().await?;
-        let result = sqlx::query(
-            "UPDATE managed_tasks
-             SET next_catchup_at=?,catchup_reason=?
-             WHERE task_key=? AND enabled!=0
+        let Some(enabled) = sqlx::query_scalar::<_, i64>(
+            "SELECT enabled
+             FROM managed_tasks
+             WHERE task_key=?
                AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
         )
-        .bind(&at)
-        .bind(reason)
         .bind(key)
         .bind(key)
         .bind(run_id)
-        .execute(&mut *transaction)
-        .await?;
-        if result.rows_affected() == 0 {
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
             transaction.rollback().await?;
             return Ok(());
+        };
+        if enabled != 0 {
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET next_catchup_at=?,catchup_reason=?
+                 WHERE task_key=? AND enabled!=0
+                   AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+            )
+            .bind(&at)
+            .bind(reason)
+            .bind(key)
+            .bind(key)
+            .bind(run_id)
+            .execute(&mut *transaction)
+            .await?;
         }
-        if matches!(reason, "owner_failed" | "task_execution_active") {
+        if matches!(
+            reason,
+            "owner_failed"
+                | "task_execution_active"
+                | "sqlite_pressure"
+                | "retention_write_admission"
+                | "retry_backoff"
+        ) {
             sqlx::query(
                 "INSERT INTO maintenance_owner_retry_state(task_key,failure_count,next_eligible_at,reason)
                  VALUES(?,1,?,?)

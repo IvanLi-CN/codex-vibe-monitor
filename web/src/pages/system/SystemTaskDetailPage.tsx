@@ -550,7 +550,8 @@ export default function SystemTaskDetailPage() {
                     <div className="text-xs text-base-content/50">旧版组合范围，保留原始结果</div>
                   ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
-                  {managedTaskKey === "retention_archive" ? (
+                  {managedTaskKey === "retention_archive" ||
+                  (run.details?.ownershipVersion === 2 && run.details.archiveBatches?.length) ? (
                     <RetentionRunThroughput details={run.details} />
                   ) : null}
                 </div>

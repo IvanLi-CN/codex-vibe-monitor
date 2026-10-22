@@ -339,14 +339,14 @@ fn apply_retention_owner_success(
     committed: usize,
     batches: usize,
     raw_files_removed: usize,
-    has_more: bool,
+    has_more: Option<bool>,
 ) {
     summary.discovered = discovered;
     summary.selected = selected;
     summary.committed = committed;
     summary.batches = batches;
     summary.raw_files_removed = raw_files_removed;
-    summary.has_more = Some(has_more);
+    summary.has_more = has_more;
     if let Some(reason) = retention_run_defer_reason() {
         summary.wait_reason = Some(reason);
     }
@@ -510,16 +510,16 @@ async fn run_invocation_archive_owner_inner(
             let (discovered, selected_scope, committed) =
                 retention_owner_success_facts("codex_invocations", selected, dry_run);
             let has_more = if dry_run {
-                batch_plan::candidate_window_has_more("codex_invocations").unwrap_or(false)
+                batch_plan::candidate_window_has_more("codex_invocations")
             } else {
                 match remaining_invocation_archive_rows(pool, &cutoff, source_max_id).await {
-                    Ok(remaining) => remaining > 0,
+                    Ok(remaining) => Some(remaining > 0),
                     Err(error) => {
                         warn!(
                             error = %error,
                             "invocation archive backlog observation failed after commit"
                         );
-                        true
+                        Some(true)
                     }
                 }
             };
@@ -584,6 +584,7 @@ async fn run_timestamped_archive_owner(
         select_sql,
         cutoff,
         dry_run,
+        config.database_path.parent(),
     )
     .await;
     match archive {
@@ -597,7 +598,7 @@ async fn run_timestamped_archive_owner(
                 committed,
                 batches,
                 raw_files_removed,
-                batch_plan::candidate_window_has_more(dataset).unwrap_or(false),
+                batch_plan::candidate_window_has_more(dataset),
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -645,7 +646,7 @@ async fn run_invocation_detail_prune_owner(
                 committed,
                 batches,
                 raw_files_removed,
-                batch_plan::candidate_window_has_more("codex_invocation_details").unwrap_or(false),
+                batch_plan::candidate_window_has_more("codex_invocation_details"),
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -678,7 +679,7 @@ async fn run_quota_snapshot_compaction_owner(
                 committed,
                 batches,
                 0,
-                batch_plan::candidate_window_has_more("codex_quota_snapshots").unwrap_or(false),
+                batch_plan::candidate_window_has_more("codex_quota_snapshots"),
             );
         }
         Err(error) => {
@@ -711,7 +712,7 @@ async fn run_model_route_expiry_owner(
                 0,
                 0,
                 0,
-                has_more,
+                Some(has_more),
             ),
             Err(error) => apply_retention_owner_error(&mut summary, &error),
         }
@@ -730,7 +731,7 @@ async fn run_model_route_expiry_owner(
         };
         summary.discovered = discovered;
         let Some(admission) = acquire_retention_write_admission("model_route_purge").await else {
-            apply_retention_owner_success(&mut summary, discovered, 0, 0, 0, 0, true);
+            apply_retention_owner_success(&mut summary, discovered, 0, 0, 0, 0, Some(true));
             return Ok(summary.finish(started_at));
         };
         let execute_started = Instant::now();
@@ -783,7 +784,7 @@ async fn run_model_route_expiry_owner(
             committed,
             0,
             0,
-            has_more,
+            Some(has_more),
         );
     }
     Ok(summary.finish(started_at))
@@ -853,7 +854,10 @@ async fn run_task_run_history_cleanup_owner(
         committed,
         batches,
         0,
-        legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS || managed_history.has_more,
+        Some(
+            legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
+                || managed_history.has_more,
+        ),
     );
     if !dry_run && summary.completion == "complete" && committed != selected {
         summary.completion = if committed > 0 { "partial" } else { "deferred" };
@@ -912,6 +916,27 @@ async fn run_retention_owner_task_inner(
     }
 }
 
+fn populate_retention_owner_batch_metrics(
+    batches: &mut [RetentionBatchMetrics],
+    arrival_rates: &HashMap<String, f64>,
+    elapsed: Duration,
+) {
+    let run_seconds = elapsed.as_secs_f64();
+    for batch in batches {
+        batch.committed_rows_per_second =
+            (run_seconds > 0.0).then_some(batch.committed_rows as f64 / run_seconds);
+        batch.arrival_rows_per_second = arrival_rates.get(&batch.dataset).copied();
+        batch.service_rate_multiple = batch
+            .arrival_rows_per_second
+            .filter(|arrival| *arrival > 0.0)
+            .and_then(|arrival| {
+                batch
+                    .committed_rows_per_second
+                    .map(|service| service / arrival)
+            });
+    }
+}
+
 pub(crate) async fn run_retention_owner_task(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -955,6 +980,7 @@ pub(crate) async fn run_retention_owner_task(
             ),
         )
         .await;
+    let arrival_rates = batch_plan::arrival_rates(pool).await;
     match result {
         (Ok(mut summary), archive_batches, candidate_window_has_more) => {
             summary.archive_batches = archive_batches;
@@ -965,6 +991,11 @@ pub(crate) async fn run_retention_owner_task(
                     .map(|batch| batch.raw_files_removed)
                     .sum(),
             );
+            populate_retention_owner_batch_metrics(
+                &mut summary.archive_batches,
+                &arrival_rates,
+                started_at.elapsed(),
+            );
             if summary.has_more.is_none() {
                 summary.has_more = candidate_window_has_more;
             }
@@ -973,16 +1004,16 @@ pub(crate) async fn run_retention_owner_task(
                     summary.raw_files_planned.max(summary.raw_files_removed);
                 summary.raw_files_removed = 0;
             }
-            let run_seconds = started_at.elapsed().as_secs_f64();
-            for batch in &mut summary.archive_batches {
-                batch.committed_rows_per_second =
-                    (run_seconds > 0.0).then_some(batch.committed_rows as f64 / run_seconds);
-            }
             Ok(summary.finish(started_at))
         }
         (Err(error), archive_batches, candidate_window_has_more) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
             summary.archive_batches = archive_batches;
+            populate_retention_owner_batch_metrics(
+                &mut summary.archive_batches,
+                &arrival_rates,
+                started_at.elapsed(),
+            );
             summary.raw_files_removed = summary
                 .archive_batches
                 .iter()
@@ -1904,6 +1935,7 @@ pub(crate) async fn run_data_retention_maintenance_inner(
         "SELECT id, occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
         shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
         dry_run,
+        config.database_path.parent(),
     )
     .await;
     let pool_attempt_archive = match pool_attempt_archive {
@@ -2091,6 +2123,7 @@ pub(crate) async fn run_data_retention_maintenance_inner(
         "SELECT id, occurred_at AS timestamp_value FROM forward_proxy_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
         shanghai_utc_cutoff_string(config.forward_proxy_attempts_retention_days),
         dry_run,
+        config.database_path.parent(),
     )
     .await
     .context("failed to archive forward proxy attempts during retention");
@@ -2376,5 +2409,13 @@ mod owner_fact_tests {
         assert_eq!(summary.raw_files_removed, 0);
         assert_eq!(summary.raw_files_planned, 3);
         assert_eq!(summary.has_more, None);
+    }
+
+    #[test]
+    fn no_progress_error_is_detected_through_context() {
+        let error = retention_archive_file_operation_no_progress(128, Some(256))
+            .context("archive identity preparation failed");
+
+        assert!(is_retention_archive_file_operation_no_progress(&error));
     }
 }

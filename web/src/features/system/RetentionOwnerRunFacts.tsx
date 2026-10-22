@@ -67,9 +67,9 @@ export function RetentionOwnerRunFacts({
           ["批次", count(selectedScope?.batches)],
           [rawFileLabel, count(rawFileCount)],
         ].map(([label, value]) => (
-          <div key={label}>
+          <div key={label} className="min-w-0">
             <dt className="text-base-content/60">{label}</dt>
-            <dd className="mt-1 font-medium tabular-nums">{value}</dd>
+            <dd className="mt-1 break-all font-medium tabular-nums">{value}</dd>
           </div>
         ))}
       </dl>

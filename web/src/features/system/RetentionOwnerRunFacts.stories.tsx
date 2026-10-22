@@ -25,7 +25,7 @@ export const Committed: Story = {
   args: {
     details: {
       ownershipVersion: 2,
-      ownerScope: "codex_invocation_details",
+      ownerScope: "pool_upstream_attempt_archive",
       dryRun: false,
       result: "complete",
       globalBacklogTotal: 12_480,
@@ -33,7 +33,7 @@ export const Committed: Story = {
       selected: 420,
       committed: 420,
       selectedScope: {
-        scope: "expired invocation details",
+        scope: "pool_upstream_request_attempts:retention_policy",
         unit: "rows",
         selected: 420,
         committed: 420,

@@ -686,15 +686,16 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     Ok(())
 }
 
-async fn run_archive_file_work_with_operation_budget<F>(
+async fn run_archive_file_work_with_operation_budget<T, F>(
     operation: &'static str,
     protected_paths: Vec<PathBuf>,
     shared_read_paths: Vec<PathBuf>,
     failure_cleanup_paths: Vec<PathBuf>,
     timeout_cleanup_paths: Vec<PathBuf>,
     work: F,
-) -> Result<()>
+) -> Result<T>
 where
+    T: Send + 'static,
     F: FnOnce(
             Option<Instant>,
             Option<CancellationToken>,
@@ -728,9 +729,7 @@ where
             timeout,
             shutdown,
         },
-        move |operation_deadline, shutdown, cancellation, progress| {
-            work(operation_deadline, shutdown, cancellation, progress)
-        },
+        work,
     )
     .await
 }
@@ -819,9 +818,11 @@ where
             }
         }
     });
+    let watchdog_triggered = Arc::new(AtomicBool::new(false));
     let watchdog = (deadline.is_none() && timeout.is_none()).then(|| {
         let progress = Arc::clone(&progress);
         let timed_out = Arc::clone(&timed_out);
+        let watchdog_triggered = Arc::clone(&watchdog_triggered);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(ARCHIVE_FILE_NO_PROGRESS_GRACE).await;
@@ -830,6 +831,7 @@ where
                     .map(|state| state.last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE)
                     .unwrap_or(true);
                 if stale {
+                    watchdog_triggered.store(true, Ordering::Release);
                     timed_out.store(true, Ordering::Release);
                     return;
                 }
@@ -837,10 +839,18 @@ where
         })
     });
     let joined = match timeout {
-        Some(timeout) => match tokio::time::timeout(timeout, worker).await {
+        Some(timeout) => match tokio::time::timeout(timeout, &mut worker).await {
             Ok(joined) => joined,
             Err(_) => {
                 timed_out.store(true, Ordering::Release);
+                match worker.await {
+                    Ok(_) => {}
+                    Err(error) => {
+                        return Err(anyhow!(
+                            "retention archive {operation} worker panicked after operation budget: {error}"
+                        ));
+                    }
+                }
                 return Err(super::retention::retention_archive_file_operation_budget_exhausted());
             }
         },
@@ -852,6 +862,18 @@ where
                         let joined = joined.with_context(|| {
                             format!("retention archive {operation} worker panicked")
                         })?;
+                        if watchdog_triggered.load(Ordering::Acquire) {
+                            let (processed_bytes, total_input_bytes) = progress
+                                .lock()
+                                .map(|state| (state.processed_bytes, state.total_input_bytes))
+                                .unwrap_or((0, None));
+                            return Err(
+                                super::retention::retention_archive_file_operation_no_progress(
+                                    processed_bytes,
+                                    total_input_bytes,
+                                ),
+                            );
+                        }
                         return joined;
                     }
                     _ = &mut watchdog => {

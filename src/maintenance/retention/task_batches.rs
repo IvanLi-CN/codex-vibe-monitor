@@ -1886,6 +1886,7 @@ pub(crate) async fn archive_timestamped_dataset(
     select_sql: &str,
     cutoff: String,
     dry_run: bool,
+    raw_path_fallback_root: Option<&Path>,
 ) -> Result<(usize, usize, usize)> {
     if dry_run {
         let candidate_limit = archive_candidate_limit(config);
@@ -1903,8 +1904,29 @@ pub(crate) async fn archive_timestamped_dataset(
         };
         let discovered = candidates.len();
         let has_more = discovered > candidate_limit;
+        let candidates = candidates
+            .into_iter()
+            .take(candidate_limit)
+            .collect::<Vec<_>>();
+        let raw_files_planned = if spec.dataset == "pool_upstream_request_attempts" {
+            let ids = candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let raw_paths = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT response_raw_path
+                 FROM pool_upstream_request_attempts
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(serde_json::to_string(&ids)?)
+            .fetch_all(pool)
+            .await?;
+            count_planned_proxy_raw_paths(&raw_paths, raw_path_fallback_root)
+        } else {
+            0
+        };
         let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
-        for candidate in candidates.into_iter().take(candidate_limit) {
+        for candidate in candidates {
             let month_key =
                 archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
             *by_month.entry(month_key).or_default() += 1;
@@ -1919,7 +1941,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 "retention dry-run planned archive batch"
             );
         }
-        return Ok((by_month.values().sum(), by_month.len(), 0));
+        return Ok((by_month.values().sum(), by_month.len(), raw_files_planned));
     }
 
     let mut rows_archived = 0usize;

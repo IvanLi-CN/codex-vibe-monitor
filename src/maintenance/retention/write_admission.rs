@@ -851,9 +851,11 @@ pub(crate) fn retention_archive_file_operation_no_progress(
 }
 
 pub(crate) fn is_retention_archive_file_operation_no_progress(error: &anyhow::Error) -> bool {
-    error
-        .to_string()
-        .contains(RETENTION_ARCHIVE_FILE_NO_PROGRESS_REASON)
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains(RETENTION_ARCHIVE_FILE_NO_PROGRESS_REASON)
+    })
 }
 
 pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {
