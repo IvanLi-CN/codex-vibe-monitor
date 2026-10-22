@@ -1,5 +1,7 @@
 use super::*;
+use futures_util::FutureExt;
 use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
 
 const STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const STARTUP_HOT_READ_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(30);
@@ -1879,8 +1881,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 };
                 let store = store.clone();
                 finalizers.spawn(async move {
-                    let result = finish_managed_task_run_bounded(&store, &finish).await;
-                    (finish, result)
+                    finalize_managed_task_with_panic_guard(store, finish).await
                 });
             }
             tokio::select! {
@@ -2028,7 +2029,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let worker_file_gate =
                         managed_task_requires_heavy_file_operation(&task_key)
                             .then(|| heavy_file_gate.clone());
-                    workers.spawn(run_managed_task_worker(
+                    workers.spawn(run_managed_task_worker_guarded(
                         state.clone(),
                         task_key,
                         run_id,
@@ -2081,10 +2082,77 @@ fn queue_managed_task_finalizer(
         return;
     }
     let store = Arc::clone(store);
-    finalizers.spawn(async move {
-        let result = finish_managed_task_run_bounded(&store, &finish).await;
-        (finish, result)
-    });
+    finalizers.spawn(async move { finalize_managed_task_with_panic_guard(store, finish).await });
+}
+
+async fn finalize_managed_task_with_panic_guard(
+    store: Arc<crate::maintenance_store::MaintenanceStore>,
+    finish: ManagedTaskFinish,
+) -> (ManagedTaskFinish, Result<()>) {
+    let task_key = finish.task_key.clone();
+    let result = AssertUnwindSafe(finish_managed_task_run_bounded(&store, &finish))
+        .catch_unwind()
+        .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(_) => {
+            warn!(task = %task_key, run_id = finish.run_id, "managed task finalizer panicked");
+            Err(anyhow!("managed task finalizer panicked"))
+        }
+    };
+    (finish, result)
+}
+
+async fn run_managed_task_worker_guarded(
+    state: Arc<AppState>,
+    task_key: String,
+    run_id: i64,
+    requested_at: String,
+    trigger_kind: String,
+    observation: crate::TaskExecutionObservation,
+    execution_lease: crate::maintenance_store::TaskExecutionLease,
+    heavy_file_gate: Option<Arc<Semaphore>>,
+    initial_stages: Option<Vec<crate::maintenance_store::TaskStage>>,
+) -> ManagedTaskFinish {
+    let fallback_task_key = task_key.clone();
+    let fallback_requested_at = requested_at.clone();
+    let result = AssertUnwindSafe(run_managed_task_worker(
+        state,
+        task_key,
+        run_id,
+        requested_at,
+        trigger_kind,
+        observation,
+        execution_lease,
+        heavy_file_gate,
+        initial_stages,
+    ))
+    .catch_unwind()
+    .await;
+    match result {
+        Ok(finish) => finish,
+        Err(_) => {
+            warn!(
+                task = %fallback_task_key,
+                run_id,
+                "managed task worker panicked; finalizing run as failed"
+            );
+            ManagedTaskFinish {
+                run_id,
+                task_key: fallback_task_key.clone(),
+                status: SystemTaskStatus::Failed,
+                finished_at: format_utc_iso_millis(Utc::now()),
+                duration_ms: managed_task_elapsed_ms(&fallback_requested_at, Instant::now()),
+                summary: Some(format!("{fallback_task_key} 执行 worker 异常")),
+                detail: Some(
+                    "managed task worker panicked before publishing a terminal result".to_string(),
+                ),
+                completion: Some("failed".to_string()),
+                core_completion: None,
+                details: None,
+            }
+        }
+    }
 }
 
 async fn run_managed_task_worker(
@@ -2194,15 +2262,7 @@ async fn run_managed_task_worker(
                 .get("globalBacklogTotal")
                 .or_else(|| details.get("total"))
         })
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            finish
-                .details
-                .as_ref()
-                .and_then(|details| details.get("selectedScope"))
-                .and_then(|scope| scope.get("selected"))
-                .and_then(Value::as_i64)
-        });
+        .and_then(Value::as_i64);
     let progress_completed = finish
         .details
         .as_ref()

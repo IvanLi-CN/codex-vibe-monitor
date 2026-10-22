@@ -578,6 +578,7 @@ pub(crate) async fn prune_old_invocation_details(
     let spec = archive_table_spec("codex_invocations");
     let success_like_condition = invocation_status_is_success_like_sql("status", "error_message");
     if dry_run {
+        let candidate_limit = archive_candidate_limit(config);
         let sql = format!(
             r#"
             SELECT id, occurred_at, request_raw_path, response_raw_path,
@@ -589,6 +590,7 @@ pub(crate) async fn prune_old_invocation_details(
               AND occurred_at < ?2
               AND occurred_at >= ?3
             ORDER BY occurred_at ASC, id ASC
+            LIMIT ?4
             "#,
             success_like_condition = success_like_condition,
         );
@@ -596,9 +598,15 @@ pub(crate) async fn prune_old_invocation_details(
             .bind(DETAIL_LEVEL_FULL)
             .bind(&prune_cutoff)
             .bind(&archive_cutoff)
+            .bind(candidate_limit.saturating_add(1) as i64)
             .fetch_all(pool)
             .await?;
-        batch_plan::record_discovered_rows("codex_invocation_details", candidates.len());
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows("codex_invocation_details", discovered);
+        batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -673,6 +681,10 @@ pub(crate) async fn prune_old_invocation_details(
             candidates_query.await?
         };
         batch_plan::record_discovered_rows("codex_invocation_details", candidates.len());
+        batch_plan::record_candidate_window_has_more(
+            "codex_invocation_details",
+            candidates.len() >= candidate_limit,
+        );
 
         if candidates.is_empty() {
             break 'work_unit;
@@ -1125,11 +1137,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let spec = archive_table_spec("codex_invocations");
 
     if dry_run {
+        let candidate_limit = archive_candidate_limit(config);
         let candidates_query = load_invocation_archive_candidate_metadata(
             pool,
             cutoff,
             source_max_invocation_id,
-            None,
+            Some(candidate_limit.saturating_add(1)),
         );
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -1139,7 +1152,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
         } else {
             candidates_query.await?
         };
-        batch_plan::record_discovered_rows(spec.dataset, candidates.len());
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
 
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
@@ -1207,6 +1225,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
             candidates_query.await?
         };
         batch_plan::record_discovered_rows(spec.dataset, candidates.len());
+        batch_plan::record_candidate_window_has_more(
+            spec.dataset,
+            candidates.len() >= candidate_limit,
+        );
 
         if candidates.is_empty() {
             break 'work_unit;
@@ -1838,56 +1860,38 @@ pub(crate) async fn archive_timestamped_dataset(
     dry_run: bool,
 ) -> Result<(usize, usize, usize)> {
     if dry_run {
-        let dry_run_sql = match spec.dataset {
-            "forward_proxy_attempts" => {
-                r#"
-                SELECT strftime('%Y-%m', datetime(occurred_at, '+8 hours')) AS month_key,
-                       COUNT(*) AS row_count
-                FROM forward_proxy_attempts
-                WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            "pool_upstream_request_attempts" => {
-                r#"
-                SELECT strftime('%Y-%m', occurred_at) AS month_key,
-                       COUNT(*) AS row_count
-                FROM pool_upstream_request_attempts
-                WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            other => bail!("unsupported dry-run archive dataset: {other}"),
-        };
-        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(dry_run_sql)
+        let candidate_limit = archive_candidate_limit(config);
+        let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
             .bind(&cutoff)
-            .fetch_all(pool)
-            .await?;
-        for batch in &batch_counts {
+            .bind(candidate_limit.saturating_add(1) as i64)
+            .fetch_all(pool);
+        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, candidates_query).await {
+                Ok(result) => result?,
+                Err(_) => return Ok((0, 0, 0)),
+            }
+        } else {
+            candidates_query.await?
+        };
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        for candidate in candidates.into_iter().take(candidate_limit) {
+            let month_key =
+                archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
+            *by_month.entry(month_key).or_default() += 1;
+        }
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+        for (month_key, rows) in &by_month {
             info!(
                 dataset = spec.dataset,
-                month_key = %batch.month_key,
-                rows = batch.row_count,
+                month_key = %month_key,
+                rows = *rows,
                 "retention dry-run planned archive batch"
             );
         }
-        batch_plan::record_discovered_rows(
-            spec.dataset,
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count.max(0) as usize)
-                .sum(),
-        );
-        return Ok((
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count as usize)
-                .sum(),
-            batch_counts.len(),
-            0,
-        ));
+        return Ok((by_month.values().sum(), by_month.len(), 0));
     }
 
     let mut rows_archived = 0usize;
@@ -1921,6 +1925,10 @@ pub(crate) async fn archive_timestamped_dataset(
             candidates_query.await?
         };
         batch_plan::record_discovered_rows(spec.dataset, candidates.len());
+        batch_plan::record_candidate_window_has_more(
+            spec.dataset,
+            candidates.len() >= candidate_limit,
+        );
 
         if candidates.is_empty() {
             break 'work_unit;

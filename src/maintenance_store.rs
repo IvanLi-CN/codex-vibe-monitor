@@ -2554,28 +2554,6 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
-    let now = Utc::now();
-    let error_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_ERROR_RETENTION_DAYS));
-    let run_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_RUN_RETENTION_DAYS));
-    sqlx::query("UPDATE managed_task_runs SET error_detail=NULL WHERE started_at < ?")
-        .bind(error_cutoff)
-        .execute(pool)
-        .await?;
-    sqlx::query("DELETE FROM managed_task_runs WHERE started_at < ?")
-        .bind(run_cutoff)
-        .execute(pool)
-        .await?;
-    sqlx::query(
-        "DELETE FROM managed_task_work_runs
-         WHERE rowid IN (
-           SELECT rowid FROM (
-             SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
-             FROM managed_task_work_runs WHERE status <> 'running'
-           ) WHERE sample_rank > 200
-         )",
-    )
-    .execute(pool)
-    .await?;
     Ok(())
 }
 

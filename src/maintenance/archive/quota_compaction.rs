@@ -10,7 +10,7 @@ async fn quota_compaction_candidates(
     pool: &Pool<Sqlite>,
     cutoff: &str,
     candidate_limit: usize,
-) -> Result<Option<Vec<TimestampedArchiveCandidate>>> {
+) -> Result<Option<(Vec<TimestampedArchiveCandidate>, usize, bool)>> {
     let query_sql = r#"
         WITH ranked AS (
             SELECT
@@ -91,7 +91,7 @@ async fn quota_compaction_candidates(
     // interruption and close the dedicated handle; never return live work to the pool.
     let result = sqlx::query_as::<_, TimestampedArchiveCandidate>(query_sql)
         .bind(cutoff)
-        .bind(candidate_limit as i64)
+        .bind(candidate_limit.saturating_add(1) as i64)
         .fetch_all(&mut connection)
         .await;
     let cleanup = connection.lock_handle().await.map(|mut handle| {
@@ -114,7 +114,11 @@ async fn quota_compaction_candidates(
     {
         return Ok(None);
     }
-    Ok(Some(result?))
+    let mut candidates = result?;
+    let discovered = candidates.len();
+    let has_more = discovered > candidate_limit;
+    candidates.truncate(candidate_limit);
+    Ok(Some((candidates, discovered, has_more)))
 }
 
 pub(crate) async fn compact_old_quota_snapshots(
@@ -126,51 +130,31 @@ pub(crate) async fn compact_old_quota_snapshots(
     let spec = archive_table_spec("codex_quota_snapshots");
 
     if dry_run {
-        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(
-            r#"
-            WITH ranked AS (
-                SELECT
-                    captured_at,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY strftime('%Y-%m-%d', datetime(captured_at, '+8 hours'))
-                        ORDER BY captured_at DESC, id DESC
-                    ) AS row_num
-                FROM codex_quota_snapshots
-                WHERE captured_at < ?1
-            )
-            SELECT strftime('%Y-%m', datetime(captured_at, '+8 hours')) AS month_key,
-                   COUNT(*) AS row_count
-            FROM ranked
-            WHERE row_num > 1
-            GROUP BY 1
-            ORDER BY 1
-            "#,
-        )
-        .bind(&cutoff)
-        .fetch_all(pool)
-        .await?;
-        super::super::retention::batch_plan::record_discovered_rows(
+        let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
+        let Some((candidates, discovered, has_more)) =
+            quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
+        else {
+            return Ok((0, 0));
+        };
+        super::super::retention::batch_plan::record_discovered_rows(spec.dataset, discovered);
+        super::super::retention::batch_plan::record_candidate_window_has_more(
             spec.dataset,
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count.max(0) as usize)
-                .sum(),
+            has_more,
         );
-        for batch in &batch_counts {
+        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
+            *by_month.entry(month_key).or_default() += 1;
+        }
+        for (month_key, rows) in &by_month {
             info!(
                 dataset = spec.dataset,
-                month_key = %batch.month_key,
-                rows = batch.row_count,
+                month_key = %month_key,
+                rows = *rows,
                 "retention dry-run planned quota compaction batch"
             );
         }
-        return Ok((
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count as usize)
-                .sum(),
-            batch_counts.len(),
-        ));
+        return Ok((by_month.values().sum(), by_month.len()));
     }
 
     let mut rows_archived = 0usize;
@@ -181,17 +165,22 @@ pub(crate) async fn compact_old_quota_snapshots(
             break 'work_unit;
         }
         let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
-        let Some(candidates) = quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
+        let Some((candidates, discovered, has_more)) =
+            quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
         else {
             break 'work_unit;
         };
-        super::super::retention::batch_plan::record_discovered_rows(spec.dataset, candidates.len());
+        super::super::retention::batch_plan::record_discovered_rows(spec.dataset, discovered);
+        super::super::retention::batch_plan::record_candidate_window_has_more(
+            spec.dataset,
+            has_more,
+        );
 
         if candidates.is_empty() {
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let candidate_remaining_hint = usize::from(has_more);
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;

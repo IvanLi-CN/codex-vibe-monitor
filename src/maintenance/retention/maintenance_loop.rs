@@ -467,7 +467,7 @@ async fn run_invocation_archive_owner_inner(
             let (discovered, selected_scope, committed) =
                 retention_owner_success_facts("codex_invocations", selected, dry_run);
             let has_more = if dry_run {
-                false
+                batch_plan::candidate_window_has_more("codex_invocations").unwrap_or(false)
             } else {
                 match remaining_invocation_archive_rows(pool, &cutoff, source_max_id).await {
                     Ok(remaining) => remaining > 0,
@@ -552,8 +552,7 @@ async fn run_timestamped_archive_owner(
                 committed,
                 batches,
                 raw_files_removed,
-                batch_plan::discovered_rows(dataset)
-                    .is_some_and(|discovered| discovered >= archive_candidate_limit(config)),
+                batch_plan::candidate_window_has_more(dataset).unwrap_or(false),
             );
         }
         Err(error) => apply_retention_owner_batch_error(&mut summary, dataset, &error),
@@ -583,8 +582,7 @@ async fn run_invocation_detail_prune_owner(
                 committed,
                 batches,
                 raw_files_removed,
-                batch_plan::discovered_rows("codex_invocation_details")
-                    .is_some_and(|discovered| discovered >= archive_candidate_limit(config)),
+                batch_plan::candidate_window_has_more("codex_invocation_details").unwrap_or(false),
             );
         }
         Err(error) => {
@@ -616,8 +614,7 @@ async fn run_quota_snapshot_compaction_owner(
                 committed,
                 batches,
                 0,
-                batch_plan::discovered_rows("codex_quota_snapshots")
-                    .is_some_and(|discovered| discovered >= archive_candidate_limit(config)),
+                batch_plan::candidate_window_has_more("codex_quota_snapshots").unwrap_or(false),
             );
         }
         Err(error) => {
@@ -690,10 +687,17 @@ async fn run_task_run_history_cleanup_owner(
             return Ok(summary.finish(started_at));
         }
     };
+    let legacy_batches = legacy_selected
+        .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS.saturating_sub(1))
+        / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS;
     let managed_history = if let Some(store) = crate::maintenance_store::global() {
         match store.cleanup_expired_history_bounded(dry_run).await {
             Ok(result) => result,
             Err(error) => {
+                summary.discovered = legacy_selected;
+                summary.selected = legacy_selected;
+                summary.committed = if dry_run { 0 } else { legacy_selected };
+                summary.batches = legacy_batches;
                 apply_retention_owner_error(&mut summary, &error);
                 return Ok(summary.finish(started_at));
             }
@@ -707,10 +711,7 @@ async fn run_task_run_history_cleanup_owner(
     } else {
         legacy_selected.saturating_add(managed_history.committed)
     };
-    let batches = legacy_selected
-        .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS.saturating_sub(1))
-        / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS
-        + usize::from(managed_history.selected > 0);
+    let batches = legacy_batches + usize::from(managed_history.selected > 0);
     apply_retention_owner_success(
         &mut summary,
         selected,
@@ -718,9 +719,7 @@ async fn run_task_run_history_cleanup_owner(
         committed,
         batches,
         0,
-        !dry_run
-            && (legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
-                || managed_history.has_more),
+        legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS || managed_history.has_more,
     );
     if !dry_run && summary.completion == "complete" && committed != selected {
         summary.completion = if committed > 0 { "partial" } else { "deferred" };
@@ -796,12 +795,15 @@ pub(crate) async fn run_retention_owner_task(
                     RefCell::new(None),
                     batch_plan::TASK_DISCOVERED_ROWS.scope(
                         RefCell::new(std::collections::BTreeMap::new()),
-                        batch_plan::TASK_BATCH_METRICS.scope(
-                            RefCell::new(Vec::new()),
-                            RETENTION_RUN_DEFER_REASON.scope(
-                                RefCell::new(None),
-                                run_retention_owner_task_inner(
-                                    pool, config, task_key, dry_run, shutdown,
+                        batch_plan::TASK_CANDIDATE_WINDOWS.scope(
+                            RefCell::new(std::collections::BTreeMap::new()),
+                            batch_plan::TASK_BATCH_METRICS.scope(
+                                RefCell::new(Vec::new()),
+                                RETENTION_RUN_DEFER_REASON.scope(
+                                    RefCell::new(None),
+                                    run_retention_owner_task_inner(
+                                        pool, config, task_key, dry_run, shutdown,
+                                    ),
                                 ),
                             ),
                         ),
@@ -954,19 +956,24 @@ async fn prune_system_task_runs_inner(
                   AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
             )
             SELECT COUNT(*)
-            FROM ranked
-            WHERE retention_rank > ?1
-              AND (
-                  (status IN ('success', 'skipped')
-                    AND (started_at < ?2 OR retention_rank > 5000))
-                  OR (status = 'failed'
-                    AND (started_at < ?3 OR retention_rank > 10000))
-              )
+            FROM (
+                SELECT 1
+                FROM ranked
+                WHERE retention_rank > ?1
+                  AND (
+                      (status IN ('success', 'skipped')
+                        AND (started_at < ?2 OR retention_rank > 5000))
+                      OR (status = 'failed'
+                        AND (started_at < ?3 OR retention_rank > 10000))
+                  )
+                LIMIT ?4
+            )
             "#,
         )
         .bind(SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT)
         .bind(&success_cutoff)
         .bind(&failed_cutoff)
+        .bind(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS as i64 + 1)
         .fetch_one(pool)
         .await
         .map_err(anyhow::Error::from)
@@ -1347,16 +1354,19 @@ pub(crate) async fn run_data_retention_maintenance_with_prompt_cache(
                 RefCell::new(None),
                 batch_plan::TASK_DISCOVERED_ROWS.scope(
                     RefCell::new(std::collections::BTreeMap::new()),
-                    batch_plan::TASK_BATCH_METRICS.scope(
-                        RefCell::new(Vec::new()),
-                        RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
-                            run.await.map(|mut summary| {
-                                batch_plan::collect_run_metrics(&mut summary);
-                                let defer_reason = RETENTION_RUN_DEFER_REASON
-                                    .with(|reason| reason.borrow().clone());
-                                (summary, defer_reason)
-                            })
-                        }),
+                    batch_plan::TASK_CANDIDATE_WINDOWS.scope(
+                        RefCell::new(std::collections::BTreeMap::new()),
+                        batch_plan::TASK_BATCH_METRICS.scope(
+                            RefCell::new(Vec::new()),
+                            RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                                run.await.map(|mut summary| {
+                                    batch_plan::collect_run_metrics(&mut summary);
+                                    let defer_reason = RETENTION_RUN_DEFER_REASON
+                                        .with(|reason| reason.borrow().clone());
+                                    (summary, defer_reason)
+                                })
+                            }),
+                        ),
                     ),
                 ),
             ),

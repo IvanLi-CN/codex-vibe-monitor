@@ -49,6 +49,7 @@ pub(crate) struct RetentionBatchMetrics {
 tokio::task_local! {
     pub(super) static TASK_BATCH_METRICS: RefCell<Vec<RetentionBatchMetrics>>;
     pub(super) static TASK_DISCOVERED_ROWS: RefCell<BTreeMap<String, usize>>;
+    pub(super) static TASK_CANDIDATE_WINDOWS: RefCell<BTreeMap<String, bool>>;
 }
 
 pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
@@ -62,6 +63,21 @@ pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
 pub(crate) fn discovered_rows(dataset: &str) -> Option<usize> {
     TASK_DISCOVERED_ROWS
         .try_with(|discovered| discovered.borrow().get(dataset).copied())
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn record_candidate_window_has_more(dataset: &str, has_more: bool) {
+    let _ = TASK_CANDIDATE_WINDOWS.try_with(|windows| {
+        let mut windows = windows.borrow_mut();
+        let entry = windows.entry(dataset.to_string()).or_default();
+        *entry |= has_more;
+    });
+}
+
+pub(crate) fn candidate_window_has_more(dataset: &str) -> Option<bool> {
+    TASK_CANDIDATE_WINDOWS
+        .try_with(|windows| windows.borrow().get(dataset).copied())
         .ok()
         .flatten()
 }
