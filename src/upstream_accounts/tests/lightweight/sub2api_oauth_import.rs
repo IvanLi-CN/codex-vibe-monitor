@@ -146,6 +146,42 @@ fn sub2api_oauth_rejects_conflicting_duplicate_explicit_identity_fields() {
 }
 
 #[test]
+fn sub2api_oauth_rejects_conflicting_identity_aliases_within_one_object() {
+    for (first_key, second_key) in [
+        ("chatgpt_account_id", "account_id"),
+        ("chatgpt_user_id", "user_id"),
+    ] {
+        let mut credentials = sub2api_credentials();
+        credentials[first_key] = json!("first-value");
+        credentials[second_key] = json!("second-value");
+        let error = normalize_imported_oauth_credentials(&sub2api_request(credentials))
+            .expect_err("reject conflicting identity aliases");
+        assert!(error.contains("conflicting explicit values"), "{error}");
+    }
+}
+
+#[test]
+fn sub2api_oauth_preserves_top_level_identity_aliases() {
+    let mut request = sub2api_request(json!({
+        "email": "member@example.com",
+        "access_token": "opaque-access-token",
+        "expires_at": "2030-01-01T00:00:00Z",
+    }));
+    let mut record: Value = serde_json::from_str(&request.content).expect("fixture JSON");
+    record["chatgpt_account_id"] = json!("acct_top_level");
+    record["chatgpt_user_id"] = json!("user_top_level");
+    request.content = record.to_string();
+
+    let normalized = normalize_imported_oauth_credentials(&request)
+        .expect("preserve top-level identity aliases");
+    assert_eq!(normalized.chatgpt_account_id, "acct_top_level");
+    assert_eq!(
+        normalized.chatgpt_user_id.as_deref(),
+        Some("user_top_level")
+    );
+}
+
+#[test]
 fn sub2api_oauth_does_not_invent_identity_or_expiry() {
     for field in ["email", "chatgpt_account_id", "expires_at"] {
         let mut credentials = sub2api_credentials();

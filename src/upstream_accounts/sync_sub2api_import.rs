@@ -4,14 +4,20 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 type ImportRecord = serde_json::Map<String, Value>;
 
 fn import_text(record: &ImportRecord, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        record
-            .get(*key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_string)
-    })
+    import_text_values(record, keys).into_iter().next()
+}
+
+fn import_text_values(record: &ImportRecord, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .filter_map(|key| {
+            record
+                .get(*key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 fn ensure_identity_values_agree(
@@ -84,41 +90,35 @@ pub(super) fn normalize_sub2api_oauth_account(record: &ImportRecord) -> Result<V
     }
     ensure_identity_values_agree(
         "email",
-        [
-            import_text(credentials, &["email"]),
-            import_text(record, &["email"]),
-        ]
-        .into_iter()
-        .flatten(),
+        import_text_values(credentials, &["email"])
+            .into_iter()
+            .chain(import_text_values(record, &["email"])),
         true,
     )?;
     ensure_identity_values_agree(
         "account_id",
-        [
-            import_text(
-                credentials,
-                &["chatgpt_account_id", "account_id", "chatgptAccountId"],
-            ),
-            import_text(
-                record,
-                &["chatgpt_account_id", "account_id", "chatgptAccountId"],
-            ),
-        ]
+        import_text_values(
+            credentials,
+            &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+        )
         .into_iter()
-        .flatten(),
+        .chain(import_text_values(
+            record,
+            &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+        )),
         false,
     )?;
     ensure_identity_values_agree(
         "chatgpt_user_id",
-        [
-            import_text(
-                credentials,
-                &["chatgpt_user_id", "user_id", "chatgptUserId"],
-            ),
-            import_text(record, &["chatgpt_user_id", "user_id", "chatgptUserId"]),
-        ]
+        import_text_values(
+            credentials,
+            &["chatgpt_user_id", "user_id", "chatgptUserId"],
+        )
         .into_iter()
-        .flatten(),
+        .chain(import_text_values(
+            record,
+            &["chatgpt_user_id", "user_id", "chatgptUserId"],
+        )),
         false,
     )?;
     let id_claims = import_claims(
@@ -139,7 +139,12 @@ pub(super) fn normalize_sub2api_oauth_account(record: &ImportRecord) -> Result<V
         credentials,
         &["chatgpt_account_id", "account_id", "chatgptAccountId"],
     )
-    .or_else(|| import_text(record, &["account_id"]))
+    .or_else(|| {
+        import_text(
+            record,
+            &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+        )
+    })
     .or_else(|| id_claims.chatgpt_account_id.clone())
     .or_else(|| access_claims.chatgpt_account_id.clone())
     .ok_or_else(|| "account_id is required".to_string())?;
@@ -147,6 +152,7 @@ pub(super) fn normalize_sub2api_oauth_account(record: &ImportRecord) -> Result<V
         credentials,
         &["chatgpt_user_id", "user_id", "chatgptUserId"],
     )
+    .or_else(|| import_text(record, &["chatgpt_user_id", "user_id", "chatgptUserId"]))
     .or_else(|| id_claims.chatgpt_user_id.clone())
     .or_else(|| access_claims.chatgpt_user_id.clone());
     let plan_type = import_text(credentials, &["plan_type", "chatgpt_plan_type"])

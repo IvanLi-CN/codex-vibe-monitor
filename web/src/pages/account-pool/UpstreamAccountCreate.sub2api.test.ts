@@ -162,6 +162,42 @@ describe("sub2api OAuth import compatibility", () => {
     if (!result.ok) expect(result.error).toContain(errorKey);
   });
 
+  it.each([
+    ["chatgpt_account_id", "account_id", "accountIdMismatch"],
+    ["chatgpt_user_id", "user_id", "userIdMismatch"],
+  ])("rejects conflicting identity aliases within credentials", (firstKey, secondKey, errorKey) => {
+    const result = parse(
+      account({
+        [firstKey]: "first-value",
+        [secondKey]: "second-value",
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain(errorKey);
+  });
+
+  it("preserves identity supplied only on the outer sub2api account", () => {
+    const result = parse({
+      ...account({
+        email: undefined,
+        chatgpt_account_id: undefined,
+        chatgpt_user_id: undefined,
+      }),
+      email: "outer@example.com",
+      chatgpt_account_id: "acct_outer",
+      chatgpt_user_id: "user_outer",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.candidates[0]).toMatchObject({
+        email: "outer@example.com",
+        chatgptAccountId: "acct_outer",
+        chatgptUserId: "user_outer",
+        matchKey: "user:user_outer",
+      });
+    }
+  });
+
   it("reports missing identity or expiry without requiring a fabricated ID token", () => {
     const result = parse(account({ email: undefined, expires_at: undefined }));
     expect(result.ok).toBe(false);
