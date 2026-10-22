@@ -1016,8 +1016,19 @@ jobs:
           test -x .ci-smoke/codex-vibe-monitor
           binary_sha256="$(sha256sum .ci-smoke/codex-vibe-monitor | awk '{print $1}')"
           checkout_sha="$(git rev-parse HEAD)"
-          printf '{"githubSha":"%s","checkoutSha":"%s","candidateSha256":"%s"}\n' \
-            "$GITHUB_SHA" "$checkout_sha" "$binary_sha256" > "$RUNNER_TEMP/candidate-identity.json"
+          implementation_sha="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          record = json.loads(Path("docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json").read_text())
+          print(record["codeCandidateSha"])
+          PY
+          )"
+          test "$(git rev-parse "${checkout_sha}^")" = "$implementation_sha"
+          changed_files="$(git diff --name-only "$implementation_sha" "$checkout_sha")"
+          test "$changed_files" = $'docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json\ndocs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json\ndocs/adr/assets/retention-maintenance-task-ownership/version-impact-record.json'
+          printf '{"githubSha":"%s","checkoutSha":"%s","implementationCandidateSha":"%s","documentationCarrierSha":"%s","candidateSha256":"%s"}\n' \
+            "$GITHUB_SHA" "$checkout_sha" "$implementation_sha" "$checkout_sha" "$binary_sha256" > "$RUNNER_TEMP/candidate-identity.json"
 
       - name: Generate released-source fixtures
         run: |
@@ -1043,14 +1054,18 @@ jobs:
         run: |
           python3 - "$RUNNER_TEMP/candidate-identity.json" \
             "$RUNNER_TEMP/retention-migration-results/candidate.json" \
-            "$RUNNER_TEMP/retention-runtime-results/results.json" <<'PY'
+            "$RUNNER_TEMP/retention-runtime-results/results.json" \
+            "$(git rev-parse HEAD^)" <<'PY'
           import json
           import sys
 
           identity = json.loads(open(sys.argv[1]).read())
           upgrade = json.loads(open(sys.argv[2]).read())
           runtime = json.loads(open(sys.argv[3]).read())
+          implementation_sha = sys.argv[4]
           assert identity["githubSha"] == identity["checkoutSha"]
+          assert identity["documentationCarrierSha"] == identity["checkoutSha"]
+          assert identity["implementationCandidateSha"] == implementation_sha
           assert upgrade["candidateSha256"] == identity["candidateSha256"]
           assert runtime["candidateSha256"] == identity["candidateSha256"]
           print(json.dumps(identity, sort_keys=True))
