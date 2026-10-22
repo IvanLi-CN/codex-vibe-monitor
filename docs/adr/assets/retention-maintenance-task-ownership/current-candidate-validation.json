@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-  "codeCandidateSha": "ba4a74a93654a550e2ed1c371620b446bcb4d2ef",
+  "codeCandidateSha": "fe8a6de84bb7dcb817a33d42a9ac4be208539ecd",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -18,7 +18,7 @@
   "currentHeadCi": {
     "workflow": "CI PR",
     "runId": null,
-    "headSha": "ba4a74a93654a550e2ed1c371620b446bcb4d2ef",
+    "headSha": "fe8a6de84bb7dcb817a33d42a9ac4be208539ecd",
     "status": "pending"
   },
   "passed": {
@@ -121,8 +121,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "ba4a74a93654a550e2ed1c371620b446bcb4d2ef",
-    "reviewedHead": "ba4a74a93654a550e2ed1c371620b446bcb4d2ef",
+    "candidateSha": "fe8a6de84bb7dcb817a33d42a9ac4be208539ecd",
+    "reviewedHead": "fe8a6de84bb7dcb817a33d42a9ac4be208539ecd",
     "status": "pending",
     "lanes": [],
     "findings": [],
@@ -142,9 +142,9 @@
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "ownerAuthorizedRepairBatch": 20,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "4de4ae1445c1123b92001d94eda4e965eb04f872",
-    "fixedFinding": "SQLite pressure during task-run history cleanup now returns an owner-visible deferred result with sqlite_pressure retry facts instead of being reported as no-work.",
-    "newFocusedRegression": "Local owner classification and system-task retention regressions pass on ba4a74a9. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
+    "previousCandidateSha": "8351c0daafe038ae2a7cb79fe61096d9f6495d82",
+    "fixedFinding": "Rust source quality reported a collapsible nested if in the journal sync loop under clippy -D warnings; the equivalent let-chain now preserves ACK retry and group sync behavior.",
+    "newFocusedRegression": "Local cargo clippy, owner classification, and system-task retention regressions pass on fe8a6de8. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -152,7 +152,7 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-    "headSha": "ba4a74a93654a550e2ed1c371620b446bcb4d2ef",
+    "headSha": "fe8a6de84bb7dcb817a33d42a9ac4be208539ecd",
     "requiredCi": {
       "workflow": "CI PR",
       "runId": null,

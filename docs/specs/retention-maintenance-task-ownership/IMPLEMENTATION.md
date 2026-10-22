@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量、dry-run 接续约束、预演文件计量、native worker 排空和 task-run history 的 SQLite 压力延期事实已补齐；当前签名修复 head 为 `ba4a74a9`，基于主干 `b67bc3ae`，PR #1162 的远端 CI、迁移回放和新一轮正式复审仍待刷新；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
+- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量、dry-run 接续约束、预演文件计量、native worker 排空和 task-run history 的 SQLite 压力延期事实已补齐；当前签名修复 head 为 `fe8a6de8`，基于主干 `b67bc3ae`，PR #1162 的远端 CI、迁移回放和新一轮正式复审仍待刷新；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
 
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
@@ -58,7 +58,7 @@
 - 发布影响按 Minor 记录：主人明确临时环境开关不属于兼容承诺；旧部署文档将一次性 CLI 描述为归档入口，未承诺附带孤儿清理。保留归档命令、任务标识、URL 和旧历史，新增独立清理入口及自动触发控制。旧命令不再附带孤儿清理是明确披露的行为变化，不宣称执行范围完全相同；持久状态单独按可加性 Minor 验证。
 - 直接来源逐一为 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2；各来源由对应发布镜像独立生成，来源与镜像摘要保存在 [released-state-sources.json](../../adr/assets/retention-maintenance-task-ownership/released-state-sources.json)。更早 Major 必须先中间升级，不支持多版本同时写入。
 - 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `ed00c68fed0975aaf0617981db8ad7fd75ce1a1f`，保留主干统计公平队列及其回归，不重写已发布历史。
-- 最终候选工程检查、十四来源升级与进程验证已完成；当前修复 head `ba4a74a9` 的本地 owner/retention 回归已通过，仍需完成远端 CI、fresh Tier 4 只读审查和迁移回放，才可宣告 Step 5C Ready。
+- 最终候选工程检查、十四来源升级与进程验证已完成；当前修复 head `fe8a6de8` 的本地 owner/retention 回归与 Clippy 已通过，仍需完成远端 CI、fresh Tier 4 只读审查和迁移回放，才可宣告 Step 5C Ready。
 
 ## References
 
