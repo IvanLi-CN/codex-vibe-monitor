@@ -2420,7 +2420,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 };
                 let commit_started = Instant::now();
                 Ok(Some(RetentionBatchCommit {
-                    raw_paths,
+                    raw_deletion_plan,
                     raw_reference_check_elapsed,
                     commit_started,
                     prompt_cache_keys: Vec::new(),

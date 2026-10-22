@@ -250,7 +250,7 @@ pub(crate) fn delete_proxy_raw_paths(
                 Ok(metadata) if metadata.file_type().is_file() => metadata,
                 Ok(_) | Err(_) => continue,
             };
-            if retention_raw_file_identity(&metadata) != expected.identity
+            if super::retention::retention_raw_file_identity(&metadata) != expected.identity
                 || metadata.len() != expected.byte_size
             {
                 warn!(
