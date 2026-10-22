@@ -6,6 +6,8 @@ export type PromptCacheConversationInvocationPreview = {
   failureClass?: string;
   routeMode?: string;
   model?: string;
+  requestModel?: string | null;
+  responseModel?: string | null;
   totalTokens?: number;
   cost?: number;
   proxyDisplayName?: string;
@@ -51,6 +53,14 @@ export function createPreview(
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
+    requestModel:
+      "requestModel" in overrides
+        ? (overrides.requestModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
+    responseModel:
+      "responseModel" in overrides
+        ? (overrides.responseModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
     totalTokens: overrides.totalTokens ?? 280,
     cost: overrides.cost ?? 0.0178,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",

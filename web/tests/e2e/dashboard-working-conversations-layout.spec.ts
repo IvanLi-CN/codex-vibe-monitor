@@ -503,6 +503,23 @@ test.describe("Dashboard working conversations responsive layout", () => {
           throw new Error("missing mobile grouped model context geometry anchors");
         }
         const modelRect = modelPart.getBoundingClientRect();
+        const modelIdentities = Array.from(
+          modelPart.querySelectorAll<HTMLElement>("[data-model-context-identity]"),
+        );
+        const modelIdentityRectsWithinModel = modelIdentities.every((identity) => {
+          const rect = identity.getBoundingClientRect();
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.left >= modelRect.left - 0.5 &&
+            rect.right <= modelRect.right + 0.5 &&
+            rect.top >= modelRect.top - 0.5 &&
+            rect.bottom <= modelRect.bottom + 0.5
+          );
+        });
+        const modelIdentityGenerationCount = modelIdentities.filter((identity) =>
+          identity.querySelector("[data-model-generation-segment]"),
+        ).length;
         const reasoningRect = reasoningPart.getBoundingClientRect();
         const effortTextRect = effortText.getBoundingClientRect();
         const fastPartRect = fastPart.getBoundingClientRect();
@@ -568,6 +585,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
         );
         return {
           modelWidth: modelRect.width,
+          modelIdentityCount: modelIdentities.length,
+          modelIdentityGenerationCount,
+          modelIdentityRectsWithinModel,
           modelToEffortGap: reasoningRect.left - modelRect.right,
           effortToFastGap: fastPartRect.left - effortTextRect.right,
           effortToFastVisibleGap:
@@ -635,6 +655,14 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);
     expect(layout.groupedContexts.every((context) => context.modelWidth >= 20)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.generationText)).toBe(true);
+    const mismatchContexts = layout.groupedContexts.filter(
+      (context) => context.modelIdentityCount === 2,
+    );
+    expect(mismatchContexts.length).toBeGreaterThan(0);
+    expect(mismatchContexts.every((context) => context.modelIdentityGenerationCount === 2)).toBe(
+      true,
+    );
+    expect(mismatchContexts.every((context) => context.modelIdentityRectsWithinModel)).toBe(true);
     expect(
       layout.groupedContexts.every(
         (context) => context.modelToEffortGap >= 3 && context.modelToEffortGap <= 5,
