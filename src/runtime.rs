@@ -2823,7 +2823,7 @@ async fn run_managed_task_once_with_scoped_observation(
             && let Some(store) = crate::maintenance_store::global()
         {
             let retry_reason = if execution.completion == "failed" {
-                "owner_failed"
+                "owner_failed".to_string()
             } else {
                 execution
                     .details
@@ -2838,9 +2838,10 @@ async fn run_managed_task_once_with_scoped_observation(
                         )
                     })
                     .unwrap_or("work_remaining")
+                    .to_string()
             };
             if let Err(error) = store
-                .schedule_owned_work_for_run(task_key, run_id, retry, retry_reason)
+                .schedule_owned_work_for_run(task_key, run_id, retry, &retry_reason)
                 .await
             {
                 warn!(
