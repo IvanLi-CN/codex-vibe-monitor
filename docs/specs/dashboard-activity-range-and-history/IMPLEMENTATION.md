@@ -23,7 +23,7 @@
 - 文档验证：`python3 /Users/ivan/.codex/bin/spec_contract_check.py --path docs/specs/dashboard-activity-range-and-history/SPEC.md` 通过，`git diff --check` 通过。
 - Web 验证：`bun run test` 为 179 个文件、1920 个通过、6 个跳过；`bun run test-storybook` 为 35 个通过、38 个跳过、173 个测试通过；`bun run typecheck:web`、`bun run build` 通过。全仓 `bun run lint:web` 完成但报告 93 个 warning，其中包含未触碰的 `UpstreamAccountsGroupedRoster.tsx` exhaustive-deps 诊断及改动文件既有 warning。
 - Rust 验证：`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings` 通过；定向 `cargo test` 被本机已有的 macOS `sqlx_macros` 动态库 `mis-aligned LINKEDIT string pool` 阻塞，后端资源 profile 尚未执行。首次 Agent VM 准入为 `resource_unverified`，重新准入完成资源分配但在 `guest_readiness_timeout` 终止，当前无有效 lease。
-- 视觉验证：ui_demo 已捕获总览桌面/393×852 移动及统计页桌面快照；总览三档范围、独立时间线、统计页顶部 180 日历均可见。
+- 视觉验证：ui_demo 已捕获总览桌面/393×852 移动及统计页桌面快照；总览三档范围、独立时间线、统计页顶部 180 日历均可见。快照运行时基线为 `8ed749c94542bc1670d095d7956fee3b911c633d`；其后的 `4865d81f` 和 `5e7c3dbc` 只修改规格、实现记录、stories 与测试，`git diff --name-only 8ed749c9 5e7c3dbc` 不包含运行时 UI 文件，因此这些证据仍绑定当前候选的可渲染实现。
 
 视觉快照：`/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112550Z-cvm-dashboard-current-721a3330.png`、`/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112636Z-cvm-dashboard-mobile-current-050edb05.png`、`/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112551Z-cvm-stats-current-48642f99.png`。
 
