@@ -135,7 +135,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 - Method: 新旧记录混合、缺少范围或指标字段、归档完成而相关任务待办、自动触发暂停和手动运行场景的界面与接口夹具。
 - covers: `REQ-RMO-001`, `REQ-RMO-004`, `REQ-RMO-011`, `REQ-RMO-012`
-- Pass condition: 七项 owner 详情和关联入口可用；暂停含义与手动按钮一致；旧 URL 与历史可读、旧结果不重算；新记录范围和事件归属准确，缺测不补零、不生成混合进度。
+- Pass condition: 七项 owner 详情和关联入口可用；暂停含义与手动按钮一致；旧 URL 与历史可读、旧结果不重算；新记录范围和事件归属准确，owner v2 的全局积压、本轮检查／选中／提交、单位与窗口覆盖可见，缺测不补零、不生成混合进度。
 
 ### VER-RMO-008 — 发布状态兼容
 
@@ -172,6 +172,20 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
   state: committed throughput on mobile
   evidence_note: Mobile component surface keeps the phase timing fields readable without horizontal overflow at the 393x852 CSS viewport, including the explicit unknown summary-proof value for timestamped upstream archives.
   image: ![Retention throughput mobile](./assets/retention-throughput-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  story_id_or_title: `System/RetentionOwnerRunFacts/Mobile`
+  state: owner v2 committed run facts on mobile
+  evidence_note: Mobile owner-facts surface shows the independent scope, unit, global backlog, discovered, selected, committed, batch, raw-file and has-more facts without overlap or horizontal overflow.
+  image: ![Retention owner run facts mobile](./assets/retention-owner-run-facts-mobile.png)
 
 ## Related ADRs
 

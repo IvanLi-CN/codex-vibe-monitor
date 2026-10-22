@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { ObservabilityTaskLink } from "../../features/observability/ObservabilityTaskLink";
+import { RetentionOwnerRunFacts } from "../../features/system/RetentionOwnerRunFacts";
 import { RetentionRunThroughput } from "../../features/system/RetentionRunThroughput";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
@@ -519,6 +520,7 @@ export default function SystemTaskDetailPage() {
                       等待：{String(run.details.waitReason)}
                     </div>
                   ) : null}
+                  <RetentionOwnerRunFacts details={run.details} />
                   {run.details?.ownershipVersion == null && run.details?.promptCacheStats ? (
                     <div className="text-xs text-base-content/65">
                       Prompt 缓存统计：

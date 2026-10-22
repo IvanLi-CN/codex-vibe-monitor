@@ -2979,6 +2979,20 @@ export interface ManagedTaskRunDetails {
   ownerScope?: string | null;
   dryRun?: boolean | null;
   coverage?: string | null;
+  result?: string | null;
+  globalBacklogTotal?: number | null;
+  discovered?: number | null;
+  selected?: number | null;
+  committed?: number | null;
+  selectedScope?: {
+    scope?: string | null;
+    unit?: string | null;
+    selected?: number | null;
+    committed?: number | null;
+    batches?: number | null;
+    rawFilesRemoved?: number | null;
+    hasMore?: boolean | null;
+  } | null;
   conversationIdentitiesChecked?: number | null;
   conversationIdentitiesReleased?: number | null;
   hourPrefixesChecked?: number | null;
