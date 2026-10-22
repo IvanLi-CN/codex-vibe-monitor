@@ -2729,6 +2729,8 @@ struct FinishRunObservationContext<'a> {
     completion: Option<&'a str>,
     core_completion: Option<&'a str>,
     details: Option<&'a serde_json::Value>,
+    retry_after_secs: Option<i64>,
+    retry_reason: Option<&'a str>,
 }
 
 impl MaintenanceStore {
@@ -3881,8 +3883,27 @@ impl MaintenanceStore {
         seconds: i64,
         reason: &str,
     ) -> Result<()> {
-        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
         let mut transaction = self.pool.begin().await?;
+        Self::schedule_owned_work_for_run_in_transaction(
+            &mut transaction,
+            key,
+            run_id,
+            seconds,
+            reason,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn schedule_owned_work_for_run_in_transaction(
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        key: &str,
+        run_id: i64,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
         let Some(enabled) = sqlx::query_scalar::<_, i64>(
             "SELECT enabled
              FROM managed_tasks
@@ -3892,10 +3913,9 @@ impl MaintenanceStore {
         .bind(key)
         .bind(key)
         .bind(run_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(&mut **transaction)
         .await?
         else {
-            transaction.rollback().await?;
             return Ok(());
         };
         if enabled != 0 {
@@ -3910,7 +3930,7 @@ impl MaintenanceStore {
             .bind(key)
             .bind(key)
             .bind(run_id)
-            .execute(&mut *transaction)
+            .execute(&mut **transaction)
             .await?;
         }
         if matches!(
@@ -3931,7 +3951,7 @@ impl MaintenanceStore {
             .bind(key)
             .bind(&at)
             .bind(reason)
-            .execute(&mut *transaction)
+            .execute(&mut **transaction)
             .await?;
         } else {
             sqlx::query(
@@ -3942,10 +3962,9 @@ impl MaintenanceStore {
             )
             .bind(key)
             .bind(format_utc_iso_millis(Utc::now()))
-            .execute(&mut *transaction)
+            .execute(&mut **transaction)
             .await?;
         }
-        transaction.commit().await?;
         Ok(())
     }
 
@@ -4715,6 +4734,41 @@ impl MaintenanceStore {
                 completion,
                 core_completion,
                 details,
+                retry_after_secs: None,
+                retry_reason: None,
+            }),
+        )
+        .await
+    }
+
+    pub(crate) async fn finish_run_with_observation_and_retry(
+        &self,
+        id: i64,
+        status: &str,
+        finished_at: &str,
+        duration_ms: i64,
+        summary: Option<&str>,
+        detail: Option<&str>,
+        completion: Option<&str>,
+        core_completion: Option<&str>,
+        details: Option<&serde_json::Value>,
+        retry_after_secs: i64,
+        retry_reason: &str,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Run,
+            self.finish_run_with_observation_inner(FinishRunObservationContext {
+                id,
+                status,
+                finished_at,
+                duration_ms,
+                summary,
+                detail,
+                completion,
+                core_completion,
+                details,
+                retry_after_secs: Some(retry_after_secs),
+                retry_reason: Some(retry_reason),
             }),
         )
         .await
@@ -4734,6 +4788,8 @@ impl MaintenanceStore {
             completion,
             core_completion,
             details,
+            retry_after_secs,
+            retry_reason,
         } = context;
         let sanitized = detail.map(sanitize_task_detail);
         let owner_v2 = details.is_some_and(|value| {
@@ -4767,12 +4823,12 @@ impl MaintenanceStore {
             })
             .map(|value| value.max(0));
         let details = details.map(serde_json::to_string).transpose()?;
+        let mut transaction = self.pool.begin().await?;
         let task_key: Option<String> =
             sqlx::query_scalar("SELECT task_key FROM managed_task_runs WHERE id=?")
                 .bind(id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *transaction)
                 .await?;
-        let mut transaction = self.pool.begin().await?;
         let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
             .bind(status)
             .bind(finished_at)
@@ -4788,6 +4844,16 @@ impl MaintenanceStore {
             .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow!("managed task run {id} was not found"));
+        }
+        if let (Some(seconds), Some(reason)) = (retry_after_secs, retry_reason) {
+            Self::schedule_owned_work_for_run_in_transaction(
+                &mut transaction,
+                task_key.as_deref().unwrap_or_default(),
+                id,
+                seconds,
+                reason,
+            )
+            .await?;
         }
         let automatic: bool =
             sqlx::query_scalar("SELECT trigger_kind!='manual' FROM managed_task_runs WHERE id=?")

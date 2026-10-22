@@ -235,6 +235,61 @@ async fn failed_retention_archive_run_schedules_bounded_retry() {
 }
 
 #[tokio::test]
+async fn failed_retention_archive_finalization_commits_retry_with_terminal_run() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "schedule",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation_and_retry(
+            run_id,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("retention_archive 执行失败"),
+            Some("owner failed after the invocation snapshot"),
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": "retention_archive",
+                "result": "failed",
+                "globalBacklogTotal": 0,
+                "committed": 0,
+                "selectedScope": {"committed": 0},
+                "waitReason": "owner_failed"
+            })),
+            300,
+            "owner_failed",
+        )
+        .await
+        .unwrap();
+
+    let state: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT runs.status,tasks.next_catchup_at,tasks.catchup_reason,retry.reason
+         FROM managed_task_runs runs
+         JOIN managed_tasks tasks ON tasks.task_key=runs.task_key
+         LEFT JOIN maintenance_owner_retry_state retry ON retry.task_key=runs.task_key
+         WHERE runs.id=?",
+    )
+    .bind(run_id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state.0, "failed");
+    assert!(state.1.is_some());
+    assert_eq!(state.2.as_deref(), Some("owner_failed"));
+    assert_eq!(state.3.as_deref(), Some("owner_failed"));
+}
+
+#[tokio::test]
 async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();

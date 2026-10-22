@@ -2254,12 +2254,9 @@ async fn finish_managed_task_and_schedule_retry(
     store: &crate::maintenance_store::MaintenanceStore,
     finish: &ManagedTaskFinish,
 ) -> Result<()> {
-    if let Some((seconds, reason)) = managed_task_schedule_retry(finish.details.as_ref()) {
-        store
-            .schedule_owned_work_for_run(&finish.task_key, finish.run_id, seconds, &reason)
-            .await?;
-    }
-    finish_managed_task_run_bounded(store, finish).await?;
+    let retry = managed_task_schedule_retry(finish.details.as_ref())
+        .map(|(seconds, reason)| (seconds, reason));
+    finish_managed_task_run_bounded(store, finish, retry.as_ref()).await?;
     Ok(())
 }
 
@@ -2517,25 +2514,47 @@ struct ManagedTaskFinish {
 async fn finish_managed_task_run_bounded(
     store: &crate::maintenance_store::MaintenanceStore,
     finish: &ManagedTaskFinish,
+    retry: Option<&(i64, String)>,
 ) -> Result<()> {
     let mut last_error = None;
     for attempt in 0..=MANAGED_TASK_FINISH_RETRY_ATTEMPTS {
-        match tokio::time::timeout(
-            MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT,
-            store.finish_run_with_observation(
-                finish.run_id,
-                finish.status.as_str(),
-                &finish.finished_at,
-                finish.duration_ms,
-                finish.summary.as_deref(),
-                finish.detail.as_deref(),
-                finish.completion.as_deref(),
-                finish.core_completion.as_deref(),
-                finish.details.as_ref(),
-            ),
-        )
-        .await
-        {
+        let finalization = async {
+            match retry {
+                Some((seconds, reason)) => {
+                    store
+                        .finish_run_with_observation_and_retry(
+                            finish.run_id,
+                            finish.status.as_str(),
+                            &finish.finished_at,
+                            finish.duration_ms,
+                            finish.summary.as_deref(),
+                            finish.detail.as_deref(),
+                            finish.completion.as_deref(),
+                            finish.core_completion.as_deref(),
+                            finish.details.as_ref(),
+                            *seconds,
+                            reason,
+                        )
+                        .await
+                }
+                None => {
+                    store
+                        .finish_run_with_observation(
+                            finish.run_id,
+                            finish.status.as_str(),
+                            &finish.finished_at,
+                            finish.duration_ms,
+                            finish.summary.as_deref(),
+                            finish.detail.as_deref(),
+                            finish.completion.as_deref(),
+                            finish.core_completion.as_deref(),
+                            finish.details.as_ref(),
+                        )
+                        .await
+                }
+            }
+        };
+        match tokio::time::timeout(MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT, finalization).await {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(error)) => last_error = Some(error),
             Err(error) => {

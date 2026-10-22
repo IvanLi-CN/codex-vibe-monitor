@@ -933,11 +933,14 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
     extract = step_run(step_config(job, "Extract candidate binary", where), f"{where}.steps['Extract candidate binary']")
     for fragment in (
         "git rev-parse HEAD",
-        "git rev-parse \"${checkout_sha}^\"",
+        "documentation_carrier_sha",
+        "git rev-parse \"${checkout_sha}^2\"",
+        "git rev-parse \"${documentation_carrier_sha}^\"",
         "git diff --name-only",
         "expected_files=",
         "| sort",
         "implementation_sha",
+        "documentationCarrierSha",
         "candidate-identity.json",
     ):
         require(fragment in extract, f"{where} candidate extraction must bind {fragment!r}")
@@ -971,6 +974,7 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         "retention-migration-results/candidate.json",
         "retention-runtime-results/results.json",
         'identity["githubSha"] == identity["checkoutSha"]',
+        'identity["documentationCarrierSha"] == documentation_carrier_sha',
         'identity["implementationCandidateSha"] == implementation_sha',
         'upgrade["candidateSha256"] == identity["candidateSha256"]',
         'runtime["candidateSha256"] == identity["candidateSha256"]',

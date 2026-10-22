@@ -1020,6 +1020,7 @@ jobs:
           test -x .ci-smoke/codex-vibe-monitor
           binary_sha256="$(sha256sum .ci-smoke/codex-vibe-monitor | awk '{print $1}')"
           checkout_sha="$(git rev-parse HEAD)"
+          documentation_carrier_sha="$(git rev-parse "${checkout_sha}^2" 2>/dev/null || git rev-parse "$checkout_sha")"
           implementation_sha="$(python3 - <<'PY'
           import json
           from pathlib import Path
@@ -1028,8 +1029,8 @@ jobs:
           print(record["codeCandidateSha"])
           PY
           )"
-          test "$(git rev-parse "${checkout_sha}^")" = "$implementation_sha"
-          changed_files="$(git diff --name-only "$implementation_sha" "$checkout_sha")"
+          test "$(git rev-parse "${documentation_carrier_sha}^")" = "$implementation_sha"
+          changed_files="$(git diff --name-only "$implementation_sha" "$documentation_carrier_sha")"
           expected_files="$(printf '%s\n' \
             docs/adr/assets/retention-maintenance-task-ownership/IMPLEMENTATION.md \
             docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json \
@@ -1037,7 +1038,7 @@ jobs:
             docs/adr/assets/retention-maintenance-task-ownership/version-impact-record.json | sort)"
           test "$(printf '%s\n' "$changed_files" | sort)" = "$expected_files"
           printf '{"githubSha":"%s","checkoutSha":"%s","implementationCandidateSha":"%s","documentationCarrierSha":"%s","candidateSha256":"%s"}\n' \
-            "$GITHUB_SHA" "$checkout_sha" "$implementation_sha" "$checkout_sha" "$binary_sha256" > "$RUNNER_TEMP/candidate-identity.json"
+            "$GITHUB_SHA" "$checkout_sha" "$implementation_sha" "$documentation_carrier_sha" "$binary_sha256" > "$RUNNER_TEMP/candidate-identity.json"
 
       - name: Generate released-source fixtures
         run: |
@@ -1064,16 +1065,18 @@ jobs:
           python3 - "$RUNNER_TEMP/candidate-identity.json" \
             "$RUNNER_TEMP/retention-migration-results/candidate.json" \
             "$RUNNER_TEMP/retention-runtime-results/results.json" \
-            "$(git rev-parse HEAD^)" <<'PY'
+            "$(git rev-parse HEAD^2 2>/dev/null || git rev-parse HEAD)" \
+            "$(git rev-parse "$(git rev-parse HEAD^2 2>/dev/null || git rev-parse HEAD)^")" <<'PY'
           import json
           import sys
 
           identity = json.loads(open(sys.argv[1]).read())
           upgrade = json.loads(open(sys.argv[2]).read())
           runtime = json.loads(open(sys.argv[3]).read())
-          implementation_sha = sys.argv[4]
+          documentation_carrier_sha = sys.argv[4]
+          implementation_sha = sys.argv[5]
           assert identity["githubSha"] == identity["checkoutSha"]
-          assert identity["documentationCarrierSha"] == identity["checkoutSha"]
+          assert identity["documentationCarrierSha"] == documentation_carrier_sha
           assert identity["implementationCandidateSha"] == implementation_sha
           assert upgrade["candidateSha256"] == identity["candidateSha256"]
           assert runtime["candidateSha256"] == identity["candidateSha256"]
