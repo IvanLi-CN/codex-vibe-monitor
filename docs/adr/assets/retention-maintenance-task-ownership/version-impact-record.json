@@ -96,17 +96,17 @@
   "follow_up_change": {
     "description": "Narrow retention_archive to fixed-fence invocation archival and add six independent retention-policy owners with bounded dispatcher execution, committed-fact results, and explicit failure/retry facts.",
     "candidate_branch": "th/retention-maintenance-ownership",
-    "candidate_base_sha": "e956d1a89b589a2d9cd0a8df69b018eefa94590c",
-    "candidate_head_sha": "e2144679edee9f813a494d92567018d6434dfe1e",
-    "status": "current-head-ci-and-formal-review-passed-migration-replay-pending",
+    "candidate_base_sha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
+    "candidate_head_sha": "b93585c4ac125def9d4ca2add0dac2992ceee6f6",
+    "status": "current-code-candidate-validation-pending",
     "impact": "minor",
-    "reasoning": "The managed-task catalog, schedule marker, and failure/retry facts are additive. New ownership-version-2 run details preserve old composite history, while each new owner exposes an independent scope, unit, result, committed count, archive batch metrics, and bounded retry reason. Schema initialization no longer performs unbounded history cleanup; the task_run_history_cleanup owner handles it in bounded batches, preserving committed facts when a later batch fails. Catch-up and retry-plan writes are generation-guarded so stale finalizers cannot overwrite newer runs. Independent detail pruning now retains the existing parallel-work coverage safety gate, and shutdown quarantine carries full owner observations for replay. Raw deletion counts remain observable after partial batch failure, safety retry state is preserved, lease-conflict schedule intent is replayable, dry-run does not create catch-up loops, known versus unknown coverage is preserved, planned raw files are separate from actual removals, and synchronous archive I/O has an external no-progress watchdog with native worker drain. The existing public task-control surface remains compatible; final head e2144679 after main e956d1a8 passed CI PR run 39764651636 and fresh five-lane formal review found no actionable P0-P2, while migration replay and current-head UI owner confirmation remain pending.",
+    "reasoning": "The managed-task catalog, schedule marker, and failure/retry facts are additive. New ownership-version-2 run details preserve old composite history, while each new owner exposes an independent scope, unit, result, committed count, archive batch metrics, and bounded retry reason. Schema initialization no longer performs unbounded history cleanup; the task_run_history_cleanup owner handles it in bounded batches, preserving committed facts when a later batch fails. Catch-up and retry-plan writes are generation-guarded so stale finalizers cannot overwrite newer runs. Independent detail pruning now retains the existing parallel-work coverage safety gate, and shutdown quarantine carries full owner observations for replay. Raw deletion counts remain observable after partial batch failure, safety retry state is preserved, lease-conflict schedule intent is replayable, dry-run does not create catch-up loops, known versus unknown coverage is preserved, planned raw files are separate from actual removals, and synchronous archive I/O has an external no-progress watchdog with native worker drain. The upgrade validator now exercises every retention owner in both dry-run and one-shot modes. Current code candidate b93585c4 is pending remote CI, migration replay, and fresh Tier 4 review.",
     "durable_state": "Additive managed-task rows, retention_owner_schedule_v2 initialization marker, and ownership-version-2 JSON run facts; no business-table DDL change.",
     "required_validation": [
-      "Run the lightweight, stateful-sqlite, and archive-file-io CI profiles; CI PR run 39764651636 passed all required checks at final head e2144679.",
+      "Run the lightweight, stateful-sqlite, and archive-file-io CI profiles for code candidate b93585c4.",
       "Verify migration replay preserves task controls, schedule overrides, and old composite history.",
-      "Complete read-only formal review; five lanes reviewed e2144679 after the e956d1a8 main sync with no actionable P0-P2 findings.",
-      "Complete migration replay and current-head UI owner confirmation before PR convergence."
+      "Complete fresh read-only Tier 4 formal review for code candidate b93585c4 after the b67bc3ae main sync.",
+      "Complete migration replay before PR convergence."
     ]
   }
 }
