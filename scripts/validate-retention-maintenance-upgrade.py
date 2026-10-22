@@ -2,6 +2,7 @@
 """Validate each released ownership source with an already-built candidate on Linux."""
 import argparse
 from datetime import datetime, timedelta, timezone
+import gzip
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 
 VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1", "v4.1.2", "v4.1.3", "v4.2.0", "v4.2.1", "v4.2.2"]
 RETENTION_OWNERS = [
@@ -48,6 +50,18 @@ OWNER_ARCHIVE_DATASETS = {
     "forward_proxy_attempt_archive": "forward_proxy_attempts",
     "invocation_detail_prune": "codex_invocations",
     "quota_snapshot_compaction": "codex_quota_snapshots",
+}
+OWNER_ARCHIVE_FIXTURES = {
+    "retention_archive": ("codex_invocations", "invoke_id", f"{OWNER_FIXTURE_PREFIX}-archive"),
+    "pool_upstream_attempt_archive": ("pool_upstream_request_attempts", "invoke_id", f"{OWNER_FIXTURE_PREFIX}-pool"),
+    "forward_proxy_attempt_archive": ("forward_proxy_attempts", "proxy_key", f"{OWNER_FIXTURE_PREFIX}-forward"),
+    "invocation_detail_prune": ("codex_invocations", "invoke_id", f"{OWNER_FIXTURE_PREFIX}-detail"),
+    "quota_snapshot_compaction": ("codex_quota_snapshots", "captured_at", "2020-01-01T00:00:00.000Z"),
+}
+OWNER_RAW_REFERENCES = {
+    "retention_archive": (("codex_invocations", "request_raw_path"), ("codex_invocations", "response_raw_path")),
+    "pool_upstream_attempt_archive": (("pool_upstream_request_attempts", "response_raw_path"),),
+    "invocation_detail_prune": (("codex_invocations", "response_raw_path"),),
 }
 
 
@@ -127,7 +141,7 @@ def owner_candidate_state(root, task_key):
 
 
 def execute(candidate, root, *arguments, expect_success=True):
-    environment = dict(os.environ, DATABASE_PATH=str(root / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(root / "maintenance.sqlite"), ARCHIVE_DIR=str(root / "archives"), PROXY_RAW_DIR=str(root / "raw"), RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false", RETENTION_DRY_RUN="true", RUST_LOG="warn")
+    environment = dict(os.environ, DATABASE_PATH=str(root / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(root / "maintenance.sqlite"), ARCHIVE_DIR=str(root / "archives"), PROXY_RAW_DIR=str(root / "raw"), INVOCATION_SUCCESS_FULL_DAYS="30", INVOCATION_MAX_DAYS="90", FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS="30", POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS="7", QUOTA_SNAPSHOT_FULL_DAYS="30", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false", RETENTION_DRY_RUN="true", RUST_LOG="warn")
     result = subprocess.run([str(candidate), *arguments], env=environment, capture_output=True, text=True, timeout=90)
     with (root / "candidate.log").open("a") as log:
         log.write(json.dumps({"arguments": arguments, "exitCode": result.returncode}) + "\n" + result.stdout + result.stderr)
@@ -181,6 +195,42 @@ def assert_new_archive_manifests(root, dataset, before):
             archive_path = root / archive_path
         assert status == "completed" and row_count > 0 and archive_path.is_file(), (dataset, file_path, status, row_count)
         assert sha256 == hashlib.sha256(archive_path.read_bytes()).hexdigest(), (dataset, file_path, sha256)
+    return changed
+
+
+def assert_archive_contains_fixture(root, dataset, changed, task_key):
+    table, column, value = OWNER_ARCHIVE_FIXTURES[task_key]
+    found = False
+    for file_path, _, _, _ in changed:
+        archive_path = Path(file_path)
+        if not archive_path.is_absolute():
+            archive_path = root / archive_path
+        with tempfile.TemporaryDirectory() as directory:
+            sqlite_path = Path(directory) / "archive.sqlite"
+            if archive_path.suffix == ".gz":
+                with gzip.open(archive_path, "rb") as source, sqlite_path.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+            else:
+                shutil.copyfile(archive_path, sqlite_path)
+            with sqlite3.connect(sqlite_path) as connection:
+                found = connection.execute(
+                    f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1",
+                    (value,),
+                ).fetchone() is not None
+        if found:
+            break
+    assert found, (task_key, dataset, changed)
+
+
+def assert_fixture_raw_references_released(root, task_key):
+    for relative_path in OWNER_RAW_PATHS.get(task_key, ()):
+        assert not (root / relative_path).exists(), (task_key, relative_path)
+    with sqlite3.connect(root / "business.sqlite") as connection:
+        for table, column in OWNER_RAW_REFERENCES.get(task_key, ()):
+            assert connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({','.join('?' for _ in OWNER_RAW_PATHS[task_key])})",
+                OWNER_RAW_PATHS[task_key],
+            ).fetchone()[0] == 0, (task_key, table, column)
 
 
 def retention_command(task_key, dry_run):
@@ -222,9 +272,9 @@ def run_scoped_command(candidate, root, task_key, dry_run):
         assert parsed.get("completion") in {"complete", "partial"}, (task_key, parsed)
         assert owner_candidate_state(root, task_key) < before_owner_state, (task_key, parsed)
         if archive_dataset:
-            assert_new_archive_manifests(root, archive_dataset, before_archives)
-        for relative_path in OWNER_RAW_PATHS.get(task_key, ()):
-            assert not (root / relative_path).exists(), (task_key, relative_path)
+            changed_archives = assert_new_archive_manifests(root, archive_dataset, before_archives)
+            assert_archive_contains_fixture(root, archive_dataset, changed_archives, task_key)
+        assert_fixture_raw_references_released(root, task_key)
     if dry_run:
         assert business_facts(root) == before_business, command
         assert file_facts(root) == before_files, command
