@@ -173,12 +173,12 @@ impl UpstreamTrafficReporter {
             ("upload", delta.upload_bytes),
             ("download", delta.download_bytes),
         ] {
-            if value > 0 {
-                if let Some(handles) = &self.proxy_metrics {
-                    handles
-                        .transfer(&self.state.observability, self.endpoint, direction)
-                        .increment(value as u64);
-                }
+            if value > 0
+                && let Some(handles) = &self.proxy_metrics
+            {
+                handles
+                    .transfer(&self.state.observability, self.endpoint, direction)
+                    .increment(value as u64);
             }
         }
         let mut recorded = false;
