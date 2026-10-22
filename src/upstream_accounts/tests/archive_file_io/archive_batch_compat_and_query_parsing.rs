@@ -1434,11 +1434,11 @@ fn imported_match_key_prefers_chatgpt_user_id_before_email_or_account_id() {
     );
     assert_eq!(
         imported_match_key(None, "member@example.com", "acct_shared"),
-        "account:acct_shared"
+        "account:acct_shared:email:member@example.com"
     );
     assert_eq!(
         imported_match_key(None, "", "acct_shared"),
-        "account:acct_shared"
+        "account:acct_shared:email:"
     );
 }
 
@@ -1803,6 +1803,11 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
         exhausted: false,
         usage_snapshot_warning: Some("usage snapshot unavailable during validation".to_string()),
     };
+    let validated_item = ImportOauthCredentialFileRequest {
+        source_id: "source-1".to_string(),
+        file_name: "alpha.json".to_string(),
+        content: "validated-payload".to_string(),
+    };
 
     update_imported_oauth_validation_job_row(
         &job,
@@ -1820,7 +1825,11 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
             detail: probe.usage_snapshot_warning.clone(),
             attempts: 1,
         },
-        Some(ImportedOauthValidatedImportData { normalized, probe }),
+        Some(ImportedOauthValidatedImportData {
+            input_digest: imported_oauth_validation_input_digest(&validated_item),
+            normalized,
+            probe,
+        }),
     )
     .await;
 
@@ -1837,6 +1846,16 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
         cached.probe.credentials.refresh_token.as_deref(),
         Some("refresh-token")
     );
+
+    let mut cache = HashMap::new();
+    cache.insert("source-1".to_string(), cached.clone());
+    assert!(cached_imported_oauth_validation_result(&cache, &validated_item).is_some());
+    let changed_item = ImportOauthCredentialFileRequest {
+        source_id: "source-1".to_string(),
+        file_name: "alpha.json".to_string(),
+        content: "changed-payload".to_string(),
+    };
+    assert!(cached_imported_oauth_validation_result(&cache, &changed_item).is_none());
 }
 
 #[tokio::test]

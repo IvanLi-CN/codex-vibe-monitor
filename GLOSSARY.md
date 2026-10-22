@@ -89,3 +89,21 @@ _Avoid_: same-account retry.
 **Responses overload signal**:
 A structured Responses failure that matches a recognized upstream overload code or a narrowly defined overload message under the relevant error code.
 _Avoid_: every `server_error`, generic overload text.
+
+## Account Import Language
+
+**Upstream Account**:
+An OpenAI connection available to the account pool through either a ChatGPT OAuth identity or an API key for an upstream service.
+_Avoid_: account when the distinction between an OAuth identity and an API key connection matters.
+
+**OAuth Upstream Account**:
+An upstream account backed by a ChatGPT login identity and its OAuth credentials.
+_Avoid_: API Key transit, which uses a different credential type and management model.
+
+**sub2api Account Record**:
+An exported representation of one sub2api account, including its platform, credential type, credentials, and associated management settings.
+_Avoid_: export package when referring to one account record.
+
+**sub2api Export Package**:
+A portable collection of sub2api account records and optional proxy definitions. A package may contain accounts from multiple platforms and with different credential types.
+_Avoid_: OAuth credential when referring to the whole package.
