@@ -7,7 +7,7 @@
 - Focused regression coverage: `web/src/pages/account-pool/UpstreamAccountCreate.sub2api.test.ts` 与 `src/upstream_accounts/tests/lightweight/sub2api_oauth_import.rs` 覆盖缺失格式标记、无 ID/refresh token、成员身份、有效期来源、身份冲突、JWT alias 与错误类型声明及既有凭据格式回读。
 - Local validation: 两个相关 Web 测试文件共 171 项通过，`typecheck:web`、`lint:web` 与 Web production build 通过；lint 保留仓库既有 93 条 warning。Rust 的 `sub2api_oauth` 16 项、`normalize_imported_oauth_credentials` 10 项与共享成员匹配回归 4 项选择器均通过，去除跨选择器重复后覆盖 29 个不同测试；`cargo fmt --all -- --check` 与 Rust source-quality policy 检查通过。
 - Rust test environment: macOS 默认 test profile 的 `sqlx-macros` 动态库加载报 `mis-aligned LINKEDIT string pool`；仅在上述本地测试命令追加 `--config 'profile.test.package.sqlx-macros.debug=1'` 绕过，没有修改仓库构建配置。
-- Remaining validation: 本次按 `agent-vm` 合同申请并复用 `sub2api-oauth-d74c`，guest 启动在 300 秒 readiness 预算内以 `guest_readiness_timeout` 结束；此前 guest 曾因 `rustc` 编译触发 OOM killer，最终 `effective_lease=false`、`guest_available=false`、实例为 stopped/cached，未取得可执行 guest。完整 backend profiles、all-target/all-feature check 与 Clippy 尚未执行，需由 PR CI 补齐。UI mock demo 已验证两个无 ID token 的不同成员入队及 API Key 跳过，新增截图归档等待主人视觉确认。
+- Remaining validation: 本次按 `agent-vm` 合同申请并复用 `sub2api-oauth-d74c`，guest 启动在 300 秒 readiness 预算内以 `guest_readiness_timeout` 结束；此前 guest 曾因 `rustc` 编译触发 OOM killer，最终 `effective_lease=false`、`guest_available=false`、实例为 stopped/cached，未取得可执行 guest。完整 backend profiles、all-target/all-feature check 与 Clippy 尚未执行，需由 PR CI 补齐。UI mock demo 已验证两个无 ID token 的不同成员入队及 API Key 跳过；主人已确认导入区紧凑提示视觉证据，桌面与 393px 移动截图已归档。
 - Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记；新增账号页的 `导入 Session` 会把 ChatGPT Web session JSON 转换到现有 OAuth 导入队列；OAuth JSON 导入忽略 `type` 来源值，单条本地校验可一次性展示多个字段错误；前端导入现在兼容单条 `sub2api` OAuth object 与整份 `sub2api-data` 导出包，并在本地展开成多个标准化单账号 payload；成员级去重与服务端既有账号匹配优先使用 `chatgpt_user_id`，无成员 ID 时只匹配同样缺少成员 ID 且邮箱相同的历史账号，并以账号 ID+邮箱作为批内去重键；共享 `account_id` 但 `chatgpt_user_id` 不同的成员不会再被误判成重复导入，同时 `k12` 作为一等 plan 类型参与 badge、分组顺序与文案显示。
 
 ## Migrated Implementation Notes
@@ -70,6 +70,10 @@
 ![OAuth import local multi-error validation](./assets/import-multiple-errors.png)
 
 ![sub2api package expands into multiple queued imported OAuth members](./assets/import-sub2api-package-queue.png)
+
+![sub2api import queue with compact feedback density](./assets/import-sub2api-package-queue-compact.png)
+
+![sub2api import queue compact feedback on mobile](./assets/import-sub2api-package-queue-compact-mobile.png)
 
 ![shared account id keeps distinct imported OAuth members importable](./assets/import-shared-account-distinct-members.png)
 

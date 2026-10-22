@@ -149,6 +149,10 @@ None
 
 ![sub2api package expands into multiple queued imported OAuth members](./assets/import-sub2api-package-queue.png)
 
+![sub2api import queue with compact feedback density](./assets/import-sub2api-package-queue-compact.png)
+
+![sub2api import queue compact feedback on mobile](./assets/import-sub2api-package-queue-compact-mobile.png)
+
 ![shared account id keeps distinct imported OAuth members importable](./assets/import-shared-account-distinct-members.png)
 
 ## 方案概述（Approach, high-level）
