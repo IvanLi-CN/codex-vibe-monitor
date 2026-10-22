@@ -424,6 +424,27 @@ pub(crate) async fn count_expired_model_routes(pool: &Pool<Sqlite>) -> Result<i6
     .await?)
 }
 
+pub(crate) async fn inspect_expired_model_routes_bounded(
+    pool: &Pool<Sqlite>,
+    limit: usize,
+) -> Result<(usize, bool)> {
+    let limit = limit.max(1);
+    let rowids = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT rowid
+        FROM pool_upstream_account_model_routes
+        WHERE last_seen_at < ?1
+        ORDER BY last_seen_at ASC, rowid ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind(cutoff_string())
+    .bind(limit.saturating_add(1) as i64)
+    .fetch_all(pool)
+    .await?;
+    Ok((rowids.len(), rowids.len() > limit))
+}
+
 pub(crate) async fn load_model_routing_states(
     pool: &Pool<Sqlite>,
     account_id: i64,

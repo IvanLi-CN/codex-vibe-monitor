@@ -149,6 +149,13 @@ pub(crate) async fn compact_old_quota_snapshots(
         .bind(&cutoff)
         .fetch_all(pool)
         .await?;
+        super::super::retention::batch_plan::record_discovered_rows(
+            spec.dataset,
+            batch_counts
+                .iter()
+                .map(|batch| batch.row_count.max(0) as usize)
+                .sum(),
+        );
         for batch in &batch_counts {
             info!(
                 dataset = spec.dataset,
@@ -178,6 +185,7 @@ pub(crate) async fn compact_old_quota_snapshots(
         else {
             break 'work_unit;
         };
+        super::super::retention::batch_plan::record_discovered_rows(spec.dataset, candidates.len());
 
         if candidates.is_empty() {
             break 'work_unit;

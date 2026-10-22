@@ -237,10 +237,48 @@ fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, da
                 })
         })
         .unwrap_or_default();
-    summary.discovered = selected;
+    summary.discovered = batch_plan::discovered_rows(dataset)
+        .unwrap_or_default()
+        .max(selected);
     summary.selected = selected;
     summary.committed = committed;
     summary.batches = batches;
+}
+
+fn retention_owner_success_facts(
+    dataset: &str,
+    observed_rows: usize,
+    dry_run: bool,
+) -> (usize, usize, usize) {
+    let (batch_selected, batch_committed, _) = batch_plan::TASK_BATCH_METRICS
+        .try_with(|metrics| {
+            metrics
+                .borrow()
+                .iter()
+                .filter(|batch| batch.dataset == dataset)
+                .fold((0, 0, 0), |(selected, committed, batches), batch| {
+                    (
+                        selected.saturating_add(batch.batch_rows),
+                        committed.saturating_add(batch.committed_rows),
+                        batches + 1,
+                    )
+                })
+        })
+        .unwrap_or_default();
+    let selected = if dry_run {
+        observed_rows
+    } else {
+        batch_selected.max(observed_rows)
+    };
+    let committed = if dry_run {
+        0
+    } else {
+        batch_committed.max(observed_rows)
+    };
+    let discovered = batch_plan::discovered_rows(dataset)
+        .unwrap_or_default()
+        .max(selected);
+    (discovered, selected, committed)
 }
 
 fn apply_retention_owner_batch_error(
@@ -254,18 +292,19 @@ fn apply_retention_owner_batch_error(
 
 fn apply_retention_owner_success(
     summary: &mut RetentionOwnerRunSummary,
+    discovered: usize,
     selected: usize,
+    committed: usize,
     batches: usize,
     raw_files_removed: usize,
     has_more: bool,
-    dry_run: bool,
 ) {
-    summary.discovered = selected;
+    summary.discovered = discovered;
     summary.selected = selected;
-    summary.committed = if dry_run { 0 } else { selected };
+    summary.committed = committed;
     summary.batches = batches;
     summary.raw_files_removed = raw_files_removed;
-    summary.has_more = !dry_run && has_more;
+    summary.has_more = has_more;
     if let Some(reason) = retention_run_defer_reason() {
         summary.wait_reason = Some(reason);
     }
@@ -425,6 +464,8 @@ async fn run_invocation_archive_owner_inner(
     .await;
     match archive {
         Ok((selected, batches, raw_files_removed, _prompt_cache_keys)) => {
+            let (discovered, selected_scope, committed) =
+                retention_owner_success_facts("codex_invocations", selected, dry_run);
             let has_more = if dry_run {
                 false
             } else {
@@ -441,11 +482,12 @@ async fn run_invocation_archive_owner_inner(
             };
             apply_retention_owner_success(
                 &mut summary,
-                selected,
+                discovered,
+                selected_scope,
+                committed,
                 batches,
                 raw_files_removed,
                 has_more,
-                dry_run,
             );
         }
         Err(error) => {
@@ -485,14 +527,15 @@ async fn run_timestamped_archive_owner(
 ) -> Result<RetentionOwnerRunSummary> {
     let started_at = Instant::now();
     let mut summary = RetentionOwnerRunSummary::new(task_key, source_scope, "rows");
+    let dataset = if task_key == "pool_upstream_attempt_archive" {
+        "pool_upstream_request_attempts"
+    } else {
+        "forward_proxy_attempts"
+    };
     let archive = archive_timestamped_dataset(
         pool,
         config,
-        archive_table_spec(if task_key == "pool_upstream_attempt_archive" {
-            "pool_upstream_request_attempts"
-        } else {
-            "forward_proxy_attempts"
-        }),
+        archive_table_spec(dataset),
         select_sql,
         cutoff,
         dry_run,
@@ -500,24 +543,20 @@ async fn run_timestamped_archive_owner(
     .await;
     match archive {
         Ok((selected, batches, raw_files_removed)) => {
+            let (discovered, selected_scope, committed) =
+                retention_owner_success_facts(dataset, selected, dry_run);
             apply_retention_owner_success(
                 &mut summary,
-                selected,
+                discovered,
+                selected_scope,
+                committed,
                 batches,
                 raw_files_removed,
-                selected >= archive_candidate_limit(config),
-                dry_run,
+                batch_plan::discovered_rows(dataset)
+                    .is_some_and(|discovered| discovered >= archive_candidate_limit(config)),
             );
         }
-        Err(error) => apply_retention_owner_batch_error(
-            &mut summary,
-            if task_key == "pool_upstream_attempt_archive" {
-                "pool_upstream_request_attempts"
-            } else {
-                "forward_proxy_attempts"
-            },
-            &error,
-        ),
+        Err(error) => apply_retention_owner_batch_error(&mut summary, dataset, &error),
     }
     Ok(summary.finish(started_at))
 }
@@ -535,13 +574,17 @@ async fn run_invocation_detail_prune_owner(
     );
     match prune_old_invocation_details(pool, config, config.database_path.parent(), dry_run).await {
         Ok((selected, batches, raw_files_removed)) => {
+            let (discovered, selected_scope, committed) =
+                retention_owner_success_facts("codex_invocation_details", selected, dry_run);
             apply_retention_owner_success(
                 &mut summary,
-                selected,
+                discovered,
+                selected_scope,
+                committed,
                 batches,
                 raw_files_removed,
-                selected >= archive_candidate_limit(config),
-                dry_run,
+                batch_plan::discovered_rows("codex_invocation_details")
+                    .is_some_and(|discovered| discovered >= archive_candidate_limit(config)),
             );
         }
         Err(error) => {
@@ -564,13 +607,17 @@ async fn run_quota_snapshot_compaction_owner(
     );
     match compact_old_quota_snapshots(pool, config, dry_run).await {
         Ok((selected, batches)) => {
+            let (discovered, selected_scope, committed) =
+                retention_owner_success_facts("codex_quota_snapshots", selected, dry_run);
             apply_retention_owner_success(
                 &mut summary,
-                selected,
+                discovered,
+                selected_scope,
+                committed,
                 batches,
                 0,
-                selected >= archive_candidate_limit(config),
-                dry_run,
+                batch_plan::discovered_rows("codex_quota_snapshots")
+                    .is_some_and(|discovered| discovered >= archive_candidate_limit(config)),
             );
         }
         Err(error) => {
@@ -592,24 +639,33 @@ async fn run_model_route_expiry_owner(
         "model route rows",
     );
     let candidate_limit = retention_candidate_limit(config, "model_route_purge");
-    let result = if dry_run {
-        crate::upstream_accounts::count_expired_model_routes(pool)
+    let result: Result<(usize, usize, usize, bool)> = if dry_run {
+        crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
             .await
-            .map(|count| count as usize)
+            .map(|(discovered, has_more)| {
+                (discovered, discovered.min(candidate_limit), 0, has_more)
+            })
     } else {
-        crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit)
-            .await
-            .map(|count| count as usize)
+        let (discovered, _) =
+            crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
+                .await?;
+        let committed = crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit)
+            .await? as usize;
+        let (_, has_more) =
+            crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
+                .await?;
+        Ok((discovered, committed, committed, has_more))
     };
     match result {
-        Ok(selected) => {
+        Ok((discovered, selected, committed, has_more)) => {
             apply_retention_owner_success(
                 &mut summary,
+                discovered,
                 selected,
+                committed,
                 0,
                 0,
-                selected >= candidate_limit,
-                dry_run,
+                has_more,
             );
         }
         Err(error) => apply_retention_owner_error(&mut summary, &error),
@@ -658,18 +714,16 @@ async fn run_task_run_history_cleanup_owner(
     apply_retention_owner_success(
         &mut summary,
         selected,
+        selected,
+        committed,
         batches,
         0,
         !dry_run
             && (legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
                 || managed_history.has_more),
-        dry_run,
     );
-    if !dry_run {
-        summary.committed = committed;
-        if summary.completion == "complete" && committed != selected {
-            summary.completion = if committed > 0 { "partial" } else { "deferred" };
-        }
+    if !dry_run && summary.completion == "complete" && committed != selected {
+        summary.completion = if committed > 0 { "partial" } else { "deferred" };
     }
     Ok(summary.finish(started_at))
 }
@@ -740,12 +794,15 @@ pub(crate) async fn run_retention_owner_task(
                 shutdown.clone(),
                 RETENTION_CURRENT_PREPARED_KEY.scope(
                     RefCell::new(None),
-                    batch_plan::TASK_BATCH_METRICS.scope(
-                        RefCell::new(Vec::new()),
-                        RETENTION_RUN_DEFER_REASON.scope(
-                            RefCell::new(None),
-                            run_retention_owner_task_inner(
-                                pool, config, task_key, dry_run, shutdown,
+                    batch_plan::TASK_DISCOVERED_ROWS.scope(
+                        RefCell::new(std::collections::BTreeMap::new()),
+                        batch_plan::TASK_BATCH_METRICS.scope(
+                            RefCell::new(Vec::new()),
+                            RETENTION_RUN_DEFER_REASON.scope(
+                                RefCell::new(None),
+                                run_retention_owner_task_inner(
+                                    pool, config, task_key, dry_run, shutdown,
+                                ),
                             ),
                         ),
                     ),
@@ -1288,16 +1345,19 @@ pub(crate) async fn run_data_retention_maintenance_with_prompt_cache(
             (),
             RETENTION_CURRENT_PREPARED_KEY.scope(
                 RefCell::new(None),
-                batch_plan::TASK_BATCH_METRICS.scope(
-                    RefCell::new(Vec::new()),
-                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
-                        run.await.map(|mut summary| {
-                            batch_plan::collect_run_metrics(&mut summary);
-                            let defer_reason =
-                                RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
-                            (summary, defer_reason)
-                        })
-                    }),
+                batch_plan::TASK_DISCOVERED_ROWS.scope(
+                    RefCell::new(std::collections::BTreeMap::new()),
+                    batch_plan::TASK_BATCH_METRICS.scope(
+                        RefCell::new(Vec::new()),
+                        RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                            run.await.map(|mut summary| {
+                                batch_plan::collect_run_metrics(&mut summary);
+                                let defer_reason = RETENTION_RUN_DEFER_REASON
+                                    .with(|reason| reason.borrow().clone());
+                                (summary, defer_reason)
+                            })
+                        }),
+                    ),
                 ),
             ),
         )

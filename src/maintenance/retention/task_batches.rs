@@ -598,6 +598,7 @@ pub(crate) async fn prune_old_invocation_details(
             .bind(&archive_cutoff)
             .fetch_all(pool)
             .await?;
+        batch_plan::record_discovered_rows("codex_invocation_details", candidates.len());
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -671,6 +672,7 @@ pub(crate) async fn prune_old_invocation_details(
         } else {
             candidates_query.await?
         };
+        batch_plan::record_discovered_rows("codex_invocation_details", candidates.len());
 
         if candidates.is_empty() {
             break 'work_unit;
@@ -1137,6 +1139,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         } else {
             candidates_query.await?
         };
+        batch_plan::record_discovered_rows(spec.dataset, candidates.len());
 
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
@@ -1203,6 +1206,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         } else {
             candidates_query.await?
         };
+        batch_plan::record_discovered_rows(spec.dataset, candidates.len());
 
         if candidates.is_empty() {
             break 'work_unit;
@@ -1869,6 +1873,13 @@ pub(crate) async fn archive_timestamped_dataset(
                 "retention dry-run planned archive batch"
             );
         }
+        batch_plan::record_discovered_rows(
+            spec.dataset,
+            batch_counts
+                .iter()
+                .map(|batch| batch.row_count.max(0) as usize)
+                .sum(),
+        );
         return Ok((
             batch_counts
                 .iter()
@@ -1909,6 +1920,7 @@ pub(crate) async fn archive_timestamped_dataset(
         } else {
             candidates_query.await?
         };
+        batch_plan::record_discovered_rows(spec.dataset, candidates.len());
 
         if candidates.is_empty() {
             break 'work_unit;

@@ -249,6 +249,7 @@ services:
 
 - 首次 backlog cleanup 先执行 `cargo run -- --retention-run-once --retention-dry-run`，确认预计归档行数、目标 archive 路径与磁盘变化。
 - 正式清理使用 `cargo run -- --retention-run-once`；执行顺序必须保持 `导出成功 -> archive_batches manifest 成功 -> 删除源数据`。
+- 六项独立保留策略可分别使用 `maintenance pool-upstream-attempt-archive`、`maintenance forward-proxy-attempt-archive`、`maintenance invocation-detail-prune`、`maintenance quota-snapshot-compaction`、`maintenance model-route-expiry` 和 `maintenance task-run-history-cleanup`，各命令均支持 `--dry-run`。
 - retention 在 prune/archive 前会先执行 raw cold-compress：默认 `>= PROXY_RAW_IMMEDIATE_GZIP_BYTES` 的 raw 在首次落盘时就直接写成 `*.bin.gz`，其余小 payload 仍先保留明文 `*.bin`，并在超过 `PROXY_RAW_HOT_SECS` 后转成 `*.bin.gz`；数据库 raw path / codec 会与真实文件同步，`request_raw_size` / `response_raw_size` 仍表示原始 payload 字节。
 - `codex_invocations` archive 文件按上海自然日切成不可变 segment；若 `ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/codex_invocations/YYYY/MM/DD/part-<seq>.sqlite.gz`。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。

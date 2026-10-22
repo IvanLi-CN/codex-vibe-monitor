@@ -1,6 +1,7 @@
 use super::observability::{RetentionBatchObservation, RetentionPhaseGuard};
 use super::*;
 use crate::observability::contention::{Outcome, RetentionOperation, RetentionPhase};
+use std::collections::BTreeMap;
 
 const ARCHIVE_BATCH_TARGET_ROWS: usize = 1_000;
 const ARCHIVE_BATCH_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -47,6 +48,22 @@ pub(crate) struct RetentionBatchMetrics {
 
 tokio::task_local! {
     pub(super) static TASK_BATCH_METRICS: RefCell<Vec<RetentionBatchMetrics>>;
+    pub(super) static TASK_DISCOVERED_ROWS: RefCell<BTreeMap<String, usize>>;
+}
+
+pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
+    let _ = TASK_DISCOVERED_ROWS.try_with(|discovered| {
+        let mut discovered = discovered.borrow_mut();
+        let entry = discovered.entry(dataset.to_string()).or_default();
+        *entry = (*entry).saturating_add(rows);
+    });
+}
+
+pub(crate) fn discovered_rows(dataset: &str) -> Option<usize> {
+    TASK_DISCOVERED_ROWS
+        .try_with(|discovered| discovered.borrow().get(dataset).copied())
+        .ok()
+        .flatten()
 }
 
 pub(crate) struct BatchObservation {
