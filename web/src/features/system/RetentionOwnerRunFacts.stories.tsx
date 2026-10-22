@@ -64,8 +64,8 @@ export const Deferred: Story = {
       selected: 256,
       committed: 0,
       selectedScope: {
-        scope: "pool_upstream_request_attempts:retention_policy",
-        unit: "rows",
+        scope: "codex_quota_snapshots:retention_policy",
+        unit: "quota snapshot rows",
         selected: 256,
         committed: 0,
         batches: 0,
@@ -78,6 +78,8 @@ export const Deferred: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("只读预演 · 结果：已延期")).toBeVisible();
+    await expect(canvas.getByText("codex_quota_snapshots:retention_policy")).toBeVisible();
+    await expect(canvas.getByText("quota snapshot rows")).toBeVisible();
     await expect(canvas.getByText("计划文件")).toBeVisible();
     await expect(canvas.getByText("3")).toBeVisible();
     await expect(canvas.getByText("全局积压")).toBeVisible();
