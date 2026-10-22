@@ -1026,7 +1026,7 @@ jobs:
           )"
           test "$(git rev-parse "${checkout_sha}^")" = "$implementation_sha"
           changed_files="$(git diff --name-only "$implementation_sha" "$checkout_sha")"
-          test "$changed_files" = $'docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json\ndocs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json\ndocs/adr/assets/retention-maintenance-task-ownership/version-impact-record.json'
+          test "$changed_files" = $'docs/adr/assets/retention-maintenance-task-ownership/IMPLEMENTATION.md\ndocs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json\ndocs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json\ndocs/adr/assets/retention-maintenance-task-ownership/version-impact-record.json'
           printf '{"githubSha":"%s","checkoutSha":"%s","implementationCandidateSha":"%s","documentationCarrierSha":"%s","candidateSha256":"%s"}\n' \
             "$GITHUB_SHA" "$checkout_sha" "$implementation_sha" "$checkout_sha" "$binary_sha256" > "$RUNNER_TEMP/candidate-identity.json"
 
