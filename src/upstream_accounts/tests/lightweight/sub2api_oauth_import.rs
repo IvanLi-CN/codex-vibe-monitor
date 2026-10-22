@@ -71,6 +71,25 @@ fn sub2api_oauth_derives_identity_and_expiry_from_access_token() {
 }
 
 #[test]
+fn sub2api_oauth_derives_account_id_from_jwt_alias() {
+    let payload = json!({
+        "email": "token@example.com",
+        "https://api.openai.com/auth": {
+            "account_id": "acct_alias",
+            "user_id": "user_alias",
+        },
+        "exp": 1893456000,
+    });
+    let token = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()));
+    let normalized = normalize_imported_oauth_credentials(&sub2api_request(json!({
+        "access_token": token,
+    })))
+    .expect("derive account identity from JWT alias");
+    assert_eq!(normalized.chatgpt_account_id, "acct_alias");
+    assert_eq!(normalized.chatgpt_user_id.as_deref(), Some("user_alias"));
+}
+
+#[test]
 fn sub2api_oauth_rejects_identity_conflict_when_unrelated_claim_has_wrong_type() {
     let payload = json!({
         "email": "token@example.com",
@@ -114,6 +133,15 @@ fn sub2api_oauth_rejects_conflicting_identity_claims_within_token() {
             "auth": {"user_id": "user_other"},
             "exp": 1893456000,
         }),
+        json!({
+            "email": "member@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_shared",
+                "chatgpt_user_id": "user_member",
+            },
+            "auth": {"account_id": "acct_other"},
+            "exp": 1893456000,
+        }),
     ] {
         let token = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()));
         let mut credentials = sub2api_credentials();
@@ -121,6 +149,28 @@ fn sub2api_oauth_rejects_conflicting_identity_claims_within_token() {
         let error = normalize_imported_oauth_credentials(&sub2api_request(credentials))
             .expect_err("reject contradictory JWT identity claims");
         assert!(error.contains("conflicting JWT claims"), "{error}");
+    }
+}
+
+#[test]
+fn sub2api_oauth_rejects_wrongly_typed_identity_claims() {
+    for payload in [
+        json!({"email": 123, "exp": 1893456000}),
+        json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": 123},
+            "exp": 1893456000,
+        }),
+        json!({
+            "https://api.openai.com/auth": {"user_id": 123},
+            "exp": 1893456000,
+        }),
+    ] {
+        let token = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()));
+        let mut credentials = sub2api_credentials();
+        credentials["access_token"] = json!(token);
+        let error = normalize_imported_oauth_credentials(&sub2api_request(credentials))
+            .expect_err("reject invalid JWT identity claim type");
+        assert!(error.contains("JWT identity claim"), "{error}");
     }
 }
 

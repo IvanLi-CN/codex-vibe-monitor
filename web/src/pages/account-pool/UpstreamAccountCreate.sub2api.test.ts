@@ -86,6 +86,32 @@ describe("sub2api OAuth import compatibility", () => {
     });
   });
 
+  it("derives account identity from the JWT account_id alias", () => {
+    const result = parse(
+      account({
+        email: undefined,
+        chatgpt_account_id: undefined,
+        chatgpt_user_id: undefined,
+        access_token: jwt({
+          email: "from-token@example.com",
+          auth: {
+            account_id: "acct_alias",
+            user_id: "user_alias",
+          },
+          exp: 1893456000,
+        }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.candidates[0]).toMatchObject({
+        email: "from-token@example.com",
+        chatgptAccountId: "acct_alias",
+        matchKey: "user:user_alias",
+      });
+    }
+  });
+
   it("rejects token identity conflicts when an unrelated claim has the wrong type", () => {
     const result = parse(
       account({
@@ -125,10 +151,33 @@ describe("sub2api OAuth import compatibility", () => {
         auth: { user_id: "user_other" },
         exp: 1893456000,
       },
+      {
+        email: "member@example.com",
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "acct_shared",
+          chatgpt_user_id: "user_member",
+        },
+        auth: { account_id: "acct_other" },
+        exp: 1893456000,
+      },
     ]) {
       const result = parse(account({ access_token: jwt(payload) }));
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toMatch(/emailMismatch|userIdMismatch/);
+      if (!result.ok)
+        expect(result.error).toMatch(/emailMismatch|accountIdMismatch|userIdMismatch/);
+    }
+  });
+
+  it("rejects wrongly typed JWT identity claims", () => {
+    for (const payload of [
+      { email: 123, exp: 1893456000 },
+      { "https://api.openai.com/auth": { chatgpt_account_id: 123 }, exp: 1893456000 },
+      { "https://api.openai.com/auth": { user_id: 123 }, exp: 1893456000 },
+    ]) {
+      const result = parse(account({ access_token: jwt(payload) }));
+      expect(result.ok).toBe(false);
+      if (!result.ok)
+        expect(result.error).toMatch(/emailMismatch|accountIdMismatch|userIdMismatch/);
     }
   });
 

@@ -755,13 +755,11 @@ function extractImportedOauthJwtEmail(payload: Record<string, unknown>) {
   if (typeof payload.email === "string" && payload.email.trim().length > 0) {
     return payload.email.trim();
   }
-  const profile = payload["https://api.openai.com/profile"] ?? payload.profile;
-  if (
-    profile &&
-    typeof profile === "object" &&
-    typeof (profile as Record<string, unknown>).email === "string"
-  ) {
-    return ((profile as Record<string, unknown>).email as string).trim();
+  for (const profile of [payload["https://api.openai.com/profile"], payload.profile]) {
+    if (profile && typeof profile === "object" && !Array.isArray(profile)) {
+      const email = (profile as Record<string, unknown>).email;
+      if (typeof email === "string" && email.trim().length > 0) return email.trim();
+    }
   }
   return null;
 }
@@ -780,6 +778,10 @@ function findImportedOauthJwtIdentityConflict(payload: Record<string, unknown>) 
       const value = object[key];
       return typeof value === "string" && value.trim().length > 0 ? [value.trim()] : [];
     });
+  const hasInvalidType = (objects: Record<string, unknown>[], keys: string[]) =>
+    objects.some((object) =>
+      keys.some((key) => object[key] != null && typeof object[key] !== "string"),
+    );
   const hasConflict = (values: string[], caseInsensitive = false) => {
     const first = values[0];
     if (!first) return false;
@@ -788,13 +790,20 @@ function findImportedOauthJwtIdentityConflict(payload: Record<string, unknown>) 
       .slice(1)
       .some((value) => (caseInsensitive ? value.toLowerCase() : value) !== normalizedFirst);
   };
+  if (hasInvalidType([payload, ...profiles], ["email"])) return "email" as const;
   if (hasConflict(collect([payload, ...profiles], "email"), true)) return "email" as const;
+  if (hasInvalidType(authObjects, ["chatgpt_account_id", "account_id"])) {
+    return "account_id" as const;
+  }
   if (
     hasConflict(
       collect(authObjects, "chatgpt_account_id").concat(collect(authObjects, "account_id")),
     )
   ) {
     return "account_id" as const;
+  }
+  if (hasInvalidType(authObjects, ["chatgpt_user_id", "user_id"])) {
+    return "chatgpt_user_id" as const;
   }
   if (
     hasConflict(collect(authObjects, "chatgpt_user_id").concat(collect(authObjects, "user_id")))
@@ -805,21 +814,21 @@ function findImportedOauthJwtIdentityConflict(payload: Record<string, unknown>) 
 }
 
 function extractImportedOauthJwtAuth(payload: Record<string, unknown>) {
-  const namespaced = payload["https://api.openai.com/auth"];
-  if (namespaced && typeof namespaced === "object") {
-    return namespaced as Record<string, unknown>;
-  }
-  const auth = payload.auth;
-  if (auth && typeof auth === "object") {
-    return auth as Record<string, unknown>;
-  }
-  return null;
+  const namespaced = getImportedObject(payload["https://api.openai.com/auth"]);
+  const auth = getImportedObject(payload.auth);
+  if (!namespaced && !auth) return null;
+  return { ...(auth ?? {}), ...(namespaced ?? {}) };
 }
 
 function extractImportedOauthJwtAccountId(payload: Record<string, unknown>) {
   const auth = extractImportedOauthJwtAuth(payload);
-  if (typeof auth?.chatgpt_account_id !== "string") return null;
-  return auth.chatgpt_account_id.trim();
+  const accountId =
+    typeof auth?.chatgpt_account_id === "string"
+      ? auth.chatgpt_account_id
+      : typeof auth?.account_id === "string"
+        ? auth.account_id
+        : null;
+  return accountId?.trim() || null;
 }
 
 function extractImportedOauthJwtUserId(payload: Record<string, unknown>) {
@@ -843,10 +852,10 @@ export function buildImportedOauthMatchKeyFromValues(
     return `user:${normalizedUserId}`;
   }
   const normalizedAccountId = chatgptAccountId?.trim().toLocaleLowerCase();
+  const normalizedEmail = email?.trim().toLocaleLowerCase() ?? "";
   if (normalizedAccountId) {
-    return `account:${normalizedAccountId}`;
+    return `account:${normalizedAccountId}:email:${normalizedEmail}`;
   }
-  const normalizedEmail = email?.trim().toLocaleLowerCase();
   if (normalizedEmail) {
     return `email:${normalizedEmail}`;
   }

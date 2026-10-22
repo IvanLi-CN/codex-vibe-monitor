@@ -1434,11 +1434,11 @@ fn imported_match_key_prefers_chatgpt_user_id_before_email_or_account_id() {
     );
     assert_eq!(
         imported_match_key(None, "member@example.com", "acct_shared"),
-        "account:acct_shared"
+        "account:acct_shared:email:member@example.com"
     );
     assert_eq!(
         imported_match_key(None, "", "acct_shared"),
-        "account:acct_shared"
+        "account:acct_shared:email:"
     );
 }
 

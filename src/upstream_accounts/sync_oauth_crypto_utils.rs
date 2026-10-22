@@ -827,6 +827,30 @@ pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaim
             })
             .collect::<Vec<_>>()
     };
+    let ensure_identity_claim_types =
+        |objects: &[Option<&serde_json::Map<String, Value>>], keys: &[&str]| -> Result<()> {
+            for object in objects.iter().flatten() {
+                for key in keys {
+                    if let Some(value) = object.get(*key)
+                        && !value.is_null()
+                        && !value.is_string()
+                    {
+                        return Err(anyhow!("JWT identity claim {key} must be a string"));
+                    }
+                }
+            }
+            Ok(())
+        };
+    ensure_identity_claim_types(&[Some(claims), profiles[0], profiles[1]], &["email"])?;
+    ensure_identity_claim_types(
+        &auths,
+        &[
+            "chatgpt_account_id",
+            "account_id",
+            "chatgpt_user_id",
+            "user_id",
+        ],
+    )?;
     let first_string_claim =
         |field: &str, values: &[String], case_insensitive: bool| -> Result<Option<String>> {
             let Some(first) = values.first() else {
@@ -852,11 +876,9 @@ pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaim
     let mut email_objects = vec![Some(claims)];
     email_objects.extend(profiles);
     let email = first_string_claim("email", &string_claims(&email_objects, "email"), true)?;
-    let account_id = first_string_claim(
-        "account_id",
-        &string_claims(&auths, "chatgpt_account_id"),
-        false,
-    )?;
+    let mut account_id_values = string_claims(&auths, "chatgpt_account_id");
+    account_id_values.extend(string_claims(&auths, "account_id"));
+    let account_id = first_string_claim("account_id", &account_id_values, false)?;
     let mut user_id_values = string_claims(&auths, "chatgpt_user_id");
     user_id_values.extend(string_claims(&auths, "user_id"));
     let user_id = first_string_claim("chatgpt_user_id", &user_id_values, false)?;
@@ -1195,10 +1217,11 @@ pub(crate) fn imported_match_key(
         return format!("user:{normalized_user_id}");
     }
     let normalized_account_id = account_id.trim().to_ascii_lowercase();
+    let normalized_email = email.trim().to_ascii_lowercase();
     if !normalized_account_id.is_empty() {
-        return format!("account:{normalized_account_id}");
+        return format!("account:{normalized_account_id}:email:{normalized_email}");
     }
-    format!("email:{}", email.trim().to_ascii_lowercase())
+    format!("email:{normalized_email}")
 }
 
 pub(crate) fn import_match_summary_from_row(row: &UpstreamAccountRow) -> ImportedOauthMatchSummary {

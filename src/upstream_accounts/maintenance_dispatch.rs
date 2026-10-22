@@ -1048,22 +1048,22 @@ pub(crate) async fn find_existing_import_match(
     .bind(email)
     .fetch_all(pool)
     .await?;
-    let email_matches = if let Some(incoming_user_id) = normalized_chatgpt_user_id {
-        email_matches
-            .into_iter()
-            .filter(|row| {
-                row.chatgpt_user_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .is_none_or(|stored_user_id| {
-                        stored_user_id.eq_ignore_ascii_case(incoming_user_id)
-                    })
-            })
-            .collect::<Vec<_>>()
-    } else {
-        email_matches
-    };
+    let email_matches = email_matches
+        .into_iter()
+        .filter(|row| {
+            let stored_user_id = row
+                .chatgpt_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            match normalized_chatgpt_user_id {
+                Some(incoming_user_id) => stored_user_id.is_none_or(|stored_user_id| {
+                    stored_user_id.eq_ignore_ascii_case(incoming_user_id)
+                }),
+                None => stored_user_id.is_none(),
+            }
+        })
+        .collect::<Vec<_>>();
     if email_matches.len() > 1 {
         bail!("multiple existing OAuth accounts match email {}", email);
     }
@@ -1081,6 +1081,7 @@ pub(crate) async fn find_existing_import_match(
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND chatgpt_account_id = ?2
+          AND lower(trim(COALESCE(chatgpt_user_id, ''))) = ''
         ORDER BY updated_at DESC, id DESC
         "#
     ))

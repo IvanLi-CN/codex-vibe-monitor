@@ -1477,6 +1477,15 @@ async fn find_existing_import_match_does_not_cross_match_different_members_by_em
         row.is_none(),
         "different workspace member must remain distinct"
     );
+
+    let row_without_incoming_user =
+        find_existing_import_match(&pool, None, "org_shared", "member@example.com")
+            .await
+            .expect("find existing import match without incoming member id");
+    assert!(
+        row_without_incoming_user.is_none(),
+        "an import without member id must not overwrite a known member"
+    );
 }
 
 #[tokio::test]
