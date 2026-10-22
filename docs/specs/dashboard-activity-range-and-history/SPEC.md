@@ -134,12 +134,13 @@
 ## Related ADRs
 
 - [Dashboard timeline replacement contract](../../adr/0019-dashboard-timeline-replacement-contract.md)
+- [Dashboard live timeline range independence](../../adr/0047-dashboard-live-timeline-range-independence.md)
 
 ## Visual Evidence
 
-- ui_demo desktop overview: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T105928Z-cvm-dashboard-desktop-latest-3c87dd50.png`
-- ui_demo 393x852 overview: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T105928Z-cvm-dashboard-mobile-latest-d2f11a0d.png`
-- ui_demo desktop stats: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T105928Z-cvm-stats-desktop-latest-14e4d511.png`
+- ui_demo desktop overview: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112550Z-cvm-dashboard-current-721a3330.png`
+- ui_demo 393x852 overview: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112636Z-cvm-dashboard-mobile-current-050edb05.png`
+- ui_demo desktop stats: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112551Z-cvm-stats-current-48642f99.png`
 
 ## References
 
