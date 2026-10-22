@@ -156,7 +156,7 @@
     "durable_state_policy": "Additive only; no business-table schema change, no deletion or rewrite of deployed migration facts, and no synthetic historical owner runs.",
     "required_validation": [
       "Replay new and existing maintenance-store initialization with disabled controls and schedule overrides.",
-      "Run lightweight, stateful-sqlite, and archive-file-io CI profiles plus format/check/clippy gates for current code candidate 10ffae51.",
+      "Run lightweight, stateful-sqlite, and archive-file-io CI profiles plus format/check/clippy gates for current code candidate 10ffae51; retain the four-file documentation carrier binding including IMPLEMENTATION.md.",
     "Complete fresh read-only Tier 4 formal review for current code candidate 10ffae51 after the b67bc3ae main sync.",
     "Replay released-source migration fixtures before marking this follow-up validated."
     ]
