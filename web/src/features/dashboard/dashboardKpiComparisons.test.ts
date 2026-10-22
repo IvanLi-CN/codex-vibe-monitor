@@ -14,6 +14,39 @@ import {
 } from "./dashboardKpiComparisons";
 
 describe("dashboard KPI comparison helpers", () => {
+  it("divides 120,000 tokens across 10 active minutes", () => {
+    const averages = buildActiveMinuteAverages(
+      {
+        totalCount: 10,
+        successCount: 10,
+        failureCount: 0,
+        totalCost: 10,
+        totalTokens: 120_000,
+      },
+      {
+        rangeStart: "2026-04-10T00:00:00.000Z",
+        rangeEnd: "2026-04-10T00:11:00.000Z",
+        bucketSeconds: 60,
+        points: Array.from({ length: 10 }, (_, index) => ({
+          bucketStart: new Date(
+            Date.parse("2026-04-10T00:00:00.000Z") + index * 60_000,
+          ).toISOString(),
+          bucketEnd: new Date(
+            Date.parse("2026-04-10T00:01:00.000Z") + index * 60_000,
+          ).toISOString(),
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 12_000,
+          totalCost: 1,
+        })),
+      },
+    );
+
+    expect(averages.activeMinutes).toBe(10);
+    expect(averages.tokensPerMinute).toBe(12_000);
+  });
+
   it("calculates active-minute day averages only from minute buckets with calls", () => {
     const averages = buildActiveMinuteAverages(
       {

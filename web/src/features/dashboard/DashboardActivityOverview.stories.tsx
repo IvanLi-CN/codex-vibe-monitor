@@ -10,8 +10,14 @@ import type {
   DashboardOverviewSnapshotStatus,
 } from "./dashboardOverviewSnapshots";
 
-type SummaryKey = "today" | "yesterday" | "previous7d" | "1d" | "7d";
-type TimeseriesKey = "today:1m" | "yesterday:1m" | "1d:1m" | "7d:1h" | "6mo:1d";
+type SummaryKey = "today" | "yesterday" | "previous1d" | "previous24h" | "previous7d" | "1d";
+type TimeseriesKey =
+  | "today:1m"
+  | "yesterday:1m"
+  | "previous1d:1m"
+  | "previous24h:1m"
+  | "1d:1m"
+  | "6mo:1d";
 type DashboardNetworkTimeseriesKey = "today:5m" | "yesterday:5m" | "1d:5m";
 type PersistedRange = "today" | "yesterday" | "1d" | "7d" | "usage" | null;
 type SummaryFixture = ReturnType<typeof createSummary>;
@@ -288,45 +294,6 @@ function build24HourPoints(): TimeseriesResponse {
   };
 }
 
-function buildHourlyPoints(): TimeseriesResponse {
-  const end = new Date("2026-04-09T00:00:00+08:00");
-  const start = new Date(end.getTime() - 7 * 24 * 60 * 60_000);
-  const points: TimeseriesPoint[] = [];
-  for (let index = 0; index < 7 * 24; index += 1) {
-    const bucketStart = new Date(start.getTime() + index * 60 * 60_000);
-    const bucketEnd = new Date(bucketStart.getTime() + 60 * 60_000);
-    const hour = bucketStart.getHours();
-    const day = bucketStart.getDay();
-    const density = ((hour + 3) * (day + 2)) % 9;
-    const firstTokenAvgMs = density > 0 ? 700 + ((index * 23) % 300) : null;
-    points.push({
-      bucketStart: bucketStart.toISOString(),
-      bucketEnd: bucketEnd.toISOString(),
-      totalCount: density,
-      successCount: Math.max(density - (density > 6 ? 1 : 0), 0),
-      failureCount: density > 6 ? 1 : 0,
-      totalTokens: density * 620,
-      cacheInputTokens: density * 110,
-      totalCost: Number((density * 0.23).toFixed(2)),
-      nonSuccessCost: deriveNonSuccessCost(
-        Number((density * 0.23).toFixed(2)),
-        density > 6 ? 1 : 0,
-        density,
-      ),
-      firstTokenSampleCount: density,
-      avgTotalMs: firstTokenAvgMs == null ? null : buildTotalLatencyMs(firstTokenAvgMs, index, 21),
-      totalLatencySampleCount: density,
-      firstTokenAvgMs,
-    });
-  }
-  return {
-    rangeStart: start.toISOString(),
-    rangeEnd: end.toISOString(),
-    bucketSeconds: 3600,
-    points,
-  };
-}
-
 function buildDailyPoints(): TimeseriesResponse {
   const endExclusive = new Date("2026-04-09T00:00:00+08:00");
   const start = new Date(endExclusive);
@@ -451,16 +418,18 @@ const ACTIVE_MINUTE_AVERAGE_PARALLEL_WORK_STATS = buildParallelWorkResponse(
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   today: TODAY_SUMMARY_FIXTURE,
   yesterday: YESTERDAY_SUMMARY_FIXTURE,
+  previous1d: YESTERDAY_SUMMARY_FIXTURE,
+  previous24h: createSummary(70312, 65208, 5104, 2874.16, 7842211220),
   previous7d: createSummary(32420, 31310, 1110, 421.76, 180246000),
   "1d": createSummary(76421, 70115, 6306, 3128.74, 8764311220),
-  "7d": createSummary(182904, 171240, 11664, 8422.18, 21640351742),
 };
 
 const TIMESERIES_FIXTURES: Record<TimeseriesKey, TimeseriesFixture> = {
   "today:1m": buildTodayMinutePoints(),
   "yesterday:1m": buildYesterdayMinutePoints(),
+  "previous1d:1m": buildYesterdayMinutePoints(),
+  "previous24h:1m": build24HourPoints(),
   "1d:1m": build24HourPoints(),
-  "7d:1h": buildHourlyPoints(),
   "6mo:1d": buildDailyPoints(),
 };
 
@@ -1250,18 +1219,20 @@ export const YesterdayTrendView: Story = {
   },
 };
 
-export const SevenDayView: Story = {
+export const LegacyRangeFallsBackToToday: Story = {
   parameters: {
     persistedRange: "7d",
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => {
-      expect(canvas.getByRole("tab", { name: /7 日|7 days/i })).toHaveAttribute(
+      expect(canvas.getByRole("tab", { name: /今日|today/i })).toHaveAttribute(
         "aria-selected",
         "true",
       );
-      expect(canvas.queryByRole("tab", { name: /趋势|trend/i })).toBeNull();
+      expect(canvas.getByRole("tab", { name: /昨日|yesterday/i })).toBeVisible();
+      expect(canvas.getByRole("tab", { name: /24 小时|24 hours/i })).toBeVisible();
+      expect(canvas.queryByRole("tab", { name: /7 日|7 days|历史|history/i })).toBeNull();
     });
   },
 };
@@ -1279,18 +1250,16 @@ export const TodayCostCumulative: Story = {
   },
 };
 
-export const HistoryView: Story = {
+export const OnlyThreeRangeTabs: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("tab", { name: /历史|history/i }));
     await waitFor(() => {
-      expect(canvas.getByRole("tab", { name: /历史|history/i })).toHaveAttribute(
-        "aria-selected",
-        "true",
+      expect(canvas.getByRole("tablist", { name: /时间范围|time range/i }).children).toHaveLength(
+        3,
       );
     });
-    await expect(canvas.getByTestId("usage-calendar-card")).toBeVisible();
-    await expect(canvas.queryByText(/总 TOKENS|total tokens/i)).toBeNull();
+    expect(canvas.queryByRole("tab", { name: /历史|history|7 日|7 days/i })).toBeNull();
+    expect(canvas.queryByTestId("usage-calendar-card")).toBeNull();
   },
 };
 
@@ -1336,14 +1305,14 @@ export const OfflineRangeNotCachedYet: Story = {
   },
 };
 
-export const RestoresPersistedHistory: Story = {
+export const RestoresLegacyHistoryToToday: Story = {
   parameters: {
     persistedRange: "usage",
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => {
-      expect(canvas.getByRole("tab", { name: /历史|history/i })).toHaveAttribute(
+      expect(canvas.getByRole("tab", { name: /今日|today/i })).toHaveAttribute(
         "aria-selected",
         "true",
       );
@@ -1355,7 +1324,7 @@ export const MetricMemoryFlow: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("tab", { name: /金额|cost/i }));
-    await userEvent.click(canvas.getByRole("tab", { name: /7 日|7 days/i }));
+    await userEvent.click(canvas.getByRole("tab", { name: /24 小时|24 hours/i }));
     await userEvent.click(canvas.getByRole("tab", { name: /tokens/i }));
     await userEvent.click(canvas.getByRole("tab", { name: /今日|today/i }));
     await waitFor(() => {
@@ -1390,17 +1359,11 @@ export const LoadsRangesOnDemand: Story = {
       expect(fetchLog.some((entry) => entry.includes("window=1d"))).toBe(false);
     });
 
-    await userEvent.click(canvas.getByRole("tab", { name: /7 日|7 days/i }));
-    await waitFor(() => {
-      const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? [];
-      expect(fetchLog).toContain("/api/stats/summary?window=7d");
-      expect(fetchLog.some((entry) => entry.includes("window=1d"))).toBe(false);
-    });
-
     await userEvent.click(canvas.getByRole("tab", { name: /24 小时|24 hours/i }));
     await waitFor(() => {
       const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? [];
       expect(fetchLog).toContain("/api/stats/summary?window=1d");
+      expect(fetchLog).toContain("/api/stats/timeseries?range=1d&bucket=1m");
     });
   },
 };
