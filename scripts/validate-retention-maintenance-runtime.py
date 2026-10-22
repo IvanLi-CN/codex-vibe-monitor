@@ -92,10 +92,14 @@ def validate_online(candidate, source, target, port):
                 connection.execute("INSERT INTO hourly_invoke_prefixes(utc_hour,prefix) VALUES(1,'JZYZAA')")
                 connection.execute("INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,payload,raw_response) VALUES('TZYZABAAAA','2099-01-01T00:00:00Z','proxy','running','{\"promptCacheKey\":\"runtime-protected\"}','{}')")
             before = UPGRADE.business_facts(target)
-            for command in [("--retention-dry-run",), ("maintenance", "invocation-identity-cleanup", "--dry-run"), ("maintenance", "raw-orphan-sweep", "--dry-run")]:
+            for task_key in UPGRADE.RETENTION_OWNERS:
+                UPGRADE.run_scoped_command(candidate, target, task_key, True)
+                assert UPGRADE.business_facts(target) == before, task_key
+            for command in [("maintenance", "invocation-identity-cleanup", "--dry-run"), ("maintenance", "raw-orphan-sweep", "--dry-run")]:
                 UPGRADE.execute(candidate, target, *command)
                 assert UPGRADE.business_facts(target) == before, command
-            UPGRADE.execute(candidate, target, "--retention-run-once")
+            for task_key in UPGRADE.RETENTION_OWNERS:
+                UPGRADE.run_scoped_command(candidate, target, task_key, False)
             with sqlite3.connect(target / "business.sqlite") as connection:
                 assert connection.execute("SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key='runtime-orphan'").fetchone() == (1,)
                 assert connection.execute("SELECT COUNT(*) FROM hourly_invoke_prefixes WHERE utc_hour=1").fetchone() == (1,)
@@ -187,7 +191,7 @@ def main():
     candidate = args.candidate.resolve()
     validate_unavailable(candidate, args.source_fixture, args.output_dir / "unavailable")
     validate_online(candidate, args.source_fixture, args.output_dir / "online", args.http_port)
-    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-three-read-only-scopes", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
+    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-all-retention-owner-scopes", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
     (args.output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results), flush=True)
 
