@@ -486,7 +486,14 @@ const DEMO_USAGE_BREAKDOWN = {
       cacheWriteTokens: 60_000_000,
       cacheReadTokens: 152_000_000,
       outputTokens: 34_240_000,
-      costs: { input: 10, cacheWrite: 20, cacheRead: 5, output: 40, reasoning: 8.24, unknown: 0 },
+      costs: {
+        input: 10,
+        cacheWrite: 20,
+        cacheRead: 5,
+        output: 40,
+        reasoning: 8.24,
+        unknown: 0,
+      },
     },
   ],
 };
@@ -678,7 +685,14 @@ function demoUsageBreakdownForModels(modelIndexes: number[]) {
       reasoning: totals.reasoning + model.costs.reasoning,
       unknown: totals.unknown + model.costs.unknown,
     }),
-    { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+    {
+      input: 0,
+      cacheWrite: 0,
+      cacheRead: 0,
+      output: 0,
+      reasoning: 0,
+      unknown: 0,
+    },
   );
   return {
     cacheWriteTokens: models.reduce((total, model) => total + model.cacheWriteTokens, 0),
@@ -808,7 +822,14 @@ function demoUsageBreakdownFromInvocations(records: ReturnType<typeof invocation
       cacheWriteTokens: 0,
       cacheReadTokens: 0,
       outputTokens: 0,
-      costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+      costs: {
+        input: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        reasoning: 0,
+        unknown: 0,
+      },
     };
     entry.cacheWriteTokens += record.cacheWriteTokens ?? 0;
     entry.cacheReadTokens += record.cacheInputTokens ?? 0;
@@ -841,7 +862,14 @@ function demoUsageBreakdownFromInvocations(records: ReturnType<typeof invocation
         reasoning: Number((total.reasoning + model.costs.reasoning).toFixed(4)),
         unknown: 0,
       }),
-      { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+      {
+        input: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        reasoning: 0,
+        unknown: 0,
+      },
     ),
     models,
   };
@@ -2705,6 +2733,17 @@ const DEMO_RETENTION_OWNER_V2_TASKS = {
     hasMore: true,
   },
 } as const;
+const DEMO_RETENTION_ARCHIVE_OWNER_V2 = {
+  unit: "invocation rows",
+  scope: "expired_invocations:retention_policy",
+  globalBacklogTotal: 4_920,
+  discovered: 1_020,
+  selected: 1_020,
+  committed: 1_020,
+  batches: 3,
+  rawFilesRemoved: 0,
+  hasMore: true,
+} as const;
 const DEMO_RETENTION_OWNER_V2_TASK_KEYS = new Set(Object.keys(DEMO_RETENTION_OWNER_V2_TASKS));
 const DEMO_DEFAULT_ENABLED_TASKS = new Set([
   "retention_archive",
@@ -2732,12 +2771,21 @@ export function resetDemoManagedTaskState(): void {
   nextManagedTaskRunId = 100;
 }
 
+function demoRetentionOwnerV2Fixture(taskKey: string) {
+  if (
+    taskKey === "retention_archive" &&
+    demoSearchParamsFromLocation().get("demoRetentionOwners") === "v2"
+  ) {
+    return DEMO_RETENTION_ARCHIVE_OWNER_V2;
+  }
+  return DEMO_RETENTION_OWNER_V2_TASKS[taskKey as keyof typeof DEMO_RETENTION_OWNER_V2_TASKS];
+}
+
 function demoRetentionOwnerV2Details(
   taskKey: string,
   dryRun = false,
 ): Record<string, unknown> | null {
-  const fixture =
-    DEMO_RETENTION_OWNER_V2_TASKS[taskKey as keyof typeof DEMO_RETENTION_OWNER_V2_TASKS];
+  const fixture = demoRetentionOwnerV2Fixture(taskKey);
   if (!fixture) return null;
   return {
     ownershipVersion: 2,
@@ -2758,22 +2806,25 @@ function demoRetentionOwnerV2Details(
       rawFilesPlanned: dryRun ? 1 : 0,
       hasMore: fixture.hasMore,
     },
-    ...(taskKey === "pool_upstream_attempt_archive"
+    ...(taskKey === "pool_upstream_attempt_archive" || taskKey === "retention_archive"
       ? {
           archiveBatches: [
             {
-              dataset: "pool_upstream_request_attempts",
+              dataset:
+                taskKey === "retention_archive"
+                  ? "codex_invocations"
+                  : "pool_upstream_request_attempts",
               monthKey: "2026-09",
               batchRows: fixture.committed,
               committedRows: dryRun ? 0 : fixture.committed,
-              committedRowsPerSecond: dryRun ? 0 : 18.4,
-              arrivalRowsPerSecond: 0.42,
-              serviceRateMultiple: dryRun ? 0 : 43.8,
-              filePrepareMs: 1_240,
-              sourceIdentityMs: 210,
-              archiveWriterMs: 980,
+              committedRowsPerSecond: dryRun ? 0 : taskKey === "retention_archive" ? 26.2 : 18.4,
+              arrivalRowsPerSecond: taskKey === "retention_archive" ? 0.35 : 0.42,
+              serviceRateMultiple: dryRun ? 0 : taskKey === "retention_archive" ? 74.9 : 43.8,
+              filePrepareMs: taskKey === "retention_archive" ? 1_480 : 1_240,
+              sourceIdentityMs: taskKey === "retention_archive" ? 380 : 210,
+              archiveWriterMs: taskKey === "retention_archive" ? 1_120 : 980,
               summaryProofMs: 120,
-              lockWaitMs: 32,
+              lockWaitMs: taskKey === "retention_archive" ? 42 : 32,
             },
           ],
         }
@@ -2801,7 +2852,10 @@ function demoDefaultTaskPolicy(
   isManual: boolean,
 ): { policySource: string; effectivePolicy: string } {
   if (isManual) {
-    return { policySource: "系统规则", effectivePolicy: "手动触发；不适用周期计划" };
+    return {
+      policySource: "系统规则",
+      effectivePolicy: "手动触发；不适用周期计划",
+    };
   }
   switch (taskKey) {
     case "system_status_snapshot":
@@ -2816,7 +2870,10 @@ function demoDefaultTaskPolicy(
       };
     case "pool_orphan_recovery":
     case "invocation_timeline_snapshot":
-      return { policySource: "系统默认", effectivePolicy: "固定检查间隔：60 秒" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "固定检查间隔：60 秒",
+      };
     case "dashboard_runtime_projection_reconcile":
       return {
         policySource: "系统默认",
@@ -2838,7 +2895,10 @@ function demoDefaultTaskPolicy(
         effectivePolicy: "300 秒独立巡检；候选、已提交数量按本 owner 单独统计",
       };
     case "forward_proxy_subscription_refresh":
-      return { policySource: "系统默认", effectivePolicy: "启动刷新与固定检查间隔：60 秒" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "启动刷新与固定检查间隔：60 秒",
+      };
     case "long_term_projection":
       return {
         policySource: "系统默认",
@@ -2850,7 +2910,10 @@ function demoDefaultTaskPolicy(
         effectivePolicy: "启动、固定检查与压力准入唤醒",
       };
     case "summary_snapshot":
-      return { policySource: "系统默认", effectivePolicy: "事件唤醒；最小刷新间隔 10 秒" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "事件唤醒；最小刷新间隔 10 秒",
+      };
     case "summary_coverage_recovery":
       return {
         policySource: "系统默认",
@@ -2863,14 +2926,20 @@ function demoDefaultTaskPolicy(
         effectivePolicy: "300 秒巡检；有待办时让行后接续，安全重试独立计时",
       };
     case "prompt_cache_materialization":
-      return { policySource: "系统默认", effectivePolicy: "事件对账与 60 秒检查" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "事件对账与 60 秒检查",
+      };
     case "startup_backfill":
       return {
         policySource: "系统默认",
         effectivePolicy: "启动监督器；按事件、检查点和压力准入唤醒",
       };
     case "startup_hourly_rollup_bootstrap":
-      return { policySource: "启动规则", effectivePolicy: "仅在服务启动阶段检查" };
+      return {
+        policySource: "启动规则",
+        effectivePolicy: "仅在服务启动阶段检查",
+      };
     default:
       return {
         policySource: "系统默认",
@@ -3256,8 +3325,7 @@ export function managedTasks() {
   return combinedTasks.map((task, index) => {
     const hue = stableHueByTask.get(task.taskKey) ?? 0;
     const latestRun = managedTaskRuns.get(task.taskKey)?.[0];
-    const ownerV2Fixture =
-      DEMO_RETENTION_OWNER_V2_TASKS[task.taskKey as keyof typeof DEMO_RETENTION_OWNER_V2_TASKS];
+    const ownerV2Fixture = demoRetentionOwnerV2Fixture(task.taskKey);
     const fallbackStartedAt = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
     const fallbackDurationMs = ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(
       task.taskKey,
@@ -3723,14 +3791,24 @@ function demoTaskOperationsTimelinePage(url: URL) {
         to?: string;
       };
       if (decoded.scene !== scene || decoded.snapshotId !== snapshotId) {
-        return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+        return {
+          ...snapshot,
+          segments: [],
+          nextCursor: null,
+          resetRequired: true,
+        };
       }
       offset = Number(decoded.offset) || 0;
       afterRevision = decoded.afterRevision;
       from = decoded.from ?? from;
       to = decoded.to ?? to;
     } catch {
-      return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+      return {
+        ...snapshot,
+        segments: [],
+        nextCursor: null,
+        resetRequired: true,
+      };
     }
   } else {
     const revision = url.searchParams.get("afterRevision");
@@ -3757,7 +3835,14 @@ function demoTaskOperationsTimelinePage(url: URL) {
     nextCursor:
       nextOffset < matching.length
         ? encodeURIComponent(
-            JSON.stringify({ scene, snapshotId, offset: nextOffset, afterRevision, from, to }),
+            JSON.stringify({
+              scene,
+              snapshotId,
+              offset: nextOffset,
+              afterRevision,
+              from,
+              to,
+            }),
           )
         : null,
     resetRequired: false,
@@ -3768,9 +3853,8 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
   const task = managedTasks().find((item) => item.taskKey === taskKey);
   if (!task) return null;
   const at = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
-  const isRetention = taskKey === "retention_archive";
-  const ownerV2Fixture =
-    DEMO_RETENTION_OWNER_V2_TASKS[taskKey as keyof typeof DEMO_RETENTION_OWNER_V2_TASKS];
+  const ownerV2Fixture = demoRetentionOwnerV2Fixture(taskKey);
+  const isRetention = taskKey === "retention_archive" && !ownerV2Fixture;
   const ownerV2Details = demoRetentionOwnerV2Details(taskKey);
   const isRowBackfill =
     taskKey.startsWith("startup_backfill.") &&
@@ -3802,7 +3886,14 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     scope: string,
     range: string,
     observedAt: string,
-  ): TaskWorkloadMetric => ({ value, unit: "invocation rows", scope, range, observedAt, coverage });
+  ): TaskWorkloadMetric => ({
+    value,
+    unit: "invocation rows",
+    scope,
+    range,
+    observedAt,
+    coverage,
+  });
   const backfillNowMs = Date.parse(demoNow()) - 26_000;
   const backfillSamples: TaskWorkloadSample[] = Array.from({ length: 100 }, (_, index) => {
     const attemptedAt = new Date(backfillNowMs - (99 - index) * 4 * 60_000).toISOString();
@@ -3893,56 +3984,51 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     processedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1842),
     updatedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1780),
     errorDetail: null,
-    completion: taskKey === "retention_archive" ? "partial" : "completed",
-    coreCompletion: task.isManual
-      ? null
-      : taskKey === "retention_archive"
-        ? "partial"
-        : "completed",
-    details:
-      taskKey === "retention_archive"
-        ? {
-            budgetMs: null,
-            elapsedMs: latestRunDurationMs || 31_000,
-            settlementMs: 2,
-            timeoutCount: null,
-            archiveBatches: [
-              {
-                dataset: "codex_invocations",
-                monthKey: "2026-09",
-                batchRows: retentionCommittedRows,
-                committedRows: retentionCommittedRows,
-                committedRowsPerSecond: retentionCommittedRows / retentionElapsedSeconds,
-                arrivalRowsPerSecond: 0.3472,
-                serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
-                filePrepareMs: 3600,
-                sourceIdentityMs: 420,
-                archiveWriterMs: 2500,
-                summaryProofMs: 180,
-                lockWaitMs: 125,
-              },
-              {
-                dataset: "pool_upstream_request_attempts",
-                monthKey: "2026-09",
-                batchRows: 1000,
-                committedRows: 1000,
-                committedRowsPerSecond: 1000 / retentionElapsedSeconds,
-                arrivalRowsPerSecond: 0.4167,
-                serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
-                filePrepareMs: 1800,
-                sourceIdentityMs: 380,
-                archiveWriterMs: 1900,
-                summaryProofMs: null,
-                lockWaitMs: 80,
-              },
-            ],
-            promptCacheStats: {
-              state: "unavailable",
-              pending: 3,
-              reason: "materialization_pending_or_disabled",
+    completion: isRetention ? "partial" : "completed",
+    coreCompletion: task.isManual ? null : isRetention ? "partial" : "completed",
+    details: isRetention
+      ? {
+          budgetMs: null,
+          elapsedMs: latestRunDurationMs || 31_000,
+          settlementMs: 2,
+          timeoutCount: null,
+          archiveBatches: [
+            {
+              dataset: "codex_invocations",
+              monthKey: "2026-09",
+              batchRows: retentionCommittedRows,
+              committedRows: retentionCommittedRows,
+              committedRowsPerSecond: retentionCommittedRows / retentionElapsedSeconds,
+              arrivalRowsPerSecond: 0.3472,
+              serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
+              filePrepareMs: 3600,
+              sourceIdentityMs: 420,
+              archiveWriterMs: 2500,
+              summaryProofMs: 180,
+              lockWaitMs: 125,
             },
-          }
-        : ownerV2Details,
+            {
+              dataset: "pool_upstream_request_attempts",
+              monthKey: "2026-09",
+              batchRows: 1000,
+              committedRows: 1000,
+              committedRowsPerSecond: 1000 / retentionElapsedSeconds,
+              arrivalRowsPerSecond: 0.4167,
+              serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
+              filePrepareMs: 1800,
+              sourceIdentityMs: 380,
+              archiveWriterMs: 1900,
+              summaryProofMs: null,
+              lockWaitMs: 80,
+            },
+          ],
+          promptCacheStats: {
+            state: "unavailable",
+            pending: 3,
+            reason: "materialization_pending_or_disabled",
+          },
+        }
+      : ownerV2Details,
   };
   if (["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)) {
     defaultRun.details = demoOwnedMaintenanceDetails(taskKey, false);
@@ -4008,38 +4094,53 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
         },
         discovered: {
           supported:
-            isRetention || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
-          unit: isRetention
-            ? "invocation rows"
-            : taskKey === "invocation_identity_cleanup"
-              ? "conversation identities"
-              : taskKey === "raw_orphan_sweep"
-                ? "raw payload files"
-                : null,
-          scope: isRetention
-            ? "expired_invocations:retention_policy"
-            : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
-              ? taskKey
-              : null,
-        },
-        processed: {
-          supported:
             isRetention ||
-            isRowBackfill ||
+            ownerV2Fixture != null ||
             ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
           unit:
-            isRetention || isRowBackfill
-              ? "invocation rows"
+            isRetention || ownerV2Fixture != null
+              ? isRetention
+                ? "invocation rows"
+                : ownerV2Fixture.unit
               : taskKey === "invocation_identity_cleanup"
                 ? "conversation identities"
                 : taskKey === "raw_orphan_sweep"
                   ? "raw payload files"
                   : null,
-          scope: isRetention
-            ? "expired_invocations:retention_policy"
-            : isRowBackfill || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
-              ? taskKey
-              : null,
+          scope:
+            isRetention || ownerV2Fixture != null
+              ? isRetention
+                ? "expired_invocations:retention_policy"
+                : ownerV2Fixture.scope
+              : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+                ? taskKey
+                : null,
+        },
+        processed: {
+          supported:
+            isRetention ||
+            ownerV2Fixture != null ||
+            isRowBackfill ||
+            ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
+          unit:
+            isRetention || ownerV2Fixture != null || isRowBackfill
+              ? isRetention || isRowBackfill
+                ? "invocation rows"
+                : ownerV2Fixture.unit
+              : taskKey === "invocation_identity_cleanup"
+                ? "conversation identities"
+                : taskKey === "raw_orphan_sweep"
+                  ? "raw payload files"
+                  : null,
+          scope:
+            isRetention || ownerV2Fixture != null
+              ? isRetention
+                ? "expired_invocations:retention_policy"
+                : ownerV2Fixture.scope
+              : isRowBackfill ||
+                  ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+                ? taskKey
+                : null,
         },
       },
     },
@@ -4111,7 +4212,12 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
               nextCatchupAt: task.nextCatchupAt ?? null,
               catchupState: task.enabled ? "scheduled" : "disabled",
               stages: [
-                { name: "archive", status: "running", completed: 1842, total: 2547 },
+                {
+                  name: "archive",
+                  status: "running",
+                  completed: 1842,
+                  total: 2547,
+                },
                 { name: "statistics", status: "pending" },
               ],
             },
@@ -4748,7 +4854,10 @@ function demoInvocationTimeline(url: URL) {
   const rawCursor = url.searchParams.get("cursor");
   if (rawCursor) {
     try {
-      const cursor = JSON.parse(atob(rawCursor)) as { asOf?: string; offset?: number };
+      const cursor = JSON.parse(atob(rawCursor)) as {
+        asOf?: string;
+        offset?: number;
+      };
       const cursorOffset = cursor.offset;
       if (
         cursor.asOf !== asOf ||
@@ -4898,22 +5007,40 @@ export async function handleDemoRequest(request: Request) {
           reason: "No healthy account remained after upstream cooldown and retry checks",
           count: 2,
         },
-        { reason: "The upstream response ended while the server was reading its body", count: 2 },
+        {
+          reason: "The upstream response ended while the server was reading its body",
+          count: 2,
+        },
         {
           reason: "The provider rejected the request because its rate limit was reached",
           count: 1,
         },
-        { reason: "A configured route could not resolve to an available upstream model", count: 1 },
+        {
+          reason: "A configured route could not resolve to an available upstream model",
+          count: 1,
+        },
         {
           reason: "The upstream returned an unexpected response during stream finalization",
           count: 2,
         },
       ],
       client: [
-        { reason: "The request body did not include a model supported by this endpoint", count: 3 },
-        { reason: "The supplied authentication token could not be validated", count: 2 },
-        { reason: "The request exceeded the maximum supported context length", count: 1 },
-        { reason: "The request format is invalid for the selected response mode", count: 1 },
+        {
+          reason: "The request body did not include a model supported by this endpoint",
+          count: 3,
+        },
+        {
+          reason: "The supplied authentication token could not be validated",
+          count: 2,
+        },
+        {
+          reason: "The request exceeded the maximum supported context length",
+          count: 1,
+        },
+        {
+          reason: "The request format is invalid for the selected response mode",
+          count: 1,
+        },
       ],
       abort: [
         {
@@ -4946,8 +5073,14 @@ export async function handleDemoRequest(request: Request) {
           reason: "No healthy account remained after upstream cooldown and retry checks",
           count: 2,
         },
-        { reason: "The upstream response ended while the server was reading its body", count: 2 },
-        { reason: "The request body did not include a model supported by this endpoint", count: 3 },
+        {
+          reason: "The upstream response ended while the server was reading its body",
+          count: 2,
+        },
+        {
+          reason: "The request body did not include a model supported by this endpoint",
+          count: 3,
+        },
         {
           reason: "The client cancelled the request before an upstream response arrived",
           count: 1,
@@ -5011,8 +5144,14 @@ export async function handleDemoRequest(request: Request) {
         changedFields: [],
         bindingBefore: null,
         bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        stickyBefore: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "demo-primary@monitor.test",
+        },
+        stickyAfter: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "demo-primary@monitor.test",
+        },
         invokeId: "demo-concurrent-late",
         routingContext: {
           reasonCode: "staleConcurrentCompletion",
@@ -5050,7 +5189,10 @@ export async function handleDemoRequest(request: Request) {
         bindingBefore: null,
         bindingAfter: null,
         stickyBefore: null,
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        stickyAfter: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "demo-primary@monitor.test",
+        },
         invokeId: "demo-fresh-success",
         routingContext: {
           reasonCode: "freshAssignmentAfterFailure",
@@ -5087,14 +5229,22 @@ export async function handleDemoRequest(request: Request) {
         changedFields: ["stickyTarget"],
         bindingBefore: null,
         bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
+        stickyBefore: {
+          upstreamAccountId: 21,
+          upstreamAccountName: "demo-fallback@monitor.test",
+        },
         stickyAfter: null,
         invokeId: null,
       },
     ];
     const infoType = url.searchParams.get("infoType");
     const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
-    return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
+    return json({
+      items: filtered,
+      total: filtered.length,
+      page: 1,
+      pageSize: 20,
+    });
   }
   if (pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) {
     const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
@@ -5521,7 +5671,10 @@ export async function handleDemoRequest(request: Request) {
     return json(
       action === "disable"
         ? { key: { ...key, status: "disabled", updatedAt: demoNow() } }
-        : { key: { ...key, updatedAt: demoNow() }, secret: "cvm-synthetic-rotated-key-not-valid" },
+        : {
+            key: { ...key, updatedAt: demoNow() },
+            secret: "cvm-synthetic-rotated-key-not-valid",
+          },
     );
   }
   if (pathname === "/api/system/observability")
@@ -5724,13 +5877,15 @@ export async function handleDemoRequest(request: Request) {
               reason: "materialization_pending_or_disabled",
             },
           };
+      const ownerV2Fixture = demoRetentionOwnerV2Fixture(taskKey);
       if (
         [
           "retention_archive",
           "invocation_identity_cleanup",
           "raw_orphan_sweep",
           "prompt_cache_materialization",
-        ].includes(taskKey)
+        ].includes(taskKey) &&
+        !ownerV2Fixture
       ) {
         run.completion = "completed";
         run.coreCompletion = taskKey === "retention_archive" ? "completed" : null;
@@ -5739,13 +5894,10 @@ export async function handleDemoRequest(request: Request) {
           run.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
           run.updatedCount = run.processedCount;
         }
-      } else if (DEMO_RETENTION_OWNER_V2_TASK_KEYS.has(taskKey)) {
+      } else if (ownerV2Fixture) {
         run.completion = "complete";
         run.coreCompletion = null;
-        run.processedCount =
-          DEMO_RETENTION_OWNER_V2_TASKS[
-            taskKey as keyof typeof DEMO_RETENTION_OWNER_V2_TASKS
-          ].committed;
+        run.processedCount = ownerV2Fixture.committed;
         run.updatedCount = run.processedCount;
         run.details = demoRetentionOwnerV2Details(taskKey);
       }
@@ -5847,7 +5999,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 3,
           groupCount: 1,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: true, allowCutOut: true, priorityTier: "primary" },
+          routingRule: {
+            allowCutIn: true,
+            allowCutOut: true,
+            priorityTier: "primary",
+          },
         },
         {
           id: 2,
@@ -5855,7 +6011,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 2,
           groupCount: 1,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: false, allowCutOut: true, priorityTier: "fallback" },
+          routingRule: {
+            allowCutIn: false,
+            allowCutOut: true,
+            priorityTier: "fallback",
+          },
         },
         {
           id: 3,
@@ -5863,7 +6023,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 2,
           groupCount: 2,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: true, allowCutOut: true, priorityTier: "normal" },
+          routingRule: {
+            allowCutIn: true,
+            allowCutOut: true,
+            priorityTier: "normal",
+          },
         },
         {
           id: 4,
@@ -5871,7 +6035,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 2,
           groupCount: 1,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: true, allowCutOut: true, priorityTier: "normal" },
+          routingRule: {
+            allowCutIn: true,
+            allowCutOut: true,
+            priorityTier: "normal",
+          },
         },
         {
           id: 5,
@@ -5879,7 +6047,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 1,
           groupCount: 0,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: false, allowCutOut: false, priorityTier: "no_new" },
+          routingRule: {
+            allowCutIn: false,
+            allowCutOut: false,
+            priorityTier: "no_new",
+          },
         },
       ],
     });
@@ -6026,7 +6198,12 @@ export const apiHandlers = [
 ];
 
 function demoOwnedMaintenanceDetails(taskKey: string, manual = true): Record<string, unknown> {
-  const base = { ownershipVersion: 1, ownerScope: taskKey, dryRun: false, manual };
+  const base = {
+    ownershipVersion: 1,
+    ownerScope: taskKey,
+    dryRun: false,
+    manual,
+  };
   if (taskKey === "invocation_identity_cleanup")
     return {
       ...base,

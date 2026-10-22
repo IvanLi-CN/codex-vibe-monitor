@@ -29,6 +29,13 @@ for (const width of [1280, 393]) {
     );
     await page.goto("/#/system/tasks/retention_archive?demoTheme=light");
     for (const key of [
+      "retention_archive",
+      "pool_upstream_attempt_archive",
+      "forward_proxy_attempt_archive",
+      "invocation_detail_prune",
+      "quota_snapshot_compaction",
+      "model_route_expiry",
+      "task_run_history_cleanup",
       "invocation_identity_cleanup",
       "raw_orphan_sweep",
       "prompt_cache_materialization",
@@ -39,25 +46,80 @@ for (const width of [1280, 393]) {
   });
 }
 
+const retentionOwnerTaskCases = [
+  {
+    key: "retention_archive",
+    title: "数据保留与归档",
+    scope: "expired_invocations:retention_policy",
+    unit: "invocation rows",
+    backlog: "4,920",
+  },
+  {
+    key: "pool_upstream_attempt_archive",
+    title: "连接池上游尝试归档",
+    scope: "pool_upstream_request_attempts:retention_policy",
+    unit: "pool attempt rows",
+    backlog: "12,480",
+  },
+  {
+    key: "forward_proxy_attempt_archive",
+    title: "正向代理尝试归档",
+    scope: "forward_proxy_attempts:retention_policy",
+    unit: "forward proxy attempt rows",
+    backlog: "1,180",
+  },
+  {
+    key: "invocation_detail_prune",
+    title: "调用详情裁剪",
+    scope: "codex_invocation_details:retention_policy",
+    unit: "invocation rows",
+    backlog: "3,240",
+  },
+  {
+    key: "quota_snapshot_compaction",
+    title: "配额快照压缩",
+    scope: "codex_quota_snapshots:retention_policy",
+    unit: "quota snapshot rows",
+    backlog: "860",
+  },
+  {
+    key: "model_route_expiry",
+    title: "模型路由过期",
+    scope: "model_routes:expiry",
+    unit: "model route rows",
+    backlog: "74",
+  },
+  {
+    key: "task_run_history_cleanup",
+    title: "任务运行历史清理",
+    scope: "task_runs:history_retention",
+    unit: "task-run rows",
+    backlog: "2,400",
+  },
+] as const;
+
 for (const width of [1280, 393]) {
-  test(`renders owner v2 facts inside the task detail page at ${width}px`, async ({ page }) => {
+  test(`renders all seven retention owner detail pages at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 852 });
-    await page.goto("/#/system/tasks/pool_upstream_attempt_archive?demoTheme=light");
+    for (const task of retentionOwnerTaskCases) {
+      const demoVersion = task.key === "retention_archive" ? "&demoRetentionOwners=v2" : "";
+      await page.goto(`/#/system/tasks/${task.key}?demoTheme=light${demoVersion}`);
+      await expect(page.getByRole("heading", { name: task.title, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "最近运行", exact: true })).toBeVisible();
 
-    await expect(
-      page.getByRole("heading", { name: "连接池上游尝试归档", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("heading", { name: "最近运行", exact: true })).toBeVisible();
-
-    const facts = page.getByRole("region", { name: "保留 owner 运行事实", exact: true });
-    await expect(facts).toBeVisible();
-    await expect(facts).toContainText("实际运行 · 结果：完成");
-    await expect(facts).toContainText("pool_upstream_request_attempts:retention_policy");
-    await expect(facts).toContainText("pool attempt rows");
-    await expect(facts).toContainText("12,480");
-    await expect(facts).toContainText("覆盖：本轮窗口未发现更多候选");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-      width,
-    );
+      const facts = page.getByRole("region", {
+        name: "保留 owner 运行事实",
+        exact: true,
+      });
+      await expect(facts).toBeVisible();
+      await expect(facts).toContainText("实际运行 · 结果：完成");
+      await expect(facts).toContainText(task.scope);
+      await expect(facts).toContainText(task.unit);
+      await expect(facts).toContainText(task.backlog);
+      await expect(facts).toContainText("覆盖：");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+    }
   });
 }
