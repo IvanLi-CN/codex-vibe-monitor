@@ -1215,12 +1215,16 @@ pub(crate) fn normalize_imported_oauth_credentials(
     }
     claims.email = Some(email.clone());
     claims.chatgpt_account_id = Some(chatgpt_account_id.clone());
-    let chatgpt_user_id = claims
-        .chatgpt_user_id
+    let chatgpt_user_id = normalize_optional_text(claims.chatgpt_user_id.clone())
+        .or_else(|| optional_imported_oauth_string(&normalized_value, &["chatgpt_user_id"]))
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    claims.chatgpt_user_id = chatgpt_user_id.clone();
+    claims.chatgpt_plan_type = claims.chatgpt_plan_type.or_else(|| {
+        optional_imported_oauth_string(&normalized_value, &["plan_type", "chatgpt_plan_type"])
+    });
     Ok(NormalizedImportedOauthCredentials {
         source_id,
         file_name,
@@ -1270,47 +1274,30 @@ fn normalize_imported_oauth_record_value(value: &Value) -> Result<Value, String>
     if record
         .get("platform")
         .and_then(value_as_string)
-        .is_some_and(|value| value.eq_ignore_ascii_case("openai"))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("openai"))
         && record
             .get("type")
             .and_then(value_as_string)
-            .is_some_and(|value| value.eq_ignore_ascii_case("oauth"))
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("oauth"))
     {
-        let credentials = record
-            .get("credentials")
-            .and_then(Value::as_object)
-            .ok_or_else(|| "sub2api oauth account is missing credentials".to_string())?;
-        let mut normalized = serde_json::Map::new();
-        for (target_key, source_key) in [
-            ("email", "email"),
-            ("access_token", "access_token"),
-            ("refresh_token", "refresh_token"),
-            ("id_token", "id_token"),
-            ("token_type", "token_type"),
-            ("expired", "expires_at"),
-            ("plan_type", "plan_type"),
-            ("chatgpt_user_id", "chatgpt_user_id"),
-        ] {
-            if let Some(value) = credentials.get(source_key) {
-                normalized.insert(target_key.to_string(), value.clone());
-            }
-        }
-        if let Some(value) = credentials
-            .get("chatgpt_account_id")
-            .or_else(|| credentials.get("account_id"))
-        {
-            normalized.insert("account_id".to_string(), value.clone());
-        }
-        return Ok(Value::Object(normalized));
+        return super::sync_sub2api_import::normalize_sub2api_oauth_account(record);
     }
 
-    if record
-        .get("type")
-        .and_then(value_as_string)
-        .is_some_and(|value| value.eq_ignore_ascii_case("sub2api-data"))
+    if record.contains_key("platform") && record.contains_key("credentials") {
+        return Err("only OpenAI OAuth sub2api accounts are supported".to_string());
+    }
+
+    if record.contains_key("accounts")
+        || record
+            .get("type")
+            .and_then(value_as_string)
+            .is_some_and(|value| {
+                value.eq_ignore_ascii_case("sub2api-data")
+                    || value.eq_ignore_ascii_case("sub2api-bundle")
+            })
     {
         return Err(
-            "sub2api-data export packages must be expanded into individual OpenAI OAuth accounts before validation"
+            "sub2api export packages must be expanded into individual OpenAI OAuth accounts before validation"
                 .to_string(),
         );
     }

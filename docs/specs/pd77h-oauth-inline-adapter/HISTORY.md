@@ -7,7 +7,7 @@
 
 ## Key Decisions
 
-- No separate historical decision record was present before this migration.
+- sub2api 导入范围限定为 OpenAI OAuth；API Key 独立中转导入不属于该兼容修复。缺少 ID token 时沿用 Session 已有身份适配方式，不为格式兼容改变持久化模型，也不把合成载体当作上游签发的身份凭据。
 
 ## Migrated Change History
 

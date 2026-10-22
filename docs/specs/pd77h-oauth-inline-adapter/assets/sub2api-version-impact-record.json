@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Accept current and legacy sub2api exports containing OpenAI OAuth accounts without requiring an ID token.",
+    "release_unit_description": "sub2api OpenAI OAuth import compatibility repair",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "Expand accepted import input while preserving existing endpoints, credential storage, and upstream authorization.",
+      "assessed_at": "2026-10-22T05:26:59.279623+00:00",
+      "evidence": [
+        "web/src/pages/account-pool/UpstreamAccountCreate.sub2api.test.ts",
+        "src/upstream_accounts/tests/lightweight/sub2api_oauth_import.rs",
+        "src/upstream_accounts/sync_sub2api_import.rs"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "OpenAI OAuth only, as confirmed by the owner."
+      },
+      "reasoning": "No schema or stored type changes. Missing ID tokens use the existing Session identity envelope; actual upstream authorization still uses the access token.",
+      "reassessed_at": "2026-10-22T05:26:59.279623+00:00",
+      "evidence": [
+        "web/src/pages/account-pool/UpstreamAccountCreate.sub2api.test.ts",
+        "src/upstream_accounts/tests/lightweight/sub2api_oauth_import.rs",
+        "src/upstream_accounts/sync_sub2api_import.rs"
+      ]
+    },
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing OAuth import clients; current unmarked and legacy marked sub2api OpenAI OAuth exports.",
+      "evidence": [
+        "Existing endpoint request and response types are unchanged.",
+        "Focused frontend import suites: 161 tests passed.",
+        "Existing OAuth normalization and sub2api regressions: 18 distinct Rust tests passed with a package-local sqlx-macros debug override."
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Existing encrypted StoredOauthCredentials and account identity metadata; no database migration or new credential variant.",
+      "source_program_compatibility_range": "Current 0.2 credential format and the existing Session synthetic identity envelope; no broader release-range claim.",
+      "evidence": [
+        "StoredOauthCredentials fields are unchanged.",
+        "Stored OAuth credential serialization and readback regression passed; the same unchanged String ID-token envelope is already used by Session import."
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "sub2api-version-impact-record.json"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": [
+      "Release verification is pending; no release or PR publication is part of this local repair."
+    ]
+  }
+}
