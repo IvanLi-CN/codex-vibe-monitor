@@ -294,6 +294,16 @@ describe("sub2api OAuth import compatibility", () => {
       { expires_at: "January 1, 2030" },
       { id_token: "not-a-jwt" },
       { id_token: 123 },
+      {
+        id_token: `${jwt({
+          email: "member@example.com",
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acct_shared",
+            chatgpt_user_id: "user_member",
+          },
+          exp: 1893456000,
+        })}.trailing`,
+      },
     ]) {
       expect(parse(account(credentials)).ok).toBe(false);
     }

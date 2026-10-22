@@ -296,7 +296,24 @@ fn sub2api_oauth_retains_member_metadata_when_supplied_id_token_omits_it() {
 
 #[test]
 fn sub2api_oauth_rejects_invalid_supplied_id_token() {
-    for token in [json!("invalid-jwt"), json!(123)] {
+    for token in [
+        json!("invalid-jwt"),
+        json!(123),
+        json!(format!(
+            "e30.{}.sig.trailing",
+            URL_SAFE_NO_PAD.encode(
+                json!({
+                    "email": "member@example.com",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct_shared",
+                        "chatgpt_user_id": "user_member",
+                    },
+                    "exp": 1893456000,
+                })
+                .to_string()
+            )
+        )),
+    ] {
         let mut credentials = sub2api_credentials();
         credentials["id_token"] = token;
         assert!(normalize_imported_oauth_credentials(&sub2api_request(credentials)).is_err());

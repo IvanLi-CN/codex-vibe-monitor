@@ -1081,12 +1081,14 @@ pub(crate) async fn find_existing_import_match(
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND chatgpt_account_id = ?2
+          AND lower(trim(COALESCE(email, ''))) = lower(trim(?3))
           AND lower(trim(COALESCE(chatgpt_user_id, ''))) = ''
         ORDER BY updated_at DESC, id DESC
         "#
     ))
     .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .bind(chatgpt_account_id)
+    .bind(email)
     .fetch_all(pool)
     .await?;
     if account_id_matches.len() > 1 {

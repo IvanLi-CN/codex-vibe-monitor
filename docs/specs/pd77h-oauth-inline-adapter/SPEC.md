@@ -67,7 +67,7 @@
 - sub2api OAuth 记录不强制提供 `id_token` 或 `refresh_token`。邮箱、账号 ID、成员 ID 与套餐优先取非空导出字段，再从已有 ID token、access token 的身份声明补齐；邮箱、账号 ID 与 access token 仍必须可确定，成员 ID 与套餐可缺省。显式字段或两个 token 之间的邮箱、账号 ID、成员 ID 冲突必须拒绝，不可静默覆盖；已存在但类型错误的身份声明也必须拒绝，不得被显式字段静默掩盖。
 - sub2api 的 token 有效期支持 `credentials.expires_at`、`credentials.expired` 与兼容的顶层 `expired`，接受 RFC3339 或 Unix 秒/毫秒；缺省时优先使用 `access_token.exp`，其次使用 `id_token.exp`。无效显式时间或无法确定有效期时拒绝，不得使用账号级 `expires_at`、导出时间或虚构默认期限补齐。
 - 缺少 ID token 的 sub2api 记录在身份和有效期完整时沿用 Session 的合成身份载体，进入既有真实服务端验证与导入流程；该载体只适配现有持久化格式，不替代 access token 授权或验活。前后端单账号解析必须保持相同归一化规则，显式成员 ID 不得因原 ID token 未携带该字段而丢失。
-- 缺少成员 ID 的导入记录只允许匹配同样缺少成员 ID 的历史账号；批内去重在无成员 ID 时同时使用账号 ID 与邮箱，避免共享账号下不同成员互相覆盖或被丢弃。
+- 缺少成员 ID 的导入记录只允许匹配同样缺少成员 ID 且邮箱相同的历史账号；批内去重在无成员 ID 时同时使用账号 ID 与邮箱，避免共享账号下不同成员互相覆盖或被丢弃。
 - OAuth pool 路由：主进程直接根据请求路径调用内联 adapter，adapter 使用当前 access token 调用 `https://chatgpt.com/backend-api/codex` 并产出 OpenAI-compatible 响应。
 - API Key pool 路由：继续使用现有 `OPENAI_UPSTREAM_BASE_URL` / 账号级 `upstreamBaseUrl` 直连 reqwest 请求路径。
 - pool 消费链：不再要求上游一定是 `reqwest::Response`；统一从“状态码 + headers + body stream”抽象读取首包、透传 headers、记录 timings 与错误。

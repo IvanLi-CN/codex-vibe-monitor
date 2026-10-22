@@ -780,8 +780,8 @@ pub(crate) fn decrypt_credentials(key: &[u8; 32], payload: &str) -> Result<Store
 
 pub(crate) fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8>> {
     let mut parts = token.split('.');
-    let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(header), Some(payload), Some(sig))
+    let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(header), Some(payload), Some(sig), None)
             if !header.is_empty() && !payload.is_empty() && !sig.is_empty() =>
         {
             (header, payload, sig)
