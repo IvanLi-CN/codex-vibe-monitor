@@ -1141,6 +1141,7 @@ class AggregationTests(unittest.TestCase):
                 "docs/adr/0033-external-request-diagnostic-traces.md",
                 "docs/adr/0034-shared-tempo-request-tracing.md",
                 "docs/adr/0046-observability-acceptance-hardware-admission.md",
+                "docs/adr/0047-observability-acceptance-single-runner-bundle.md",
                 "docs/design/request-lifecycle-observability.md",
             ]:
                 target = candidate_source / relative
