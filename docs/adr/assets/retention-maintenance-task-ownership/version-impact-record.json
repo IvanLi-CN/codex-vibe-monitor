@@ -97,7 +97,7 @@
     "description": "Narrow retention_archive to fixed-fence invocation archival and add six independent retention-policy owners with bounded dispatcher execution and committed-fact results.",
     "candidate_branch": "th/retention-maintenance-ownership",
     "candidate_base_sha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "candidate_head_sha": "40ec55eb2df44bc3af5b85cee53727654d9add70",
+    "candidate_head_sha": "26d4bdd9b36935c6f1c816e08ee7cbebd7e868cb",
     "status": "implementation-pending-validation",
     "impact": "minor",
     "reasoning": "The managed-task catalog and schedule marker changes are additive. New ownership-version-2 run details preserve old composite history, while each new owner exposes an independent scope, unit, result, and committed count. The existing public task-control surface remains compatible; CI, migration replay, and formal review are still required before verification can be claimed.",
