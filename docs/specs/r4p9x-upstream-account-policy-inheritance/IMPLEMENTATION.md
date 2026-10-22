@@ -27,6 +27,7 @@ Readable tag surfaces stay narrow.
 The account-pool UI is reduced to group/account policy editing plus read-only system tag visibility.
 
 - `/account-pool/tags` route and module navigation entry are removed
+- `/account-pool` defaults to the API-key transit surface; explicit `/account-pool/pool` and legacy `/account-pool/upstream-accounts` links remain the OAuth/Session surface
 - create flows no longer render tag fields for OAuth, batch OAuth, imported OAuth, or API key onboarding
 - detail editing no longer renders tag pickers, create-tag actions, or delete-tag actions
 - bulk add/remove tag actions are removed from the roster

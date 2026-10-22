@@ -13,6 +13,14 @@ Upstream account routing policy is resolved through four editable layers:
 
 Read-only system tag signals are applied after the selected model rule and cannot be overridden.
 
+## Context and Scope
+
+This topic covers the upstream account policy model and its owner-facing account-pool domain split, including the default route used when an operator opens `/account-pool`.
+
+## Requirements
+
+- `REQ-ACCOUNT-POOL-DEFAULT-TRANSIT`: The web application MUST redirect `/account-pool` to `/account-pool/transits`; explicit `/account-pool/pool` and legacy `/account-pool/upstream-accounts` links MUST continue to open the OAuth/Session surface.
+
 Only root, group, account, and conversation model policy are operator-editable. Tags are no longer a user-managed policy layer. The account-pool UI may display and filter system tags, but tag creation, editing, deletion, manual attach/detach, and tag-based policy authoring are not supported.
 
 ## Policy Surface
@@ -636,10 +644,15 @@ The upstream area has two explicit account domains backed by the same account ta
 
 - `oauth_codex` is the official account pool. Group policy, group proxy bindings, node shunting, single-account rotation, mother-account assignment, OAuth maintenance, and pool access/sync settings apply only here. Group summaries, counts, and node-shunt candidate queries enforce this kind at the server boundary.
 - `api_key_codex` is the third-party transit domain. It keeps account-level routing, request compression, an explicit non-empty proxy binding, local limits, notes, and read-only system tags, but has no group, mother-account, node-shunt, single-account-rotation, or OAuth maintenance surface. Runtime routing uses the account binding (or direct fallback), with an explicit conversation proxy override taking precedence, and never consumes legacy group proxy/policy state.
+- `/account-pool` defaults to `/account-pool/transits`; `/account-pool/pool` remains the explicit OAuth/Session surface, and legacy `/account-pool/upstream-accounts` links continue to resolve to it.
 
 Account roster and maintenance-event APIs accept `kind=oauth_codex|api_key_codex`. The filter is applied before metrics, totals, pagination, group summaries, and event filtering. Omitting `kind` preserves the legacy mixed response for compatibility. API-key group writes are rejected server-side; UI hiding is not the enforcement boundary.
 
 Startup schema maintenance automatically migrates every legacy API-key record in one SQLite transaction. It retains an existing non-empty account proxy binding first; otherwise it copies a non-empty legacy group proxy binding; otherwise it writes the explicit direct binding. The migration clears API-key `group_name` and `is_mother`, detaches transit accounts from legacy group-only strategies, and writes an audit event. It preserves OAuth members, group metadata, account IDs, encrypted credentials, and tags. Create and update APIs reject an explicit empty proxy binding; UI creation defaults to direct and cannot submit without at least one binding.
+
+## Verification
+
+- `VER-ACCOUNT-POOL-DEFAULT-TRANSIT` covers: `REQ-ACCOUNT-POOL-DEFAULT-TRANSIT` through App route tests, account-pool layout tests, and the Web Demo route matrix.
 
 ## Related ADRs
 
