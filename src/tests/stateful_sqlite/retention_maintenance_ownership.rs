@@ -38,6 +38,81 @@ async fn ownership_manual_materialization_start_preserves_paused_schedule() {
 }
 
 #[tokio::test]
+async fn ownership_v2_persists_committed_as_processed_count() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "manual",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            run_id,
+            "success",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "committed": 7,
+                "processedCount": 7,
+                "selectedScope": {"committed": 7}
+            })),
+        )
+        .await
+        .unwrap();
+    let processed_count: Option<i64> =
+        sqlx::query_scalar("SELECT processed_count FROM managed_task_runs WHERE id=?")
+            .bind(run_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(processed_count, Some(7));
+}
+
+#[tokio::test]
+async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    for _ in 0..70 {
+        sqlx::query(
+            "INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,status,summary) VALUES('retention_archive','test',?,'success','old run')",
+        )
+        .bind("2020-01-01T00:00:00.000Z")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    }
+    let preview = store.cleanup_expired_history_bounded(true).await.unwrap();
+    assert_eq!(preview.selected, 64);
+    assert_eq!(preview.committed, 0);
+    assert!(preview.has_more);
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM managed_task_runs")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, 70);
+
+    let result = store.cleanup_expired_history_bounded(false).await.unwrap();
+    assert_eq!(result.selected, 64);
+    assert_eq!(result.committed, 64);
+    assert!(result.has_more);
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM managed_task_runs")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(after, 6);
+}
+
+#[tokio::test]
 async fn ownership_initialization_preserves_controls_and_recovers_interrupted_schedule_write() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();

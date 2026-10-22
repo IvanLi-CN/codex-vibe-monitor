@@ -24,6 +24,7 @@ use crate::{
 };
 
 static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const ARCHIVE_FILE_NO_PROGRESS_GRACE: Duration = Duration::from_secs(30);
 #[derive(Default)]
 struct ActiveArchiveFileOperations {
     writers: HashSet<PathBuf>,
@@ -477,7 +478,7 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
             inflate_gzip_sqlite_file_with_limits(
                 &source,
                 &destination,
-                Some(deadline),
+                deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
             )
@@ -534,6 +535,7 @@ fn inflate_gzip_sqlite_file_with_limits(
     let mut decoder = GzDecoder::new(input);
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
+    let total_input_bytes = fs::metadata(source).ok().map(|metadata| metadata.len());
     let mut writer = io::BufWriter::new(output);
     copy_archive_bytes_with_limits(
         &mut decoder,
@@ -542,6 +544,7 @@ fn inflate_gzip_sqlite_file_with_limits(
         operation_deadline,
         shutdown,
         cancellation,
+        total_input_bytes,
     )
     .with_context(|| {
         format!(
@@ -605,7 +608,7 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
             deflate_sqlite_file_to_gzip_with_limits(
                 &source,
                 &destination,
-                Some(deadline),
+                deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
             )
@@ -627,6 +630,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
         .with_context(|| format!("failed to create archive gzip {}", destination.display()))?;
     let mut encoder = GzEncoder::new(io::BufWriter::new(output), Compression::default());
     let mut reader = io::BufReader::new(input);
+    let total_input_bytes = fs::metadata(source).ok().map(|metadata| metadata.len());
     copy_archive_bytes_with_limits(
         &mut reader,
         &mut encoder,
@@ -634,6 +638,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
         operation_deadline,
         shutdown,
         cancellation,
+        total_input_bytes,
     )
     .with_context(|| {
         format!(
@@ -658,14 +663,23 @@ async fn run_archive_file_work_with_operation_budget<F>(
     work: F,
 ) -> Result<()>
 where
-    F: FnOnce(Instant, Option<CancellationToken>, Arc<AtomicBool>) -> Result<()> + Send + 'static,
+    F: FnOnce(Option<Instant>, Option<CancellationToken>, Arc<AtomicBool>) -> Result<()>
+        + Send
+        + 'static,
 {
-    let deadline = super::retention::retention_archive_file_operation_deadline();
     let shutdown = super::retention::retention_run_shutdown_token();
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(super::retention::retention_archive_file_operation_budget_exhausted());
-    }
+    // Production compression is governed by cancellation and the no-progress guard. The
+    // legacy fixed operation budget remains available only to deterministic unit tests.
+    #[cfg(test)]
+    let (deadline, timeout) = {
+        let deadline = super::retention::retention_archive_file_operation_deadline();
+        (
+            Some(deadline),
+            Some(deadline.saturating_duration_since(Instant::now())),
+        )
+    };
+    #[cfg(not(test))]
+    let (deadline, timeout) = (None, None);
     run_archive_file_work_with_deadline(
         ArchiveFileWorkRequest {
             operation,
@@ -673,16 +687,12 @@ where
             shared_read_paths,
             failure_cleanup_paths,
             timeout_cleanup_paths,
-            deadline: Some(deadline),
-            timeout: Some(remaining),
+            deadline,
+            timeout,
             shutdown,
         },
         move |operation_deadline, shutdown, cancellation| {
-            work(
-                operation_deadline.expect("operation budget must provide a deadline"),
-                shutdown,
-                cancellation,
-            )
+            work(operation_deadline, shutdown, cancellation)
         },
     )
     .await
@@ -785,14 +795,27 @@ fn copy_archive_bytes_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    total_input_bytes: Option<u64>,
 ) -> Result<()> {
     let mut buffer = [0_u8; 64 * 1024];
+    let mut processed_bytes = 0_u64;
+    let mut last_progress_at = Instant::now();
     loop {
         if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
             || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
             || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
         {
             return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+        }
+        if operation_deadline.is_none()
+            && last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE
+        {
+            return Err(
+                super::retention::retention_archive_file_operation_no_progress(
+                    processed_bytes,
+                    total_input_bytes,
+                ),
+            );
         }
         if shutdown.is_some_and(CancellationToken::is_cancelled)
             || (shutdown.is_none()
@@ -813,6 +836,8 @@ fn copy_archive_bytes_with_limits(
             bail!("insufficient disk space for task-local archive file work");
         }
         writer.write_all(&buffer[..read])?;
+        processed_bytes = processed_bytes.saturating_add(read as u64);
+        last_progress_at = Instant::now();
     }
 }
 
@@ -879,6 +904,44 @@ pub(crate) fn sha256_hex_file_with_deadline(path: &Path, deadline: Instant) -> R
             break;
         }
         hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(crate) fn sha256_hex_file_with_progress_guard(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
+    let total_input_bytes = file.metadata().ok().map(|metadata| metadata.len());
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 8192];
+    let mut processed_bytes = 0_u64;
+    let mut last_progress_at = Instant::now();
+    loop {
+        if super::retention::retention_run_budget_expired() {
+            return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+        }
+        if super::retention::retention_run_shutdown_token()
+            .is_some_and(|shutdown| shutdown.is_cancelled())
+        {
+            return Err(super::retention::retention_write_deferred(
+                "archive_file_hash",
+            ));
+        }
+        if last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE {
+            return Err(
+                super::retention::retention_archive_file_operation_no_progress(
+                    processed_bytes,
+                    total_input_bytes,
+                ),
+            );
+        }
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        processed_bytes = processed_bytes.saturating_add(read as u64);
+        last_progress_at = Instant::now();
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

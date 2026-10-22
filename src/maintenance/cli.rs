@@ -229,7 +229,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                     Ok(result) => {
                         let status = match result.completion {
                             "failed" => "failed",
-                            "deferred" => "skipped",
+                            "partial" | "deferred" => "skipped",
                             _ => "success",
                         };
                         observation.finish_with_status_and_reason(status, None);

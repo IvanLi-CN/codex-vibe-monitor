@@ -1,29 +1,32 @@
-# Retention Maintenance Has Four Explicit Task Owners
+# Retention Maintenance Has Seven Explicit Policy Owners
 
 Status: Accepted
 
-Retention currently combines archive work and orphan-conversation cleanup in one execution, observes independently owned Prompt-cache materialization as a retention stage, and attributes a separate raw orphan worker to the retention timeline. The owner confirmed four independently managed responsibilities so completion, failure, and resource consumption can be attributed to the work that actually owns them. Automatic triggering is controlled per task; explicit manual execution remains available when automatic triggers are paused. The confirmed requirement set is recorded in the [ownership Spec](../specs/retention-maintenance-task-ownership/SPEC.md).
+Retention previously combined invocation archive work with independent retention-policy cleanup and exposed mixed-unit completion facts. The owner confirmed seven independently managed policy owners so completion, failure, and resource consumption can be attributed to the work that actually owns them. Existing Prompt-cache, identity, raw-compression, archive-batch, and raw-orphan workers retain their own execution identities. Automatic triggering is controlled per task; explicit manual execution remains available when automatic triggers are paused. The confirmed requirement set is recorded in the [ownership Spec](../specs/retention-maintenance-task-ownership/SPEC.md).
 
 ## Agreed Responsibility Split
 
-| Responsibility                     | Task ownership                                                                        | Completion scope                                                                                                                           |
-| ---------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Data retention and archival        | Keep `retention_archive` and its existing task route.                                 | Archive publication, source transitions, detail pruning, cold raw compression, archive expiry, and the existing retention-policy janitors. |
-| Prompt-cache materialization       | Reuse `prompt_cache_materialization`; do not introduce another materialization owner. | Its existing identity, aggregate, and projection work, including refreshes durably queued by retention.                                    |
-| Orphan invocation identity cleanup | Extract the existing cleanup from the retention execution into a managed task.        | Reference- and occupancy-safe release of eligible conversation identities and ended, unreferenced hourly invocation prefixes.              |
-| Orphan Raw Payload File Cleanup    | Give the existing independent raw orphan worker a separate managed identity.          | Ownership-safe file removal and the corresponding physical inventory reconciliation.                                                       |
+| Responsibility            | Task ownership                       | Completion scope                                                                                 |
+| ------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| Invocation archival       | Keep `retention_archive`.            | Fixed cutoff/source-fence invocation archive, proof, source conversion, and related raw release. |
+| Pool attempt archival     | Add `pool_upstream_attempt_archive`. | Expired `pool_upstream_request_attempts` rows only.                                              |
+| Forward proxy archival    | Add `forward_proxy_attempt_archive`. | Expired `forward_proxy_attempts` rows only.                                                      |
+| Invocation detail pruning | Add `invocation_detail_prune`.       | Eligible completed invocation detail rows only.                                                  |
+| Quota snapshot compaction | Add `quota_snapshot_compaction`.     | Historical quota snapshots beyond the daily representative boundary.                             |
+| Model route expiry        | Add `model_route_expiry`.            | Expired model-route rows only.                                                                   |
+| Task-run history cleanup  | Add `task_run_history_cleanup`.      | Expired `system_task_runs` audit history and `managed_task_runs` scheduler history.              |
 
 Archive-associated raw-file release remains part of the source transition that permits it. Independent raw orphan cleanup handles files without a remaining owner; it does not take over that atomic archive transition. The existing raw-payload metrics inventory remains a separate responsibility outside this task split.
 
 ## Agreed Operator Control
 
-The four task-page controls are independent and are the sole steady-state authority for automatic triggering. The existing enabled/disabled field represents whether automatic triggers are active; it does not grant or revoke permission for an explicit manual execution. Pausing `retention_archive` does not pause either cleanup task or Prompt-cache materialization. Resuming automatic archival does not change the other tasks' control values.
+The seven policy-owner task-page controls are independent and are the sole steady-state authority for automatic triggering. The existing enabled/disabled field represents whether automatic triggers are active; it does not grant or revoke permission for an explicit manual execution. Pausing `retention_archive` does not pause any other retention owner or Prompt-cache materialization. Resuming automatic archival does not change the other tasks' control values.
 
 Remove `RETENTION_ENABLED` and its legacy `XY_RETENTION_ENABLED` alias from the supported runtime configuration. Neither is read, validated, rejected, or imported during startup or control initialization. Environment configuration documentation, examples, and the effective-policy display must reflect the managed controls. A retained old variable has no effect, including when its old value was false.
 
 Do not import the previously effective environmental enablement. Existing managed-task control values and administrator schedule overrides remain intact; missing task rows use the new task defaults. Consequently, an archive task whose stored control is enabled may begin automatic work after upgrading even if the retired variable previously suppressed it. The owner explicitly selected this behavior instead of a one-time compatibility import.
 
-Both newly managed cleanup tasks default to enabled on a new installation and when their controls are first introduced into an existing maintenance store. New installations retain the enabled defaults of the archive and materialization tasks. An existing row's disabled value is an operator decision and must not be reset to the enabled default on later starts or upgrades.
+The seven policy-owner rows default to enabled on a new installation and when their controls are first introduced into an existing maintenance store. New installations retain the enabled defaults of the existing materialization and cleanup tasks. An existing row's disabled value is an operator decision and must not be reset to the enabled default on later starts or upgrades.
 
 Orphan identity cleanup includes both orphan Prompt-cache Conversations and the existing cleanup of ended, unreferenced hourly invocation prefixes. They remain distinct measured populations within the same identity-cleanup responsibility; the split must not leave hourly prefix cleanup behind in the archive execution.
 
@@ -39,15 +42,15 @@ Task-page run-now and CLI one-shot requests remain allowed while automatic trigg
 
 ## Agreed One-Shot Scope
 
-`--retention-run-once` executes only the archival responsibility and its retained policy janitors. It no longer performs orphan conversation identity cleanup or a raw orphan scan. Its dry-run scope is the same archival responsibility.
+`--retention-run-once` executes only the invocation archival responsibility. It no longer performs detail pruning, attempt archival, quota compaction, route expiry, task-run history cleanup, orphan conversation identity cleanup, raw compression, archive-batch cleanup, or a raw orphan scan. Its dry-run scope is the same invocation archival responsibility.
 
-The two cleanup owners each provide their own bounded one-shot and dry-run entry point. A task-specific invocation cannot execute, resume automatic triggers for, or consume the budget of another responsibility. Identity cleanup includes its conversation and hourly-prefix populations; raw cleanup uses its existing ownership and recovery protocol.
+Each policy owner provides its own bounded one-shot and dry-run entry point. A task-specific invocation cannot execute, resume automatic triggers for, or consume the budget of another responsibility. Identity cleanup includes its conversation and hourly-prefix populations; raw compression, archive-batch cleanup, and raw orphan cleanup use their existing ownership and recovery protocols.
 
 Dry-run evaluates the selected task's eligible work and reports the inspected scope and incomplete coverage explicitly. It cannot delete source rows, release identities, unlink files, publish quarantine/release changes, or advance the live cleanup correctness cursor; operational observation or necessary structural initialization is distinct from performing the cleanup. A bounded preview is not a promise of a full-store total.
 
 ## Presentation and Audit Contract
 
-The task catalog and actual-execution area show four distinct responsibility owners. Each has its own detail route, effective scheduling, operator control, run history, work measurements, and resource-deferral attribution. Related-task links can connect the archive detail page to materialization and cleanup without producing another combined execution or a mixed-unit completion percentage.
+The task catalog and actual-execution area show seven distinct policy owners. Each has its own detail route, effective scheduling, operator control, run history, work measurements, and resource-deferral attribution. Related-task links can connect the archive detail page to materialization and cleanup without producing another combined execution or a mixed-unit completion percentage.
 
 New archive progress and history describe the archive owner's work only. They do not present independently owned materialization or identity cleanup as archive stages, and the raw orphan worker's new execution and pressure events belong to the raw cleanup identity. Shared database pressure remains a shared condition, while the observed affected work retains its real task identity.
 
@@ -61,6 +64,8 @@ Old retention records remain under their original task identity and retain their
 - Conversation deletion continues to check both key references and Conversation ID references, active occupancy, and existing retention protections. Raw deletion continues to require its existing ownership proof and file-lock rules. Task separation does not authorize earlier or less thoroughly proven deletion.
 - Archive publication proofs, source identity verification, monthly archive targets, task-local batch closure, retention periods, and foreground-write priority remain governed by their existing contracts.
 - Progress retains task-specific units. Invocation rows, conversation identities, files, and bytes cannot be combined into one total or completion percentage. Unknown population or missing observation remains unknown.
+- New policy-owner results use `no-work`, `complete`, `partial`, `deferred`, and `failed`; `discovered`, `selected`, and `committed` facts remain separate, and `processedCount` never sums different owners. Historical composite records retain their old `completed`-compatible values and details.
+- The dispatcher has bounded workers and finalizers, holds a task execution lease for the complete worker lifetime, limits heavy file work to one active owner, and drains native work before shutdown releases its lease. Admission waits do not hold database connections, write permits, or archive fences.
 - Business correctness state remains authoritative in the main store; operational configuration, progress, and history retain the existing maintenance-store ownership. Observation failure cannot add synchronous fallback writes to the business store.
 
 ## Verification Expectations

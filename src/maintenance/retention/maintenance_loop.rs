@@ -124,6 +124,645 @@ impl RetentionRunSummary {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct RetentionOwnerRunSummary {
+    pub(crate) task_key: String,
+    pub(crate) source_scope: String,
+    pub(crate) unit: String,
+    pub(crate) global_total: Option<i64>,
+    pub(crate) source_max_id: Option<i64>,
+    pub(crate) discovered: usize,
+    pub(crate) selected: usize,
+    pub(crate) committed: usize,
+    pub(crate) batches: usize,
+    pub(crate) raw_files_removed: usize,
+    pub(crate) completion: &'static str,
+    pub(crate) wait_reason: Option<String>,
+    pub(crate) fatal_error: Option<String>,
+    pub(crate) has_more: bool,
+    pub(crate) elapsed_ms: u64,
+}
+
+impl RetentionOwnerRunSummary {
+    fn new(task_key: &str, source_scope: &str, unit: &str) -> Self {
+        Self {
+            task_key: task_key.to_string(),
+            source_scope: source_scope.to_string(),
+            unit: unit.to_string(),
+            global_total: None,
+            source_max_id: None,
+            discovered: 0,
+            selected: 0,
+            committed: 0,
+            batches: 0,
+            raw_files_removed: 0,
+            completion: "complete",
+            wait_reason: None,
+            fatal_error: None,
+            has_more: false,
+            elapsed_ms: 0,
+        }
+    }
+
+    fn finish(mut self, started_at: Instant) -> Self {
+        self.elapsed_ms = started_at.elapsed().as_millis() as u64;
+        self
+    }
+}
+
+fn classify_retention_owner_error(error: &anyhow::Error) -> (&'static str, Option<String>) {
+    if is_retention_archive_file_operation_budget_exhausted(error) {
+        return (
+            "deferred",
+            Some(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON.to_string()),
+        );
+    }
+    if is_retention_archive_file_operation_no_progress(error) {
+        return (
+            "failed",
+            Some(format!(
+                "fatal_error;reason={RETENTION_ARCHIVE_FILE_NO_PROGRESS_REASON};failure_fingerprint:{}",
+                retention_error_fingerprint(error)
+            )),
+        );
+    }
+    if retention_run_budget_expired() {
+        return ("deferred", Some("retention_work_budget".to_string()));
+    }
+    if is_retention_write_deferred(error) {
+        return ("deferred", Some("retention_write_admission".to_string()));
+    }
+    if crate::is_sqlite_lock_error(error) {
+        return (
+            "deferred",
+            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE.to_string()),
+        );
+    }
+    (
+        "failed",
+        Some(format!(
+            "fatal_error;failure_fingerprint:{}",
+            retention_error_fingerprint(error)
+        )),
+    )
+}
+
+fn apply_retention_owner_error(summary: &mut RetentionOwnerRunSummary, error: &anyhow::Error) {
+    let (completion, reason) = classify_retention_owner_error(error);
+    summary.completion = if completion == "deferred" && summary.committed > 0 {
+        "partial"
+    } else {
+        completion
+    };
+    if completion == "failed" {
+        summary.fatal_error = reason;
+    } else {
+        summary.wait_reason = reason;
+    }
+}
+
+fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, dataset: &str) {
+    let (selected, committed, batches) = batch_plan::TASK_BATCH_METRICS
+        .try_with(|metrics| {
+            metrics
+                .borrow()
+                .iter()
+                .filter(|batch| batch.dataset == dataset)
+                .fold((0, 0, 0), |(selected, committed, batches), batch| {
+                    (
+                        selected.saturating_add(batch.batch_rows),
+                        committed.saturating_add(batch.committed_rows),
+                        batches + 1,
+                    )
+                })
+        })
+        .unwrap_or_default();
+    summary.discovered = selected;
+    summary.selected = selected;
+    summary.committed = committed;
+    summary.batches = batches;
+}
+
+fn apply_retention_owner_batch_error(
+    summary: &mut RetentionOwnerRunSummary,
+    dataset: &str,
+    error: &anyhow::Error,
+) {
+    record_retention_owner_batch_facts(summary, dataset);
+    apply_retention_owner_error(summary, error);
+}
+
+fn apply_retention_owner_success(
+    summary: &mut RetentionOwnerRunSummary,
+    selected: usize,
+    batches: usize,
+    raw_files_removed: usize,
+    has_more: bool,
+    dry_run: bool,
+) {
+    summary.discovered = selected;
+    summary.selected = selected;
+    summary.committed = if dry_run { 0 } else { selected };
+    summary.batches = batches;
+    summary.raw_files_removed = raw_files_removed;
+    summary.has_more = !dry_run && has_more;
+    if let Some(reason) = retention_run_defer_reason() {
+        summary.wait_reason = Some(reason);
+    }
+    summary.completion = if summary.wait_reason.is_some() || summary.has_more {
+        if summary.committed > 0 {
+            "partial"
+        } else {
+            "deferred"
+        }
+    } else if selected == 0 {
+        "no-work"
+    } else {
+        "complete"
+    };
+}
+
+async fn invocation_archive_fence(pool: &Pool<Sqlite>, cutoff: &str) -> Result<(Option<i64>, i64)> {
+    let source_max_id =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(pool)
+            .await?;
+    let total = match source_max_id {
+        Some(source_max_id) => {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1 AND id <= ?2",
+            )
+            .bind(cutoff)
+            .bind(source_max_id)
+            .fetch_one(pool)
+            .await?
+        }
+        None => 0,
+    };
+    Ok((source_max_id, total))
+}
+
+async fn remaining_invocation_archive_rows(
+    pool: &Pool<Sqlite>,
+    cutoff: &str,
+    source_max_id: Option<i64>,
+) -> Result<i64> {
+    let Some(source_max_id) = source_max_id else {
+        return Ok(0);
+    };
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1 AND id <= ?2",
+    )
+    .bind(cutoff)
+    .bind(source_max_id)
+    .fetch_one(pool)
+    .await
+}
+
+async fn run_invocation_archive_owner_inner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+    shutdown: &CancellationToken,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let (source_max_id, global_total) = invocation_archive_fence(pool, &cutoff).await?;
+    let mut summary = RetentionOwnerRunSummary::new(
+        "retention_archive",
+        "expired_invocations:retention_policy",
+        "invocation rows",
+    );
+    summary.source_max_id = source_max_id;
+    summary.global_total = Some(global_total);
+
+    if shutdown.is_cancelled() {
+        summary.completion = "deferred";
+        summary.wait_reason = Some("shutdown".to_string());
+        return Ok(summary.finish(started_at));
+    }
+
+    if !dry_run {
+        let janitor = cleanup_stale_archive_temp_files(config, false)?;
+        if janitor.stale_temp_files_removed > 0 {
+            info!(
+                ?janitor,
+                "archive temp janitor removed stale files before invocation archive owner"
+            );
+        }
+        for (stage, result) in [
+            (
+                "legacy_reconcile",
+                reconcile_staged_archive_replacements(pool, Some(config))
+                    .await
+                    .map(|_| ()),
+            ),
+            (
+                "prepared_reconcile",
+                reconcile_retention_prepared_archives(pool, config)
+                    .await
+                    .map(|_| ()),
+            ),
+            (
+                "legacy_reconcile",
+                reconcile_legacy_retention_archive_segments(pool, config)
+                    .await
+                    .map(|_| ()),
+            ),
+        ] {
+            if let Err(error) = result {
+                if is_retention_write_deferred(&error)
+                    || is_retention_archive_file_operation_budget_exhausted(&error)
+                {
+                    summary.wait_reason = Some(if is_retention_write_deferred(&error) {
+                        "retention_write_admission".to_string()
+                    } else {
+                        RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON.to_string()
+                    });
+                } else {
+                    retention_recovery_persist_latest_failure_best_effort(pool, stage, &error)
+                        .await;
+                    summary.wait_reason = Some("retention_recovery_failure".to_string());
+                }
+                retention_recovery_log_event(
+                    tracing::Level::WARN,
+                    stage,
+                    "invocation archive recovery preflight deferred",
+                );
+            }
+        }
+    }
+
+    if global_total == 0 && summary.wait_reason.is_none() {
+        summary.completion = "no-work";
+        return Ok(summary.finish(started_at));
+    }
+
+    let payload_loss_days = config
+        .invocation_success_full_days
+        .min(config.invocation_max_days);
+    if !dry_run
+        && !parallel_work_minute_coverage_ready_for_payload_retention(
+            pool,
+            shanghai_retention_cutoff(payload_loss_days).timestamp(),
+        )
+        .await
+        .context("failed to verify parallel-work minute coverage before invocation archive")?
+    {
+        summary.completion = "deferred";
+        summary.wait_reason = Some("parallel_work_minute_coverage".to_string());
+        return Ok(summary.finish(started_at));
+    }
+
+    let archive = archive_old_invocations_with_source_max(
+        pool,
+        config,
+        config.database_path.parent(),
+        dry_run,
+        &cutoff,
+        source_max_id,
+    )
+    .await;
+    match archive {
+        Ok((selected, batches, raw_files_removed, _prompt_cache_keys)) => {
+            let has_more = if dry_run {
+                false
+            } else {
+                match remaining_invocation_archive_rows(pool, &cutoff, source_max_id).await {
+                    Ok(remaining) => remaining > 0,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "invocation archive backlog observation failed after commit"
+                        );
+                        true
+                    }
+                }
+            };
+            apply_retention_owner_success(
+                &mut summary,
+                selected,
+                batches,
+                raw_files_removed,
+                has_more,
+                dry_run,
+            );
+        }
+        Err(error) => {
+            record_retention_owner_batch_facts(&mut summary, "codex_invocations");
+            summary.has_more =
+                match remaining_invocation_archive_rows(pool, &cutoff, source_max_id).await {
+                    Ok(remaining) => remaining > 0,
+                    Err(observation_error) => {
+                        warn!(
+                            error = %observation_error,
+                            "invocation archive backlog observation failed after error"
+                        );
+                        true
+                    }
+                };
+            apply_retention_owner_error(&mut summary, &error);
+        }
+    }
+    if summary.wait_reason.is_some() && summary.completion == "complete" {
+        summary.completion = if summary.committed > 0 || summary.has_more {
+            "partial"
+        } else {
+            "deferred"
+        };
+    }
+    Ok(summary.finish(started_at))
+}
+
+async fn run_timestamped_archive_owner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    task_key: &str,
+    source_scope: &str,
+    select_sql: &str,
+    cutoff: String,
+    dry_run: bool,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let mut summary = RetentionOwnerRunSummary::new(task_key, source_scope, "rows");
+    let archive = archive_timestamped_dataset(
+        pool,
+        config,
+        archive_table_spec(if task_key == "pool_upstream_attempt_archive" {
+            "pool_upstream_request_attempts"
+        } else {
+            "forward_proxy_attempts"
+        }),
+        select_sql,
+        cutoff,
+        dry_run,
+    )
+    .await;
+    match archive {
+        Ok((selected, batches, raw_files_removed)) => {
+            apply_retention_owner_success(
+                &mut summary,
+                selected,
+                batches,
+                raw_files_removed,
+                selected >= archive_candidate_limit(config),
+                dry_run,
+            );
+        }
+        Err(error) => apply_retention_owner_batch_error(
+            &mut summary,
+            if task_key == "pool_upstream_attempt_archive" {
+                "pool_upstream_request_attempts"
+            } else {
+                "forward_proxy_attempts"
+            },
+            &error,
+        ),
+    }
+    Ok(summary.finish(started_at))
+}
+
+async fn run_invocation_detail_prune_owner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let mut summary = RetentionOwnerRunSummary::new(
+        "invocation_detail_prune",
+        "codex_invocation_details:retention_policy",
+        "invocation rows",
+    );
+    match prune_old_invocation_details(pool, config, config.database_path.parent(), dry_run).await {
+        Ok((selected, batches, raw_files_removed)) => {
+            apply_retention_owner_success(
+                &mut summary,
+                selected,
+                batches,
+                raw_files_removed,
+                selected >= archive_candidate_limit(config),
+                dry_run,
+            );
+        }
+        Err(error) => {
+            apply_retention_owner_batch_error(&mut summary, "codex_invocation_details", &error)
+        }
+    }
+    Ok(summary.finish(started_at))
+}
+
+async fn run_quota_snapshot_compaction_owner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let mut summary = RetentionOwnerRunSummary::new(
+        "quota_snapshot_compaction",
+        "codex_quota_snapshots:retention_policy",
+        "quota snapshot rows",
+    );
+    match compact_old_quota_snapshots(pool, config, dry_run).await {
+        Ok((selected, batches)) => {
+            apply_retention_owner_success(
+                &mut summary,
+                selected,
+                batches,
+                0,
+                selected >= archive_candidate_limit(config),
+                dry_run,
+            );
+        }
+        Err(error) => {
+            apply_retention_owner_batch_error(&mut summary, "codex_quota_snapshots", &error)
+        }
+    }
+    Ok(summary.finish(started_at))
+}
+
+async fn run_model_route_expiry_owner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let mut summary = RetentionOwnerRunSummary::new(
+        "model_route_expiry",
+        "model_routes:expiry",
+        "model route rows",
+    );
+    let candidate_limit = retention_candidate_limit(config, "model_route_purge");
+    let result = if dry_run {
+        crate::upstream_accounts::count_expired_model_routes(pool)
+            .await
+            .map(|count| count as usize)
+    } else {
+        crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit)
+            .await
+            .map(|count| count as usize)
+    };
+    match result {
+        Ok(selected) => {
+            apply_retention_owner_success(
+                &mut summary,
+                selected,
+                0,
+                0,
+                selected >= candidate_limit,
+                dry_run,
+            );
+        }
+        Err(error) => apply_retention_owner_error(&mut summary, &error),
+    }
+    Ok(summary.finish(started_at))
+}
+
+async fn run_task_run_history_cleanup_owner(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let mut summary = RetentionOwnerRunSummary::new(
+        "task_run_history_cleanup",
+        "task_runs:history_retention",
+        "task-run rows",
+    );
+    let legacy_selected = match prune_system_task_runs_for_owner(pool, dry_run).await {
+        Ok(selected) => selected,
+        Err(error) => {
+            apply_retention_owner_error(&mut summary, &error);
+            return Ok(summary.finish(started_at));
+        }
+    };
+    let managed_history = if let Some(store) = crate::maintenance_store::global() {
+        match store.cleanup_expired_history_bounded(dry_run).await {
+            Ok(result) => result,
+            Err(error) => {
+                apply_retention_owner_error(&mut summary, &error);
+                return Ok(summary.finish(started_at));
+            }
+        }
+    } else {
+        crate::maintenance_store::ManagedTaskHistoryCleanupResult::default()
+    };
+    let selected = legacy_selected.saturating_add(managed_history.selected);
+    let committed = if dry_run {
+        0
+    } else {
+        legacy_selected.saturating_add(managed_history.committed)
+    };
+    let batches = legacy_selected
+        .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS.saturating_sub(1))
+        / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS
+        + usize::from(managed_history.selected > 0);
+    apply_retention_owner_success(
+        &mut summary,
+        selected,
+        batches,
+        0,
+        !dry_run
+            && (legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
+                || managed_history.has_more),
+        dry_run,
+    );
+    if !dry_run {
+        summary.committed = committed;
+        if summary.completion == "complete" && committed != selected {
+            summary.completion = if committed > 0 { "partial" } else { "deferred" };
+        }
+    }
+    Ok(summary.finish(started_at))
+}
+
+async fn run_retention_owner_task_inner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    task_key: &str,
+    dry_run: bool,
+    shutdown: &CancellationToken,
+) -> Result<RetentionOwnerRunSummary> {
+    if shutdown.is_cancelled() {
+        let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
+        summary.completion = "deferred";
+        summary.wait_reason = Some("shutdown".to_string());
+        return Ok(summary);
+    }
+    match task_key {
+        "retention_archive" => {
+            run_invocation_archive_owner_inner(pool, config, dry_run, shutdown).await
+        }
+        "pool_upstream_attempt_archive" => {
+            run_timestamped_archive_owner(
+                pool,
+                config,
+                task_key,
+                "pool_upstream_request_attempts:retention_policy",
+                "SELECT id, occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
+                shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
+                dry_run,
+            )
+            .await
+        }
+        "forward_proxy_attempt_archive" => {
+            run_timestamped_archive_owner(
+                pool,
+                config,
+                task_key,
+                "forward_proxy_attempts:retention_policy",
+                "SELECT id, occurred_at AS timestamp_value FROM forward_proxy_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
+                shanghai_utc_cutoff_string(config.forward_proxy_attempts_retention_days),
+                dry_run,
+            )
+            .await
+        }
+        "invocation_detail_prune" => run_invocation_detail_prune_owner(pool, config, dry_run).await,
+        "quota_snapshot_compaction" => {
+            run_quota_snapshot_compaction_owner(pool, config, dry_run).await
+        }
+        "model_route_expiry" => run_model_route_expiry_owner(pool, config, dry_run).await,
+        "task_run_history_cleanup" => run_task_run_history_cleanup_owner(pool, dry_run).await,
+        _ => bail!("unsupported retention owner task: {task_key}"),
+    }
+}
+
+pub(crate) async fn run_retention_owner_task(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    task_key: &str,
+    dry_run: bool,
+    shutdown: &CancellationToken,
+) -> Result<RetentionOwnerRunSummary> {
+    let started_at = Instant::now();
+    let result = RETENTION_MAINTENANCE_ACTIVE
+        .scope(
+            (),
+            RETENTION_SHUTDOWN.scope(
+                shutdown.clone(),
+                RETENTION_CURRENT_PREPARED_KEY.scope(
+                    RefCell::new(None),
+                    batch_plan::TASK_BATCH_METRICS.scope(
+                        RefCell::new(Vec::new()),
+                        RETENTION_RUN_DEFER_REASON.scope(
+                            RefCell::new(None),
+                            run_retention_owner_task_inner(
+                                pool, config, task_key, dry_run, shutdown,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        .await;
+    match result {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
+            apply_retention_owner_error(&mut summary, &error);
+            Ok(summary.finish(started_at))
+        }
+    }
+}
+
 fn mark_archive_file_operation_budget_exhausted(
     summary: &mut RetentionRunSummary,
     error: &anyhow::Error,
@@ -222,8 +861,20 @@ pub(crate) fn system_task_run_retention_admission_requires_pressure_backoff(
 }
 
 pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
+    prune_system_task_runs_inner(pool, dry_run, true).await
+}
+
+async fn prune_system_task_runs_for_owner(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
+    prune_system_task_runs_inner(pool, dry_run, false).await
+}
+
+async fn prune_system_task_runs_inner(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+    respect_process_schedule: bool,
+) -> Result<usize> {
     let now_epoch_ms = system_task_run_retention_now_epoch_ms();
-    if !system_task_run_retention_pass_is_due(now_epoch_ms) {
+    if respect_process_schedule && !system_task_run_retention_pass_is_due(now_epoch_ms) {
         return Ok(0);
     }
 

@@ -496,7 +496,8 @@ export default function SystemTaskDetailPage() {
                   <div className="flex flex-wrap justify-between gap-2">
                     <span>{run.startedAt}</span>
                     <span className="font-medium">
-                      {managedTaskRunStatusLabel(run.status)} · {formatDuration(run.durationMs)}
+                      {managedTaskRunStatusLabel(run.status, run.completion)} ·{" "}
+                      {formatDuration(run.durationMs)}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60">

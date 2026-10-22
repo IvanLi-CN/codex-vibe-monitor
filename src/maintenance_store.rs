@@ -12,7 +12,6 @@ use std::{
     collections::HashSet,
     path::PathBuf,
     str::FromStr,
-    sync::atomic::{AtomicI64, Ordering},
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -22,14 +21,16 @@ const MIN_INTERVAL_SECS: i64 = 60;
 const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
 const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
-const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+const TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS: i64 = 64;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
 const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
 const MANAGED_TASK_ENQUEUE_BATCH_SIZE: i64 = 32;
 const MANAGED_TASK_CLAIM_BATCH_SIZE: i64 = 32;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
+const RETENTION_OWNER_SCHEDULE_MARKER: &str = "retention_owner_schedule_v2";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
+const DEFAULT_RETENTION_OWNER_INTERVAL_SECS: i64 = 300;
 const OWNERSHIP_INITIALIZATION_MARKER: &str = "retention_maintenance_ownership_v1";
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
@@ -62,6 +63,12 @@ type LegacyBackfillProgressRow = (
 );
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
     "invocation_identity_cleanup",
     "raw_orphan_sweep",
     "upstream_account_maintenance",
@@ -78,7 +85,6 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "raw_payload_metrics_inventory",
     "prompt_cache_materialization",
 ];
-static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub(crate) async fn observe_store_write<T>(
@@ -154,6 +160,12 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     matches!(
         key,
         "retention_archive"
+            | "pool_upstream_attempt_archive"
+            | "forward_proxy_attempt_archive"
+            | "invocation_detail_prune"
+            | "quota_snapshot_compaction"
+            | "model_route_expiry"
+            | "task_run_history_cleanup"
             | "invocation_identity_cleanup"
             | "raw_orphan_sweep"
             | "prompt_cache_materialization"
@@ -207,6 +219,13 @@ fn canonical_task_execution_key(task_key: &str) -> &str {
 pub(crate) struct MaintenanceStore {
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) prompt_cache_materialization_control: Arc<PromptCacheMaterializationControl>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ManagedTaskHistoryCleanupResult {
+    pub(crate) selected: usize,
+    pub(crate) committed: usize,
+    pub(crate) has_more: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1153,7 +1172,49 @@ pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
     (
         "retention_archive",
         "数据保留与归档",
-        "按保留策略归档并清理历史数据",
+        "按固定源快照完成过期调用归档",
+        "interval",
+        false,
+    ),
+    (
+        "pool_upstream_attempt_archive",
+        "连接池上游尝试归档",
+        "独立归档过期的连接池上游请求尝试",
+        "interval",
+        false,
+    ),
+    (
+        "forward_proxy_attempt_archive",
+        "正向代理尝试归档",
+        "独立归档过期的正向代理尝试",
+        "interval",
+        false,
+    ),
+    (
+        "invocation_detail_prune",
+        "调用详情裁剪",
+        "独立裁剪保留窗口内已完成调用的详情数据",
+        "interval",
+        false,
+    ),
+    (
+        "quota_snapshot_compaction",
+        "配额快照压缩",
+        "独立压缩历史配额快照，仅保留每日代表记录",
+        "interval",
+        false,
+    ),
+    (
+        "model_route_expiry",
+        "模型路由过期",
+        "独立清理已过期的模型路由记录",
+        "interval",
+        false,
+    ),
+    (
+        "task_run_history_cleanup",
+        "任务运行历史清理",
+        "独立清理超出保留策略的任务运行历史",
         "interval",
         false,
     ),
@@ -1359,6 +1420,12 @@ pub(crate) fn task_title_for_observation(task_key: &str) -> String {
 pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
     match task_key {
         "retention_archive"
+        | "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup"
         | "invocation_identity_cleanup"
         | "raw_orphan_sweep"
         | "upstream_account_maintenance"
@@ -1387,6 +1454,12 @@ pub(crate) fn canonical_managed_task_key(task_key: &str) -> &str {
 
 const EDITABLE_SCHEDULE_TASKS: &[&str] = &[
     "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
     "invocation_identity_cleanup",
     "raw_orphan_sweep",
     "upstream_account_maintenance",
@@ -1401,7 +1474,13 @@ fn task_trigger_kinds(task_key: &str, trigger_mode: &str, is_manual: bool) -> Ve
         return vec!["manual".to_string()];
     }
     let kinds: &[&str] = match task_key {
-        "retention_archive" => &["startup", "interval", "catchup", "manual"],
+        "retention_archive"
+        | "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup" => &["startup", "interval", "catchup", "manual"],
         "upstream_account_maintenance" => &["startup", "interval"],
         "invocation_identity_cleanup" | "raw_orphan_sweep" => &["interval", "catchup", "manual"],
         "forward_proxy_subscription_refresh" => &["startup", "interval"],
@@ -1453,7 +1532,16 @@ fn task_policy_text(
         ),
         "retention_archive" => (
             "运行配置",
-            "启动检查与保留策略周期；按配置判断是否有工作".to_string(),
+            "启动检查与调用归档周期；按固定源快照判断是否有工作".to_string(),
+        ),
+        "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup" => (
+            "系统默认",
+            "300 秒独立巡检；候选、已提交数量按本 owner 单独统计".to_string(),
         ),
         "forward_proxy_subscription_refresh" => {
             ("系统默认", "启动刷新与固定检查间隔：60 秒".to_string())
@@ -1534,6 +1622,35 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
             pending: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
             discovered: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
             processed: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
+        };
+    }
+
+    let owner_scope = match task_key {
+        "pool_upstream_attempt_archive" => Some((
+            "pool attempt rows",
+            "pool_upstream_request_attempts:retention_policy",
+        )),
+        "forward_proxy_attempt_archive" => Some((
+            "forward proxy attempt rows",
+            "forward_proxy_attempts:retention_policy",
+        )),
+        "invocation_detail_prune" => Some((
+            "invocation rows",
+            "codex_invocation_details:retention_policy",
+        )),
+        "quota_snapshot_compaction" => Some((
+            "quota snapshot rows",
+            "codex_quota_snapshots:retention_policy",
+        )),
+        "model_route_expiry" => Some(("model route rows", "model_routes:expiry")),
+        "task_run_history_cleanup" => Some(("task-run rows", "task_runs:history_retention")),
+        _ => None,
+    };
+    if let Some((unit, scope)) = owner_scope {
+        return TaskMeasurementCapabilities {
+            pending: metric_capability(false, None, None),
+            discovered: metric_capability(true, Some(unit), Some(scope)),
+            processed: metric_capability(true, Some(unit), Some(scope)),
         };
     }
 
@@ -3069,7 +3186,7 @@ impl MaintenanceStore {
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64)
                         .bind(status).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
-                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
+                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
                         .execute(&mut *transaction).await?;
                 }
@@ -3403,7 +3520,7 @@ impl MaintenanceStore {
                  WHERE candidate.status='requested'
                    AND candidate.task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
-                   ) AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
+                   ) AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
                    )
                  ORDER BY candidate.id
                  LIMIT ?
@@ -3421,7 +3538,7 @@ impl MaintenanceStore {
              WHERE id = (
                  SELECT id FROM managed_task_runs
                  WHERE status='requested'
-                   AND ((trigger_kind='manual' AND task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')) OR task_key IN (
+                   AND ((trigger_kind='manual' AND task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')) OR task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled!=0 OR is_manual!=0
                    ))
                  ORDER BY id
@@ -3834,6 +3951,46 @@ impl MaintenanceStore {
                 .await?;
             changed = true;
         }
+        let owner_schedule_applied: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(RETENTION_OWNER_SCHEDULE_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if owner_schedule_applied.is_none() {
+            for key in [
+                "pool_upstream_attempt_archive",
+                "forward_proxy_attempt_archive",
+                "invocation_detail_prune",
+                "quota_snapshot_compaction",
+                "model_route_expiry",
+                "task_run_history_cleanup",
+            ] {
+                sqlx::query(
+                    "UPDATE managed_tasks
+                     SET interval_secs=?,
+                         next_trigger_at=CASE WHEN enabled!=0 THEN COALESCE(next_trigger_at, ?) ELSE NULL END,
+                         schedule_source='default',
+                         updated_at=?
+                     WHERE task_key=?
+                       AND is_manual=0
+                       AND interval_secs IS NULL
+                       AND (cron_expr IS NULL OR trim(cron_expr)='')",
+                )
+                .bind(DEFAULT_RETENTION_OWNER_INTERVAL_SECS)
+                .bind(&now)
+                .bind(&now)
+                .bind(key)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)")
+                .bind(RETENTION_OWNER_SCHEDULE_MARKER)
+                .bind("applied")
+                .bind(&now)
+                .execute(&mut *transaction)
+                .await?;
+            changed = true;
+        }
         let defaults_applied: Option<String> =
             sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
                 .bind(INITIAL_TASK_DEFAULTS_MARKER)
@@ -4096,48 +4253,120 @@ impl MaintenanceStore {
         Ok(enqueued)
     }
 
-    pub(crate) async fn cleanup_expired_history_if_due(&self) -> Result<()> {
-        let now_ms = Utc::now().timestamp_millis();
-        let last_ms = LAST_TASK_HISTORY_CLEANUP_MS.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last_ms) < TASK_HISTORY_CLEANUP_INTERVAL_MS
-            || LAST_TASK_HISTORY_CLEANUP_MS
-                .compare_exchange(last_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-        {
-            return Ok(());
-        }
+    pub(crate) async fn cleanup_expired_history_bounded(
+        &self,
+        dry_run: bool,
+    ) -> Result<ManagedTaskHistoryCleanupResult> {
         observe_store_write(
             StoreOperation::Cleanup,
-            self.cleanup_expired_history_if_due_inner(),
+            self.cleanup_expired_history_bounded_inner(dry_run),
         )
         .await
     }
 
-    async fn cleanup_expired_history_if_due_inner(&self) -> Result<()> {
+    async fn cleanup_expired_history_bounded_inner(
+        &self,
+        dry_run: bool,
+    ) -> Result<ManagedTaskHistoryCleanupResult> {
         let now = Utc::now();
         let error_cutoff =
             format_utc_iso_millis(now - ChronoDuration::days(TASK_ERROR_RETENTION_DAYS));
         let run_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_RUN_RETENTION_DAYS));
-        sqlx::query("UPDATE managed_task_runs SET error_detail=NULL WHERE started_at < ?")
-            .bind(error_cutoff)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM managed_task_runs WHERE started_at < ?")
-            .bind(run_cutoff)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query(
+        let error_detail_count_sql = "SELECT COUNT(*) FROM (SELECT id FROM managed_task_runs WHERE started_at < ?1 AND started_at >= ?2 AND error_detail IS NOT NULL LIMIT ?3)";
+        let run_count_sql = "SELECT COUNT(*) FROM (SELECT id FROM managed_task_runs WHERE started_at < ?1 AND status NOT IN ('running','requested','queued') ORDER BY started_at ASC, id ASC LIMIT ?2)";
+        let work_count_sql = "SELECT COUNT(*) FROM (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank FROM managed_task_work_runs WHERE status <> 'running') WHERE sample_rank > 200 LIMIT ?1)";
+
+        if dry_run {
+            let error_detail_count = sqlx::query_scalar::<_, i64>(error_detail_count_sql)
+                .bind(&error_cutoff)
+                .bind(&run_cutoff)
+                .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+                .fetch_one(&self.pool)
+                .await?;
+            let run_count = sqlx::query_scalar::<_, i64>(run_count_sql)
+                .bind(&run_cutoff)
+                .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+                .fetch_one(&self.pool)
+                .await?;
+            let work_count = sqlx::query_scalar::<_, i64>(work_count_sql)
+                .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+                .fetch_one(&self.pool)
+                .await?;
+            let selected = error_detail_count
+                .saturating_add(run_count)
+                .saturating_add(work_count)
+                .max(0) as usize;
+            return Ok(ManagedTaskHistoryCleanupResult {
+                selected,
+                committed: 0,
+                has_more: error_detail_count >= TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
+                    || run_count >= TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
+                    || work_count >= TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS,
+            });
+        }
+
+        let mut transaction = self.pool.begin().await?;
+        let error_detail_cleared = sqlx::query(
+            "UPDATE managed_task_runs
+             SET error_detail=NULL
+             WHERE id IN (
+               SELECT id FROM managed_task_runs
+               WHERE started_at < ?1 AND started_at >= ?2 AND error_detail IS NOT NULL
+               ORDER BY started_at ASC, id ASC
+               LIMIT ?3
+             )",
+        )
+        .bind(&error_cutoff)
+        .bind(&run_cutoff)
+        .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected() as usize;
+        let runs_deleted = sqlx::query(
+            "DELETE FROM managed_task_runs
+             WHERE id IN (
+               SELECT id FROM managed_task_runs
+               WHERE started_at < ?1
+                 AND status NOT IN ('running','requested','queued')
+               ORDER BY started_at ASC, id ASC
+               LIMIT ?2
+             )",
+        )
+        .bind(&run_cutoff)
+        .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected() as usize;
+        let work_runs_deleted = sqlx::query(
             "DELETE FROM managed_task_work_runs
              WHERE rowid IN (
                SELECT rowid FROM (
-                 SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
+                 SELECT rowid, ROW_NUMBER() OVER (
+                   PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC
+                 ) AS sample_rank
                  FROM managed_task_work_runs WHERE status <> 'running'
-               ) WHERE sample_rank > 200
+               )
+               WHERE sample_rank > 200
+               ORDER BY rowid
+               LIMIT ?1
              )",
         )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected() as usize;
+        transaction.commit().await?;
+
+        let committed = error_detail_cleared
+            .saturating_add(runs_deleted)
+            .saturating_add(work_runs_deleted);
+        Ok(ManagedTaskHistoryCleanupResult {
+            selected: committed,
+            committed,
+            has_more: error_detail_cleared == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
+                || runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
+                || work_runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS,
+        })
     }
 
     pub(crate) async fn begin_run(
@@ -4329,17 +4558,48 @@ impl MaintenanceStore {
             details,
         } = context;
         let sanitized = detail.map(sanitize_task_detail);
+        let owner_v2 = details.is_some_and(|value| {
+            value
+                .get("ownershipVersion")
+                .and_then(serde_json::Value::as_i64)
+                == Some(2)
+        });
+        let owner_processed_count = details
+            .filter(|value| {
+                value
+                    .get("ownershipVersion")
+                    .and_then(serde_json::Value::as_i64)
+                    == Some(2)
+            })
+            .and_then(|value| {
+                value
+                    .get("committed")
+                    .and_then(serde_json::Value::as_i64)
+                    .or_else(|| {
+                        value
+                            .get("selectedScope")
+                            .and_then(|scope| scope.get("committed"))
+                            .and_then(serde_json::Value::as_i64)
+                    })
+                    .or_else(|| {
+                        value
+                            .get("processedCount")
+                            .and_then(serde_json::Value::as_i64)
+                    })
+            })
+            .map(|value| value.max(0));
         let details = details.map(serde_json::to_string).transpose()?;
         let task_key: Option<String> =
             sqlx::query_scalar("SELECT task_key FROM managed_task_runs WHERE id=?")
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await?;
-        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
+        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
             .bind(status)
             .bind(finished_at)
             .bind(duration_ms)
             .bind(summary)
+            .bind(owner_processed_count)
             .bind(sanitized)
             .bind(completion)
             .bind(core_completion)
@@ -4363,6 +4623,47 @@ impl MaintenanceStore {
             )
             .await?;
             self.sync_retention_progress_schedule().await?;
+        }
+        if automatic
+            && owner_v2
+            && matches!(
+                task_key.as_deref(),
+                Some(
+                    "pool_upstream_attempt_archive"
+                        | "forward_proxy_attempt_archive"
+                        | "invocation_detail_prune"
+                        | "quota_snapshot_compaction"
+                        | "model_route_expiry"
+                        | "task_run_history_cleanup"
+                )
+            )
+            && matches!(completion, Some("complete") | Some("no-work"))
+        {
+            let owner_details = details
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+            let has_more = owner_details
+                .as_ref()
+                .and_then(|value| value.get("selectedScope"))
+                .and_then(|scope| scope.get("hasMore"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let wait_reason = owner_details
+                .as_ref()
+                .and_then(|value| value.get("waitReason"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty());
+            if !has_more && wait_reason.is_none() {
+                sqlx::query(
+                    "UPDATE managed_tasks
+                     SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?
+                     WHERE task_key=? AND enabled!=0",
+                )
+                .bind(&finished_at)
+                .bind(task_key.as_deref().expect("matched retention owner"))
+                .execute(&self.pool)
+                .await?;
+            }
         }
         if automatic
             && completion == Some("completed")
@@ -4396,10 +4697,20 @@ impl MaintenanceStore {
         else {
             return Ok(());
         };
-        let backlog_total = details.get("total").and_then(serde_json::Value::as_i64);
-        let completed = details
-            .get("invocationRowsArchived")
+        let backlog_total = details
+            .get("globalBacklogTotal")
             .and_then(serde_json::Value::as_i64)
+            .or_else(|| details.get("total").and_then(serde_json::Value::as_i64));
+        let completed = details
+            .get("selectedScope")
+            .and_then(|scope| scope.get("committed"))
+            .and_then(serde_json::Value::as_i64)
+            .or_else(|| details.get("committed").and_then(serde_json::Value::as_i64))
+            .or_else(|| {
+                details
+                    .get("invocationRowsArchived")
+                    .and_then(serde_json::Value::as_i64)
+            })
             .unwrap_or(0)
             .max(0);
         let wait_reason = details
@@ -5137,7 +5448,15 @@ impl MaintenanceStore {
         }
         let restore_retention_default = matches!(
             task_key,
-            "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+            "retention_archive"
+                | "pool_upstream_attempt_archive"
+                | "forward_proxy_attempt_archive"
+                | "invocation_detail_prune"
+                | "quota_snapshot_compaction"
+                | "model_route_expiry"
+                | "task_run_history_cleanup"
+                | "invocation_identity_cleanup"
+                | "raw_orphan_sweep"
         ) && update_schedule
             && interval_secs == Some(None)
             && cron_expr == Some(None);
@@ -5896,7 +6215,7 @@ mod tests {
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
-        assert_eq!(MANAGED_TASKS.len(), 24);
+        assert_eq!(MANAGED_TASKS.len(), 30);
         assert_eq!(
             MANAGED_TASKS
                 .iter()
@@ -6780,7 +7099,7 @@ mod tests {
                 .iter()
                 .filter(|(key, _, _, _, is_manual)| task_enabled_by_default(key, *is_manual))
                 .count(),
-            16
+            22
         );
     }
 
@@ -7640,6 +7959,13 @@ mod tests {
         assert_eq!(schedule.source, "default");
         assert_eq!(schedule.interval_secs, Some(3_600));
         assert!(schedule.next_trigger_at.is_some());
+        let owner_schedule = store
+            .detail("pool_upstream_attempt_archive")
+            .await
+            .unwrap()
+            .expect("pool attempt owner detail");
+        assert_eq!(owner_schedule.task.interval_secs, Some(300));
+        assert_eq!(owner_schedule.task.schedule_source, "default");
 
         assert!(
             store

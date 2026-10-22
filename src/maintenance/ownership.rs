@@ -94,6 +94,92 @@ pub(crate) struct OwnedMaintenanceContext<'a> {
     pub(crate) raw_traversal: &'a Mutex<RetentionRawDirectoryTraversal>,
 }
 
+fn retention_owner_execution(
+    summary: RetentionOwnerRunSummary,
+    options: MaintenanceExecutionOptions,
+    observation: Option<&crate::TaskExecutionObservation>,
+) -> OwnedMaintenanceExecution {
+    let completion = summary.completion;
+    if let Some(observation) = observation {
+        if summary.task_key == "retention_archive" {
+            observation.set_pending_population(
+                summary.global_total,
+                format_utc_iso_millis(Utc::now()),
+                summary.source_scope.clone(),
+                "complete eligible invocation snapshot at run start".to_string(),
+                "exact",
+            );
+        }
+        observation.set_discovered_work(
+            summary.discovered as i64,
+            format_utc_iso_millis(Utc::now()),
+            "run-window".to_string(),
+        );
+        observation.set_processed_work(summary.committed as i64);
+    }
+    let retry_after_secs = summary.wait_reason.as_deref().map(|reason| match reason {
+        "retention_work_budget" => 1,
+        "retention_write_admission" | "sqlite_pressure" => 30,
+        "retention_recovery_failure" => 300,
+        _ => 15,
+    });
+    let next_work_secs = if completion == "failed" {
+        Some(300)
+    } else if summary.task_key == "retention_archive" {
+        None
+    } else if summary.has_more {
+        Some(1)
+    } else {
+        retry_after_secs
+    };
+    let summary_text = if summary.completion == "failed" {
+        format!("{} 执行失败", summary.task_key)
+    } else if options.dry_run {
+        format!(
+            "{} 计划处理 {} {}，本次未提交数据",
+            summary.task_key, summary.selected, summary.unit
+        )
+    } else {
+        format!(
+            "{} 已提交 {} {}，批次 {}",
+            summary.task_key, summary.committed, summary.unit, summary.batches
+        )
+    };
+    OwnedMaintenanceExecution {
+        summary: summary_text,
+        completion,
+        next_work_secs,
+        details: json!({
+            "ownershipVersion": 2,
+            "ownerScope": summary.task_key,
+            "dryRun": options.dry_run,
+            "manual": options.manual,
+            "result": completion,
+            "globalBacklogTotal": summary.global_total,
+            "total": summary.global_total,
+            "backlogRemaining": summary.global_total.map(|total| total.saturating_sub(summary.committed as i64)),
+            "discovered": summary.discovered,
+            "selected": summary.selected,
+            "committed": summary.committed,
+            "processedCount": summary.committed,
+            "completed": summary.committed,
+            "selectedScope": {
+                "scope": summary.source_scope,
+                "unit": summary.unit,
+                "selected": summary.selected,
+                "committed": summary.committed,
+                "batches": summary.batches,
+                "rawFilesRemoved": summary.raw_files_removed,
+                "hasMore": summary.has_more,
+            },
+            "sourceMaxInvocationId": summary.source_max_id,
+            "waitReason": summary.wait_reason,
+            "fatalError": summary.fatal_error,
+            "elapsedMs": summary.elapsed_ms,
+        }),
+    }
+}
+
 pub(crate) async fn execute_owned_maintenance(
     context: OwnedMaintenanceContext<'_>,
     task_key: &str,
@@ -103,42 +189,26 @@ pub(crate) async fn execute_owned_maintenance(
     let started = Instant::now();
     let run_observation = observation.clone();
     let mut result = match task_key {
-        "retention_archive" => {
-            if options.dry_run
-                && let Some(observation) = &observation
-            {
-                observation.mark_work_started();
-            }
-            // Keep the archive state machine off the cleanup/dispatcher futures' inline frames.
-            let summary = Box::pin(
-                run_data_retention_maintenance_with_circuit_and_prompt_cache(
-                    context.pool,
-                    context.config,
-                    Some(options.dry_run),
-                    Some(context.shutdown),
-                    context.circuit,
-                    None,
-                    observation,
-                ),
+        "retention_archive"
+        | "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup" => {
+            let summary = run_retention_owner_task(
+                context.pool,
+                context.config,
+                task_key,
+                options.dry_run,
+                context.shutdown,
             )
             .await?;
-            let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);
-            OwnedMaintenanceExecution {
-                summary: brief,
-                completion: summary.completion(),
-                next_work_secs: None,
-                details: json!({"completion": summary.completion(), "coreCompletion": summary.core_completion(),
-                    "budgetMs": summary.work_budget_ms, "elapsedMs": summary.elapsed_ms, "settlementMs": summary.settlement_ms,
-                    "budgetExhausted": summary.budget_exhausted, "recoverableFailure": summary.recoverable_failure,
-                    "waitReason": summary.wait_reason, "processedCount": summary.processed_row_count(),
-                    "total": summary.backlog_total, "completed": summary.invocation_rows_archived,
-                    "backlogRemaining": summary.backlog_total.map(|total| total.saturating_sub(summary.invocation_rows_archived as i64)),
-                    "observedAt": summary.backlog_observed_at, "sourceMaxInvocationId": summary.source_max_invocation_id,
-                    "invocationRowsArchived": summary.invocation_rows_archived, "invocationDetailsPruned": summary.invocation_details_pruned,
-                    "archiveBatchesTouched": summary.archive_batches_touched, "archiveBatches": summary.batches,
-                    "timeoutCount": summary.timeout_count, "rawFilesRemoved": summary.raw_files_removed, "summary": detail,
-                    "fatalError": summary.fatal_error}),
-            }
+            return Ok(retention_owner_execution(
+                summary,
+                options,
+                run_observation.as_ref(),
+            ));
         }
         "invocation_identity_cleanup" => {
             let admission = tokio::select! {

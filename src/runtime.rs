@@ -7,6 +7,9 @@ const STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX: Duration = Duration::from_s
 const MANAGED_TASK_FINISH_RETRY_ATTEMPTS: usize = 4;
 const MANAGED_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
+const MANAGED_TASK_MAX_ACTIVE_WORKERS: usize = 4;
+const MANAGED_TASK_MAX_ACTIVE_FINALIZERS: usize = 2;
+const MANAGED_TASK_MAX_PENDING_FINISHES: usize = 16;
 const STARTUP_RECOVERY_BATCH_ROWS: usize = 64;
 pub(crate) const STARTUP_RECOVERY_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
 pub(crate) const STARTUP_RECOVERY_ADMISSION_BUDGET: Duration = Duration::from_millis(250);
@@ -1866,9 +1869,41 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             return;
         };
         let mut pending_finishes = VecDeque::new();
+        let mut workers = tokio::task::JoinSet::new();
+        let mut finalizers = tokio::task::JoinSet::new();
+        let heavy_file_gate = Arc::new(Semaphore::new(1));
         loop {
+            while finalizers.len() < MANAGED_TASK_MAX_ACTIVE_FINALIZERS {
+                let Some(finish) = pending_finishes.pop_front() else {
+                    break;
+                };
+                let store = store.clone();
+                finalizers.spawn(async move {
+                    let result = finish_managed_task_run_bounded(&store, &finish).await;
+                    (finish, result)
+                });
+            }
             tokio::select! {
                 _ = state.shutdown.cancelled() => {
+                    // A worker owns both the per-task execution lease and any native file
+                    // operation permit. Await every worker so cancellation cannot publish a
+                    // false idle state while a blocking archive worker is still draining.
+                    while let Some(joined) = workers.join_next().await {
+                        if let Ok(finish) = joined {
+                            queue_managed_task_finish(&mut pending_finishes, finish);
+                        }
+                    }
+                    while let Some(joined) = finalizers.join_next().await {
+                        if let Ok((finish, Err(error))) = joined {
+                            warn!(
+                                run_id = finish.run_id,
+                                task = %finish.task_key,
+                                error = %error,
+                                "managed task finalization failed during shutdown"
+                            );
+                            queue_managed_task_finish(&mut pending_finishes, finish);
+                        }
+                    }
                     drain_managed_task_finishes_on_shutdown(
                         state.as_ref(),
                         &store,
@@ -1877,283 +1912,373 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     .await;
                     return;
                 },
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
-            }
-            if let Some(finish) = pending_finishes.pop_front()
-                && let Err(error) = finish_managed_task_run_bounded(&store, &finish).await
-            {
-                warn!(
-                    run_id = finish.run_id,
-                    task = %finish.task_key,
-                    error = %error,
-                    "managed task dispatcher deferred task-history finalization"
-                );
-                pending_finishes.push_back(finish);
-            }
-            let has_dispatch_work = match store.probe_due_or_requested_runs().await {
-                Ok(has_work) => has_work,
-                Err(error) => {
-                    warn!(error = %error, "managed task dispatcher failed to probe for work");
-                    continue;
-                }
-            };
-            if !has_dispatch_work {
-                continue;
-            }
-            if let Err(error) = store.enqueue_due_runs().await {
-                warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
-            }
-            if let Err(error) = store.cleanup_expired_history_if_due().await {
-                warn!(error = %error, "managed task dispatcher failed to clean expired history");
-            }
-            let claim = match store.claim_requested_run().await {
-                Ok(claim) => claim,
-                Err(error) => {
-                    warn!(error = %error, "managed task dispatcher failed to claim a requested run");
-                    continue;
-                }
-            };
-            let Some((run_id, task_key, requested_at, trigger_kind)) = claim else {
-                continue;
-            };
-            crate::task_timeline::notify_runtime_changed();
-            let Some(_execution_lease) =
-                crate::maintenance_store::try_acquire_task_execution(&task_key)
-            else {
-                pending_finishes.push_back(ManagedTaskFinish {
-                    run_id,
-                    task_key,
-                    status: SystemTaskStatus::Failed,
-                    finished_at: format_utc_iso_millis(Utc::now()),
-                    duration_ms: 0,
-                    summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
-                    detail: None,
-                    completion: None,
-                    core_completion: None,
-                    details: None,
-                });
-                continue;
-            };
-            let execution_started_at = Instant::now();
-            let initial_stages = (task_key == "retention_archive").then(|| {
-                vec![crate::maintenance_store::TaskStage {
-                    name: "archive".to_string(),
-                    status: "running".to_string(),
-                    completed: None,
-                    total: None,
-                    elapsed_ms: None,
-                    wait_reason: None,
-                    checkpoint: Some("admitted".to_string()),
-                }]
-            });
-            if let Err(error) = store
-                .publish_progress(
-                    &task_key,
-                    None,
-                    None,
-                    Some("running"),
-                    Some("admitted"),
-                    None,
-                    (task_key == "retention_archive").then_some("expired_invocations"),
-                    None,
-                    None,
-                    initial_stages.as_deref(),
-                )
-                .await
-            {
-                warn!(task = %task_key, error = %error, "managed task progress snapshot could not be published");
-            }
-            let observation = crate::TaskExecutionObservation::begin_for_managed_run(
-                &task_key,
-                &crate::maintenance_store::task_title_for_observation(&task_key),
-                &trigger_kind,
-                crate::maintenance_store::task_execution_class(&task_key),
-                if matches!(
-                    task_key.as_str(),
-                    "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
-                ) {
-                    "waiting_resources"
-                } else {
-                    "processing"
-                },
-                Some(run_id),
-            );
-            let result = if matches!(
-                task_key.as_str(),
-                "retention_archive"
-                    | "invocation_identity_cleanup"
-                    | "raw_orphan_sweep"
-                    | "prepare_performance_indexes"
-            ) {
-                // These owners settle file/transaction work at their own cancellation boundaries.
-                // Dropping their future here could release admission before in-flight IO drains.
-                run_managed_task_once_with_observation(&state, &task_key, run_id, &observation)
-                    .await
-            } else {
-                tokio::select! {
-                    biased;
-                    _ = state.shutdown.cancelled() => {
-                        Err(anyhow!("managed task cancelled during shutdown"))
+                Some(joined) = workers.join_next(), if !workers.is_empty() => {
+                    match joined {
+                        Ok(finish) => queue_managed_task_finalizer(
+                            &mut finalizers,
+                            &mut pending_finishes,
+                            &store,
+                            finish,
+                        ),
+                        Err(error) => warn!(error = %error, "managed task worker panicked"),
                     }
-                    result = run_managed_task_once_with_observation(
-                        &state,
-                        &task_key,
-                        run_id,
-                        &observation,
-                    ) => result,
-                }
-            };
-            let (status, summary, detail, completion, core_completion, details) = match result {
-                Ok(execution) => {
-                    let status = match execution.completion.as_deref() {
-                        Some("deferred") => SystemTaskStatus::Skipped,
-                        Some("failed") => SystemTaskStatus::Failed,
-                        _ => SystemTaskStatus::Success,
-                    };
-                    (
-                        status,
-                        Some(execution.summary),
-                        execution.detail,
-                        execution.completion,
-                        execution.core_completion,
-                        execution.details,
-                    )
-                }
-                Err(error) => {
-                    if trigger_kind != "manual"
-                        && matches!(
-                            task_key.as_str(),
-                            "invocation_identity_cleanup" | "raw_orphan_sweep"
-                        )
-                        && let Err(retry_error) = store
-                            .record_owned_retry(&task_key, is_retention_write_deferred(&error))
-                            .await
+                },
+                Some(joined) = finalizers.join_next(), if !finalizers.is_empty() => {
+                    match joined {
+                        Ok((_finish, Ok(()))) => {}
+                        Ok((finish, Err(error))) => {
+                            warn!(run_id=finish.run_id, task=%finish.task_key, error=%error,
+                                "managed task dispatcher deferred task-history finalization");
+                            queue_managed_task_finish(&mut pending_finishes, finish);
+                        }
+                        Err(error) => warn!(error = %error, "managed task finalizer panicked"),
+                    }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                    if workers.len() >= MANAGED_TASK_MAX_ACTIVE_WORKERS
+                        || pending_finishes
+                            .len()
+                            .saturating_add(finalizers.len())
+                            .saturating_add(workers.len())
+                            >= MANAGED_TASK_MAX_PENDING_FINISHES
                     {
-                        warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");
+                        continue;
                     }
-                    (
-                        SystemTaskStatus::Failed,
-                        Some(format!("{task_key} 执行失败")),
-                        Some(error.to_string()),
-                        None,
-                        None,
-                        None,
-                    )
-                }
-            };
-            let workload_reason = details
-                .as_ref()
-                .and_then(|details| details.get("waitReason"))
-                .and_then(Value::as_str)
-                .or(detail.as_deref());
-            observation.finish_with_status_and_reason(
-                if state.shutdown.is_cancelled() {
-                    "interrupted"
-                } else {
-                    status.as_str()
-                },
-                workload_reason,
-            );
-            let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
-            let task_dimension = managed_task_metric_dimension(&task_key);
-            state.observability.task_completed(
-                task_dimension,
-                if status == SystemTaskStatus::Success {
-                    "success"
-                } else if status == SystemTaskStatus::Failed {
-                    "error"
-                } else {
-                    "deferred"
-                },
-                Duration::from_millis(duration_ms.max(0) as u64),
-            );
-            let finish = ManagedTaskFinish {
-                run_id,
-                task_key,
-                status,
-                finished_at: format_utc_iso_millis(Utc::now()),
-                duration_ms,
-                summary,
-                detail,
-                completion,
-                core_completion,
-                details,
-            };
-            let progress_total = finish
-                .details
-                .as_ref()
-                .and_then(|details| details.get("total"))
-                .and_then(Value::as_i64);
-            let progress_completed = finish
-                .details
-                .as_ref()
-                .and_then(|details| details.get("completed"))
-                .and_then(Value::as_i64);
-            let progress_wait_reason = finish
-                .details
-                .as_ref()
-                .and_then(|details| details.get("waitReason"))
-                .and_then(Value::as_str);
-            let final_stages = (finish.task_key == "retention_archive").then(|| {
-                let archive_status = match finish.completion.as_deref() {
-                    Some("completed") => "completed",
-                    Some("partial") => "partial",
-                    Some("deferred") => "deferred",
-                    _ if finish.status == SystemTaskStatus::Failed => "failed",
-                    _ => "completed",
-                };
-                vec![crate::maintenance_store::TaskStage {
-                    name: "archive".to_string(),
-                    status: archive_status.to_string(),
-                    completed: progress_completed,
-                    total: progress_total,
-                    elapsed_ms: finish
-                        .details
-                        .as_ref()
-                        .and_then(|details| details.get("elapsedMs"))
-                        .and_then(Value::as_i64),
-                    wait_reason: progress_wait_reason.map(str::to_string),
-                    checkpoint: Some("finished".to_string()),
-                }]
-            });
-            let completion_phase =
-                finish
-                    .completion
-                    .as_deref()
-                    .unwrap_or(if status == SystemTaskStatus::Failed {
-                        "failed"
-                    } else {
-                        "complete"
+                    let has_dispatch_work = match store.probe_due_or_requested_runs().await {
+                        Ok(has_work) => has_work,
+                        Err(error) => {
+                            warn!(error = %error, "managed task dispatcher failed to probe for work");
+                            continue;
+                        }
+                    };
+                    if !has_dispatch_work {
+                        continue;
+                    }
+                    if let Err(error) = store.enqueue_due_runs().await {
+                        warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
+                    }
+                    let claim = match store.claim_requested_run().await {
+                        Ok(claim) => claim,
+                        Err(error) => {
+                            warn!(error = %error, "managed task dispatcher failed to claim a requested run");
+                            continue;
+                        }
+                    };
+                    let Some((run_id, task_key, requested_at, trigger_kind)) = claim else {
+                        continue;
+                    };
+                    crate::task_timeline::notify_runtime_changed();
+                    let Some(execution_lease) =
+                        crate::maintenance_store::try_acquire_task_execution(&task_key)
+                    else {
+                        queue_managed_task_finish(&mut pending_finishes, ManagedTaskFinish {
+                            run_id,
+                            task_key,
+                            status: SystemTaskStatus::Failed,
+                            finished_at: format_utc_iso_millis(Utc::now()),
+                            duration_ms: 0,
+                            summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
+                            detail: None,
+                            completion: None,
+                            core_completion: None,
+                            details: None,
+                        });
+                        continue;
+                    };
+                    let initial_stages = (task_key == "retention_archive").then(|| {
+                        vec![crate::maintenance_store::TaskStage {
+                            name: "archive".to_string(),
+                            status: "running".to_string(),
+                            completed: None,
+                            total: None,
+                            elapsed_ms: None,
+                            wait_reason: None,
+                            checkpoint: Some("admitted".to_string()),
+                        }]
                     });
-            if let Err(error) = store
-                .publish_progress(
-                    &finish.task_key,
-                    progress_total,
-                    progress_completed,
-                    Some(completion_phase),
-                    Some("finished"),
-                    (finish.task_key == "retention_archive").then_some("expired_invocations"),
-                    (finish.task_key == "retention_archive").then_some("codex_invocations"),
-                    progress_wait_reason
-                        .or((status == SystemTaskStatus::Failed).then_some("fatal_error")),
-                    None,
-                    final_stages.as_deref().or(initial_stages.as_deref()),
-                )
-                .await
-            {
-                warn!(task = %finish.task_key, error = %error, "managed task final progress snapshot could not be published");
-            }
-            if let Err(error) = finish_managed_task_run_bounded(&store, &finish).await {
-                warn!(
-                    run_id = finish.run_id,
-                    task = %finish.task_key,
-                    error = %error,
-                    "managed task dispatcher deferred task-history finalization"
-                );
-                pending_finishes.push_back(finish);
+                    if let Err(error) = store
+                        .publish_progress(
+                            &task_key,
+                            None,
+                            None,
+                            Some("running"),
+                            Some("admitted"),
+                            None,
+                            (task_key == "retention_archive").then_some("expired_invocations"),
+                            None,
+                            None,
+                            initial_stages.as_deref(),
+                        )
+                        .await
+                    {
+                        warn!(task = %task_key, error = %error, "managed task progress snapshot could not be published");
+                    }
+                    let observation = crate::TaskExecutionObservation::begin_for_managed_run(
+                        &task_key,
+                        &crate::maintenance_store::task_title_for_observation(&task_key),
+                        &trigger_kind,
+                        crate::maintenance_store::task_execution_class(&task_key),
+                        if managed_task_requires_heavy_file_operation(&task_key) {
+                            "waiting_resources"
+                        } else {
+                            "processing"
+                        },
+                        Some(run_id),
+                    );
+                    let worker_file_gate =
+                        managed_task_requires_heavy_file_operation(&task_key)
+                            .then(|| heavy_file_gate.clone());
+                    workers.spawn(run_managed_task_worker(
+                        state.clone(),
+                        task_key,
+                        run_id,
+                        requested_at,
+                        trigger_kind,
+                        observation,
+                        execution_lease,
+                        worker_file_gate,
+                        initial_stages,
+                    ));
+                }
             }
         }
     })
+}
+
+fn managed_task_requires_heavy_file_operation(task_key: &str) -> bool {
+    matches!(
+        task_key,
+        "retention_archive"
+            | "pool_upstream_attempt_archive"
+            | "forward_proxy_attempt_archive"
+            | "invocation_detail_prune"
+            | "quota_snapshot_compaction"
+            | "raw_orphan_sweep"
+            | "raw_compression"
+            | "archive_upstream_activity_manifest"
+            | "materialize_historical_rollups"
+            | "verify_archive_storage"
+            | "prune_archive_batches"
+            | "prune_legacy_archive_batches"
+    )
+}
+
+fn queue_managed_task_finish(
+    pending_finishes: &mut VecDeque<ManagedTaskFinish>,
+    finish: ManagedTaskFinish,
+) {
+    pending_finishes.push_back(finish);
+}
+
+fn queue_managed_task_finalizer(
+    finalizers: &mut tokio::task::JoinSet<(ManagedTaskFinish, Result<()>)>,
+    pending_finishes: &mut VecDeque<ManagedTaskFinish>,
+    store: &Arc<crate::maintenance_store::MaintenanceStore>,
+    finish: ManagedTaskFinish,
+) {
+    if finalizers.len() >= MANAGED_TASK_MAX_ACTIVE_FINALIZERS {
+        pending_finishes.push_back(finish);
+        return;
+    }
+    let store = Arc::clone(store);
+    finalizers.spawn(async move {
+        let result = finish_managed_task_run_bounded(&store, &finish).await;
+        (finish, result)
+    });
+}
+
+async fn run_managed_task_worker(
+    state: Arc<AppState>,
+    task_key: String,
+    run_id: i64,
+    requested_at: String,
+    trigger_kind: String,
+    observation: crate::TaskExecutionObservation,
+    _execution_lease: crate::maintenance_store::TaskExecutionLease,
+    heavy_file_gate: Option<Arc<Semaphore>>,
+    initial_stages: Option<Vec<crate::maintenance_store::TaskStage>>,
+) -> ManagedTaskFinish {
+    let _heavy_file_permit = match heavy_file_gate {
+        Some(gate) => Some(gate.acquire_owned().await.expect("managed file gate open")),
+        None => None,
+    };
+    let store = crate::maintenance_store::global()
+        .cloned()
+        .expect("maintenance store available while managed task worker runs");
+    let execution_started_at = Instant::now();
+    let result =
+        run_managed_task_once_with_observation(&state, &task_key, run_id, &observation).await;
+    let (status, summary, detail, completion, core_completion, details) = match result {
+        Ok(execution) => {
+            let status = match execution.completion.as_deref() {
+                Some("partial") | Some("deferred") => SystemTaskStatus::Skipped,
+                Some("failed") => SystemTaskStatus::Failed,
+                _ => SystemTaskStatus::Success,
+            };
+            (
+                status,
+                Some(execution.summary),
+                execution.detail,
+                execution.completion,
+                execution.core_completion,
+                execution.details,
+            )
+        }
+        Err(error) => {
+            if trigger_kind != "manual"
+                && matches!(
+                    task_key.as_str(),
+                    "invocation_identity_cleanup" | "raw_orphan_sweep"
+                )
+                && let Err(retry_error) = store
+                    .record_owned_retry(&task_key, is_retention_write_deferred(&error))
+                    .await
+            {
+                warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");
+            }
+            (
+                SystemTaskStatus::Failed,
+                Some(format!("{task_key} 执行失败")),
+                Some(error.to_string()),
+                None,
+                None,
+                None,
+            )
+        }
+    };
+    let workload_reason = details
+        .as_ref()
+        .and_then(|details| details.get("waitReason"))
+        .and_then(Value::as_str)
+        .or(detail.as_deref());
+    observation.finish_with_status_and_reason(
+        if state.shutdown.is_cancelled() {
+            "interrupted"
+        } else {
+            status.as_str()
+        },
+        workload_reason,
+    );
+    let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
+    let task_dimension = managed_task_metric_dimension(&task_key);
+    let task_outcome = match completion.as_deref() {
+        Some("partial") => "partial",
+        Some("deferred") => "deferred",
+        Some("failed") if status == SystemTaskStatus::Failed => "error",
+        _ if status == SystemTaskStatus::Success => "success",
+        _ if status == SystemTaskStatus::Failed => "error",
+        _ => "deferred",
+    };
+    state.observability.task_completed(
+        task_dimension,
+        task_outcome,
+        Duration::from_millis(duration_ms.max(0) as u64),
+    );
+    let finish = ManagedTaskFinish {
+        run_id,
+        task_key,
+        status,
+        finished_at: format_utc_iso_millis(Utc::now()),
+        duration_ms,
+        summary,
+        detail,
+        completion,
+        core_completion,
+        details,
+    };
+    let progress_total = finish
+        .details
+        .as_ref()
+        .and_then(|details| {
+            details
+                .get("globalBacklogTotal")
+                .or_else(|| details.get("total"))
+        })
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            finish
+                .details
+                .as_ref()
+                .and_then(|details| details.get("selectedScope"))
+                .and_then(|scope| scope.get("selected"))
+                .and_then(Value::as_i64)
+        });
+    let progress_completed = finish
+        .details
+        .as_ref()
+        .and_then(|details| {
+            details
+                .get("committed")
+                .or_else(|| details.get("completed"))
+        })
+        .and_then(Value::as_i64);
+    let progress_wait_reason = finish
+        .details
+        .as_ref()
+        .and_then(|details| details.get("waitReason"))
+        .and_then(Value::as_str);
+    let progress_unit = finish
+        .details
+        .as_ref()
+        .and_then(|details| details.get("selectedScope"))
+        .and_then(|scope| scope.get("unit"))
+        .and_then(Value::as_str);
+    let progress_source_scope = finish
+        .details
+        .as_ref()
+        .and_then(|details| details.get("selectedScope"))
+        .and_then(|scope| scope.get("scope"))
+        .and_then(Value::as_str);
+    let final_stages = (finish.task_key == "retention_archive").then(|| {
+        let archive_status = match finish.completion.as_deref() {
+            Some("complete") | Some("completed") => "complete",
+            Some("no-work") => "no-work",
+            Some("partial") => "partial",
+            Some("deferred") => "deferred",
+            _ if finish.status == SystemTaskStatus::Failed => "failed",
+            _ => "complete",
+        };
+        vec![crate::maintenance_store::TaskStage {
+            name: "archive".to_string(),
+            status: archive_status.to_string(),
+            completed: progress_completed,
+            total: progress_total,
+            elapsed_ms: finish
+                .details
+                .as_ref()
+                .and_then(|details| details.get("elapsedMs"))
+                .and_then(Value::as_i64),
+            wait_reason: progress_wait_reason.map(str::to_string),
+            checkpoint: Some("finished".to_string()),
+        }]
+    });
+    let completion_phase =
+        finish
+            .completion
+            .as_deref()
+            .unwrap_or(if status == SystemTaskStatus::Failed {
+                "failed"
+            } else {
+                "complete"
+            });
+    if let Err(error) = store
+        .publish_progress(
+            &finish.task_key,
+            progress_total,
+            progress_completed,
+            Some(completion_phase),
+            Some("finished"),
+            progress_unit,
+            progress_source_scope,
+            progress_wait_reason.or((status == SystemTaskStatus::Failed).then_some("fatal_error")),
+            None,
+            final_stages.as_deref().or(initial_stages.as_deref()),
+        )
+        .await
+    {
+        warn!(task = %finish.task_key, error = %error, "managed task final progress snapshot could not be published");
+    }
+    finish
 }
 
 struct ManagedTaskFinish {
@@ -2243,6 +2368,12 @@ async fn drain_managed_task_finishes_on_shutdown(
 fn managed_task_metric_dimension(task_key: &str) -> &'static str {
     match task_key {
         "retention_archive" => "retention_archive",
+        "pool_upstream_attempt_archive" => "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive" => "forward_proxy_attempt_archive",
+        "invocation_detail_prune" => "invocation_detail_prune",
+        "quota_snapshot_compaction" => "quota_snapshot_compaction",
+        "model_route_expiry" => "model_route_expiry",
+        "task_run_history_cleanup" => "task_run_history_cleanup",
         "invocation_identity_cleanup" => "invocation_identity_cleanup",
         "raw_orphan_sweep" => "raw_orphan_sweep",
         "upstream_account_maintenance" => "upstream_account_maintenance",
@@ -2303,30 +2434,6 @@ impl ManagedTaskExecution {
             core_completion: None,
             details: None,
         }
-    }
-}
-
-async fn persist_retention_catchup_schedule(summary: &crate::maintenance::RetentionRunSummary) {
-    if maintenance_execution_is_manual() {
-        return;
-    }
-    let Some(store) = crate::maintenance_store::global() else {
-        return;
-    };
-    let completion = summary.completion();
-    if let Err(error) = store
-        .update_retention_catchup_from_summary(
-            Some(completion),
-            summary.backlog_total,
-            summary.invocation_rows_archived,
-            summary.wait_reason.as_deref(),
-            &format_utc_iso_millis(Utc::now()),
-        )
-        .await
-    {
-        warn!(error = %error, "failed to persist the retention catch-up schedule");
-    } else if let Err(error) = store.sync_retention_progress_schedule().await {
-        warn!(error = %error, "failed to publish the retention catch-up progress schedule");
     }
 }
 
@@ -2392,14 +2499,40 @@ async fn run_managed_task_once_with_observation(
         } else {
             matches!(
                 task_key,
-                "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+                "retention_archive"
+                    | "pool_upstream_attempt_archive"
+                    | "forward_proxy_attempt_archive"
+                    | "invocation_detail_prune"
+                    | "quota_snapshot_compaction"
+                    | "model_route_expiry"
+                    | "task_run_history_cleanup"
+                    | "invocation_identity_cleanup"
+                    | "raw_orphan_sweep"
             ) && state.config.retention_dry_run
         },
     };
     if crate::maintenance_store::is_retention_maintenance_task(task_key) {
         sqlx::query("UPDATE managed_task_runs SET details=? WHERE id=?")
-            .bind(json!({"ownershipVersion": 1,"ownerScope": task_key,"dryRun": options.dry_run,"manual": options.manual}).to_string())
-            .bind(run_id).execute(&store.pool).await?;
+            .bind(
+                json!({
+                    "ownershipVersion": if matches!(task_key,
+                        "retention_archive"
+                            | "pool_upstream_attempt_archive"
+                            | "forward_proxy_attempt_archive"
+                            | "invocation_detail_prune"
+                            | "quota_snapshot_compaction"
+                            | "model_route_expiry"
+                            | "task_run_history_cleanup"
+                    ) { 2 } else { 1 },
+                    "ownerScope": task_key,
+                    "dryRun": options.dry_run,
+                    "manual": options.manual
+                })
+                .to_string(),
+            )
+            .bind(run_id)
+            .execute(&store.pool)
+            .await?;
     }
     let mut execution = crate::observability::contention::with_performance(
         state.observability.clone(),
@@ -2419,7 +2552,22 @@ async fn run_managed_task_once_with_observation(
     .await?;
     if crate::maintenance_store::is_retention_maintenance_task(task_key) {
         let details = execution.details.get_or_insert_with(|| json!({}));
-        details["ownershipVersion"] = json!(1);
+        if details.get("ownershipVersion").is_none() {
+            details["ownershipVersion"] = json!(if matches!(
+                task_key,
+                "retention_archive"
+                    | "pool_upstream_attempt_archive"
+                    | "forward_proxy_attempt_archive"
+                    | "invocation_detail_prune"
+                    | "quota_snapshot_compaction"
+                    | "model_route_expiry"
+                    | "task_run_history_cleanup"
+            ) {
+                2
+            } else {
+                1
+            });
+        }
         details["ownerScope"] = json!(task_key);
         details["dryRun"] = json!(options.dry_run);
         details["manual"] = json!(options.manual);
@@ -2435,7 +2583,15 @@ async fn run_managed_task_once_with_scoped_observation(
 ) -> Result<ManagedTaskExecution> {
     if matches!(
         task_key,
-        "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+        "retention_archive"
+            | "pool_upstream_attempt_archive"
+            | "forward_proxy_attempt_archive"
+            | "invocation_detail_prune"
+            | "quota_snapshot_compaction"
+            | "model_route_expiry"
+            | "task_run_history_cleanup"
+            | "invocation_identity_cleanup"
+            | "raw_orphan_sweep"
     ) {
         let options = maintenance_execution_options();
         let raw_traversal = managed_raw_traversal();
@@ -2491,8 +2647,13 @@ async fn run_managed_task_once_with_scoped_observation(
             && let Some(retry) = execution.next_work_secs
             && let Some(store) = crate::maintenance_store::global()
         {
+            let retry_reason = if execution.completion == "failed" {
+                "owner_failed"
+            } else {
+                "work_remaining"
+            };
             store
-                .schedule_owned_work(task_key, retry, "work_remaining")
+                .schedule_owned_work(task_key, retry, retry_reason)
                 .await?;
         }
         return Ok(ManagedTaskExecution {
@@ -2729,20 +2890,25 @@ async fn run_managed_task_once(
     run_id: i64,
 ) -> Result<String> {
     match task_key {
-        "retention_archive" => {
-            let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
+        "retention_archive"
+        | "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup" => {
+            let summary = run_retention_owner_task(
                 &state.pool,
                 &state.config,
-                Some(false),
-                Some(&state.shutdown),
-                state.raw_capture_circuit.clone(),
-                Some(&state.prompt_cache_conversation_cache),
-                None,
+                task_key,
+                false,
+                &state.shutdown,
             )
             .await?;
-            persist_retention_catchup_schedule(&summary).await;
-            let (brief, _detail) = crate::api::summarize_retention_run_for_system_task(&summary);
-            Ok(brief)
+            Ok(format!(
+                "{} 完成：提交 {} {}",
+                task_key, summary.committed, summary.unit
+            ))
         }
         "forward_proxy_subscription_refresh" => {
             refresh_forward_proxy_subscriptions(state.clone(), false, None).await?;

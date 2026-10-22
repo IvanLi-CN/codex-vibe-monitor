@@ -92,5 +92,18 @@
       "public-api=minor; owner-confirmed temporary-config exclusion and documented archive CLI scope",
       "persistent-state=minor; fourteen individually generated released sources"
     ]
+  },
+  "follow_up_change": {
+    "description": "Narrow retention_archive to fixed-fence invocation archival and add six independent retention-policy owners with bounded dispatcher execution and committed-fact results.",
+    "candidate_branch": "th/retention-maintenance-ownership",
+    "status": "implementation-pending-validation",
+    "impact": "minor",
+    "reasoning": "The managed-task catalog and schedule marker changes are additive. New ownership-version-2 run details preserve old composite history, while each new owner exposes an independent scope, unit, result, and committed count. The existing public task-control surface remains compatible; CI, migration replay, and formal review are still required before verification can be claimed.",
+    "durable_state": "Additive managed-task rows, retention_owner_schedule_v2 initialization marker, and ownership-version-2 JSON run facts; no business-table DDL change.",
+    "required_validation": [
+      "Run the lightweight, stateful-sqlite, and archive-file-io CI profiles.",
+      "Verify migration replay preserves task controls, schedule overrides, and old composite history.",
+      "Complete read-only formal review and UI visual-evidence checks before PR convergence."
+    ]
   }
 }
