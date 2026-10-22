@@ -34,10 +34,15 @@ export function RetentionOwnerRunFacts({
   if (details?.ownershipVersion !== 2) return null;
 
   const selectedScope = details.selectedScope;
-  const rawFileLabel = details.dryRun ? "计划文件" : "释放文件";
-  const rawFileCount = details.dryRun
-    ? selectedScope?.rawFilesPlanned
-    : selectedScope?.rawFilesRemoved;
+  const rawFileLabel = details.dryRun == null ? "文件" : details.dryRun ? "计划文件" : "释放文件";
+  const rawFileCount =
+    details.dryRun == null
+      ? null
+      : details.dryRun
+        ? selectedScope?.rawFilesPlanned
+        : selectedScope?.rawFilesRemoved;
+  const runModeLabel =
+    details.dryRun == null ? "模式未知" : details.dryRun ? "只读预演" : "实际运行";
   const coverage =
     selectedScope?.hasMore == null
       ? "覆盖：未知"
@@ -53,7 +58,7 @@ export function RetentionOwnerRunFacts({
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 font-medium">
         <span>本任务运行事实</span>
         <span className="text-base-content/60">
-          {details.dryRun ? "只读预演" : "实际运行"} · 结果：{resultLabel(details.result)}
+          {runModeLabel} · 结果：{resultLabel(details.result)}
         </span>
       </div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-4">

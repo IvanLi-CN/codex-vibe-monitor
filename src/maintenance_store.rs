@@ -3624,21 +3624,26 @@ impl MaintenanceStore {
 
     async fn recover_incomplete_runs_inner(&self) -> Result<u64> {
         let finished_at = format_utc_iso_millis(Utc::now());
-        let runs: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT id,task_key,trigger_kind
+        let runs: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id,task_key,trigger_kind,details
              FROM managed_task_runs
              WHERE status='running'
              ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
-        for (run_id, task_key, trigger_kind) in &runs {
+        for (run_id, task_key, trigger_kind, existing_details) in &runs {
             let owner_v2 = is_retention_owner_v2_task(task_key);
             let details = owner_v2.then(|| {
+                let recovered_dry_run = existing_details
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .and_then(|value| value.get("dryRun").and_then(serde_json::Value::as_bool));
                 let mut details = serde_json::json!({
                     "ownershipVersion": 2,
                     "ownerScope": task_key,
                     "manual": trigger_kind == "manual",
+                    "dryRun": recovered_dry_run,
                     "result": "failed",
                     "globalBacklogTotal": null,
                     "total": null,
@@ -7777,6 +7782,13 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert incomplete managed task run");
+        sqlx::query(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,details)
+             VALUES ('pool_upstream_attempt_archive','manual','2026-09-30T00:00:00.000Z','running','started','{\"ownershipVersion\":1,\"dryRun\":true}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert dry-run owner task run");
         let fresh_started_at = crate::format_utc_iso_millis(Utc::now());
         sqlx::query(
             "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('forward_proxy_subscription_refresh','startup',?1,'running','started')",
@@ -7787,7 +7799,7 @@ mod tests {
         .expect("insert fresh managed task run");
 
         let store = MaintenanceStore::from_pool(pool);
-        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 2);
+        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 3);
         let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='retention_archive'",
         )
@@ -7810,6 +7822,7 @@ mod tests {
             serde_json::from_str(recovered_owner.0.as_deref().expect("owner details"))
                 .expect("decode recovered owner details");
         assert_eq!(details["ownershipVersion"], 2);
+        assert!(details["dryRun"].is_null());
         assert_eq!(details["scheduleRetryReason"], "owner_failed");
         assert!(recovered_owner.1.is_some());
         assert_eq!(recovered_owner.2.as_deref(), Some("owner_failed"));
@@ -7822,6 +7835,16 @@ mod tests {
         assert_eq!(fresh_status.0, "failed");
         assert!(fresh_status.1.is_some());
         assert_eq!(fresh_status.2.as_deref(), Some("服务重启时回收未完成运行"));
+        let recovered_dry_run: Option<String> = sqlx::query_scalar(
+            "SELECT details FROM managed_task_runs WHERE task_key='pool_upstream_attempt_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load recovered dry-run owner task");
+        let recovered_dry_run: serde_json::Value =
+            serde_json::from_str(recovered_dry_run.as_deref().expect("dry-run details"))
+                .expect("decode recovered dry-run details");
+        assert_eq!(recovered_dry_run["dryRun"], true);
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
     }
 

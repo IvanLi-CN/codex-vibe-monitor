@@ -95,3 +95,28 @@ export const DeferredMobile: Story = {
   ...Deferred,
   globals: { viewport: { value: "mobile393", isRotated: false } },
 };
+
+export const RecoveredUnknownMode: Story = {
+  args: {
+    details: {
+      ownershipVersion: 2,
+      ownerScope: "retention_archive",
+      dryRun: null,
+      result: "failed",
+      selectedScope: {
+        scope: "retention_archive",
+        unit: "unknown",
+        selected: 0,
+        committed: 0,
+        batches: 0,
+        hasMore: true,
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("模式未知 · 结果：失败")).toBeVisible();
+    await expect(canvas.getByText("文件")).toBeVisible();
+    await expect(canvas.getAllByText("未知").length).toBeGreaterThan(0);
+  },
+};
