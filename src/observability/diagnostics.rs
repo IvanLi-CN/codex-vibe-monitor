@@ -161,12 +161,14 @@ pub(super) struct RequestMetricHandles {
     response_duration: metrics::Histogram,
     local_wait: metrics::Histogram,
     unattributed: metrics::Histogram,
-    response_ends: [std::sync::OnceLock<metrics::Counter>; 3],
+    response_complete: metrics::Counter,
+    response_ends_other: [std::sync::OnceLock<metrics::Counter>; 2],
     resource_wait: [metrics::Histogram; 7],
     wait_affected: [metrics::Counter; 7],
     wait_over_100ms: [metrics::Counter; 7],
     resource_events: [metrics::Histogram; 7],
-    resource_event_outcomes: [[std::sync::OnceLock<metrics::Counter>; 2]; 7],
+    resource_event_complete: [metrics::Counter; 7],
+    resource_event_cancelled: [std::sync::OnceLock<metrics::Counter>; 7],
     stages: [metrics::Histogram; 9],
     milestones: [metrics::Histogram; 3],
     persistence: [metrics::Histogram; 3],
@@ -249,19 +251,32 @@ impl RequestMetricHandles {
                 vec![("endpoint", endpoint), ("outcome", outcome)],
             )
         });
+        let response_complete = counter(
+            "cvm_request_response_ends_total",
+            vec![("endpoint", endpoint), ("outcome", "complete")],
+        );
+        let resource_event_complete = std::array::from_fn(|resource_index| {
+            counter(
+                "cvm_resource_wait_events_total",
+                vec![
+                    ("resource", Resource::ALL[resource_index].name()),
+                    ("outcome", "complete"),
+                ],
+            )
+        });
         Self {
             endpoint,
             response_duration,
             local_wait,
             unattributed,
-            response_ends: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            response_complete,
+            response_ends_other: std::array::from_fn(|_| std::sync::OnceLock::new()),
             resource_wait,
             wait_affected,
             wait_over_100ms,
             resource_events,
-            resource_event_outcomes: std::array::from_fn(|_| {
-                std::array::from_fn(|_| std::sync::OnceLock::new())
-            }),
+            resource_event_complete,
+            resource_event_cancelled: std::array::from_fn(|_| std::sync::OnceLock::new()),
             stages,
             milestones,
             persistence,
@@ -272,41 +287,50 @@ impl RequestMetricHandles {
         metrics: &ObservabilityRuntime,
         outcome: &'static str,
     ) -> Option<&metrics::Counter> {
-        ["complete", "error", "cancelled"]
-            .iter()
-            .position(|candidate| *candidate == outcome)
-            .map(|index| {
-                self.response_ends[index].get_or_init(|| {
-                    metrics.register_counter(ObservabilityRuntime::key(
-                        "cvm_request_response_ends_total",
-                        &[("endpoint", self.endpoint), ("outcome", outcome)],
-                    ))
-                })
-            })
+        if outcome == "complete" {
+            return Some(&self.response_complete);
+        }
+        let index = match outcome {
+            "error" => 0,
+            "cancelled" => 1,
+            _ => return None,
+        };
+        Some(self.response_ends_other[index].get_or_init(|| {
+            metrics.register_counter(ObservabilityRuntime::key(
+                "cvm_request_response_ends_total",
+                &[("endpoint", self.endpoint), ("outcome", outcome)],
+            ))
+        }))
     }
     fn resource_event_outcome(
         &self,
         metrics: &ObservabilityRuntime,
         resource: Resource,
         outcome: &'static str,
-    ) -> &metrics::Counter {
-        let outcome_index = usize::from(outcome == "cancelled");
-        self.resource_event_outcomes[resource.index()][outcome_index].get_or_init(|| {
-            metrics.register_counter(ObservabilityRuntime::key(
-                "cvm_resource_wait_events_total",
-                &[("resource", resource.name()), ("outcome", outcome)],
-            ))
-        })
+    ) -> Option<&metrics::Counter> {
+        if outcome == "complete" {
+            return Some(&self.resource_event_complete[resource.index()]);
+        }
+        if outcome != "cancelled" {
+            return None;
+        }
+        Some(
+            self.resource_event_cancelled[resource.index()].get_or_init(|| {
+                metrics.register_counter(ObservabilityRuntime::key(
+                    "cvm_resource_wait_events_total",
+                    &[("resource", resource.name()), ("outcome", outcome)],
+                ))
+            }),
+        )
     }
     fn persistence_histogram(&self, outcome: &'static str) -> Option<&metrics::Histogram> {
-        [
-            "committed",
-            "association_unavailable",
-            "coalesced_unavailable",
-        ]
-        .iter()
-        .position(|candidate| *candidate == outcome)
-        .map(|index| &self.persistence[index])
+        let index = match outcome {
+            "committed" => 0,
+            "association_unavailable" => 1,
+            "coalesced_unavailable" => 2,
+            _ => return None,
+        };
+        Some(&self.persistence[index])
     }
 }
 #[derive(Clone, Copy, Default)]
@@ -950,19 +974,24 @@ impl Drop for Guard {
             Kind::Wait(resource) => {
                 self.context.0.metric_handles.resource_events[resource.index()]
                     .record(duration.as_secs_f64());
-                self.context
-                    .0
-                    .metric_handles
-                    .resource_event_outcome(
-                        &self.context.0.metrics,
-                        resource,
-                        if self.complete {
-                            "complete"
-                        } else {
-                            "cancelled"
-                        },
-                    )
-                    .increment(1);
+                let outcome = if self.complete {
+                    "complete"
+                } else {
+                    "cancelled"
+                };
+                if let Some(counter) = self.context.0.metric_handles.resource_event_outcome(
+                    &self.context.0.metrics,
+                    resource,
+                    outcome,
+                ) {
+                    counter.increment(1);
+                } else {
+                    self.context.0.metrics.counter(
+                        "cvm_resource_wait_events_total",
+                        &[("resource", resource.name()), ("outcome", outcome)],
+                        1,
+                    );
+                }
             }
             Kind::Phase(phase) => {
                 self.context.0.metric_handles.stages[phase.index()].record(duration.as_secs_f64());

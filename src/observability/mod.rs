@@ -142,128 +142,110 @@ fn proxy_phase_index(phase: &'static str) -> usize {
 
 #[derive(Debug)]
 pub(crate) struct ProxyMetricHandles {
-    invocations: [std::sync::OnceLock<metrics::Counter>; PROXY_OUTCOME_COUNT],
-    phases: [std::sync::OnceLock<metrics::Histogram>; PROXY_PHASE_COUNT],
+    endpoint: &'static str,
+    invocations: [metrics::Counter; PROXY_OUTCOME_COUNT],
+    phases: [metrics::Histogram; PROXY_PHASE_COUNT],
     ttfb: std::sync::OnceLock<metrics::Histogram>,
     ttft: std::sync::OnceLock<metrics::Histogram>,
     stream: std::sync::OnceLock<metrics::Histogram>,
-    attempts: [std::sync::OnceLock<metrics::Counter>; PROXY_OUTCOME_COUNT],
-    transfer: [std::sync::OnceLock<metrics::Counter>; PROXY_DIRECTION_COUNT],
-}
-
-impl Default for ProxyMetricHandles {
-    fn default() -> Self {
-        Self {
-            invocations: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            phases: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            ttfb: std::sync::OnceLock::new(),
-            ttft: std::sync::OnceLock::new(),
-            stream: std::sync::OnceLock::new(),
-            attempts: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            transfer: std::array::from_fn(|_| std::sync::OnceLock::new()),
-        }
-    }
+    attempts: [metrics::Counter; PROXY_OUTCOME_COUNT],
+    transfer: [metrics::Counter; PROXY_DIRECTION_COUNT],
 }
 
 impl ProxyMetricHandles {
-    fn invocation(
-        &self,
-        metrics: &ObservabilityRuntime,
-        endpoint: &'static str,
-        outcome: &'static str,
-    ) -> &metrics::Counter {
-        let index = proxy_invocation_outcome_index(outcome);
-        self.invocations[index].get_or_init(|| {
-            metrics.register_counter(ObservabilityRuntime::key(
+    fn new(metrics: &ObservabilityRuntime, endpoint: &'static str) -> Self {
+        let counter = |name: &'static str, labels: Vec<(&'static str, &'static str)>| {
+            metrics.register_counter(ObservabilityRuntime::key(name, &labels))
+        };
+        let histogram = |name: &'static str, labels: Vec<(&'static str, &'static str)>| {
+            metrics.register_histogram(ObservabilityRuntime::key(name, &labels))
+        };
+        let invocations = std::array::from_fn(|index| {
+            counter(
                 "cvm_proxy_invocations_total",
-                &[("endpoint", endpoint), ("outcome", outcome)],
-            ))
-        })
-    }
-
-    fn phase(
-        &self,
-        metrics: &ObservabilityRuntime,
-        endpoint: &'static str,
-        phase: &'static str,
-    ) -> &metrics::Histogram {
-        self.phase_at(metrics, endpoint, proxy_phase_index(phase))
-    }
-
-    fn phase_at(
-        &self,
-        metrics: &ObservabilityRuntime,
-        endpoint: &'static str,
-        index: usize,
-    ) -> &metrics::Histogram {
-        let phase = PROXY_PHASES[index];
-        self.phases[index].get_or_init(|| {
-            metrics.register_histogram(ObservabilityRuntime::key(
+                vec![
+                    ("endpoint", endpoint),
+                    ("outcome", PROXY_INVOCATION_OUTCOMES[index]),
+                ],
+            )
+        });
+        let phases = std::array::from_fn(|index| {
+            histogram(
                 "cvm_proxy_phase_duration_seconds",
-                &[("endpoint", endpoint), ("phase", phase)],
-            ))
-        })
+                vec![("endpoint", endpoint), ("phase", PROXY_PHASES[index])],
+            )
+        });
+        let attempts = std::array::from_fn(|index| {
+            counter(
+                "cvm_proxy_upstream_attempts_total",
+                vec![
+                    ("endpoint", endpoint),
+                    ("outcome", PROXY_ATTEMPT_OUTCOMES[index]),
+                ],
+            )
+        });
+        let transfer = std::array::from_fn(|index| {
+            counter(
+                "cvm_proxy_transfer_bytes_total",
+                vec![
+                    ("endpoint", endpoint),
+                    ("direction", PROXY_DIRECTIONS[index]),
+                ],
+            )
+        });
+        Self {
+            endpoint,
+            invocations,
+            phases,
+            ttfb: std::sync::OnceLock::new(),
+            ttft: std::sync::OnceLock::new(),
+            stream: std::sync::OnceLock::new(),
+            attempts,
+            transfer,
+        }
     }
 
-    fn ttfb(&self, metrics: &ObservabilityRuntime, endpoint: &'static str) -> &metrics::Histogram {
+    fn invocation(&self, outcome: &'static str) -> &metrics::Counter {
+        &self.invocations[proxy_invocation_outcome_index(outcome)]
+    }
+
+    fn phase(&self, phase: &'static str) -> &metrics::Histogram {
+        &self.phases[proxy_phase_index(phase)]
+    }
+
+    fn ttfb(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
         self.ttfb.get_or_init(|| {
             metrics.register_histogram(ObservabilityRuntime::key(
                 "cvm_proxy_ttfb_seconds",
-                &[("endpoint", endpoint)],
+                &[("endpoint", self.endpoint)],
             ))
         })
     }
 
-    fn ttft(&self, metrics: &ObservabilityRuntime, endpoint: &'static str) -> &metrics::Histogram {
+    fn ttft(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
         self.ttft.get_or_init(|| {
             metrics.register_histogram(ObservabilityRuntime::key(
                 "cvm_proxy_ttft_seconds",
-                &[("endpoint", endpoint)],
+                &[("endpoint", self.endpoint)],
             ))
         })
     }
 
-    fn stream(
-        &self,
-        metrics: &ObservabilityRuntime,
-        endpoint: &'static str,
-    ) -> &metrics::Histogram {
+    fn stream(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
         self.stream.get_or_init(|| {
             metrics.register_histogram(ObservabilityRuntime::key(
                 "cvm_proxy_stream_duration_seconds",
-                &[("endpoint", endpoint)],
+                &[("endpoint", self.endpoint)],
             ))
         })
     }
 
-    fn attempt(
-        &self,
-        metrics: &ObservabilityRuntime,
-        endpoint: &'static str,
-        outcome: &'static str,
-    ) -> &metrics::Counter {
-        let index = proxy_attempt_outcome_index(outcome);
-        self.attempts[index].get_or_init(|| {
-            metrics.register_counter(ObservabilityRuntime::key(
-                "cvm_proxy_upstream_attempts_total",
-                &[("endpoint", endpoint), ("outcome", outcome)],
-            ))
-        })
+    fn attempt(&self, outcome: &'static str) -> &metrics::Counter {
+        &self.attempts[proxy_attempt_outcome_index(outcome)]
     }
 
-    pub(crate) fn transfer(
-        &self,
-        metrics: &ObservabilityRuntime,
-        endpoint: &'static str,
-        direction: &'static str,
-    ) -> &metrics::Counter {
-        let index = proxy_direction_index(direction);
-        self.transfer[index].get_or_init(|| {
-            metrics.register_counter(ObservabilityRuntime::key(
-                "cvm_proxy_transfer_bytes_total",
-                &[("endpoint", endpoint), ("direction", direction)],
-            ))
-        })
+    pub(crate) fn transfer(&self, direction: &'static str) -> &metrics::Counter {
+        &self.transfer[proxy_direction_index(direction)]
     }
 }
 
@@ -502,7 +484,7 @@ impl ObservabilityRuntime {
     ) -> Arc<http::HttpMetricHandles> {
         let index = http::route_index(route) * http::HTTP_METHOD_COUNT + http::method_index(method);
         self.http_metrics[index]
-            .get_or_init(|| Arc::new(http::HttpMetricHandles::new(route, method)))
+            .get_or_init(|| Arc::new(http::HttpMetricHandles::new(self, route, method)))
             .clone()
     }
     fn request_metrics(&self, endpoint: &'static str) -> Arc<diagnostics::RequestMetricHandles> {
@@ -559,7 +541,7 @@ impl ObservabilityRuntime {
     pub(crate) fn proxy_metrics(&self, endpoint: &'static str) -> Arc<ProxyMetricHandles> {
         let index = proxy_endpoint_index(endpoint);
         self.proxy_metrics[index]
-            .get_or_init(|| Arc::new(ProxyMetricHandles::default()))
+            .get_or_init(|| Arc::new(ProxyMetricHandles::new(self, endpoint)))
             .clone()
     }
     pub(crate) async fn initialize_traces(&self, config: traces::TraceConfig) {
@@ -764,7 +746,7 @@ impl ObservabilityRuntime {
             "cancelled" | "canceled" => "cancelled",
             _ => "error",
         };
-        handles.invocation(self, endpoint, outcome).increment(1);
+        handles.invocation(outcome).increment(1);
         let t = &record.timings;
         for (phase, value) in [
             ("total", t.t_total_ms),
@@ -777,24 +759,20 @@ impl ObservabilityRuntime {
             ("persist", t.t_persist_ms),
         ] {
             if value.is_finite() && value > 0.0 {
-                handles.phase(self, endpoint, phase).record(value / 1000.0);
+                handles.phase(phase).record(value / 1000.0);
             }
         }
         if t.t_upstream_ttfb_ms.is_finite() && t.t_upstream_ttfb_ms > 0.0 {
-            handles
-                .ttfb(self, endpoint)
-                .record(t.t_upstream_ttfb_ms / 1000.0);
+            handles.ttfb(self).record(t.t_upstream_ttfb_ms / 1000.0);
         }
         if let Some(ttft) = t
             .first_token_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
-            handles.ttft(self, endpoint).record(ttft / 1000.0);
+            handles.ttft(self).record(ttft / 1000.0);
         }
         if t.t_upstream_stream_ms.is_finite() && t.t_upstream_stream_ms > 0.0 {
-            handles
-                .stream(self, endpoint)
-                .record(t.t_upstream_stream_ms / 1000.0);
+            handles.stream(self).record(t.t_upstream_stream_ms / 1000.0);
         }
     }
 }
@@ -809,10 +787,7 @@ impl ObservationSpan {
         phase: &'static str,
     ) -> Self {
         Self {
-            histogram: metrics
-                .proxy_metrics(endpoint)
-                .phase(&metrics, endpoint, phase)
-                .clone(),
+            histogram: metrics.proxy_metrics(endpoint).phase(phase).clone(),
             started: Instant::now(),
         }
     }
@@ -850,9 +825,7 @@ impl UpstreamAttempt {
 }
 impl Drop for UpstreamAttempt {
     fn drop(&mut self) {
-        self.handles
-            .attempt(&self.metrics, self.endpoint, self.outcome)
-            .increment(1);
+        self.handles.attempt(self.outcome).increment(1);
     }
 }
 
