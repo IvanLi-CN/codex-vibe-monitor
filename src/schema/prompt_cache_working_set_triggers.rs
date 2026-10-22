@@ -4,7 +4,7 @@ use super::compatibility::{
 };
 use super::*;
 
-pub(crate) async fn rebuild_prompt_cache_working_set_live_triggers(
+pub(super) async fn rebuild_prompt_cache_working_set_live_triggers(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     let refresh_started = Instant::now();

@@ -8,24 +8,24 @@ pub(crate) const INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL: &str = "CASE WHEN json_va
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_EXPR_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 pub(crate) const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
 pub(crate) const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
-pub(crate) const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
+pub(super) const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
     "invocation_rollup_hourly_token_components_v1";
-pub(crate) const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
-pub(crate) const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
-pub(crate) const SCHEMA_REFRESH_MIGRATIONS_TABLE: &str = "schema_refresh_migrations";
-pub(crate) const RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME: &str =
+pub(super) const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
+pub(super) const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
+pub(super) const SCHEMA_REFRESH_MIGRATIONS_TABLE: &str = "schema_refresh_migrations";
+pub(super) const RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME: &str =
     "retire_openai_websocket_proxy_v1";
-pub(crate) const PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
+pub(super) const PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
     "prompt_cache_expression_indexes_v1";
-pub(crate) const INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
+pub(super) const INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
     "invoke_id_filter_expression_index_v1";
-pub(crate) const TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME: &str =
+pub(super) const TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME: &str =
     "timeseries_minute_projection_startup_recovery_baseline_v1";
-pub(crate) const INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME: &str =
+pub(super) const INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME: &str =
     "invocation_live_projection_v1";
-pub(crate) const PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME: &str =
+pub(super) const PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME: &str =
     "prompt_cache_working_set_relevant_updates_v1";
-pub(crate) const TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL: &str = r#"
+pub(super) const TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
         consumer TEXT PRIMARY KEY,
         generation INTEGER NOT NULL DEFAULT 0,
@@ -63,7 +63,7 @@ pub(crate) fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::s
     lock
 }
 
-pub(crate) async fn ensure_schema_refresh_migrations_table(pool: &Pool<Sqlite>) -> Result<()> {
+pub(super) async fn ensure_schema_refresh_migrations_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {SCHEMA_REFRESH_MIGRATIONS_TABLE} (\
             migration_name TEXT PRIMARY KEY,\
@@ -76,7 +76,7 @@ pub(crate) async fn ensure_schema_refresh_migrations_table(pool: &Pool<Sqlite>) 
     Ok(())
 }
 
-pub(crate) async fn schema_refresh_completed(
+pub(super) async fn schema_refresh_completed(
     pool: &Pool<Sqlite>,
     migration_name: &str,
 ) -> Result<bool> {
@@ -89,7 +89,7 @@ pub(crate) async fn schema_refresh_completed(
         != 0)
 }
 
-pub(crate) async fn schema_refresh_completed_in_transaction(
+pub(super) async fn schema_refresh_completed_in_transaction(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     migration_name: &str,
 ) -> Result<bool> {
@@ -102,7 +102,7 @@ pub(crate) async fn schema_refresh_completed_in_transaction(
         != 0)
 }
 
-pub(crate) async fn record_schema_refresh_completion(
+pub(super) async fn record_schema_refresh_completion(
     pool: &Pool<Sqlite>,
     migration_name: &str,
 ) -> Result<()> {
@@ -116,7 +116,7 @@ pub(crate) async fn record_schema_refresh_completion(
     Ok(())
 }
 
-pub(crate) async fn record_schema_refresh_completion_in_transaction(
+pub(super) async fn record_schema_refresh_completion_in_transaction(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     migration_name: &str,
 ) -> Result<()> {
@@ -129,11 +129,11 @@ pub(crate) async fn record_schema_refresh_completion_in_transaction(
     .with_context(|| format!("failed to record schema refresh completion for {migration_name}"))?;
     Ok(())
 }
-pub(crate) async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
+pub(super) async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
     sqlite_schema_object_exists(pool, "table", table_name).await
 }
 
-pub(crate) async fn sqlite_schema_object_exists(
+pub(super) async fn sqlite_schema_object_exists(
     pool: &Pool<Sqlite>,
     object_type: &str,
     object_name: &str,
@@ -148,7 +148,7 @@ pub(crate) async fn sqlite_schema_object_exists(
         != 0)
 }
 
-pub(crate) async fn invocation_live_projection_objects_exist(
+pub(super) async fn invocation_live_projection_objects_exist(
     pool: &Pool<Sqlite>,
     invocation_in_progress_live_exists: bool,
     prompt_cache_working_set_live_exists: bool,
@@ -173,7 +173,7 @@ pub(crate) async fn invocation_live_projection_objects_exist(
     Ok(true)
 }
 
-pub(crate) async fn ensure_nullable_real_column(
+pub(super) async fn ensure_nullable_real_column(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,
@@ -195,7 +195,7 @@ pub(crate) async fn ensure_nullable_real_column(
     Ok(())
 }
 
-pub(crate) async fn ensure_column_with_definition(
+pub(super) async fn ensure_column_with_definition(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,
