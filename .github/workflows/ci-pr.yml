@@ -986,3 +986,51 @@ jobs:
           SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+  retention-migration-validation:
+    name: Retention Migration Validation
+    needs: build-pr-smoke-artifacts
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Verify smoke artifact producer
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download PR smoke artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts
+
+      - name: Extract candidate binary
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-smoke
+          tar -C .ci-smoke -xf "$RUNNER_TEMP/pr-smoke-artifacts/pr-smoke-artifacts.tar"
+          test -x .ci-smoke/codex-vibe-monitor
+
+      - name: Generate released-source fixtures
+        run: |
+          python3 scripts/generate-retention-maintenance-release-fixtures.py \
+            --output-dir "$RUNNER_TEMP/retention-migration-fixtures"
+
+      - name: Run released-source migration validation
+        run: |
+          python3 scripts/validate-retention-maintenance-upgrade.py \
+            --fixtures-root "$RUNNER_TEMP/retention-migration-fixtures" \
+            --candidate "$PWD/.ci-smoke/codex-vibe-monitor" \
+            --output-dir "$RUNNER_TEMP/retention-migration-results"
+
+      - name: Upload retention migration evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-migration-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}/retention-migration-results
+          if-no-files-found: error
+          retention-days: 7

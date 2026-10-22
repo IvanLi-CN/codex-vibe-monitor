@@ -826,3 +826,10 @@ jobs:
           SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}-${{ github.run_attempt }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+  retention-migration-validation:
+    name: Retention Migration Validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fixture retention migration validation
+        run: true

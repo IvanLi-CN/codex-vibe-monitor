@@ -77,6 +77,30 @@ def retention_command(task_key, dry_run):
     return command + (("--dry-run",) if dry_run else ())
 
 
+def run_scoped_command(candidate, root, task_key, dry_run):
+    with sqlite3.connect(root / "maintenance.sqlite") as connection:
+        before_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
+    before_business = business_facts(root)
+    before_files = file_facts(root)
+    command = retention_command(task_key, dry_run)
+    execute(candidate, root, *command)
+    with sqlite3.connect(root / "maintenance.sqlite") as connection:
+        records = connection.execute(
+            "SELECT id,task_key,details FROM managed_task_runs WHERE id>? AND trigger_kind='manual' AND details IS NOT NULL ORDER BY id",
+            (before_run_id,),
+        ).fetchall()
+    assert len(records) == 1, (task_key, dry_run, records)
+    record_id, recorded_task_key, details = records[0]
+    parsed = json.loads(details)
+    assert recorded_task_key == task_key and parsed.get("ownerScope") == task_key, (task_key, record_id, parsed)
+    assert parsed.get("ownershipVersion") == OWNER_VERSIONS[task_key], (task_key, parsed)
+    assert parsed.get("dryRun") is dry_run, (task_key, dry_run, parsed)
+    if dry_run:
+        assert business_facts(root) == before_business, command
+        assert file_facts(root) == before_files, command
+    return parsed
+
+
 def validate_source(candidate, source, target):
     assert not target.exists(), f"Output target already exists: {target}"
     shutil.copytree(source, target)
@@ -111,20 +135,31 @@ def validate_source(candidate, source, target):
         assert rows["raw_orphan_sweep"] == (1, 300, None), rows
         assert connection.execute("SELECT value FROM maintenance_metadata WHERE key='retention_maintenance_ownership_v1'").fetchone() == ("applied",)
         connection.execute("UPDATE managed_tasks SET enabled=0,interval_secs=420,next_trigger_at=NULL WHERE task_key IN ('invocation_identity_cleanup','raw_orphan_sweep')")
+    for task_key in RETENTION_OWNERS:
+        run_scoped_command(candidate, target, task_key, True)
     before = business_facts(target)
     before_files = file_facts(target)
-    dry_run_commands = [retention_command(task_key, True) for task_key in RETENTION_OWNERS]
-    dry_run_commands.extend([
-        ("maintenance", "invocation-identity-cleanup", "--dry-run"),
-        ("maintenance", "raw-orphan-sweep", "--dry-run"),
-    ])
-    for command in dry_run_commands:
+    for task_key, command in [
+        ("invocation_identity_cleanup", ("maintenance", "invocation-identity-cleanup", "--dry-run")),
+        ("raw_orphan_sweep", ("maintenance", "raw-orphan-sweep", "--dry-run")),
+    ]:
+        with sqlite3.connect(target / "maintenance.sqlite") as connection:
+            before_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
         execute(candidate, target, *command)
+        with sqlite3.connect(target / "maintenance.sqlite") as connection:
+            records = connection.execute(
+                "SELECT id,task_key,details FROM managed_task_runs WHERE id>? AND trigger_kind='manual' AND details IS NOT NULL ORDER BY id",
+                (before_run_id,),
+            ).fetchall()
+        assert len(records) == 1 and records[0][1] == task_key, (task_key, records)
+        parsed = json.loads(records[0][2])
+        assert parsed.get("ownerScope") == task_key and parsed.get("ownershipVersion") == OWNER_VERSIONS[task_key]
+        assert parsed.get("dryRun") is True
         assert business_facts(target) == before, command
         assert file_facts(target) == before_files and raw.exists(), command
     # Real retention owners are explicit even with RETENTION_DRY_RUN=true. Each one-shot is scoped to its owner.
     for task_key in RETENTION_OWNERS:
-        execute(candidate, target, *retention_command(task_key, False))
+        run_scoped_command(candidate, target, task_key, False)
     # The archive owner leaves both orphan responsibilities alone.
     with sqlite3.connect(target / "business.sqlite") as connection:
         assert connection.execute("SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key='upgrade-orphan'").fetchone()[0] == 1
