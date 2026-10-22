@@ -4874,7 +4874,7 @@ impl MaintenanceStore {
                 .bind(id)
                 .fetch_optional(&mut *transaction)
                 .await?;
-        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
+        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=? AND status IN ('running','requested','queued')")
             .bind(status)
             .bind(finished_at)
             .bind(duration_ms)
@@ -4888,7 +4888,24 @@ impl MaintenanceStore {
             .execute(&mut *transaction)
             .await?;
         if result.rows_affected() == 0 {
-            return Err(anyhow!("managed task run {id} was not found"));
+            let current_status: Option<String> =
+                sqlx::query_scalar("SELECT status FROM managed_task_runs WHERE id=?")
+                    .bind(id)
+                    .fetch_optional(&mut *transaction)
+                    .await?;
+            return match current_status.as_deref() {
+                Some(status) if !matches!(status, "running" | "requested" | "queued") => {
+                    // A terminal journal replay can arrive after startup recovery or a
+                    // competing finalizer already closed this generation. Treat it as an
+                    // acknowledged no-op so it cannot overwrite retry or catch-up state.
+                    transaction.commit().await?;
+                    Ok(())
+                }
+                Some(status) => Err(anyhow!(
+                    "managed task run {id} could not transition from status {status}"
+                )),
+                None => Err(anyhow!("managed task run {id} was not found")),
+            };
         }
         if let (Some(seconds), Some(reason)) = (retry_after_secs, retry_reason) {
             Self::schedule_owned_work_for_run_in_transaction(

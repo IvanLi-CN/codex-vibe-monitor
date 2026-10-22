@@ -1822,6 +1822,7 @@ impl TerminalJournal {
     }
 
     pub(crate) fn system_task_recovery_blocked_task_keys(&self) -> HashSet<String> {
+        let recovery_pending = self.system_task_recovery_pending();
         let mut task_keys = self
             .deferred_system_task_finishes
             .iter()
@@ -1833,6 +1834,11 @@ impl TerminalJournal {
                 .filter_map(|run_id| self.system_task_recovery_task_keys.get(run_id))
                 .cloned(),
         );
+        if recovery_pending {
+            // History cleanup can delete a terminal row before a delayed replay resolves its
+            // run_id. Keep the cleanup owner behind the same durable recovery fence.
+            task_keys.insert("task_run_history_cleanup".to_string());
+        }
         task_keys
     }
 
@@ -3118,6 +3124,11 @@ mod tests {
             recovered
                 .system_task_recovery_blocked_task_keys()
                 .contains(&finish.task_key)
+        );
+        assert!(
+            recovered
+                .system_task_recovery_blocked_task_keys()
+                .contains("task_run_history_cleanup")
         );
         let replay = recovered.take_system_task_finishes(1);
         assert_eq!(replay.len(), 1);
