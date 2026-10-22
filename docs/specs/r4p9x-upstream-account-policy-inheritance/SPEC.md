@@ -638,6 +638,38 @@ Visual evidence is captured from stable Storybook scenarios for:
   image:
   ![Account pool mobile domain](./assets/upstream-domains-pool-mobile-393.png)
 
+- source_type: ui_demo
+  story_id_or_title: `/account-pool/pool?demoScene=operational&demoTheme=dark`
+  state: OAuth/Session account roster with localized policy labels and neutral metadata chip hierarchy
+  requested_viewport: 1440x960
+  viewport_strategy: ui-demo-source
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies that account kind, tags, concurrency, and idle metadata no longer compete with enabled, working, retry, error, and proxy semantic tones; policy chips no longer expose internal translation keys.
+  candidate_sha: `d272cf722de45c6892bdf6d9276f3ae41fc6bbfd`
+  target_program: mock-only
+  capture_scope: browser viewport
+  sensitive_exclusion: deterministic ui_demo fixtures only
+  submission_gate: approved
+  image:
+  ![Account pool chip colors desktop](./assets/account-pool-chip-colors-desktop.png)
+
+- source_type: ui_demo
+  story_id_or_title: `/account-pool/pool?demoScene=operational&demoTheme=dark`
+  state: narrow OAuth/Session account cards with wrapped semantic chips
+  requested_viewport: 390x844
+  viewport_strategy: ui-demo-source
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the corrected chip hierarchy remains readable when account metadata wraps on narrow screens without horizontal overflow.
+  candidate_sha: `d272cf722de45c6892bdf6d9276f3ae41fc6bbfd`
+  target_program: mock-only
+  capture_scope: browser viewport
+  sensitive_exclusion: deterministic ui_demo fixtures only
+  submission_gate: approved
+  image:
+  ![Account pool chip colors mobile](./assets/account-pool-chip-colors-mobile-390.png)
+
 ## Upstream Domains
 
 The upstream area has two explicit account domains backed by the same account table and IDs:

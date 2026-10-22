@@ -33,6 +33,7 @@ The account-pool UI is reduced to group/account policy editing plus read-only sy
 - bulk add/remove tag actions are removed from the roster
 - account cards and detail drawers still display system tags as read-only badges
 - roster filtering still uses `usePoolTags`, but only against the system-tag directory
+- account roster chips use localized `policyBadges` labels; ordinary account metadata uses neutral tones while enabled, active, retry, error, and proxy states retain semantic tones
 
 The account detail Routing tab exposes final effective rules as field-level inline account overrides.
 
