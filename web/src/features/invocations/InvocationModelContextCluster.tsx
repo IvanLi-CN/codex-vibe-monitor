@@ -66,7 +66,7 @@ function CompactModelIdentity({
           data-model-generation-segment={generationLabel}
           data-model-context-side={side}
           data-testid={testId ? `${testId}-${side}-generation` : undefined}
-          className="shrink-0 font-mono text-[10px] font-semibold leading-none text-base-content/78"
+          className="flex h-4 shrink-0 items-center font-mono text-[10px] font-semibold leading-none text-base-content/78"
         >
           {generationLabel}
         </span>
@@ -198,7 +198,7 @@ export function InvocationModelContextCluster({
         data-testid={testId}
         data-model-context-grouped="true"
         className={cn(
-          "inline-flex h-5 min-w-0 max-w-full items-center gap-[3px] overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
+          "inline-flex h-5 min-w-0 max-w-full items-center gap-[3px] overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 px-1 leading-none",
           className,
         )}
         title={modelLabel}

@@ -269,6 +269,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const fastPartRect = fastPart?.getBoundingClientRect();
         const modelIconRect = modelIcon?.getBoundingClientRect();
         const modelIconContainerRect = modelIcon?.parentElement?.getBoundingClientRect();
+        const generationRect = generation.getBoundingClientRect();
         const fastIconRect = fastIcon?.getBoundingClientRect();
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
           Math.max(
@@ -315,6 +316,16 @@ test.describe("Dashboard working conversations responsive layout", () => {
             modelIconRect && modelIconContainerRect
               ? centerDelta(modelIconRect, modelIconContainerRect)
               : null,
+          generationCenterDelta:
+            modelIconContainerRect && generationRect
+              ? Math.abs(
+                  generationRect.top +
+                    generationRect.height / 2 -
+                    (modelIconContainerRect.top + modelIconContainerRect.height / 2),
+                )
+              : null,
+          modelStartInset: modelRect.left - cluster.getBoundingClientRect().left,
+          modelEndInset: cluster.getBoundingClientRect().right - modelRect.right,
           fastIconCenterDelta:
             fastIconRect && fastPartRect ? centerDelta(fastIconRect, fastPartRect) : null,
           effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
@@ -355,7 +366,13 @@ test.describe("Dashboard working conversations responsive layout", () => {
       layout.groupedGeometry.every(
         (geometry) =>
           (geometry.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
+          (geometry.generationCenterDelta ?? Number.POSITIVE_INFINITY) <= 1 &&
           (geometry.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) => geometry.modelStartInset >= 4 && geometry.modelEndInset >= 4,
       ),
     ).toBe(true);
     expect(

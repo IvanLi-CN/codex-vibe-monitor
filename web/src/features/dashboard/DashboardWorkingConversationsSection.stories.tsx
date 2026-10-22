@@ -3789,6 +3789,8 @@ export const GPT6ModelContextCluster: Story = {
     await expect(identity).toHaveAttribute("aria-label", "gpt-6-astra");
     await expect(identity).toHaveAttribute("data-model-icon", "creation");
     await expect(identity).toHaveClass("h-4", "w-4");
+    await expect(generation).toHaveClass("h-4", "items-center");
+    await expect(cluster).toHaveClass("px-1");
     await expect(identity).not.toHaveClass("border");
     await expect(
       cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
