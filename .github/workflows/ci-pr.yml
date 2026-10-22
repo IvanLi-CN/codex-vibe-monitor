@@ -1027,10 +1027,20 @@ jobs:
             --candidate "$PWD/.ci-smoke/codex-vibe-monitor" \
             --output-dir "$RUNNER_TEMP/retention-migration-results"
 
+      - name: Run runtime ownership validation
+        run: |
+          python3 scripts/validate-retention-maintenance-runtime.py \
+            --source-fixture "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" \
+            --candidate "$PWD/.ci-smoke/codex-vibe-monitor" \
+            --output-dir "$RUNNER_TEMP/retention-runtime-results" \
+            --http-port 60081
+
       - name: Upload retention migration evidence
         uses: actions/upload-artifact@v7
         with:
           name: retention-migration-validation-${{ github.run_id }}
-          path: ${{ runner.temp }}/retention-migration-results
+          path: |
+            ${{ runner.temp }}/retention-migration-results
+            ${{ runner.temp }}/retention-runtime-results
           if-no-files-found: error
           retention-days: 7
