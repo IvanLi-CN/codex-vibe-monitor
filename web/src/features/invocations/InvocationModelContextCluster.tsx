@@ -66,7 +66,7 @@ function CompactModelIdentity({
           data-model-generation-segment={generationLabel}
           data-model-context-side={side}
           data-testid={testId ? `${testId}-${side}-generation` : undefined}
-          className="flex h-4 shrink-0 items-center font-mono text-[10px] font-semibold leading-none text-base-content/78"
+          className="flex h-4 shrink-0 translate-y-px items-center font-mono text-[10px] font-semibold leading-none text-base-content/78"
         >
           {generationLabel}
         </span>
@@ -148,6 +148,7 @@ export function InvocationModelContextCluster({
   const displayReasoningEffort = formatReasoningEffort(reasoningEffortValue);
   const hasReasoningEffort = displayReasoningEffort !== FALLBACK_CELL;
   const fastIndicator = renderFastIndicator(fastIndicatorState, t, {
+    compact: grouped,
     verticalAlign: grouped ? "center" : "baseline",
   });
   const fastLabel =
@@ -260,7 +261,7 @@ export function InvocationModelContextCluster({
         {fastIndicator ? (
           <span
             data-model-context-part="fast"
-            className="flex w-4 shrink-0 items-center justify-center"
+            className="flex w-[7px] shrink-0 items-center justify-center overflow-hidden"
           >
             {fastIndicator}
           </span>

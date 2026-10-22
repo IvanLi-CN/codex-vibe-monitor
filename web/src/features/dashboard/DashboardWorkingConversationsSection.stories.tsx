@@ -3789,7 +3789,7 @@ export const GPT6ModelContextCluster: Story = {
     await expect(identity).toHaveAttribute("aria-label", "gpt-6-astra");
     await expect(identity).toHaveAttribute("data-model-icon", "creation");
     await expect(identity).toHaveClass("h-4", "w-4");
-    await expect(generation).toHaveClass("h-4", "items-center");
+    await expect(generation).toHaveClass("h-4", "items-center", "translate-y-px");
     await expect(cluster).toHaveClass("px-1");
     await expect(identity).not.toHaveClass("border");
     await expect(
@@ -3801,6 +3801,7 @@ export const GPT6ModelContextCluster: Story = {
       ),
     ).toHaveTextContent("high");
     await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    await expect(cluster.querySelector('[data-model-context-part="fast"]')).toHaveClass("w-[7px]");
   },
 };
 

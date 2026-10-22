@@ -271,6 +271,19 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const modelIconContainerRect = modelIcon?.parentElement?.getBoundingClientRect();
         const generationRect = generation.getBoundingClientRect();
         const fastIconRect = fastIcon?.getBoundingClientRect();
+        const fastPath = fastIcon?.querySelector("path");
+        const fastPathBox = fastPath?.getBBox();
+        const fastPathTransform = fastPath?.getScreenCTM();
+        const fastVisibleRight =
+          fastPathBox && fastPathTransform
+            ? new DOMPoint(fastPathBox.x + fastPathBox.width, fastPathBox.y).matrixTransform(
+                fastPathTransform,
+              ).x
+            : null;
+        const fastVisibleLeft =
+          fastPathBox && fastPathTransform
+            ? new DOMPoint(fastPathBox.x, fastPathBox.y).matrixTransform(fastPathTransform).x
+            : null;
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
           Math.max(
             Math.abs(
@@ -311,6 +324,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
           modelWidth: modelRect.width,
           modelToEffortGap: reasoningRect.left - modelRect.right,
           effortToFastGap: fastPartRect ? fastPartRect.left - effortTextRect.right : null,
+          effortToFastVisibleGap:
+            fastVisibleLeft == null ? null : fastVisibleLeft - effortTextRect.right,
           generationText: generation.textContent,
           modelIconCenterDelta:
             modelIconRect && modelIconContainerRect
@@ -326,6 +341,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
               : null,
           modelStartInset: modelRect.left - cluster.getBoundingClientRect().left,
           modelEndInset: cluster.getBoundingClientRect().right - modelRect.right,
+          fastVisibleEndInset: fastVisibleRight
+            ? cluster.getBoundingClientRect().right - fastVisibleRight
+            : null,
           fastIconCenterDelta:
             fastIconRect && fastPartRect ? centerDelta(fastIconRect, fastPartRect) : null,
           effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
@@ -366,13 +384,18 @@ test.describe("Dashboard working conversations responsive layout", () => {
       layout.groupedGeometry.every(
         (geometry) =>
           (geometry.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
-          (geometry.generationCenterDelta ?? Number.POSITIVE_INFINITY) <= 1 &&
-          (geometry.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+          (geometry.generationCenterDelta ?? Number.POSITIVE_INFINITY) <= 1,
       ),
     ).toBe(true);
     expect(
       layout.groupedGeometry.every(
-        (geometry) => geometry.modelStartInset >= 4 && geometry.modelEndInset >= 4,
+        (geometry) =>
+          geometry.modelStartInset >= 4 &&
+          geometry.modelEndInset >= 4 &&
+          (geometry.fastVisibleEndInset ?? Number.POSITIVE_INFINITY) >= 4 &&
+          Math.abs(
+            geometry.modelStartInset - (geometry.fastVisibleEndInset ?? Number.NEGATIVE_INFINITY),
+          ) <= 0.5,
       ),
     ).toBe(true);
     expect(
@@ -385,6 +408,13 @@ test.describe("Dashboard working conversations responsive layout", () => {
         (geometry) =>
           (geometry.effortToFastGap ?? Number.POSITIVE_INFINITY) >= 3 &&
           (geometry.effortToFastGap ?? Number.NEGATIVE_INFINITY) <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) =>
+          (geometry.effortToFastVisibleGap ?? Number.POSITIVE_INFINITY) >= 2.5 &&
+          (geometry.effortToFastVisibleGap ?? Number.NEGATIVE_INFINITY) <= 4.5,
       ),
     ).toBe(true);
     expect(layout.groupedGeometry.every((geometry) => geometry.markerCount === 0)).toBe(true);
@@ -471,6 +501,13 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const modelIconRect = modelIcon?.getBoundingClientRect();
         const modelIconContainerRect = modelIcon?.parentElement?.getBoundingClientRect();
         const fastIconRect = fastIcon?.getBoundingClientRect();
+        const fastPath = fastIcon?.querySelector("path");
+        const fastPathBox = fastPath?.getBBox();
+        const fastPathTransform = fastPath?.getScreenCTM();
+        const fastVisibleLeft =
+          fastPathBox && fastPathTransform
+            ? new DOMPoint(fastPathBox.x, fastPathBox.y).matrixTransform(fastPathTransform).x
+            : null;
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
           Math.max(
             Math.abs(
@@ -518,6 +555,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
           modelWidth: modelRect.width,
           modelToEffortGap: reasoningRect.left - modelRect.right,
           effortToFastGap: fastPartRect.left - effortTextRect.right,
+          effortToFastVisibleGap:
+            fastVisibleLeft == null ? null : fastVisibleLeft - effortTextRect.right,
           generationText: generation.textContent,
           modelIconCenterDelta:
             modelIconRect && modelIconContainerRect
@@ -585,14 +624,19 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedContexts.every((context) => context.partsWithinCluster)).toBe(true);
     expect(
       layout.groupedContexts.every(
-        (context) =>
-          (context.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
-          (context.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+        (context) => (context.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
       ),
     ).toBe(true);
     expect(
       layout.groupedContexts.every(
         (context) => context.effortToFastGap >= 3 && context.effortToFastGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) =>
+          (context.effortToFastVisibleGap ?? Number.POSITIVE_INFINITY) >= 2.5 &&
+          (context.effortToFastVisibleGap ?? Number.NEGATIVE_INFINITY) <= 4.5,
       ),
     ).toBe(true);
     expect(layout.groupedContexts.every((context) => context.internalDividerCount === 0)).toBe(
