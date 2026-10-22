@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-  "codeCandidateSha": "cfe996f5be4c68a2e1918e8a412ccfe7b2508a4c",
+  "codeCandidateSha": "95b95759d3f574f7adfc4b95cf9e4ba4be4bbb58",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -11,7 +11,7 @@
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 15,
+    "repairBatchesUsed": 16,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -114,8 +114,8 @@
     "postEvidenceRefreshCi"
   ],
   "formalReview": {
-    "candidateSha": "c55bf4c35e5cb94ec303fc1868e31009a189da89",
-    "reviewedHead": "c55bf4c35e5cb94ec303fc1868e31009a189da89",
+    "candidateSha": "1371a7da4b232e9821880a264e8ca86ea9824f82",
+    "reviewedHead": "1371a7da4b232e9821880a264e8ca86ea9824f82",
     "status": "superseded-by-code-repair",
     "lanes": [
       "contract",
@@ -133,9 +133,15 @@
       "P2: owner backoff reasons could be overridden by a one-second hasMore retry.",
       "P2: v2 retention_archive records could be mislabeled as old combined-scope history in the UI.",
       "P2: v2 owner records did not expose the already-collected archive batch metrics.",
-      "P2: the stateful pause contract test did not disable the six newly seeded v2 owners."
+      "P2: the stateful pause contract test did not disable the six newly seeded v2 owners.",
+      "P1: the independent invocation_detail_prune owner bypassed the parallel-work minute coverage gate before irreversible detail pruning.",
+      "P1: the owner retry-plan failure path attempted to mutate an immutable execution binding and blocked compilation.",
+      "P2: cancellation during timestamped archive proof loading could return complete with selected facts but no committed rows or defer reason.",
+      "P2: owner_failed catch-up scheduling did not block an independently due normal schedule trigger.",
+      "P2: a legacy identity/raw finalizer path could clear a newer owner catch-up schedule without a run-generation guard.",
+      "P2: shutdown quarantine dropped completion/details and could not replay a deferred owner retry schedule."
     ],
-    "note": "The five-lane read-only review of c55bf4c3 found the listed P2 contract, state-concurrency, failure-data, observation, UI, metrics, and test-platform findings. Code repair cfe996f5 supersedes that reviewed head; a fresh review is required for the current code candidate."
+    "note": "The five-lane read-only review of 1371a7da found the listed contract, concurrency, failure-data, migration, and test-platform findings. Repair batch 16 is bound to 95b95759 and addresses each finding; a fresh review is required for the current code candidate."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -149,11 +155,11 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "ownerAuthorizedRepairBatch": 15,
+    "ownerAuthorizedRepairBatch": 16,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "c55bf4c35e5cb94ec303fc1868e31009a189da89",
-    "fixedFinding": "The five-lane review of c55bf4c3 found owner fact loss after model-route probes, partial history cleanup failures, retry-plan write errors, stale-finalizer catch-up clearing, missing actual-work markers, backoff starvation, a v2 UI legacy-scope label, and missing archive batch metrics; exact-head CI also exposed the pause test's six newly seeded owners. The repair preserves committed facts, adds run-generation guards and v2 metrics, updates observation/UI/test contracts, and keeps retry limits bounded.",
-    "newFocusedRegression": "Rust format and diff checks pass. The repair is code candidate cfe996f5; fresh formal review, exact-head CI, migration replay, and refreshed UI visual evidence remain pending.",
+    "previousCandidateSha": "cfe996f5be4c68a2e1918e8a412ccfe7b2508a4c",
+    "fixedFinding": "Repair batch 16 adds the independent detail-prune parallel-work coverage gate, records cancellation and budget stops as owner defer facts, makes the retry-plan execution binding mutable, guards legacy finalizer scheduling by run generation, makes owner_failed retry state block normal schedule triggers, and persists task_key/completion/core_completion/details through shutdown quarantine so deferred retry scheduling can replay. It also covers all seeded v2 owners in the pause contract test.",
+    "newFocusedRegression": "Rust format and diff checks pass. Code candidate 95b95759 is committed and signed; exact-head CI, migration replay, fresh formal review, and any current-head UI evidence refresh remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -161,10 +167,10 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "headSha": "cfe996f5be4c68a2e1918e8a412ccfe7b2508a4c",
+    "headSha": "95b95759d3f574f7adfc4b95cf9e4ba4be4bbb58",
     "requiredCi": null,
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the implementation commit cfe996f5; this validation record is carried by a subsequent documentation-only commit. Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this repair."
+    "note": "candidate_head_sha binds the implementation commit 95b95759; this validation record is carried by a subsequent documentation-only commit. Older retained evidence and the failed CI for 1371a7da are historical and cannot substitute for current-head review or the CI run after this repair."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",

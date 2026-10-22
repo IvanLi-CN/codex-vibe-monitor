@@ -2,7 +2,8 @@
 
 ## Current Status
 
-- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，当前代码候选为 `cfe996f5`，PR #1162 的 exact-head CI、迁移回放与正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
+- Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格和 shutdown observation 重放已补齐，当前代码候选为 95b95759，PR #1162 的 exact-head CI、迁移回放与正式复审在本证据快照时待完成；生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
+
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
 
@@ -17,6 +18,8 @@
 - `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。直接升级来源逐一覆盖 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2，不以版本等价假设共用来源。最终 Linux 二进制的十四来源升级和进程安全验证已通过，生产字节一致；测试及证据相关 Tier 4 复审待完成。
 - `REQ-RMO-005`, `REQ-RMO-011`, `REQ-RMO-014`：自动归档失败在维护库 finalizer 中保留不确定性并安排 300 秒 owner_failed catch-up，即使失败前的 backlog 快照为零；同一 owner 的执行租约冲突写入明确 `failed`、ownershipVersion=2、`task_execution_active` 和有界重试资格，避免缺少 completion/details 的不可解释失败。历史清理由 `task_run_history_cleanup` owner 分批执行，schema 初始化不再隐式删除工作量样本。新增 stateful SQLite 失败重试回归与 dispatcher 事实构造回归。
 - `REQ-RMO-011`, `REQ-RMO-013`, `REQ-RMO-014`：模型路由 owner 以真实剩余量决定接续，历史清理在后续批次失败时保留已提交行数，重试计划写入失败时 finalizer 继续使用已持久化的业务事实并按 run generation 保护 catch-up；七个 v2 owner 的实际工作观测、压力退避、归档批次明细和旧版范围显示均与独立 task key 对齐。暂停回归覆盖全部 v2 owner，避免新增默认任务绕过暂停契约。
+
+- REQ-RMO-005、REQ-RMO-011、REQ-RMO-013、REQ-RMO-014：第十六批让独立 invocation_detail_prune owner 复用 parallel-work minute coverage gate，在证明加载取消或预算停止时写入 deferred facts；失败 retry state 同时约束 catch-up 与正常周期触发，旧 finalizer 和 shutdown journal 均按 run generation 与完整 observation 保持重试意图。
 
 ## Verification
 
@@ -33,6 +36,8 @@
 - 本轮默认 feature 的生产构建 SHA-256 与第六批逐字节一致，因此十四来源升级与八项进程结果按其原执行来源保留，结果卡明确记录当前候选与原执行候选。未把保留结果写成重新执行。额外完整工具夹具 wrapper 因快照资源未完成；必需的质量声明检查与后端 runner 合同通过，工具源码未改变，未宣称完整 wrapper 成功。
 - 第十三批 CI 修复前的 PR head 在测试目标编译阶段暴露 `.shared()` 缺少 `FutureExt` 导入；新增显式测试导入后，失败归档重试与租约冲突事实回归均绑定到新的代码候选。随后 docs carrier `989b044e` 的 exact-head CI 暴露轻量迁移夹具仍期待 schema 隐式删除 5 条样本，以及 Clippy 的 `.bind(&finished_at)` 无必要借用；第十四批代码候选 `cb4c1bef` 已修复两项，本地允许的格式与差异检查通过，远端 CI、迁移回放和正式复审仍待验证。
 - 第十三批 CI 修复前的 PR head 在测试目标编译阶段暴露 `.shared()` 缺少 `FutureExt` 导入；新增显式测试导入后，失败归档重试与租约冲突事实回归均绑定到新的代码候选。随后 docs carrier `989b044e` 的 exact-head CI 暴露轻量迁移夹具仍期待 schema 隐式删除 5 条样本，以及 Clippy 的 `.bind(&finished_at)` 无必要借用；第十四批代码候选 `cb4c1bef` 已修复两项。其后 c55 的 exact-head stateful CI 暴露暂停测试仍只停用旧四项任务，第十五批代码候选 `cfe996f5` 已扩展到七个 v2 owner；本地允许的格式与差异检查通过，远端 CI、迁移回放和正式复审仍待验证。
+
+- 第十六批代码候选 95b95759 通过本地 cargo fmt --all -- --check 与 git diff --check，并由签名 Conventional Commit 交付。1371a7da 的三次匹配 CI PR 运行均失败，不能作为当前候选证据；新头的 exact-head CI、迁移回放、fresh formal review 与当前 head 证据刷新仍待验证。
 
 ## Visual Evidence
 

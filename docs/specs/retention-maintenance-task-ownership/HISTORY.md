@@ -33,6 +33,8 @@
 
 - 主人明确 `RETENTION_ENABLED` 及其旧别名是临时功能，不要求兼容，并确认 Minor／stable 继续合并。版本影响重新按支持范围评估：旧部署文档承诺归档操作，未承诺附带孤儿清理；现有命令、任务标识、URL 和历史保留，新清理入口为增量能力。修正先前将临时配置退出自动归为 Major 的判断，执行职责、控制语义和持久状态合同不变；同步迁移证据中的当前版本分类，保留其通用跨 Major 升级约束。
 
+- 主人继续授权解决第十六批问题。对 1371a7da 的正式复核发现独立详情裁剪绕过分钟聚合覆盖门禁、重试事实写回存在编译错误、证明加载取消可能误报完成、失败退避可被正常周期绕过、旧 finalizer 缺少代际保护，以及 shutdown quarantine 丢失完整 observation；第十六批候选 95b95759 已补齐这些边界，并把暂停回归扩展到全部新增 v2 owner。旧头三次 exact-head CI 运行均失败；新头的 exact-head CI、迁移回放和 fresh formal review 仍待完成。
+
 ## References
 
 - [Requirements](SPEC.md)
