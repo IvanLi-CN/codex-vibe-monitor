@@ -941,7 +941,12 @@ class AggregationTests(unittest.TestCase):
             part = self.part(lane)
             part.mkdir()
             context = {**self.context, "runnerIdentity": lane}
-            config = {"candidate": self.candidate, "suite": lane, "executionStartedUTCSeconds": 100,
+            config = {"candidate": self.candidate, "harnessSha": acceptance.source_revision(SOURCE),
+                      "acceptanceContractDigest": acceptance.acceptance_contract_digest(SOURCE),
+                      "candidateAcceptanceContractDigest": acceptance.acceptance_contract_digest(SOURCE),
+                      "acceptanceHarnessDigest": acceptance.acceptance_harness_digest(SOURCE),
+                      "candidateAcceptanceHarnessDigest": acceptance.acceptance_harness_digest(SOURCE),
+                      "suite": lane, "executionStartedUTCSeconds": 100,
                       "executionFinishedUTCSeconds": 850, "pairIndex": None if lane == "runtime" else int(lane[-1]),
                       "windowSeconds": 60, "warmupSeconds": 60, "requestRate": 5,
                       "appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}
@@ -1092,6 +1097,18 @@ class AggregationTests(unittest.TestCase):
     def test_wrong_contract_or_candidate_is_rejected(self):
         self.change("pair-1", "runtime-card.json", lambda row: row.update(acceptance_contract_digest="wrong"))
         self.assertFalse(self.aggregate())
+
+    def test_candidate_acceptance_harness_drift_requires_post_merge_verification(self):
+        self.change("pair-1", "run-config.json", lambda row: row.update(candidateAcceptanceHarnessDigest="different"))
+        self.assertFalse(self.aggregate())
+        scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
+        self.assertEqual(scenario["error"], "candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
+
+    def test_candidate_acceptance_contract_drift_requires_post_merge_verification(self):
+        self.change("pair-1", "run-config.json", lambda row: row.update(candidateAcceptanceContractDigest="different"))
+        self.assertFalse(self.aggregate())
+        scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
+        self.assertEqual(scenario["error"], "candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
 
     def test_different_image_or_hardware_is_rejected(self):
         self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))

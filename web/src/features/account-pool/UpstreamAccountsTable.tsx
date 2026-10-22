@@ -252,15 +252,15 @@ export function accountSyncState(item: UpstreamAccountSummary) {
   return (item.displayStatus ?? item.status) === "syncing" ? "syncing" : "idle";
 }
 
-export function enableChipTone(status: string): "success" | "secondary" {
-  return status === "enabled" ? "success" : "secondary";
+export function enableChipTone(status: string): "success" | "neutral" {
+  return status === "enabled" ? "success" : "neutral";
 }
 
-export function workChipTone(status: string): "info" | "warning" | "secondary" {
+export function workChipTone(status: string): "info" | "warning" | "neutral" {
   if (status === "working") return "info";
   if (status === "degraded") return "warning";
   if (status === "rate_limited") return "warning";
-  return "secondary";
+  return "neutral";
 }
 
 export function resolveAvailabilityChip(
@@ -320,7 +320,7 @@ export function resolveAvailabilityChip(
   return null;
 }
 
-type RosterStatusChipTone = "success" | "secondary" | "warning" | "error" | "info";
+type RosterStatusChipTone = "neutral" | "success" | "secondary" | "warning" | "error" | "info";
 
 export type RosterStatusChip = {
   key: "enable" | "sync" | "health" | "work";
@@ -483,7 +483,7 @@ export function resolveRosterActionableStatusChips(
   return workChip ? [workChip] : [];
 }
 
-export function healthChipTone(status: string): "warning" | "error" | "secondary" {
+export function healthChipTone(status: string): "warning" | "error" | "neutral" {
   if (status === "upstream_unavailable") return "warning";
   if (
     status === "needs_reauth" ||
@@ -493,16 +493,24 @@ export function healthChipTone(status: string): "warning" | "error" | "secondary
   ) {
     return "error";
   }
-  return "secondary";
+  return "neutral";
 }
 
-export function syncChipTone(status: string): "warning" | "secondary" {
-  return status === "syncing" ? "warning" : "secondary";
+export function syncChipTone(status: string): "warning" | "neutral" {
+  return status === "syncing" ? "warning" : "neutral";
 }
 
 export function compactChip(
   content: ReactNode,
-  variant: "primary" | "accent" | "secondary" | "success" | "warning" | "error" | "info",
+  variant:
+    | "neutral"
+    | "primary"
+    | "accent"
+    | "secondary"
+    | "success"
+    | "warning"
+    | "error"
+    | "info",
   options?: {
     className?: string;
     dataPlan?: string;
@@ -543,7 +551,7 @@ export function renderTagChips(tags?: AccountTagSummary[] | null) {
         return (
           <Chip
             key={tag.id}
-            tone={isSystemUnsupportedModel ? "warning" : "secondary"}
+            tone={isSystemUnsupportedModel ? "warning" : "neutral"}
             className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
             title={tag.name}
           >
@@ -564,7 +572,7 @@ export function renderAllTagChips(tags?: AccountTagSummary[] | null) {
         return (
           <Chip
             key={tag.id}
-            tone={isSystemUnsupportedModel ? "warning" : "secondary"}
+            tone={isSystemUnsupportedModel ? "warning" : "neutral"}
             className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
             title={tag.name}
           >
@@ -593,7 +601,7 @@ export function renderTagOverflowChip(
         "aria-label": labels.hiddenTagsA11y(overflowCount, hiddenNames),
       }}
     >
-      {compactChip(`+${overflowCount}`, "secondary", { title: hiddenNames })}
+      {compactChip(`+${overflowCount}`, "neutral", { title: hiddenNames })}
     </Tooltip>
   );
 }
@@ -910,7 +918,7 @@ export function resolveCurrentForwardProxyChipLabel(
 export function resolveCurrentForwardProxyChipTone(item: UpstreamAccountSummary) {
   if (item.currentForwardProxyState === "assigned") return "info" as const;
   if (item.currentForwardProxyState === "pending") return "warning" as const;
-  return "secondary" as const;
+  return "neutral" as const;
 }
 
 export function UpstreamAccountsTable({
@@ -1138,7 +1146,7 @@ export function UpstreamAccountsTable({
                         ))}
                         {renderNoRefreshTokenChip(item, labels)}
                         {renderActiveRoutingPolicyChips(item, labels)}
-                        {compactChip(kindLabel(item, labels), "secondary")}
+                        {compactChip(kindLabel(item, labels), "neutral")}
                         {item.compactSupport?.status === "unsupported" &&
                         labels.compactSupport?.(item)
                           ? compactChip(labels.compactSupport(item) ?? "", "warning", {
@@ -1391,7 +1399,7 @@ export function UpstreamAccountsTable({
                           ))}
                           {renderNoRefreshTokenChip(item, labels)}
                           {renderActiveRoutingPolicyChips(item, labels)}
-                          {compactChip(kindLabel(item, labels), "secondary")}
+                          {compactChip(kindLabel(item, labels), "neutral")}
                           {item.compactSupport?.status === "unsupported" &&
                           labels.compactSupport?.(item)
                             ? compactChip(labels.compactSupport(item) ?? "", "warning", {

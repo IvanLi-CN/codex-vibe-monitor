@@ -181,7 +181,7 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
 完整性能验收由显式添加 `run:observability-performance` 标签后的一次性 GitHub-hosted
-Actions job 执行；未显式启动时不阻塞普通 PR Ready，且不得把未运行写成预算已验证。
+Actions job 执行，或在默认分支上通过 `workflow_dispatch` 输入完整 `candidate_sha` 执行合并后复测；未显式启动时不阻塞普通 PR Ready，且不得把未运行写成预算已验证。
 性能 evidence 始终绑定 candidate SHA；任意新提交都会使旧卡失效，必须在新 head 上重新添加一次性标签，普通 `synchronize` 运行不会自动重跑长测。
 任何测试环境通过都不能代替 101 公网验收。
 
@@ -191,11 +191,9 @@ Actions job 执行；未显式启动时不阻塞普通 PR Ready，且不得把�
 共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
-`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
-ID、revision 与 archive checksum；四个 `Observability Acceptance` 分支在独立的 `ubuntu-24.04` runner 上加载同一镜像，三轮同机配对与功能/CPU attach 并行执行，`Observability Performance Budget` 只校验和汇总证据。
-该工作流只接受默认分支版本的 `pull_request_target` 标签事件；测量和诊断脚本从
-base checkout 执行，候选 checkout 只用于确认 SHA，候选代码作为隔离容器镜像运行。
-因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
+`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用候选 SHA 构建生产镜像，并传输镜像 ID、revision 与 archive checksum；四个 `Observability Acceptance` 分支在独立的 `ubuntu-24.04` runner 上加载同一镜像，三轮同机配对与功能/CPU attach 并行执行，`Observability Performance Budget` 只校验和汇总证据。
+PR 标签路径仍从默认分支控制的 `pull_request_target` 读取 base harness；合并后手动路径必须从 `main` 启动，以 `github.sha` 作为 trusted harness，并以输入的 `candidate_sha` 作为候选。每个分支记录 trusted harness SHA、trusted/candidate harness digest，汇总器拒绝 harness 漂移并要求合并后复测。
+测量和诊断脚本只从受信任 checkout 执行，候选 checkout 用于确认 SHA 和计算 harness 漂移；候选代码作为隔离容器镜像运行。因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
 首次引入该 workflow 的 PR 也不能从自己的新增文件触发它；合并到默认分支后，后续候选 PR 才能通过一次性标签启动。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
 默认 5 req/s、3 次同机配对、每窗口 60 秒与 60 秒预热，三轮轮换模式顺序，每窗口须完成 300/300 请求；保留原始窗口及配对比值 CV ≤5%、CPU 非饱和、无尾部积压以及 CPU/完成请求与成功请求 p95 增幅 ≤5% 的门槛。三台配对 runner 的硬件和 runtime 必须兼容，不能跨机器直接配对，也不能筛掉失败分支。
