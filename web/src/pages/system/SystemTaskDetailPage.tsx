@@ -533,7 +533,8 @@ export default function SystemTaskDetailPage() {
                   ) : null}
                   {run.details?.ownershipVersion === 1 ? (
                     <div className="text-xs text-base-content/65">
-                      {run.details.dryRun ? "只读预演" : "实际运行"} · 本任务范围
+                      {run.details.dryRun ? "只读预演" : "实际运行"} ·{" "}
+                      {managedTaskKey === "retention_archive" ? "旧版组合范围" : "本任务范围"}
                       {managedTaskKey === "invocation_identity_cleanup"
                         ? ` · 对话身份 ${String(run.details.conversationIdentitiesChecked ?? "未知")} 个已检查 / ${String(run.details.conversationIdentitiesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}；小时前缀 ${String(run.details.hourPrefixesChecked ?? "未知")} 个已检查 / ${String(run.details.hourPrefixesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}`
                         : null}
