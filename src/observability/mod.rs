@@ -267,6 +267,61 @@ impl ProxyMetricHandles {
     }
 }
 
+// Fixed production dimensions bypass the per-sample registry lookup and series admission path.
+const CACHED_COUNTER_COUNT: usize = 19;
+const CACHED_HISTOGRAM_COUNT: usize = 5;
+const CACHED_GAUGE_COUNT: usize = 3;
+
+fn cached_counter_index(id: &'static str, dimension: &'static str) -> Option<usize> {
+    match (id, dimension) {
+        ("p1.transfer_bytes", "p1") => Some(0),
+        ("p1.retry_count", "p1") => Some(1),
+        ("p2.flush_attempt_count", "p2") => Some(2),
+        ("p2.pressure_defer_count", "p2") => Some(3),
+        ("p2.retry_count", "p2") => Some(4),
+        ("p2.lock_retry_count", "p2") => Some(5),
+        ("projection.reconcile_count", "dashboard") => Some(6),
+        ("projection.reconcile_defer_count", "writer_pressure") => Some(7),
+        ("projection.reconcile_defer_count", "background_busy") => Some(8),
+        ("projection.reconcile_failure_count", "dashboard") => Some(9),
+        ("sse.frame_bytes", "current") => Some(10),
+        ("sse.frame_bytes", "network") => Some(11),
+        ("sse.frame_bytes", "terminal") => Some(12),
+        ("sse.publish_error_count", "current") => Some(13),
+        ("sse.publish_error_count", "network") => Some(14),
+        ("sse.publish_error_count", "terminal") => Some(15),
+        ("projection.publish_count", "current") => Some(16),
+        ("projection.publish_count", "network") => Some(17),
+        ("projection.publish_count", "terminal") => Some(18),
+        _ => None,
+    }
+}
+
+fn cached_histogram_index(id: &'static str, dimension: &'static str) -> Option<usize> {
+    match (id, dimension) {
+        ("p1.ack_duration_ms", "p1") => Some(0),
+        ("projection.reconcile_duration_ms", "dashboard") => Some(1),
+        ("projection.publish_duration_ms", "current") => Some(2),
+        ("projection.publish_duration_ms", "network") => Some(3),
+        ("projection.publish_duration_ms", "terminal") => Some(4),
+        _ => None,
+    }
+}
+
+fn cached_gauge_index(id: &'static str, dimension: &'static str) -> Option<usize> {
+    match (id, dimension) {
+        ("projection.snapshot_bytes", "current") => Some(0),
+        ("projection.snapshot_bytes", "network") => Some(1),
+        ("projection.snapshot_bytes", "terminal") => Some(2),
+        _ => None,
+    }
+}
+
+struct MappedHistogramHandle {
+    histogram: metrics::Histogram,
+    scale: f64,
+}
+
 fn histogram_buckets(name: &str) -> &'static [f64] {
     if MAINTENANCE_HISTOGRAMS.contains(&name) {
         MAINTENANCE_BUCKETS
@@ -295,6 +350,9 @@ pub(crate) struct ObservabilityRuntime {
     request_metrics:
         [std::sync::OnceLock<Arc<diagnostics::RequestMetricHandles>>; diagnostics::ENDPOINT_COUNT],
     proxy_metrics: [std::sync::OnceLock<Arc<ProxyMetricHandles>>; PROXY_ENDPOINT_COUNT],
+    cached_counters: [std::sync::OnceLock<metrics::Counter>; CACHED_COUNTER_COUNT],
+    cached_histograms: [std::sync::OnceLock<MappedHistogramHandle>; CACHED_HISTOGRAM_COUNT],
+    cached_gauges: [std::sync::OnceLock<metrics::Gauge>; CACHED_GAUGE_COUNT],
     series: limits::SeriesBudget,
     contention: contention::ContentionMetrics,
 }
@@ -343,6 +401,9 @@ impl ObservabilityRuntime {
             http_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
             request_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
             proxy_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            cached_counters: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            cached_histograms: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            cached_gauges: std::array::from_fn(|_| std::sync::OnceLock::new()),
             series: limits::SeriesBudget::default(),
             contention: contention::ContentionMetrics::default(),
         })
@@ -450,6 +511,51 @@ impl ObservabilityRuntime {
             .get_or_init(|| Arc::new(diagnostics::RequestMetricHandles::new(self, endpoint)))
             .clone()
     }
+    fn cached_counter(
+        &self,
+        index: usize,
+        id: &'static str,
+        dimension: &'static str,
+    ) -> &metrics::Counter {
+        self.cached_counters[index].get_or_init(|| {
+            let Some((name, labels, _)) = registry::mapped_metric(id, dimension) else {
+                return metrics::Counter::noop();
+            };
+            self.register_counter(Key::from_parts(name, labels))
+        })
+    }
+    fn cached_histogram(
+        &self,
+        index: usize,
+        id: &'static str,
+        dimension: &'static str,
+    ) -> &MappedHistogramHandle {
+        self.cached_histograms[index].get_or_init(|| {
+            let Some((name, labels, scale)) = registry::mapped_metric(id, dimension) else {
+                return MappedHistogramHandle {
+                    histogram: metrics::Histogram::noop(),
+                    scale: 1.0,
+                };
+            };
+            MappedHistogramHandle {
+                histogram: self.register_histogram(Key::from_parts(name, labels)),
+                scale,
+            }
+        })
+    }
+    fn cached_gauge(
+        &self,
+        index: usize,
+        id: &'static str,
+        dimension: &'static str,
+    ) -> &metrics::Gauge {
+        self.cached_gauges[index].get_or_init(|| {
+            let Some((name, labels, _)) = registry::mapped_metric(id, dimension) else {
+                return metrics::Gauge::noop();
+            };
+            self.register_gauge(Key::from_parts(name, labels))
+        })
+    }
     pub(crate) fn proxy_metrics(&self, endpoint: &'static str) -> Arc<ProxyMetricHandles> {
         let index = proxy_endpoint_index(endpoint);
         self.proxy_metrics[index]
@@ -506,6 +612,10 @@ impl ObservabilityRuntime {
         if !self.enabled {
             return;
         }
+        if let Some(index) = cached_counter_index(id, dimension) {
+            self.cached_counter(index, id, dimension).increment(value);
+            return;
+        }
         if let Some((name, labels, _)) = registry::mapped_metric(id, dimension) {
             self.register_counter(Key::from_parts(name, labels))
                 .increment(value);
@@ -515,6 +625,11 @@ impl ObservabilityRuntime {
         if !self.enabled || !value.is_finite() || value < 0.0 {
             return;
         }
+        if let Some(index) = cached_histogram_index(id, dimension) {
+            let handle = self.cached_histogram(index, id, dimension);
+            handle.histogram.record(value * handle.scale);
+            return;
+        }
         if let Some((name, labels, scale)) = registry::mapped_metric(id, dimension) {
             self.register_histogram(Key::from_parts(name, labels))
                 .record(value * scale);
@@ -522,6 +637,10 @@ impl ObservabilityRuntime {
     }
     pub(crate) fn record_gauge(&self, id: &'static str, dimension: &'static str, value: f64) {
         if !self.enabled || !value.is_finite() || value < 0.0 {
+            return;
+        }
+        if let Some(index) = cached_gauge_index(id, dimension) {
+            self.cached_gauge(index, id, dimension).set(value);
             return;
         }
         if let Some((name, labels, scale)) = registry::mapped_metric(id, dimension) {
@@ -811,6 +930,23 @@ mod contract_tests {
         let disabled = ObservabilityRuntime::new(false);
         disabled.record_duration_ms("p1.ack_duration_ms", "p1", 25.0);
         assert!(disabled.render().is_empty());
+    }
+
+    #[test]
+    fn cached_fixed_dimensions_preserve_metric_mapping() {
+        let metrics = ObservabilityRuntime::new(true);
+        metrics.record_counter("p1.retry_count", "p1", 2);
+        metrics.record_gauge("projection.snapshot_bytes", "network", 42.0);
+        metrics.record_duration_ms("projection.publish_duration_ms", "terminal", 25.0);
+
+        let text = metrics.render();
+        assert!(
+            text.contains("cvm_sqlite_retries_total{class=\"p1_terminal\",reason=\"other\"} 2")
+        );
+        assert!(text.contains("cvm_projection_snapshot_bytes{slice=\"network\"} 42"));
+        assert!(
+            text.contains("cvm_projection_publish_duration_seconds_sum{slice=\"terminal\"} 0.025")
+        );
     }
 
     #[test]
