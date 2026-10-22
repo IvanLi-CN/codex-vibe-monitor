@@ -2,6 +2,8 @@ import { Chip } from "../../components/ui/chip";
 import type { useTranslation } from "../../i18n";
 import type { FastIndicatorState } from "../../lib/invocation";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
+import { ModelIdentity, resolveModelIdentityGenerationLabel } from "../shared/ModelIdentity";
 import {
   formatReasoningEffort,
   getReasoningEffortTone,
@@ -25,20 +27,9 @@ const REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES: Record<ReasoningEffortTone, stri
   unknown: "text-base-content/62",
 };
 
-const REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, string> = {
-  none: "bg-base-content/34",
-  minimal: "bg-info/65",
-  low: "bg-info/80",
-  medium: "bg-primary/80",
-  high: "bg-warning/85",
-  xhigh: "bg-warning",
-  max: "bg-error/85",
-  ultra: "bg-error",
-  unknown: "bg-base-content/38",
-};
-
 export interface InvocationModelContextClusterProps {
   modelValue: string;
+  requestModelValue?: string;
   modelHasMismatch?: boolean;
   reasoningEffortValue: string;
   fastIndicatorState: FastIndicatorState;
@@ -47,6 +38,49 @@ export interface InvocationModelContextClusterProps {
   className?: string;
   testId?: string;
   modelTestId?: string;
+}
+
+function CompactModelIdentity({
+  model,
+  side,
+  testId,
+}: {
+  model: string;
+  side: "request" | "response" | "single";
+  testId?: string;
+}) {
+  const generationLabel = resolveModelIdentityGenerationLabel(model);
+  const identityTestId = testId ? `${testId}-${side}-identity` : undefined;
+
+  return (
+    <span
+      data-model-context-identity={side}
+      className={cn(
+        "inline-flex min-w-0 max-w-full items-center gap-0.5",
+        generationLabel ? "shrink-0" : "flex-1",
+      )}
+      title={model || undefined}
+    >
+      {generationLabel ? (
+        <span
+          data-model-generation-segment={generationLabel}
+          data-model-context-side={side}
+          data-testid={testId ? `${testId}-${side}-generation` : undefined}
+          className="shrink-0 font-mono text-[10px] font-semibold leading-none text-base-content/78"
+        >
+          {generationLabel}
+        </span>
+      ) : null}
+      <ModelIdentity
+        model={model}
+        className={cn("min-w-0 max-w-full", generationLabel ? "h-4 w-4 shrink-0" : "flex-1")}
+        textClassName="truncate font-mono text-[10px] leading-none text-base-content/84"
+        iconClassName="h-3.5 w-3.5"
+        title={model}
+        testId={identityTestId}
+      />
+    </span>
+  );
 }
 
 export function InvocationReasoningEffortChip({
@@ -101,6 +135,7 @@ export function InvocationReasoningEffortChip({
 
 export function InvocationModelContextCluster({
   modelValue,
+  requestModelValue,
   modelHasMismatch = false,
   reasoningEffortValue,
   fastIndicatorState,
@@ -121,8 +156,24 @@ export function InvocationModelContextCluster({
       : fastIndicatorState === "requested_only"
         ? t("table.model.fastRequestedOnlyAria")
         : null;
+  const hasModelMismatch =
+    modelHasMismatch &&
+    requestModelValue != null &&
+    requestModelValue !== FALLBACK_CELL &&
+    modelValue !== FALLBACK_CELL;
+  const compactRequestModel = requestModelValue ?? FALLBACK_CELL;
+  const modelRouteLabel = hasModelMismatch ? `${requestModelValue} -> ${modelValue}` : modelValue;
   const modelLabel = [
-    modelValue,
+    modelRouteLabel,
+    displayReasoningEffort === FALLBACK_CELL ? null : displayReasoningEffort,
+    fastLabel,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const modelAriaLabel = [
+    hasModelMismatch
+      ? `${t("table.model.routingMismatchAria")}: ${requestModelValue} -> ${modelValue}`
+      : modelValue,
     displayReasoningEffort === FALLBACK_CELL ? null : displayReasoningEffort,
     fastLabel,
   ]
@@ -147,19 +198,45 @@ export function InvocationModelContextCluster({
         data-testid={testId}
         data-model-context-grouped="true"
         className={cn(
-          "inline-flex h-5 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
+          "inline-flex h-5 min-w-0 max-w-full items-center gap-0.5 overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
           className,
         )}
         title={modelLabel}
-        aria-label={modelLabel}
+        aria-label={modelAriaLabel}
         role="group"
       >
         <span
           data-testid={modelTestId}
           data-model-context-part="model"
-          className="flex h-5 w-5 shrink-0 items-center justify-center text-base-content/72"
+          className={cn(
+            "flex h-5 max-w-full items-center overflow-hidden text-base-content/72",
+            hasModelMismatch || resolveModelIdentityGenerationLabel(modelValue) != null
+              ? "min-w-max shrink-0"
+              : "min-w-0 flex-auto",
+          )}
         >
-          {model}
+          <CompactModelIdentity
+            model={hasModelMismatch ? compactRequestModel : modelValue}
+            side={hasModelMismatch ? "request" : "single"}
+            testId={modelTestId}
+          />
+          {hasModelMismatch ? (
+            <span
+              className="mx-0.5 inline-flex h-4 w-3 shrink-0 items-center justify-center text-base-content/55"
+              title={t("table.model.routingMismatchTitle")}
+              aria-label={t("table.model.routingMismatchAria")}
+              data-model-context-part="routing"
+              data-testid={
+                testId ? `${testId.replace(/-context$/, "")}-routing-indicator` : undefined
+              }
+              role="img"
+            >
+              <AppIcon name="arrow-right-bold" className="h-3 w-3" aria-hidden />
+            </span>
+          ) : null}
+          {hasModelMismatch ? (
+            <CompactModelIdentity model={modelValue} side="response" testId={modelTestId} />
+          ) : null}
         </span>
         {hasReasoningEffort ? (
           <span
@@ -167,19 +244,11 @@ export function InvocationModelContextCluster({
             data-model-context-part="reasoning-effort"
             data-reasoning-effort-tone={reasoningTone}
             className={cn(
-              "flex min-w-0 items-center gap-1 text-xs font-semibold",
+              "flex min-h-5 min-w-0 items-center text-xs font-semibold",
               REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
             )}
             title={displayReasoningEffort}
           >
-            <span
-              data-model-context-part="reasoning-effort-marker"
-              className={cn(
-                "h-1 w-1 shrink-0 rounded-full",
-                REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES[reasoningTone],
-              )}
-              aria-hidden
-            />
             <span
               data-model-context-part="reasoning-effort-text"
               className="truncate whitespace-nowrap"
@@ -191,7 +260,7 @@ export function InvocationModelContextCluster({
         {fastIndicator ? (
           <span
             data-model-context-part="fast"
-            className="flex w-5 shrink-0 items-center justify-center"
+            className="flex w-4 shrink-0 items-center justify-center"
           >
             {fastIndicator}
           </span>
@@ -206,7 +275,7 @@ export function InvocationModelContextCluster({
       data-model-context-grouped="false"
       className={cn("flex min-w-0 items-center gap-1", className)}
       title={modelLabel}
-      aria-label={modelLabel}
+      aria-label={modelAriaLabel}
       role="group"
     >
       <span data-testid={modelTestId} className="min-w-0">

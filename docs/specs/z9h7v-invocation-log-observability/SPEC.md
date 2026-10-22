@@ -9,9 +9,9 @@ This spec owns invocation observability and the read-only model identity present
 - REQ-GPT6-PERFORMANCE-IDENTITY: GPT-6 Astra/Sol/Luna identities in model-performance rows must reuse the shared accessible model identity as bare glyphs, integrate into the badge's single existing outer border, and preserve single-line rows and badge height.
 - REQ-MODEL-GENERATION-IDENTITY: 共享只读身份必须按下方识别表区分完整模型代次 `5.6`、`6`、`6.1`，不能把 `5.6` 压成 `5` 或把 `6.1` 压成 `6`。合法日期别名沿用基础模型代次；非法日期、preview、未知家族及未列出的代次必须保留原模型文本，不推断身份。完整模型 ID 必须继续保留在 title 与可访问名称中。
 - REQ-MODEL-FAMILY-ICON: 所有共享只读身份必须按家族复用图标的形状与颜色：Sol 使用 `white-balance-sunny` 及 warning 色，Luna 使用 `weather-night` 及 info 色，Astra 使用 `creation` 及既有紫色，GPT-5.6 Terra 保留 `earth` 及既有 success 色。同一家族的图标颜色不得随代次变化。图标必须始终以裸 glyph 呈现；图标本体及其对齐容器不得有背景、边框/轮廓、圆角、阴影或代次专属底板。外层业务组件可保留既有边界。图标不得被称为官方 OpenAI 图标。
-- REQ-DASHBOARD-MODEL-CONTEXT-FORMAT: Dashboard 全局和账号级模型性能、用量明细在详细模式命中身份时，必须在同一单行胶囊内按 `<代次> <家族图标> <推理强度>` 排列；可见代次只显示版本段，不含 `GPT-` 前缀或日期。代次使用中性色紧凑等宽文本，图标保留固定尺寸模型段，推理强度只显示已有格式化文本与 tone，不在强度前显示圆点或其它 marker；不得重复展示完整模型 ID，不得给图标段添加背景、边框/轮廓、圆角或阴影，胶囊仅保留一个外层边框且高度不变。桌面浮层与窄屏详情复用同一身份顺序，且不得产生横向滚动。
-- REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK: 两类 Dashboard 明细详细模式中的缺失、空白或格式化为破折号的推理强度必须显示 `—`，不得推断模型默认值；显式 `none` 必须仍显示 `none`。未知推理强度必须按既有格式化规则保留其文本并使用 unknown 色调。未命中模型身份时必须沿用模型名与推理强度的文本回退。
-- REQ-MODEL-IDENTITY-SCOPE: 简单模式必须继续显示完整模型名且不显示推理强度，也不使用详细模式的代次胶囊。新的代次顺序只适用于上述 Dashboard 明细；其它只读身份表面共享家族图标映射与模型识别，但保留自身布局、FAST、请求/响应模型和改路由信号。编辑器、筛选器、选择器及原始 payload 必须保持文本值。身份展示不得改变模型目录、价格、API/SSE、数据库、历史记录、筛选值、聚合键或排序规则。
+- REQ-DASHBOARD-MODEL-CONTEXT-FORMAT: Dashboard 全局和账号级模型性能、用量明细在详细模式命中身份时，必须在同一单行胶囊内按 `<代次> <家族图标> <推理强度>` 排列；Dashboard working conversation 当前/历史 invocation slot 与 upstream-account recent invocation row 的紧凑上下文必须复用同一顺序，并在其后保留既有 FAST 语义。可见代次只显示版本段，不含 `GPT-` 前缀或日期。代次使用中性色紧凑等宽文本，图标保留固定尺寸模型段，紧凑上下文的推理强度只保留既有 tone 与文本，不渲染前置圆点 marker；详细胶囊同样不在强度前显示圆点或其它 marker。不得重复展示完整模型 ID，不得给图标段添加背景、边框/轮廓、圆角或阴影，外层边界与高度保持稳定。请求与响应模型规范化后确实不同时，紧凑上下文按 `request → response` 显示两段独立身份；每段分别使用可识别的代次/裸 glyph 或文本回退。桌面、窄屏与浅/深色状态复用同一身份顺序，且不得产生横向滚动。
+- REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK: Dashboard 性能/用量详细模式中的缺失、空白或格式化为破折号的推理强度必须显示 `—`；两类紧凑 invocation 上下文则省略缺失、空白或 `—` 的推理强度段，不得推断模型默认值。显式 `none` 在详细与紧凑模式均必须仍显示 `none`。未知推理强度必须按既有格式化规则保留其文本并使用 unknown 色调。单模型值继续按 `responseModel` → legacy `model` → `requestModel` 回退；只有请求与响应均存在且规范化后确实不同才显示 mismatch，缺失模型显示 `—`，未知/非法模型保留完整文本，不猜测代次或家族。完整模型 ID 继续通过 title/aria 作为辅助身份信息保留。
+- REQ-MODEL-IDENTITY-SCOPE: 简单模式必须继续显示完整模型名且不显示推理强度，也不使用详细模式的代次胶囊。代次顺序适用于 Dashboard 性能/用量详细身份和上述两类 Dashboard 紧凑 invocation 上下文；Records/Invocation 表格、调用详情 request/response 字段、长期统计、编辑器、筛选器、选择器及原始 payload 共享识别规则但保留自身布局、FAST、请求/响应模型和改路由信号。身份展示不得改变模型目录、价格、API/SSE、数据库、历史记录、筛选值、聚合键或排序规则。
 - REQ-DASHBOARD-MODEL-BREAKDOWN: The Dashboard model-performance and usage-breakdown floaters must expose one shared frontend grouping mode. `detailed` is the default and keeps one row per response model plus reasoning effort; `simple` shows one row per response model. The selected mode is persisted globally for all eligible floaters, synchronizes already-open floaters, and applies to future openings. The model-performance simple view must consume an exact backend `modelGroups` projection using the same qualifying-sample and interval-union rules as detailed performance data; the frontend must not approximate it by merging detailed rows. Long-term statistics surfaces are outside this contract.
 - REQ-DASHBOARD-MODEL-BREAKDOWN-SORT: Each logical floater type persists its own frontend sort preference. The model column provides name ascending, name descending, reasoning-effort ascending, and reasoning-effort descending in detailed mode, and only the two name rules in simple mode. Numeric metric columns toggle ascending/descending; missing values sort last in either direction, the total row remains pinned first, and usage numeric sorting uses token counts as the primary value while cost remains display-only. Reasoning-effort order is `minimal < low < medium < high < xhigh < max < ultra`, with unknown values last.
 
@@ -41,7 +41,7 @@ This spec owns invocation observability and the read-only model identity present
 
 缺失推理强度的示例为 `6.1 [Sol 图标] —`；完整可访问文案继续表达 `gpt-6.1-sol · —`。已有推理强度文本颜色、未知值格式化与安全截断规则继续使用；详细胶囊中的强度前不显示圆点 marker。代次与图标必须完整可见，长自定义推理强度可以安全截断，并保留完整 title/可访问文案。
 
-简单模式继续按实际模型 ID 聚合，并显示完整模型名，不生成推理强度占位。共享图标映射适用于其它只读表面，但长期统计图例、调用记录和 Dashboard 对话卡不在新增代次顺序的范围内；其中原有缺失推理强度的省略行为也不采用明细的 `—` 占位规则。
+简单模式继续按实际模型 ID 聚合，并显示完整模型名，不生成推理强度占位。Dashboard working conversation 的当前/历史 invocation slot 与 upstream-account recent invocation row 使用紧凑上下文：已识别模型显示 `<代次> <家族 glyph>`，再显示已有推理强度与 FAST；缺失 effort 省略该段，显式 `none` 保留。请求与响应 mismatch 显示 `request → response` 两段身份，未知侧保留文本，完整值进入 title/aria。共享图标映射适用于其它只读表面，但 Records/Invocation 表格、调用详情、长期统计、编辑器、筛选器、选择器及原始 payload 不扩展为该紧凑代次顺序。
 
 ### Acceptance scenarios
 
@@ -51,10 +51,14 @@ This spec owns invocation observability and the read-only model identity present
 - Given `gpt-5.6-sol-2026-02-30`、`gpt-6.1-sol-2025-02-29`、`gpt-6.1-sol-preview`、`gpt-6.1-terra`、`gpt-6.1` 或其它未识别 ID，When 详细明细渲染，Then 保留模型文本与推理强度，不展示推断的代次或家族图标。
 - Given `gpt-5.6` 或 `gpt-5.6-terra`，When 详细明细渲染，Then 分别显示 `5.6 [Sol 图标]` 或 `5.6 [Terra 图标]`，保持已有别名和 Terra 身份。
 - Given 推理强度为缺失、空白、`—`、显式 `none` 或自定义值，When 详细明细渲染，Then 前三者显示 `—`，`none` 保持明确文本，自定义值沿用既有格式化文本与 unknown 色调；不会生成模型默认推理强度。
+- Given Dashboard working conversation 当前/历史 invocation slot 或 upstream-account recent invocation row 命中 `gpt-5.6-sol`、`gpt-6-luna`、`gpt-6.1-luna`，When 紧凑上下文渲染，Then 可见顺序分别为 `5.6`、`6`、`6.1` 代次、裸家族 glyph、已有推理强度与 FAST，且两个消费者使用同一渲染边界。
+- Given 紧凑 invocation 上下文的 reasoning effort 缺失、空白或为 `—`，When 渲染，Then effort 段省略；Given effort 明确为 `none`，Then `none` 仍可见且不带前置 marker，FAST 位置与语义不变。
+- Given 紧凑 invocation 上下文同时存在规范化后不同的 request/response model，When 渲染，Then 按 `request → response` 显示两段独立身份；已识别侧显示完整代次与 glyph，未知侧显示原文本，title/aria 保留两侧完整模型 ID，等价模型保持单模型显示。
+- Given 紧凑 invocation 上下文的模型未知、非法或缺失，When 渲染，Then 未知值保留文本、缺失值显示 `—`，不推断代次或家族；两类 Dashboard surface 在桌面、393x852 窄屏及浅/深色主题下保持胶囊/行高稳定、代次与 glyph 完整可见且无横向溢出。
 - Given 命中模型身份的详细胶囊具有外层边框且显示任一推理强度，When 展示代次、家族图标和推理强度，Then 推理强度前没有圆点或其它 marker，图标仍是无背景、无自身边框的裸 glyph。
 - Given 同一组数据从详细切换为简单模式，When 全局或账号级两类明细渲染，Then 显示完整模型名并按既有规则合并，不显示推理强度；切回详细模式恢复代次胶囊，模式和排序记忆行为保持一致。
 - Given 详细模式有多个不同代次、最长已知推理强度 `ultra`、长自定义推理强度及未知模型，When 在浅色/深色桌面、平板和窄屏布局中查看，Then 代次和图标完整可见、胶囊高度保持不变、桌面每行保持单行，内容安全截断且不存在文档级或明细级横向滚动。
-- Given 调用记录、对话卡、详情、长期统计、编辑器或原始 payload，When 使用共享模型身份，Then 只应用已确认的家族图标与识别规则；原有信息布局、FAST、双模型/改路由语义、纯文本编辑值及聚合归属保持原合同。
+- Given Records/Invocation 表格、调用详情、长期统计、编辑器或原始 payload，When 使用共享模型身份，Then 只应用已确认的家族图标与识别规则；原有信息布局、FAST、双模型/改路由语义、纯文本编辑值及聚合归属保持原合同，新增紧凑代次顺序不扩展到这些 surface。
 
 ## Shared invocation card presentation
 
@@ -648,6 +652,74 @@ For in-flight records, missing TTFT and response duration values display elapsed
   ![Dashboard mobile model generations without effort markers](./assets/model-generation-usage-mobile390-no-effort-dot-storybook.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/GPT56ModelContextCluster
+  state: light desktop compact working-conversation invocation slot
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
+  target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
+  evidence_note: verifies the compact working-conversation slot keeps the model row readable as `5.6` plus the Sol glyph, reasoning effort, and FAST indicator without colliding with transport or latency metadata.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard compact invocation context light desktop](./assets/dashboard-compact-invocation-light-desktop-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/GPT56ModelContextCluster
+  state: dark desktop compact working-conversation invocation slot
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
+  target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
+  evidence_note: verifies the same compact generation/glyph/effort/FAST order remains readable in the dark theme with stable card and model-row geometry.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard compact invocation context dark desktop](./assets/dashboard-compact-invocation-dark-desktop-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/GPT61ModelContextCluster
+  state: light desktop GPT-6.1 compact invocation slot with explicit none effort
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
+  target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
+  evidence_note: verifies the complete `6.1` generation remains visible beside the Luna glyph and explicit `none` effort in the compact slot.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard compact GPT-6.1 invocation context](./assets/dashboard-compact-invocation-gpt61-desktop-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/UpstreamAccountModelContext
+  state: upstream-account recent rows at source-managed 393x852 with request-to-response mismatch
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
+  target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
+  evidence_note: verifies upstream recent rows reuse the compact cluster, show `5.6`, `6`, and explicit `none`, render a directional `5.6 → 6` mismatch, and preserve horizontal containment at 393x852.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard upstream recent compact model context mobile](./assets/dashboard-upstream-recent-model-context-mobile393-storybook.png)
+
+- source_type: storybook_canvas
   story_id_or_title: Dashboard/ModelPerformanceTrigger/DesktopTooltip
   state: desktop model-performance tooltip with explicit wall-clock, cumulative, and parallelism columns
   requested_viewport: 1440x1024
@@ -946,7 +1018,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - VER-GPT6-PERFORMANCE-IDENTITY: covers: REQ-GPT6-PERFORMANCE-IDENTITY; ModelPerformanceModelIdentity and Dashboard performance tests verify badge composition, accessible model labels, and row layout.
 - VER-MODEL-GENERATION-IDENTITY: covers: REQ-MODEL-GENERATION-IDENTITY, REQ-MODEL-FAMILY-ICON; shared identity tests verify every listed generation/family, the legacy Sol alias, case/whitespace handling, valid dates including leap years, invalid dates for all supported generations, unsupported-ID text fallback, consistent family glyph and color mapping, no icon background/border/outline/rounded frame/shadow, and complete tooltip/accessible IDs.
-- VER-DASHBOARD-MODEL-CONTEXT: covers: REQ-DASHBOARD-MODEL-CONTEXT-FORMAT, REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK; shared context and performance/usage tests verify visible generation, element order, unchanged glyph segment/badge height, no reasoning-effort marker, missing-versus-explicit-none effort, custom effort tone, and safe unknown-model fallback. Deterministic mock Storybook evidence verifies light/dark desktop, tablet and narrow layouts, multiple Sol generations in one view, and no horizontal overflow.
+- VER-DASHBOARD-MODEL-CONTEXT: covers: REQ-DASHBOARD-MODEL-CONTEXT-FORMAT, REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK; ModelPerformanceModelIdentity tests preserve detailed/simple behavior, while InvocationModelContextCluster and Dashboard working/upstream tests verify `5.6`/`6`/`6.1` order, generation-before-glyph, FAST placement, missing-versus-explicit-none effort, request-to-response mismatch, full title/aria values, and safe unknown/missing fallback. Deterministic mock Storybook evidence verifies both compact consumers in light/dark desktop and source-managed 393x852 narrow layouts with stable height and no horizontal overflow.
 - VER-MODEL-IDENTITY-SCOPE: covers: REQ-MODEL-IDENTITY-SCOPE; consumer regression coverage verifies simple-mode full names and grouping, complete title/accessible values, unchanged routing/FAST metadata and missing-effort behavior outside detailed Dashboard breakdowns, textual editors/filters/selectors/raw payloads, and unchanged data keys and backend contracts.
 - VER-DASHBOARD-MODEL-BREAKDOWN: covers: REQ-DASHBOARD-MODEL-BREAKDOWN; backend model-performance duration tests, API normalization, ModelPerformanceDetails and UsageBreakdownTooltip tests verify exact model grouping and synchronized frontend mode state.
 - VER-DASHBOARD-MODEL-BREAKDOWN-SORT: covers: REQ-DASHBOARD-MODEL-BREAKDOWN-SORT; dashboardModelBreakdown unit tests, direct-header component tests, and Storybook plays verify cycling model rules, sortable metric boundaries, missing-value ordering, pinned totals, and frontend persistence.

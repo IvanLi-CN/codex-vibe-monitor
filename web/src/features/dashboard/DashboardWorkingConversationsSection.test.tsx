@@ -2541,7 +2541,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).not.toBeNull();
 
     const reasoningBadge = firstRow.querySelector(
-      '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+      '[data-testid="dashboard-upstream-account-recent-model-context-reasoning-effort"]',
     );
     const endpointBadge = firstRow.querySelector('[data-testid="invocation-endpoint-badge"]');
     expect(reasoningBadge?.className).toContain("min-h-5");
@@ -3309,22 +3309,20 @@ describe("DashboardWorkingConversationsSection", () => {
         ?.querySelector('[data-testid="dashboard-working-conversation-slot-header"]')
         ?.getAttribute("aria-label"),
     ).toEqual(expect.stringContaining("Fast"));
-    expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
-    expect(cluster.querySelector('[data-model-context-part="model"]')?.className).toContain("w-5");
-    expect(cluster.querySelector('[data-model-context-part="model"]')?.className).not.toContain(
-      "flex-1",
+    const generation = cluster.querySelector('[data-model-generation-segment="5.6"]');
+    const identity = cluster.querySelector('[data-model-icon="white-balance-sunny"]');
+    expect(generation).not.toBeNull();
+    expect(identity).not.toBeNull();
+    expect(generation?.compareDocumentPosition(identity ?? generation)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(
-      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
-    ).not.toBeNull();
-    expect(
-      cluster
-        .querySelector('[data-model-context-part="reasoning-effort-marker"]')
-        ?.getAttribute("aria-hidden"),
-    ).toBe("true");
-    expect(
-      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')?.className,
-    ).toContain("bg-warning");
+    expect(cluster.querySelector('[data-model-context-part="model"]')?.className).toContain("h-5");
+    expect(cluster.querySelector('[data-model-context-part="model"]')?.className).toContain(
+      "min-w-max",
+    );
+    expect(cluster.className).toContain("gap-0.5");
+    expect(cluster.querySelector('[data-model-context-part="fast"]')?.className).toContain("w-4");
+    expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
     expect(
       cluster.querySelector(
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
@@ -3359,12 +3357,16 @@ describe("DashboardWorkingConversationsSection", () => {
 
     const modelPart = host?.querySelector('[data-model-context-part="model"]');
     const identity = modelPart?.querySelector('[data-model-icon="creation"]');
+    const generation = modelPart?.querySelector('[data-model-generation-segment="6"]');
 
-    expect(modelPart?.className).toContain("w-5");
+    expect(modelPart?.className).toContain("h-5");
+    expect(generation).not.toBeNull();
     expect(identity).not.toBeNull();
     expect(identity?.getAttribute("data-model-icon")).toBe("creation");
     expect(identity?.getAttribute("aria-label")).toBe("gpt-6-astra");
-    expect(identity?.parentElement?.className).toContain("gap-0");
+    expect(generation?.compareDocumentPosition(identity ?? generation)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it("uses the error marker tone for max reasoning effort", () => {
@@ -3387,11 +3389,97 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const marker = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-model-context"] [data-model-context-part="reasoning-effort-marker"]',
+    const reasoningEffort = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"] [data-model-context-part="reasoning-effort"]',
     );
-    expect(marker).not.toBeNull();
-    expect(marker?.className).toContain("bg-error");
+    expect(reasoningEffort).not.toBeNull();
+    expect(reasoningEffort?.getAttribute("data-reasoning-effort-tone")).toBe("max");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversation-model-context"] [data-model-context-part="reasoning-effort-marker"]',
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps explicit none visible and exposes the GPT-6.1 generation", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-gpt61-context", [
+          createPreview({
+            id: 4,
+            invokeId: "invoke-gpt61-context",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-6.1-luna",
+            requestModel: "gpt-6.1-luna",
+            responseModel: "gpt-6.1-luna",
+            reasoningEffort: "none",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-6.1 model context cluster");
+    }
+
+    expect(cluster.querySelector('[data-model-generation-segment="6.1"]')).not.toBeNull();
+    expect(cluster.querySelector('[data-model-icon="weather-night"]')).not.toBeNull();
+    expect(cluster.textContent).toContain("none");
+    expect(cluster.textContent).not.toContain("—");
+  });
+
+  it("shows both recognized identities for a compact routing mismatch", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-compact-mismatch", [
+          createPreview({
+            id: 5,
+            invokeId: "invoke-compact-mismatch",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-6-luna",
+            requestModel: "gpt-5.6-sol",
+            responseModel: "gpt-6-luna",
+            reasoningEffort: "medium",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing compact mismatch model context cluster");
+    }
+    const modelPart = cluster.querySelector('[data-model-context-part="model"]');
+    const requestGeneration = modelPart?.querySelector(
+      '[data-model-context-identity="request"] [data-model-generation-segment="5.6"]',
+    );
+    const responseGeneration = modelPart?.querySelector(
+      '[data-model-context-identity="response"] [data-model-generation-segment="6"]',
+    );
+
+    expect(requestGeneration).not.toBeNull();
+    expect(responseGeneration).not.toBeNull();
+    expect(modelPart?.querySelector('[data-model-context-part="routing"]')).not.toBeNull();
+    expect(cluster.getAttribute("title")).toContain("gpt-5.6-sol");
+    expect(cluster.getAttribute("title")).toContain("gpt-6-luna");
+    expect(cluster.getAttribute("aria-label")).toContain("gpt-5.6-sol");
+    expect(cluster.getAttribute("aria-label")).toContain("gpt-6-luna");
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-working-conversation-slot-header"]')
+        ?.getAttribute("aria-label"),
+    ).toContain("gpt-5.6-sol -> gpt-6-luna");
   });
 
   it.each([
@@ -3476,9 +3564,7 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing upstream recent model context cluster");
     }
     expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
-    expect(
-      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
-    ).not.toBeNull();
+    expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
   });
 

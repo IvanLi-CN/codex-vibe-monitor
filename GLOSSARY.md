@@ -8,6 +8,26 @@ This context describes the Dashboard's live data surfaces and the performance co
 The owner-facing data for the currently selected Dashboard window, including live activity, working conversations, parallel work, and open-window timeseries.
 _Avoid_: dashboard snapshot, which can also mean a closed historical response.
 
+**Visible Model Generation**:
+The complete version segment shown in a model identity, such as `5.6`, `6`, or `6.1`, used to distinguish model generations independently from the family glyph and reasoning effort.
+_Avoid_: model level, reasoning effort, generation icon.
+
+**Compact Model Context**:
+The owner-facing model identity grouping used in a compact working-conversation or invocation surface, combining the visible model generation, family glyph, and available reasoning effort while retaining the full model ID as secondary identity information.
+_Avoid_: simplified display, model label, model level.
+
+**Model Identity Fallback**:
+The explicit textual representation used when a model cannot be recognized as a supported identity or when its value is absent; it never infers a generation or family from incomplete data.
+_Avoid_: guessed model, default model, blank identity.
+
+**Model Routing Mismatch**:
+A request model and response model that remain different after normalization, requiring both model identities and their directional relationship to stay understandable in compact diagnostics.
+_Avoid_: model error, generation mismatch.
+
+**Missing Reasoning Effort**:
+An invocation has no collected reasoning-effort value, or only the display placeholder `—`; compact model context omits the effort segment, while an explicit `none` remains a real value.
+_Avoid_: default reasoning effort, inferred effort, no reasoning.
+
 **Hot Projection**:
 A continuously maintained current-state read model whose updates are driven by typed runtime revisions and bounded deltas.
 _Avoid_: live snapshot, which hides whether the update is incremental or a rebuilt full payload.
