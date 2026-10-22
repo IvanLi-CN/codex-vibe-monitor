@@ -38,6 +38,8 @@
 - 主人继续授权解决第十八批问题。对 f28248f6 的 fresh 审查发现 watchdog 错误分类、native worker 排空、历史解压进度、retry/finalization 调度窗口、失败 hasMore 事实、dry-run 文件计量和 dry-run owner catch-up 清理缺口；第十八批候选 370be26c 已修复这些边界。当前候选的 exact-head CI、迁移回放、fresh formal review 和 dry-run UI 视觉证据仍待完成。
 - 主人继续授权收敛主干同步后的当前 head。主干将 observability acceptance 改为 serial bundle 后，五 lane formal review 在 `3508ab41` 发现 candidate-source drift 夹具漏复制 ADR 0047；第十九批修复以 `27eb5b13` 补齐复制清单。当前 head 的 CI PR run `39760631680` 全部通过，五 lane 正式复审 clear；迁移回放和当前 head dry-run UI 主人确认仍待完成。
 
+- 主干新增 schema startup phase 拆分 `e956d1a8` 后，签名合并提交 `e2144679` 将最终 PR head 对齐最新可信基线；CI PR `39764651636`、Docs Pages `39764651482`、Review Policy `39764651536`、Label Gate `39764651670` 全部通过，五 lane 正式复审绑定 `e2144679` 且无可执行 P0-P2 findings。迁移回放和 current-head dry-run UI 主人确认仍待完成。
+
 ## References
 
 - [Requirements](SPEC.md)

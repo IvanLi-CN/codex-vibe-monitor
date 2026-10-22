@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "status": "current-head-ci-and-formal-review-passed-ui-confirmation-pending",
-  "baseSha": "bd312e0bbcdbb4807829685062486648059a2135",
-  "codeCandidateSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+  "baseSha": "e956d1a89b589a2d9cd0a8df69b018eefa94590c",
+  "codeCandidateSha": "e2144679edee9f813a494d92567018d6434dfe1e",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -17,8 +17,8 @@
   },
   "currentHeadCi": {
     "workflow": "CI PR",
-    "runId": 39760631680,
-    "headSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "runId": 39764651636,
+    "headSha": "e2144679edee9f813a494d92567018d6434dfe1e",
     "status": "success"
   },
   "passed": {
@@ -120,8 +120,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
-    "reviewedHead": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "candidateSha": "e2144679edee9f813a494d92567018d6434dfe1e",
+    "reviewedHead": "e2144679edee9f813a494d92567018d6434dfe1e",
     "status": "passed",
     "lanes": [
       "contract",
@@ -131,7 +131,7 @@
       "database-migration"
     ],
     "findings": [],
-    "note": "Five independent read-only lanes reviewed 27eb5b13 and found no actionable P0-P2 findings. Residual gaps are non-empty owner exclusion integration coverage and real ACK write/fsync failure recovery coverage."
+    "note": "Five independent read-only lanes reviewed e2144679 after the signed sync with main e956d1a8 and found no actionable P0-P2 findings. Residual gaps are non-empty owner exclusion integration coverage, real ACK write/fsync failure recovery coverage, and migration replay evidence."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -149,22 +149,22 @@
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
     "previousCandidateSha": "3508ab41d9c7a1b7bfc9212a46dfc20e7a27c3ae",
     "fixedFinding": "After the serial observability bundle landed on main, the candidate-source drift regression fixture was updated to copy ADR 0047, keeping its temporary source tree complete for the contract digest.",
-    "newFocusedRegression": "Code candidate 27eb5b13 is committed and signed; CI PR run 39760631680 passed all required checks and the fresh five-lane formal review is clear. Migration replay and current-head UI owner confirmation remain pending.",
+    "newFocusedRegression": "The signed final head e2144679 includes the main sync at e956d1a8; CI PR run 39764651636, Docs Pages run 39764651482, Review Policy run 39764651536, and Label Gate run 39764651670 all passed, and the fresh five-lane formal review is clear. Migration replay and current-head UI owner confirmation remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
   "currentCandidateBinding": {
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "baseSha": "bd312e0bbcdbb4807829685062486648059a2135",
-    "headSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "baseSha": "e956d1a89b589a2d9cd0a8df69b018eefa94590c",
+    "headSha": "e2144679edee9f813a494d92567018d6434dfe1e",
     "requiredCi": {
       "workflow": "CI PR",
-      "runId": 39760631680,
+      "runId": 39764651636,
       "status": "success"
     },
     "formalTier4Review": "passed",
-    "note": "candidate_head_sha binds the implementation commit 27eb5b13; the required CI run and fresh five-lane read-only review are current. Older retained execution evidence remains historical and does not substitute for the pending migration replay or current-head UI owner confirmation."
+    "note": "candidate_head_sha binds the signed final head e2144679 after the e956d1a8 main sync; the required CI run and fresh five-lane read-only review are current. Older retained execution evidence remains historical and does not substitute for the pending migration replay or current-head UI owner confirmation."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
