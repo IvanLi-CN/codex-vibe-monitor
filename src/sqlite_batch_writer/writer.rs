@@ -287,7 +287,7 @@ impl SqliteBatchWriter {
         }
     }
 
-    pub(crate) fn stamp_attempt_progress(&self, write: SqliteBatchWrite) -> SqliteBatchWrite {
+    pub(super) fn stamp_attempt_progress(&self, write: SqliteBatchWrite) -> SqliteBatchWrite {
         match write {
             SqliteBatchWrite::AttemptProgress(mut progress) => {
                 let sequence = self
