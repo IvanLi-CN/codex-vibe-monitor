@@ -215,7 +215,15 @@ pub(crate) fn mark_managed_maintenance_work_started() {
     let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
         if matches!(
             observation.inner.task_key.as_str(),
-            "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+            "retention_archive"
+                | "pool_upstream_attempt_archive"
+                | "forward_proxy_attempt_archive"
+                | "invocation_detail_prune"
+                | "quota_snapshot_compaction"
+                | "model_route_expiry"
+                | "task_run_history_cleanup"
+                | "invocation_identity_cleanup"
+                | "raw_orphan_sweep"
         ) {
             observation.mark_work_started();
         }

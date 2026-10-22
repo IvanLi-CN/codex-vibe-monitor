@@ -163,6 +163,12 @@ async fn ownership_initialization_preserves_controls_and_recovers_interrupted_sc
     store.apply_initial_task_defaults().await.unwrap();
     for key in [
         "retention_archive",
+        "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive",
+        "invocation_detail_prune",
+        "quota_snapshot_compaction",
+        "model_route_expiry",
+        "task_run_history_cleanup",
         "prompt_cache_materialization",
         "invocation_identity_cleanup",
         "raw_orphan_sweep",
@@ -241,6 +247,20 @@ async fn ownership_pause_preserves_accepted_manual_requests_and_blocks_new_autom
         assert_eq!(claim.0, id);
         assert_eq!(claim.1, key);
         assert_eq!(claim.3, "manual");
+        let ownership_version = if matches!(
+            key,
+            "retention_archive"
+                | "pool_upstream_attempt_archive"
+                | "forward_proxy_attempt_archive"
+                | "invocation_detail_prune"
+                | "quota_snapshot_compaction"
+                | "model_route_expiry"
+                | "task_run_history_cleanup"
+        ) {
+            2
+        } else {
+            1
+        };
         store
             .finish_run_with_observation(
                 id,
@@ -251,7 +271,7 @@ async fn ownership_pause_preserves_accepted_manual_requests_and_blocks_new_autom
                 None,
                 Some("partial"),
                 None,
-                Some(&json!({"total":100,"completed":1,"ownershipVersion":1})),
+                Some(&json!({"total":100,"completed":1,"ownershipVersion":ownership_version})),
             )
             .await
             .unwrap();

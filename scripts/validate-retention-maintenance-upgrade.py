@@ -10,7 +10,19 @@ import sqlite3
 import subprocess
 
 VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1", "v4.1.2", "v4.1.3", "v4.2.0", "v4.2.1", "v4.2.2"]
-OWNERS = ["retention_archive", "invocation_identity_cleanup", "raw_orphan_sweep", "prompt_cache_materialization"]
+RETENTION_OWNERS = [
+    "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
+]
+LEGACY_OWNERS = ["invocation_identity_cleanup", "raw_orphan_sweep", "prompt_cache_materialization"]
+OWNERS = RETENTION_OWNERS + LEGACY_OWNERS
+OWNER_VERSIONS = {key: 2 for key in RETENTION_OWNERS}
+OWNER_VERSIONS.update({key: 1 for key in LEGACY_OWNERS})
 
 
 def execute(candidate, root, *arguments, expect_success=True):
@@ -51,8 +63,17 @@ def validate_source(candidate, source, target):
     # Explicit dry-run bypasses startup recovery, and the retired switches cannot reject parsing.
     execute(candidate, target, "--retention-dry-run")
     with sqlite3.connect(target / "maintenance.sqlite") as connection:
-        rows = {row[0]: row[1:] for row in connection.execute("SELECT task_key,enabled,interval_secs,cron_expr FROM managed_tasks WHERE task_key IN (?,?,?,?)", OWNERS)}
+        owner_placeholders = ",".join("?" for _ in OWNERS)
+        rows = {
+            row[0]: row[1:]
+            for row in connection.execute(
+                f"SELECT task_key,enabled,interval_secs,cron_expr FROM managed_tasks WHERE task_key IN ({owner_placeholders})",
+                OWNERS,
+            )
+        }
         assert rows["retention_archive"] == (0, 600, None), rows
+        for key in RETENTION_OWNERS[1:]:
+            assert rows[key] == (1, 300, None), (key, rows)
         assert rows["prompt_cache_materialization"][0] == 0, rows
         assert rows["invocation_identity_cleanup"] == (1, 300, None), rows
         assert rows["raw_orphan_sweep"] == (1, 300, None), rows
@@ -81,7 +102,10 @@ def validate_source(candidate, source, target):
         rows = list(connection.execute("SELECT enabled,interval_secs FROM managed_tasks WHERE task_key IN ('invocation_identity_cleanup','raw_orphan_sweep')"))
         assert rows == [(0, 420), (0, 420)], rows
         records = connection.execute("SELECT task_key,details FROM managed_task_runs WHERE trigger_kind='manual' AND details IS NOT NULL").fetchall()
-        assert all(json.loads(details).get("ownerScope") == key and json.loads(details).get("ownershipVersion") == 1 for key, details in records)
+        for key, details in records:
+            parsed = json.loads(details)
+            assert parsed.get("ownerScope") == key
+            assert parsed.get("ownershipVersion") == OWNER_VERSIONS[key]
         observations = connection.execute("SELECT details,actual_started_at,actual_finished_at,actual_duration_ms FROM managed_task_runs WHERE trigger_kind='manual' AND details IS NOT NULL").fetchall()
         for details, actual_started, actual_finished, duration in observations:
             expected_start = json.loads(details).get("actualStartedAt")

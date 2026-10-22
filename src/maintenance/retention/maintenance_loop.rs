@@ -135,6 +135,7 @@ pub(crate) struct RetentionOwnerRunSummary {
     pub(crate) selected: usize,
     pub(crate) committed: usize,
     pub(crate) batches: usize,
+    pub(crate) archive_batches: Vec<RetentionBatchMetrics>,
     pub(crate) raw_files_removed: usize,
     pub(crate) completion: &'static str,
     pub(crate) wait_reason: Option<String>,
@@ -155,6 +156,7 @@ impl RetentionOwnerRunSummary {
             selected: 0,
             committed: 0,
             batches: 0,
+            archive_batches: Vec::new(),
             raw_files_removed: 0,
             completion: "complete",
             wait_reason: None,
@@ -722,7 +724,7 @@ async fn run_model_route_expiry_owner(
         )
         .await
         {
-            Ok((_, has_more)) => has_more,
+            Ok((remaining, _has_more)) => remaining > 0,
             Err(error) => {
                 apply_retention_owner_post_commit_error(
                     &mut summary,
@@ -759,7 +761,22 @@ async fn run_task_run_history_cleanup_owner(
     let legacy_selected = match prune_system_task_runs_for_owner(pool, dry_run).await {
         Ok(selected) => selected,
         Err(error) => {
-            apply_retention_owner_error(&mut summary, &error);
+            let committed = error
+                .downcast_ref::<SystemTaskRunRetentionPartialError>()
+                .map(|partial| partial.committed)
+                .unwrap_or_default();
+            summary.discovered = committed;
+            summary.selected = committed;
+            summary.committed = if dry_run { 0 } else { committed };
+            summary.batches = committed
+                .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS - 1)
+                / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS;
+            summary.has_more = true;
+            if let Some(partial) = error.downcast_ref::<SystemTaskRunRetentionPartialError>() {
+                apply_retention_owner_error(&mut summary, &partial.cause);
+            } else {
+                apply_retention_owner_error(&mut summary, &error);
+            }
             return Ok(summary.finish(started_at));
         }
     };
@@ -875,12 +892,15 @@ pub(crate) async fn run_retention_owner_task(
                             RefCell::new(std::collections::BTreeMap::new()),
                             batch_plan::TASK_BATCH_METRICS.scope(
                                 RefCell::new(Vec::new()),
-                                RETENTION_RUN_DEFER_REASON.scope(
-                                    RefCell::new(None),
-                                    run_retention_owner_task_inner(
+                                RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                                    let result = run_retention_owner_task_inner(
                                         pool, config, task_key, dry_run, shutdown,
-                                    ),
-                                ),
+                                    )
+                                    .await;
+                                    let archive_batches = batch_plan::TASK_BATCH_METRICS
+                                        .with(|metrics| metrics.borrow().clone());
+                                    (result, archive_batches)
+                                }),
                             ),
                         ),
                     ),
@@ -889,9 +909,18 @@ pub(crate) async fn run_retention_owner_task(
         )
         .await;
     match result {
-        Ok(summary) => Ok(summary),
-        Err(error) => {
+        (Ok(mut summary), archive_batches) => {
+            summary.archive_batches = archive_batches;
+            let run_seconds = started_at.elapsed().as_secs_f64();
+            for batch in &mut summary.archive_batches {
+                batch.committed_rows_per_second =
+                    (run_seconds > 0.0).then_some(batch.committed_rows as f64 / run_seconds);
+            }
+            Ok(summary.finish(started_at))
+        }
+        (Err(error), archive_batches) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
+            summary.archive_batches = archive_batches;
             apply_retention_owner_error(&mut summary, &error);
             Ok(summary.finish(started_at))
         }
@@ -995,6 +1024,35 @@ pub(crate) fn system_task_run_retention_admission_requires_pressure_backoff(
     )
 }
 
+#[derive(Debug)]
+struct SystemTaskRunRetentionPartialError {
+    committed: usize,
+    cause: anyhow::Error,
+}
+
+impl std::fmt::Display for SystemTaskRunRetentionPartialError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "system task run retention failed after committing {} rows: {}",
+            self.committed, self.cause
+        )
+    }
+}
+
+impl std::error::Error for SystemTaskRunRetentionPartialError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
+fn system_task_run_retention_partial_error(
+    committed: usize,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    anyhow::Error::new(SystemTaskRunRetentionPartialError { committed, cause })
+}
+
 pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
     prune_system_task_runs_inner(pool, dry_run, true).await
 }
@@ -1059,9 +1117,11 @@ async fn prune_system_task_runs_inner(
             } else {
                 Err(error.context("failed to count system task retention candidates"))
             }
-        })?;
+        })
+        .map_err(|error| system_task_run_retention_partial_error(0, error))?;
         return Ok((candidates.max(0) as usize).min(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS));
     }
+    let mut pruned = 0usize;
     let candidates = match sqlx::query_as::<_, SystemTaskRunRetentionCandidate>(
         r#"
             WITH ranked AS (
@@ -1104,14 +1164,16 @@ async fn prune_system_task_runs_inner(
             if system_task_run_retention_handle_pressure(&error) {
                 return Ok(0);
             }
-            return Err(error).context("failed to select system task retention candidates");
+            return Err(system_task_run_retention_partial_error(
+                0,
+                error.context("failed to select system task retention candidates"),
+            ));
         }
     };
     if candidates.is_empty() {
         return Ok(0);
     }
 
-    let mut pruned = 0usize;
     for candidates in candidates.chunks(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS) {
         let Some(admission) = acquire_retention_write_admission("system_task_run_retention").await
         else {
@@ -1145,7 +1207,10 @@ async fn prune_system_task_runs_inner(
                 if system_task_run_retention_handle_pressure(&error) {
                     return Ok(pruned);
                 }
-                return Err(error).context("failed to begin system task retention batch");
+                return Err(system_task_run_retention_partial_error(
+                    pruned,
+                    error.context("failed to begin system task retention batch"),
+                ));
             }
         };
         let deleted = match delete.build().execute(&mut *transaction).await {
@@ -1155,7 +1220,10 @@ async fn prune_system_task_runs_inner(
                 if system_task_run_retention_handle_pressure(&error) {
                     return Ok(pruned);
                 }
-                return Err(error).context("failed to delete system task retention batch");
+                return Err(system_task_run_retention_partial_error(
+                    pruned,
+                    error.context("failed to delete system task retention batch"),
+                ));
             }
         };
         if let Err(error) = transaction.commit().await {
@@ -1163,7 +1231,10 @@ async fn prune_system_task_runs_inner(
             if system_task_run_retention_handle_pressure(&error) {
                 return Ok(pruned);
             }
-            return Err(error).context("failed to commit system task retention batch");
+            return Err(system_task_run_retention_partial_error(
+                pruned,
+                error.context("failed to commit system task retention batch"),
+            ));
         }
         retention_record_commit!(
             "system_task_run_retention",

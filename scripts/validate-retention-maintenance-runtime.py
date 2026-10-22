@@ -67,7 +67,8 @@ def validate_online(candidate, source, target, port):
     UPGRADE.execute(candidate, target, "--retention-dry-run")
     with sqlite3.connect(target / "maintenance.sqlite") as connection:
         connection.execute("UPDATE managed_tasks SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL")
-        controls = connection.execute("SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN (?,?,?,?) ORDER BY task_key", UPGRADE.OWNERS).fetchall()
+        owner_placeholders = ",".join("?" for _ in UPGRADE.OWNERS)
+        controls = connection.execute(f"SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN ({owner_placeholders}) ORDER BY task_key", UPGRADE.OWNERS).fetchall()
         baseline_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
     environment = dict(os.environ, DATABASE_PATH=str(target / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(target / "maintenance.sqlite"), ARCHIVE_DIR=str(target / "archives"), PROXY_RAW_DIR=str(target / "raw"), HTTP_BIND=f"127.0.0.1:{port}", OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:1/", OBSERVABILITY_ENABLED="false", RUST_LOG="warn", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false")
     (target / "raw").mkdir(exist_ok=True)
@@ -144,13 +145,13 @@ def validate_online(candidate, source, target, port):
                 log.write(json.dumps({"arguments": ["maintenance", "invocation-identity-cleanup"], "exitCode": pending_cli.returncode, "competition": True}) + "\n" + stdout + stderr)
             pending_cli = None
             with sqlite3.connect(target / "maintenance.sqlite") as connection:
-                assert connection.execute("SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN (?,?,?,?) ORDER BY task_key", UPGRADE.OWNERS).fetchall() == controls, "manual requests changed automatic controls or planned a continuation"
-                records = connection.execute("SELECT task_key,trigger_kind,details FROM managed_task_runs WHERE id > ? AND task_key IN (?,?,?,?)", [baseline_run_id, *UPGRADE.OWNERS]).fetchall()
+                assert connection.execute(f"SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN ({owner_placeholders}) ORDER BY task_key", UPGRADE.OWNERS).fetchall() == controls, "manual requests changed automatic controls or planned a continuation"
+                records = connection.execute(f"SELECT task_key,trigger_kind,details FROM managed_task_runs WHERE id > ? AND task_key IN ({owner_placeholders})", [baseline_run_id, *UPGRADE.OWNERS]).fetchall()
                 assert records
                 for key, trigger, details in records:
                     assert trigger == "manual", (key, trigger)
                     details = json.loads(details)
-                    assert details["ownershipVersion"] == 1 and details["ownerScope"] == key
+                    assert details["ownershipVersion"] == UPGRADE.OWNER_VERSIONS[key] and details["ownerScope"] == key
                     assert isinstance(details["dryRun"], bool)
         finally:
             if blocker is not None:

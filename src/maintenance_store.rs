@@ -3795,6 +3795,44 @@ impl MaintenanceStore {
         Ok(())
     }
 
+    pub(crate) async fn schedule_owned_work_for_run(
+        &self,
+        key: &str,
+        run_id: i64,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.schedule_owned_work_for_run_inner(key, run_id, seconds, reason),
+        )
+        .await
+    }
+
+    async fn schedule_owned_work_for_run_inner(
+        &self,
+        key: &str,
+        run_id: i64,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET next_catchup_at=?,catchup_reason=?
+             WHERE task_key=? AND enabled!=0
+               AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+        )
+        .bind(at)
+        .bind(reason)
+        .bind(key)
+        .bind(key)
+        .bind(run_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn record_owned_retry_delay(
         &self,
         key: &str,
@@ -4595,6 +4633,7 @@ impl MaintenanceStore {
                 .await?;
         if automatic && task_key.as_deref() == Some("retention_archive") {
             self.update_retention_catchup_after_finish(
+                id,
                 completion,
                 details.as_deref(),
                 &format_utc_iso_millis(Utc::now()),
@@ -4635,10 +4674,13 @@ impl MaintenanceStore {
                 sqlx::query(
                     "UPDATE managed_tasks
                      SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?
-                     WHERE task_key=? AND enabled!=0",
+                     WHERE task_key=? AND enabled!=0
+                       AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
                 )
                 .bind(finished_at)
                 .bind(task_key.as_deref().expect("matched retention owner"))
+                .bind(task_key.as_deref().expect("matched retention owner"))
+                .bind(id)
                 .execute(&self.pool)
                 .await?;
             }
@@ -4666,6 +4708,7 @@ impl MaintenanceStore {
 
     async fn update_retention_catchup_after_finish(
         &self,
+        run_id: i64,
         completion: Option<&str>,
         details: Option<&str>,
         now: &str,
@@ -4695,12 +4738,16 @@ impl MaintenanceStore {
             .get("waitReason")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty());
-        self.update_retention_catchup_from_summary(
-            completion,
-            backlog_total,
-            completed as usize,
-            wait_reason,
-            now,
+        observe_store_write(
+            StoreOperation::Control,
+            self.update_retention_catchup_from_summary_inner(
+                completion,
+                backlog_total,
+                completed as usize,
+                wait_reason,
+                now,
+                Some(run_id),
+            ),
         )
         .await
     }
@@ -4721,6 +4768,7 @@ impl MaintenanceStore {
                 completed,
                 wait_reason,
                 now,
+                None,
             ),
         )
         .await
@@ -4733,6 +4781,7 @@ impl MaintenanceStore {
         completed: usize,
         wait_reason: Option<&str>,
         now: &str,
+        run_id: Option<i64>,
     ) -> Result<()> {
         let completed = completed.min(i64::MAX as usize) as i64;
         if completion.is_none() {
@@ -4751,9 +4800,12 @@ impl MaintenanceStore {
             sqlx::query(
                 "UPDATE managed_tasks
                  SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
-                 WHERE task_key='retention_archive' AND enabled!=0",
+                 WHERE task_key='retention_archive' AND enabled!=0
+                   AND (? IS NULL OR (SELECT MAX(id) FROM managed_task_runs WHERE task_key='retention_archive')=?)",
             )
             .bind(now)
+            .bind(run_id)
+            .bind(run_id)
             .execute(&self.pool)
             .await?;
             return Ok(());
@@ -4779,11 +4831,13 @@ impl MaintenanceStore {
                  END,
                  catchup_reason=CASE WHEN enabled=0 THEN NULL ELSE ?2 END,
                  updated_at=?3
-             WHERE task_key='retention_archive'",
+             WHERE task_key='retention_archive'
+               AND (?4 IS NULL OR (SELECT MAX(id) FROM managed_task_runs WHERE task_key='retention_archive')=?4)",
         )
         .bind(&next_catchup_at)
         .bind(wait_reason.unwrap_or("backlog_remaining"))
         .bind(now)
+        .bind(run_id)
         .execute(&self.pool)
         .await?;
         Ok(())

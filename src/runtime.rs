@@ -1974,7 +1974,12 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     else {
                         if is_retention_owner_v2_task(&task_key)
                             && let Err(error) = store
-                                .schedule_owned_work(&task_key, 300, "task_execution_active")
+                                .schedule_owned_work_for_run(
+                                    &task_key,
+                                    run_id,
+                                    300,
+                                    "task_execution_active",
+                                )
                                 .await
                         {
                             warn!(
@@ -2157,7 +2162,7 @@ async fn finalize_managed_task_with_panic_guard(
     finish: ManagedTaskFinish,
 ) -> (ManagedTaskFinish, Result<()>) {
     let task_key = finish.task_key.clone();
-    let result = AssertUnwindSafe(finish_managed_task_run_bounded(&store, &finish))
+    let result = AssertUnwindSafe(finish_managed_task_and_schedule_retry(&store, &finish))
         .catch_unwind()
         .await;
     let result = match result {
@@ -2168,6 +2173,31 @@ async fn finalize_managed_task_with_panic_guard(
         }
     };
     (finish, result)
+}
+
+fn managed_task_schedule_retry(details: Option<&Value>) -> Option<(i64, String)> {
+    let details = details?;
+    let seconds = details
+        .get("scheduleRetryAfterSecs")
+        .and_then(Value::as_i64)?;
+    let reason = details
+        .get("scheduleRetryReason")
+        .and_then(Value::as_str)?
+        .to_string();
+    Some((seconds, reason))
+}
+
+async fn finish_managed_task_and_schedule_retry(
+    store: &crate::maintenance_store::MaintenanceStore,
+    finish: &ManagedTaskFinish,
+) -> Result<()> {
+    finish_managed_task_run_bounded(store, finish).await?;
+    if let Some((seconds, reason)) = managed_task_schedule_retry(finish.details.as_ref()) {
+        store
+            .schedule_owned_work_for_run(&finish.task_key, finish.run_id, seconds, &reason)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn run_managed_task_worker_guarded(
@@ -2465,7 +2495,7 @@ async fn drain_managed_task_finishes_on_shutdown(
     pending_finishes: &mut VecDeque<ManagedTaskFinish>,
 ) {
     while let Some(finish) = pending_finishes.pop_front() {
-        if let Err(error) = finish_managed_task_run_bounded(store, &finish).await {
+        if let Err(error) = finish_managed_task_and_schedule_retry(store, &finish).await {
             // Replay resolves the maintenance row by run_id; task_kind is legacy journal metadata.
             let recovery = BatchedSystemTaskFinish {
                 run_id: finish.run_id,
@@ -2779,9 +2809,20 @@ async fn run_managed_task_once_with_scoped_observation(
             } else {
                 "work_remaining"
             };
-            store
-                .schedule_owned_work(task_key, retry, retry_reason)
-                .await?;
+            if let Err(error) = store
+                .schedule_owned_work_for_run(task_key, run_id, retry, retry_reason)
+                .await
+            {
+                warn!(
+                    task = %task_key,
+                    run_id,
+                    error = %error,
+                    "managed owner retry could not be scheduled; preserving execution facts for finalizer retry"
+                );
+                execution.details["waitReason"] = json!("schedule_retry");
+                execution.details["scheduleRetryAfterSecs"] = json!(retry);
+                execution.details["scheduleRetryReason"] = json!(retry_reason);
+            }
         }
         return Ok(ManagedTaskExecution {
             summary: execution.summary,

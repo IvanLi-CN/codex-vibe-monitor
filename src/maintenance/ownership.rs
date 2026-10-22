@@ -120,17 +120,19 @@ fn retention_owner_execution(
     let retry_after_secs = summary.wait_reason.as_deref().map(|reason| match reason {
         "retention_work_budget" => 1,
         "retention_write_admission" | "sqlite_pressure" => 30,
-        "retention_recovery_failure" => 300,
+        "retention_recovery_failure" | "owner_failed" | "task_execution_active" => 300,
         _ => 15,
     });
     let next_work_secs = if completion == "failed" {
         Some(300)
     } else if summary.task_key == "retention_archive" {
         None
+    } else if let Some(retry_after_secs) = retry_after_secs {
+        Some(retry_after_secs)
     } else if summary.has_more {
         Some(1)
     } else {
-        retry_after_secs
+        None
     };
     let summary_text = if summary.completion == "failed" {
         format!("{} 执行失败", summary.task_key)
@@ -172,6 +174,7 @@ fn retention_owner_execution(
                 "rawFilesRemoved": summary.raw_files_removed,
                 "hasMore": summary.has_more,
             },
+            "archiveBatches": summary.archive_batches,
             "sourceMaxInvocationId": summary.source_max_id,
             "waitReason": summary.wait_reason,
             "fatalError": summary.fatal_error,
