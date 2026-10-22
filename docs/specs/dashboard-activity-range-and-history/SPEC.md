@@ -78,10 +78,10 @@
 ### REQ-DAH-007
 
 - 历史活动日历 MUST 从活动总览移至统计页最顶部，位于现有统计筛选与汇总卡片之前。全局与账号活动总览均不再保留「历史」范围。
-- 统计页日历 MUST 使用全局统计作用域，严格展示含今日在内的最近 180 个浏览器本地自然日；起始日为今日向前 179 日，不能用六个日历月替代。
+- 统计页日历 MUST 使用全局统计作用域，严格展示含今日在内的最近 365 个浏览器本地自然日；起始日为今日向前 364 日，不能用六个日历月替代。日历所在活动面板 MUST 在统计页内容区全宽展开，不得按日历内容宽度收缩并留下右侧空白。
 - 日历 MUST 提供 `次数`、`金额`、`Token` 切换，默认次数，悬浮展示日期及所选指标值；今日格 MUST 随数据更新。
 - 日历的范围和指标选择 MUST 独立于统计页现有时间范围、聚合粒度和活动总览指标选择；统计页原筛选继续控制原有汇总与图表。
-- 日历 MUST 保留既有日格展示方式；切换指标不得改变 180 天边界或混入其他指标的值。
+- 日历 MUST 保留既有日格展示方式；切换指标不得改变 365 天边界或混入其他指标的值。
 
 ### REQ-DAH-008
 
@@ -125,7 +125,7 @@
 
 - Method: 日历日期、指标和统计页组合组件验证。
 - covers: `REQ-DAH-007`, `REQ-DAH-008`
-- Pass condition: 日历位于统计页首块并展示全局数据，跨月、跨年仍恰好 180 个日期且包含今日；三种指标与日期提示正确，统计页原筛选不改变日历；全局和账号活动总览均没有历史范围；错误和加载不会显示为零活动。
+- Pass condition: 日历位于统计页首块并展示全局数据，跨月、跨年仍恰好 365 个日期且包含今日；活动面板在统计内容区全宽展开，窄屏横向滚动只发生在日历视口内；三种指标与日期提示正确，统计页原筛选不改变日历；全局和账号活动总览均没有历史范围；错误和加载不会显示为零活动。
 
 ### VER-DAH-007
 
@@ -142,7 +142,8 @@
 
 - ui_demo desktop overview: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112550Z-cvm-dashboard-current-721a3330.png`
 - ui_demo 393x852 overview: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112636Z-cvm-dashboard-mobile-current-050edb05.png`
-- ui_demo desktop stats: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112551Z-cvm-stats-current-48642f99.png`
+- ui_demo desktop stats, full-width 365-day history: `./assets/stats-history-full-width-365d-desktop.png`
+- ui_demo 393x852 stats, scoped calendar scrolling: `./assets/stats-history-full-width-365d-mobile-393.png`
 
 ## References
 

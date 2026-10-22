@@ -899,8 +899,8 @@ pub(crate) fn parse_summary_window(
         Some("all") => Ok(SummaryWindow::All),
         Some("previous7d") => Ok(SummaryWindow::PreviousFullDays(7)),
         Some(
-            raw @ ("today" | "yesterday" | "previous1d" | "previous24h" | "recent180d" | "thisWeek"
-            | "thisMonth"),
+            raw @ ("today" | "yesterday" | "previous1d" | "previous24h" | "recent180d"
+            | "recent365d" | "thisWeek" | "thisMonth"),
         ) => Ok(SummaryWindow::Calendar(raw.to_string())),
         Some(raw) if raw.starts_with(EXPLICIT_RANGE_PREFIX) => {
             Ok(SummaryWindow::Calendar(raw.to_string()))

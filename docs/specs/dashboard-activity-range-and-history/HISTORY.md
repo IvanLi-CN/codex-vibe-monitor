@@ -20,6 +20,7 @@
 ## Delivery
 
 - PR #1169 (`feat(web): unify activity ranges and history`) 已收敛到 current-head CI 全绿；源码质量预算修复提交为 `f67805a6`，只调整统计范围边界的模块归属，不改变本主题的外部行为或视觉证据。
+- 后续产品调整将统计页历史活动改为内容区全宽展示，并将日历窗口扩展为最近 365 个本地自然日；旧 `recent180d` 后端查询继续兼容。
 
 ## References
 

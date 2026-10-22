@@ -612,6 +612,29 @@ fn named_range_recent_180_days_uses_local_calendar_boundaries() {
 }
 
 #[test]
+fn named_range_recent_365_days_uses_local_calendar_boundaries() {
+    let tz = chrono_tz::America::Los_Angeles;
+    let now = Utc
+        .with_ymd_and_hms(2026, 11, 2, 18, 0, 0)
+        .single()
+        .expect("valid dt");
+
+    let (start, end) = named_range_bounds("recent365d", now, tz).expect("recent 365d bounds");
+    assert_eq!(
+        start.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2025, 11, 3).unwrap()
+    );
+    assert_eq!(
+        end.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap()
+    );
+    assert_eq!(
+        end.signed_duration_since(start),
+        chrono::Duration::hours(8_760)
+    );
+}
+
+#[test]
 fn named_range_this_week_end_respects_dst() {
     let tz = chrono_tz::America::Los_Angeles;
     let now = Utc
@@ -696,6 +719,25 @@ fn parse_summary_window_accepts_recent_180_day_calendar_window() {
 
     match window {
         SummaryWindow::Calendar(value) => assert_eq!(value, "recent180d"),
+        other => panic!("expected calendar window, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_summary_window_accepts_recent_365_day_calendar_window() {
+    let window = parse_summary_window(
+        &SummaryQuery {
+            window: Some("recent365d".to_string()),
+            limit: None,
+            time_zone: None,
+            upstream_account_id: None,
+        },
+        50,
+    )
+    .expect("parse recent 365 day summary window");
+
+    match window {
+        SummaryWindow::Calendar(value) => assert_eq!(value, "recent365d"),
         other => panic!("expected calendar window, got {other:?}"),
     }
 }

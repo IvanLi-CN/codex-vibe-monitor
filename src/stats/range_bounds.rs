@@ -54,6 +54,14 @@ pub(crate) fn named_range_bounds(
                 .unwrap_or(local_date + ChronoDuration::days(1));
             Some((start, local_midnight_utc(next_date, tz)))
         }
+        "recent365d" => {
+            let local_date = now.with_timezone(&tz).date_naive();
+            let start = local_midnight_utc(local_date - ChronoDuration::days(364), tz);
+            let next_date = local_date
+                .succ_opt()
+                .unwrap_or(local_date + ChronoDuration::days(1));
+            Some((start, local_midnight_utc(next_date, tz)))
+        }
         "thisWeek" => {
             let start = start_of_local_week(now, tz);
             // Week end must be computed via the next local boundary, not a fixed +7*24h.
