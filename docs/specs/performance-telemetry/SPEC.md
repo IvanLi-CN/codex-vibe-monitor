@@ -30,6 +30,10 @@
 - REQ-015: 本次退役限定 v3→v4，核验固定 digest 的 v3 镜像与停止 writer 的身份，拒绝 v2 直接跨 major 及 v4 来源。须精确核验文件身份与前一 major 的完整 schema-v1 DDL，包含默认值、表约束与索引，仅忽略格式和注释；停旧 writer 后含 WAL 一致归档并校验，再移出应用挂载。未知归属、DDL 或备份失败保留源。阶段清单可重入，中断用前向恢复，恢复备份是独立灾难恢复操作。 covers: [退役合同](../../design/performance-observability.md#旧系统一次性退役与恢复)
 - REQ-016: 性能 A/B 必须由 GitHub Actions 的 GitHub-hosted runner 完成，生产镜像构建与测量使用不同 job。三轮实验在三台隔离 runner 并行执行，每轮在同一 runner 串行运行同一候选镜像的 off、metrics-only、metrics＋trace 三种模式，轮换模式顺序；功能与 CPU attach 在第四台 runner 并行验证。每窗口 60 秒预热、60 秒测量、5 req/s，必须完成 300/300 请求；九个窗口全部齐备才能比较。三台配对 runner 的单一 CPU 型号、核心数、内核、runner 镜像及镜像版本必须逐项相同，增量按同机配对比值的中位数计算，不跨机器配对；三组原始窗口及配对比值的 CV 均不得超过 5%，CPU 每完成请求及成功请求 p95 增幅均不得超过 5%。短窗口样本不足或不稳定只能报告未验证，不能降低门槛。性能实验只接受默认分支控制的 `pull_request_target` 显式标签事件，脚本来自 base checkout，候选代码只作为隔离镜像运行；证据绑定 candidate SHA、镜像 ID、合同及场景 digest、run/attempt，任意新提交使旧卡失效。性能实验不成为普通 Build Artifacts 的依赖；本地或共享测试机结果不能签发预算通过卡。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
 - REQ-016A: 性能测试阶段共享同一个起始时刻，包含 checkout、镜像下载装载、准备、预热、准入、测量和清理，硬上限 15 分钟，不按分支或重试重置。脚本在第 14 分钟中断运行并保留清理和上传时间，各测试 job 另有 15 分钟硬超时；最终合并验证超出共享 15 分钟不得签发通过卡。镜像构建独立计时并设 15 分钟上限，不把构建耗时算作已完成的测试。每个测量窗口在预热后按 20 秒间隔取得连续三次安静样本，PSI `some avg10/avg60` 阈值保持 CPU <2%、IO <5%、memory <0.1%，每窗口最多等待 180 秒、每轮三窗口累计最多 450 秒，同时受共享总时限约束；不再重复执行初始静默等待。正式窗口记录开关、配对编号、UTC/单调起止、初末边界及每 10 秒资源样本；首次测量前一次性固定 app 与辅助容器的容器 ID、PID 起始 tick、cgroup v2 路径和有效 affinity，并要求每个 PID 的实际 cgroup 路径对应其 Docker 容器身份；首个 CPU 归因样本显式标记 `counterDeltaStatus=baseline` 且不填充 delta，后续样本必须记录实际 counter delta；验证器拒绝缺失、负值、字段不完整或 CPU 集合不一致的 delta，按相邻原始 host/app 计数器重算并逐样本核对，窗口汇总 delta 必须与首尾样本重算结果一致；验证器还必须逐样本校验 app `cpu.pressure` 的完整数值结构，并在准备阶段独立核对每个 cgroup 路径与容器 ID 的对应关系；在每个样本记录 runner 允许 CPU 的 `/proc/stat`、app cgroup 的 `cpu.stat`/`cpu.pressure`/`cpu.max` 与进程状态，保留 host/app counter delta，且每个样本的 app `cpu.max` 必须等于准备阶段的一核配额，准备记录与每个原始样本逐服务交叉校验。首样本未满足准入、缺失/非法、采集错误、PID 替换、计数器回退、配额变化、cgroup/CPU 归因不支持或间隔超过 20 秒记为 unavailable，不用零值填充或从 wall time 推断根因。负载期间超阈值保留原始 PSI 与 `pressureExceededSamples`，不伪装成采集故障。应用固定一个 CPU，辅助容器使用 runner 默认 affinity；按模式启停必需服务，Grafana 在正式窗口始终停止。缺失分支、超时、身份或硬件不匹配、积压、trace 丢失均不能通过，不自动延时、重跑或筛选窗口。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+- REQ-016B: `cpu.stat` 解析器必须接受 Linux 合法的未来字段名，包括由小写字母、数字、下划线和点组成的分段命名空间，同时继续要求六个必需计数器、非负整数、无重复键和 16 KiB 文件上限；进程/cgroup 身份、有效 CPU 集合和计数器回退校验保持不变。
+- REQ-016C: CPU 归因准备失败必须写入有界且固定枚举的 `stage`、`source`、`reason` 诊断；不得写入原始异常文本、路径、环境变量、业务数据或未授权字段。准备失败必须独立保留为 unavailable，并在 observer 尚未启动时仍尽力写入白名单证据。
+- REQ-016D: 汇总器必须独立保留已验证的 runtime 场景、A/B pair 场景和硬件兼容性结论；硬件不匹配只能使经验性结论 unavailable，不得删除已验证 runtime 结果、池化不可比较样本，或把功能失败、准备失败和硬件错误改写为通过。
+- REQ-016E: GitHub-hosted 的 `ubuntu-24.04` 标签不等价于物理硬件一致性；正式比较仍须逐项核对 CPU 型号、核心数、内核、runner 镜像及版本。低成本资源 preflight 只能作为未来的准入/成本门，不得放宽五字段合同；付费 runner、外部资源或统计合同变更须另行作出明确基础设施决定。
 
 - REQ-017: 所有 HTTP `/v1` 代理路径在鉴权和路由之前开始独立诊断，使用同一单调及 UTC 基准；响应 head、首字节、有效 model delta 和 body EOF/error/cancel 是累计里程碑，body 终结仅记录一次。不存在的阶段标为不适用，应用入口以前的传输及客户端收全数据不在计时范围。 covers: [生命周期合同](../../design/request-lifecycle-observability.md)
 - REQ-018: 具名本地资源等待导出事件次数/耗时、每请求累计/最大值和受影响请求数；响应窗口内实际区间去重并集用于等待占比，嵌套阶段和不同分位数不得相加，未归因 wall time 不得解释为 CPU 或调度等待。取消区间为已观测下界。 covers: [等待合同](../../design/request-lifecycle-observability.md)
@@ -69,6 +73,7 @@
 - VER-010: 定向生命周期回归覆盖前置拒绝、两次 attempt、EOF/error/cancel 仅结束一次及晚到 commit；等待统计验证嵌套区间并集、分母、固定标签及有界丢弃，导出白名单与初始化失败隔离通过回归。 covers: REQ-017, REQ-018, REQ-019, REQ-020, REQ-021
 - VER-011: 既有隔离验收实际摄入 Tempo、按类别搜索及 TraceID 获取晚到持久化，验证独立权限与伪造 tenant 被覆盖；当前 provision 的桌面及 393×852 Grafana 案例和瀑布图提供视觉证据。 covers: REQ-022, REQ-023
 - VER-012: 固定模块事件与缓存句柄覆盖真实成功、失败、取消、重复通知和确认，提交行数只在事务成功后累计，缺测不伪造零。归档 `write_hold` 覆盖成功准入至许可释放，包括其间文件复核和提交后清理；`transaction` 单独计量事务，部分批次因预算或取消退出不得报告完整成功。固定统计查询只计量对应 SQL：`long_term_overlap` 来自规范区间表的重叠查询，状态和日汇总读取不混入；真实 SQLite 查询的结果与错误保持不变。固定标签组合和实际 Histogram 桶数遵守现有系列预算，抓取不增加 SQL 或文件扫描。 covers: REQ-003, REQ-004, REQ-006, REQ-024
+- VER-013: 解析器未来字段回归、固定诊断白名单、准备失败证据写入、runtime/A-B/hardware 结论保留及硬件 mismatch 组合均有确定性测试；资源调查记录当前 hosted runner 能力和低成本 preflight 入口，且不把工具契约测试、历史运行或不可比较硬件运行当作 5% 经验性通过证据。 covers: REQ-016, REQ-016A, REQ-016B, REQ-016C, REQ-016D, REQ-016E
 
 ## Related ADRs
 
@@ -77,6 +82,7 @@
 
 - [ADR 0033: External request diagnostic traces](../../adr/0033-external-request-diagnostic-traces.md)
 - [ADR 0034: Shared Tempo request tracing](../../adr/0034-shared-tempo-request-tracing.md)
+- [ADR 0046: Observability acceptance hardware admission](../../adr/0046-observability-acceptance-hardware-admission.md)
 
 ## Visual Evidence
 

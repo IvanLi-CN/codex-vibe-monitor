@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 
+from cpu_attribution import cpu_attribution_diagnostic
 from environment import actions_context, comparison_report, verify_measurement_evidence
 from run import certificate
 
@@ -82,6 +83,30 @@ def verify_hardware_compatibility(contexts):
                 raise HardwareCompatibilityError(f"hardware metadata incompatible: {key}")
 
 
+def _pair_issue(pair_index, scenario):
+    status = scenario.get("status") if isinstance(scenario, dict) else None
+    issue = {"pairIndex": pair_index, "status": status if status in {"failed", "unavailable"} else "unavailable"}
+    diagnostic = scenario.get("diagnostic") if isinstance(scenario, dict) else None
+    if isinstance(diagnostic, dict):
+        issue["diagnostic"] = cpu_attribution_diagnostic(
+            None,
+            diagnostic.get("stage", "unknown"),
+            code=diagnostic.get("reason"),
+            source=diagnostic.get("source"),
+        )
+    elif issue["status"] == "failed":
+        issue["reason"] = "part_failed"
+    else:
+        issue["reason"] = "part_unavailable"
+    return issue
+
+
+def _scenario_status(scenarios):
+    if any(row.get("status") == "failed" for row in scenarios.values()):
+        return "failed"
+    return "passed" if all(row.get("status") == "passed" for row in scenarios.values()) else "unavailable"
+
+
 def aggregate(source, candidate_source, root, parts, candidate):
     root.mkdir(parents=True, exist_ok=True)
     # The result job verifies identities from each measurement part; it is not
@@ -91,12 +116,16 @@ def aggregate(source, candidate_source, root, parts, candidate):
     scenarios = {name: {"status": "unavailable", "error": "required part evidence missing or invalid"}
                  for name in RUNTIME_SCENARIOS | {"default-observability-ab"}}
     status = "unavailable"
+    pair_scenarios = []
     try:
         verified = []
         prefix = f"observability-part-{context['runId']}-{context['attempt']}-"
         for lane in LANES:
             part = parts / (prefix + lane)
-            verified.append(verify_part(part, lane, expected))
+            verified_part = verify_part(part, lane, expected)
+            verified.append(verified_part)
+            if lane == "runtime":
+                scenarios = dict(verified_part[2])
         starts = [read(parts / (prefix + lane), "run-config.json")["executionStartedUTCSeconds"] for lane in LANES]
         if len(set(starts)) != 1:
             raise ValueError("parts reset the shared test clock")
@@ -105,14 +134,13 @@ def aggregate(source, candidate_source, root, parts, candidate):
         if len({item[0] for item in verified}) != 1:
             raise ValueError("parts used different candidate images")
         pairs = [item[1] for item in verified[1:]]
+        pair_scenarios = [item[2]["default-observability-ab"] for item in verified[1:]]
         # Each pair owns its off/metrics/full windows on one isolated runner.
         # Paired comparisons require exact hardware/runtime metadata so raw
         # machine-dependent timings are not compared across incompatible hosts.
         if len({pair["runnerIdentity"] for pair in pairs}) != 3:
             raise ValueError("paired experiments did not use isolated runners")
         verify_hardware_compatibility(pairs)
-        scenarios = dict(verified[0][2])
-        pair_scenarios = [item[2]["default-observability-ab"] for item in verified[1:]]
         bad = next((row for row in pair_scenarios if row["status"] == "failed"), None)
         bad = bad or next((row for row in pair_scenarios if row["status"] != "passed"), None)
         if bad:
@@ -134,9 +162,18 @@ def aggregate(source, candidate_source, root, parts, candidate):
         status = "failed" if any(row["status"] == "failed" for row in scenarios.values()) else "unavailable" if any(row["status"] != "passed" for row in scenarios.values()) else "passed"
     except HardwareCompatibilityError as error:
         scenarios["default-observability-ab"] = {"status": "unavailable", "error": str(error)}
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        issues = [_pair_issue(index, scenario) for index, scenario in enumerate(pair_scenarios) if scenario.get("status") != "passed"]
+        if issues:
+            scenarios["default-observability-ab"]["pairIssues"] = issues
+    except FileNotFoundError:
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "required part evidence missing or invalid",
+        }
+    except (OSError, ValueError, KeyError, TypeError):
         # Missing parts, mismatches, and timeout never produce a passing card.
-        scenarios["default-observability-ab"] = {"status": "unavailable", "error": "part evidence invalid: " + type(error).__name__}
+        scenarios["default-observability-ab"] = {"status": "unavailable", "error": "part evidence invalid"}
+    status = _scenario_status(scenarios)
     expected["empirical_evidence_status"] = status
     (root / "scenarios.json").write_text(json.dumps(scenarios, indent=2) + "\n")
     (root / "empirical-card.json").write_text(json.dumps(expected, indent=2) + "\n")

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 SOURCE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SOURCE / "scripts/observability-acceptance"))
-from cpu_attribution import CpuAttributionError, PreparedCpuAttribution
+from cpu_attribution import MAX_FILE_BYTES, CpuAttributionError, PreparedCpuAttribution, cpu_attribution_diagnostic, parse_cpu_stat
 import environment
 from run import Run
 import run as acceptance
@@ -301,6 +301,63 @@ class ContainerMountTests(unittest.TestCase):
         with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
             with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):
                 self.execute_mounted("fixture.py")
+
+
+class CpuStatParserTests(unittest.TestCase):
+    required = "".join(f"{key} 1\n" for key in ("usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec"))
+
+    def test_linux_cpu_stat_extensions_are_accepted_without_relaxing_required_fields(self):
+        parsed = parse_cpu_stat(self.required + "core_sched.force_idle_usec 0\nnr_bursts 2\n")
+        self.assertEqual(parsed["core_sched.force_idle_usec"], 0)
+        self.assertEqual(parsed["nr_bursts"], 2)
+        self.assertTrue({"usage_usec", "user_usec", "system_usec", "nr_periods", "nr_throttled", "throttled_usec"}.issubset(parsed))
+        with self.assertRaisesRegex(CpuAttributionError, "cpu_attribution_unsupported:app.cpuStat"):
+            parse_cpu_stat(self.required.replace("usage_usec", "usage_missing"))
+
+    def test_cpu_stat_strict_checks_remain_for_duplicate_negative_and_oversized_input(self):
+        for text in [
+            self.required + "usage_usec 2\n",
+            self.required + "core_sched.force_idle_usec -1\n",
+            self.required + "future_field 0\n" * (MAX_FILE_BYTES // 8),
+        ]:
+            with self.subTest(text=text[-32:]):
+                with self.assertRaises(CpuAttributionError):
+                    parse_cpu_stat(text)
+
+
+class CpuPreparationTests(unittest.TestCase):
+    def test_diagnostic_fields_are_fixed_even_for_malformed_values(self):
+        diagnostic = cpu_attribution_diagnostic(
+            None,
+            [],
+            code={"secret": "/tmp/private"},
+            source="/tmp/private/token",
+        )
+        self.assertEqual(diagnostic, {"stage": "unknown", "source": "cpu-attribution", "reason": "preparation_failed"})
+
+    def test_preparation_failure_keeps_fixed_diagnostic_in_scenario_and_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = Run.__new__(Run)
+            run.context = {"cpuAffinity": [0, 1], "measurementCpu": "0"}
+            run.pair_index = 0
+            run.root = root
+            run.project = "fixture"
+            run.compose_file = root / "compose.json"
+            run.results = {}
+            run.client_failures = []
+            run.compose = Mock(return_value="a" * 12)
+            inspect = [{"Id": "a" * 64, "State": {"Running": True, "Pid": 100}}]
+            with patch.object(acceptance, "execute", return_value=json.dumps(inspect)), \
+                 patch.object(acceptance, "PreparedCpuAttribution", side_effect=CpuAttributionError("cpu_read_failed", "app.cpuStat")), \
+                 patch.object(acceptance.subprocess, "run"):
+                run.checkpoint("default-observability-ab", lambda: run.prepare_cpu_attribution("off"))
+            scenario = json.loads((root / "scenarios.json").read_text())["default-observability-ab"]
+            self.assertEqual(scenario["error"], "cpu attribution preparation unavailable")
+            self.assertEqual(scenario["diagnostic"], {"stage": "prepare", "source": "app.cpuStat", "reason": "cpu_read_failed"})
+            evidence = json.loads((root / "cpu-attribution.json").read_text())[0]
+            self.assertEqual({key: evidence[key] for key in ("stage", "source", "reason")}, scenario["diagnostic"])
+            self.assertNotIn(str(root), json.dumps(scenario))
 
 
 class ResourceAdmissionTests(unittest.TestCase):
@@ -948,6 +1005,9 @@ class AggregationTests(unittest.TestCase):
         (self.part("pair-2") / "measurement-windows.json").unlink()
         self.assertFalse(self.aggregate())
         self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertTrue(all(scenarios[name]["status"] == "passed" for name in aggregation.RUNTIME_SCENARIOS))
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "required part evidence missing or invalid")
 
     def test_missing_auxiliary_cpu_identity_cannot_pass(self):
         self.change("pair-1", "cpu-attribution.json", lambda rows: rows[0]["containers"].pop(1))
@@ -1036,9 +1096,83 @@ class AggregationTests(unittest.TestCase):
         self.assertFalse(self.aggregate())
         scenarios = json.loads((self.output / "scenarios.json").read_text())
         self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata incompatible: cpuModel")
+        self.assertTrue(all(scenarios[name]["status"] == "passed" for name in aggregation.RUNTIME_SCENARIOS))
+        self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
         self.change("pair-2", "runner-context.json", lambda row: row.update(**self.context, runnerIdentity="pair-2"))
         self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="pair-1"))
         self.assertFalse(self.aggregate())
+
+    def test_hardware_mismatch_preserves_pair_preparation_diagnostic(self):
+        self.change(
+            "pair-1",
+            "runtime-card.json",
+            lambda row: row.update(empirical_evidence_status="unavailable"),
+        )
+        self.change(
+            "pair-1",
+            "scenarios.json",
+            lambda rows: rows.__setitem__(
+                "default-observability-ab",
+                {
+                    "status": "unavailable",
+                    "error": "cpu attribution preparation unavailable",
+                    "diagnostic": {"stage": "prepare", "source": "app.cpuStat", "reason": "cpu_read_failed"},
+                }
+            ),
+        )
+        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.assertFalse(self.aggregate())
+        scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
+        self.assertEqual(scenario["error"], "hardware metadata incompatible: cpuModel")
+        self.assertEqual(scenario["pairIssues"][0]["diagnostic"], {"stage": "prepare", "source": "app.cpuStat", "reason": "cpu_read_failed"})
+
+    def test_hardware_mismatch_sanitizes_pair_preparation_diagnostic(self):
+        self.change(
+            "pair-1",
+            "runtime-card.json",
+            lambda row: row.update(empirical_evidence_status="unavailable"),
+        )
+        self.change(
+            "pair-1",
+            "scenarios.json",
+            lambda rows: rows.__setitem__(
+                "default-observability-ab",
+                {
+                    "status": "unavailable",
+                    "error": "cpu attribution preparation unavailable",
+                    "diagnostic": {"stage": "prepare", "source": "/tmp/private", "reason": "secret"},
+                },
+            ),
+        )
+        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(
+            scenarios["default-observability-ab"]["pairIssues"][0]["diagnostic"],
+            {"stage": "prepare", "source": "cpu-attribution", "reason": "preparation_failed"},
+        )
+
+    def test_hardware_mismatch_does_not_hide_runtime_functional_failure(self):
+        self.change("runtime", "runtime-card.json", lambda row: row.update(empirical_evidence_status="failed"))
+        self.change(
+            "runtime",
+            "scenarios.json",
+            lambda rows: rows["https-auth-query"].update(status="failed", error="query mismatch"),
+        )
+        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.assertFalse(self.aggregate())
+        scenarios = json.loads((self.output / "scenarios.json").read_text())
+        self.assertEqual(scenarios["https-auth-query"]["status"], "failed")
+        self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata incompatible: cpuModel")
+        self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "failed")
+
+    def test_hardware_mismatch_takes_precedence_over_unstable_pair_samples_without_issuing_a_card(self):
+        self.change("pair-1", "ab-samples.json", lambda rows: rows["off"][0].update(cpuSecondsPerRequest=2.0))
+        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.assertFalse(self.aggregate())
+        scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
+        self.assertEqual(scenario["error"], "hardware metadata incompatible: cpuModel")
+        self.assertFalse((self.output / "ab-summary.json").exists())
 
     def test_missing_hardware_metadata_is_unavailable(self):
         self.change("pair-1", "runner-context.json", lambda row: row.pop("kernel"))

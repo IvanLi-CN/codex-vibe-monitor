@@ -30,6 +30,39 @@ APP_COUNTER_FIELDS = (
     "nr_throttled",
     "throttled_usec",
 )
+CPU_DIAGNOSTIC_CODES = frozenset(
+    {
+        "cpu_attribution_unsupported",
+        "cpu_counter_reset",
+        "cpu_metadata_mismatch",
+        "cpu_read_failed",
+        "container_unavailable",
+        "container_metadata_invalid",
+        "preparation_failed",
+        "pid_replaced",
+    }
+)
+CPU_DIAGNOSTIC_STAGES = frozenset({"prepare", "sample", "counter_delta"})
+_SAFE_CPU_SOURCES = frozenset(
+    {
+        "app.container",
+        "app.cpuMax",
+        "app.cpuPressure",
+        "app.cpuStat",
+        "app.effectiveAffinity",
+        "container.effectiveAffinity",
+        "container.discovery",
+        "containers",
+        "counterDelta",
+        "proc.stat",
+        "proc.uptime",
+        "process.cgroup",
+        "runner.cpuAffinity",
+    }
+)
+_SAFE_CPU_SERVICE_SOURCE = re.compile(
+    r"[a-z0-9][a-z0-9_-]*\.(?:affinity|cgroup|containerId|cpuMax|cpuPressure|cpuStat|pid|processStat)"
+)
 
 
 class CpuAttributionError(ValueError):
@@ -43,6 +76,25 @@ class CpuAttributionError(ValueError):
 
 def _fail(code: str, source: str) -> None:
     raise CpuAttributionError(code, source)
+
+
+def cpu_attribution_diagnostic(error: CpuAttributionError | None, stage: str, *, code: str | None = None, source: str | None = None) -> dict[str, str]:
+    """Return bounded diagnostic fields without exposing exception text or paths."""
+    raw_code = code if code is not None else getattr(error, "code", "preparation_failed")
+    raw_source = source if source is not None else getattr(error, "source", "cpu-attribution")
+    safe_stage = stage if isinstance(stage, str) and stage in CPU_DIAGNOSTIC_STAGES else "unknown"
+    safe_code = raw_code if isinstance(raw_code, str) and raw_code in CPU_DIAGNOSTIC_CODES else "preparation_failed"
+    safe_source = (
+        raw_source
+        if isinstance(raw_source, str)
+        and (raw_source in _SAFE_CPU_SOURCES or _SAFE_CPU_SERVICE_SOURCE.fullmatch(raw_source))
+        else "cpu-attribution"
+    )
+    return {
+        "stage": safe_stage,
+        "source": safe_source,
+        "reason": safe_code,
+    }
 
 
 def _read_text(path: Path, source: str) -> str:
@@ -114,10 +166,18 @@ def parse_proc_stat(text: str, cpus: list[int], source: str = "/proc/stat") -> d
 
 
 def parse_cpu_stat(text: str, source: str = "app.cpuStat") -> dict[str, int]:
+    if not isinstance(text, str):
+        _fail("cpu_read_failed", source)
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeError as error:
+        raise CpuAttributionError("cpu_read_failed", source) from error
+    if size > MAX_FILE_BYTES:
+        _fail("cpu_read_failed", source)
     values: dict[str, int] = {}
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) != 2 or not re.fullmatch(r"[a-z_]+", parts[0]):
+        if len(parts) != 2 or not re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*", parts[0]):
             _fail("cpu_read_failed", source)
         key = parts[0]
         if key in values:
