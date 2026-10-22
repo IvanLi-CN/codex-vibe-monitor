@@ -242,13 +242,16 @@ fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, da
                 .borrow()
                 .iter()
                 .filter(|batch| batch.dataset == dataset)
-                .fold((0, 0, 0), |(selected, committed, batches), batch| {
-                    (
-                        selected.saturating_add(batch.batch_rows),
-                        committed.saturating_add(batch.committed_rows),
-                        batches + 1,
-                    )
-                })
+                .fold(
+                    (0usize, 0usize, 0usize),
+                    |(selected, committed, batches), batch| {
+                        (
+                            selected.saturating_add(batch.batch_rows),
+                            committed.saturating_add(batch.committed_rows),
+                            batches + 1,
+                        )
+                    },
+                )
         })
         .unwrap_or_default();
     summary.discovered = batch_plan::discovered_rows(dataset)
@@ -270,13 +273,16 @@ fn retention_owner_success_facts(
                 .borrow()
                 .iter()
                 .filter(|batch| batch.dataset == dataset)
-                .fold((0, 0, 0), |(selected, committed, batches), batch| {
-                    (
-                        selected.saturating_add(batch.batch_rows),
-                        committed.saturating_add(batch.committed_rows),
-                        batches + 1,
-                    )
-                })
+                .fold(
+                    (0usize, 0usize, 0usize),
+                    |(selected, committed, batches), batch| {
+                        (
+                            selected.saturating_add(batch.batch_rows),
+                            committed.saturating_add(batch.committed_rows),
+                            batches + 1,
+                        )
+                    },
+                )
         })
         .unwrap_or_default();
     let selected = if dry_run {
@@ -363,13 +369,14 @@ async fn remaining_invocation_archive_rows(
     let Some(source_max_id) = source_max_id else {
         return Ok(0);
     };
-    sqlx::query_scalar::<_, i64>(
+    let remaining = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1 AND id <= ?2",
     )
     .bind(cutoff)
     .bind(source_max_id)
     .fetch_one(pool)
-    .await
+    .await?;
+    Ok(remaining)
 }
 
 async fn run_invocation_archive_owner_inner(

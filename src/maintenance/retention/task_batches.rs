@@ -1074,7 +1074,7 @@ pub(crate) async fn prune_old_invocation_details(
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
                     p1_waiter_count,
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 rows_pruned += group.len();
                 committed_rows += group.len();
@@ -1816,7 +1816,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
                     p1_waiter_count,
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 rows_archived += group.len();
                 committed_rows += group.len();
@@ -2431,7 +2431,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
                     p1_waiter_count,
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);

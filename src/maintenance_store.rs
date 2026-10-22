@@ -4341,9 +4341,9 @@ impl MaintenanceStore {
         Ok(ManagedTaskHistoryCleanupResult {
             selected: committed,
             committed,
-            has_more: error_detail_cleared == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
-                || runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
-                || work_runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS,
+            has_more: error_detail_cleared == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS as usize
+                || runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS as usize
+                || work_runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS as usize,
         })
     }
 
@@ -7943,7 +7943,10 @@ mod tests {
             .unwrap()
             .expect("pool attempt owner detail");
         assert_eq!(owner_schedule.task.interval_secs, Some(300));
-        assert_eq!(owner_schedule.task.schedule_source, "default");
+        assert_eq!(
+            owner_schedule.task.schedule_source.as_deref(),
+            Some("default")
+        );
 
         assert!(
             store

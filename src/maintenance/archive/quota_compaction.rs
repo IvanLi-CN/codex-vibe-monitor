@@ -405,7 +405,7 @@ pub(crate) async fn compact_old_quota_snapshots(
                     commit_started.duration_since(execute_started),
                     commit_started.elapsed(),
                     admission.p1_waiter_count(),
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 observation.committed(group.len(), admission.lock_wait());
                 drop(admission);
