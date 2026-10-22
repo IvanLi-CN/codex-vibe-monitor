@@ -198,7 +198,7 @@ export function InvocationModelContextCluster({
         data-testid={testId}
         data-model-context-grouped="true"
         className={cn(
-          "inline-flex h-5 min-w-0 max-w-full items-center gap-0.5 overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
+          "inline-flex h-5 min-w-0 max-w-full items-center gap-[3px] overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
           className,
         )}
         title={modelLabel}

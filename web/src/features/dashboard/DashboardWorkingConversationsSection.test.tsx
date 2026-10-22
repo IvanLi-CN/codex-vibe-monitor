@@ -3320,7 +3320,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(cluster.querySelector('[data-model-context-part="model"]')?.className).toContain(
       "min-w-max",
     );
-    expect(cluster.className).toContain("gap-0.5");
+    expect(cluster.className).toContain("gap-[3px]");
     expect(cluster.querySelector('[data-model-context-part="fast"]')?.className).toContain("w-4");
     expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
     expect(

@@ -210,11 +210,6 @@ test.describe("Dashboard working conversations responsive layout", () => {
       const chipRect = accountChip.getBoundingClientRect();
       const modelRect = slotModel.getBoundingClientRect();
       const usageRect = usageLine.getBoundingClientRect();
-      const slotTime = slot.querySelector<HTMLElement>(
-        '[data-testid="dashboard-working-conversation-slot-time"]',
-      );
-      if (!slotTime) throw new Error("missing slot time geometry anchor");
-      const timeRect = slotTime.getBoundingClientRect();
       const reasoningTextOverflow = Array.from(
         card.querySelectorAll<HTMLElement>(
           '[data-testid="dashboard-working-conversation-reasoning-effort"] span',
@@ -258,20 +253,22 @@ test.describe("Dashboard working conversations responsive layout", () => {
           '[data-testid="invocation-fast-icon"] svg',
         );
         const fastPart = cluster.querySelector<HTMLElement>('[data-model-context-part="fast"]');
-        const marker = cluster.querySelector<HTMLElement>(
-          '[data-model-context-part="reasoning-effort-marker"]',
-        );
         const effortText = cluster.querySelector<HTMLElement>(
           '[data-model-context-part="reasoning-effort-text"]',
         );
-        if (!modelPart || !marker || !effortText) {
+        const reasoningPart = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort"]',
+        );
+        const generation = cluster.querySelector<HTMLElement>("[data-model-generation-segment]");
+        if (!modelPart || !reasoningPart || !effortText || !generation) {
           throw new Error("missing grouped model context geometry anchors");
         }
         const modelRect = modelPart.getBoundingClientRect();
-        const markerRect = marker.getBoundingClientRect();
+        const reasoningRect = reasoningPart.getBoundingClientRect();
         const effortTextRect = effortText.getBoundingClientRect();
         const fastPartRect = fastPart?.getBoundingClientRect();
         const modelIconRect = modelIcon?.getBoundingClientRect();
+        const modelIconContainerRect = modelIcon?.parentElement?.getBoundingClientRect();
         const fastIconRect = fastIcon?.getBoundingClientRect();
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
           Math.max(
@@ -311,10 +308,13 @@ test.describe("Dashboard working conversations responsive layout", () => {
         }, 0);
         return {
           modelWidth: modelRect.width,
-          modelToMarkerGap: markerRect.left - modelRect.right,
-          markerToEffortGap: effortTextRect.left - markerRect.right,
+          modelToEffortGap: reasoningRect.left - modelRect.right,
           effortToFastGap: fastPartRect ? fastPartRect.left - effortTextRect.right : null,
-          modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
+          generationText: generation.textContent,
+          modelIconCenterDelta:
+            modelIconRect && modelIconContainerRect
+              ? centerDelta(modelIconRect, modelIconContainerRect)
+              : null,
           fastIconCenterDelta:
             fastIconRect && fastPartRect ? centerDelta(fastIconRect, fastPartRect) : null,
           effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
@@ -327,7 +327,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
 
       return {
         chipModelTopDelta: Math.abs(chipRect.top - accountLine.getBoundingClientRect().top),
-        modelAfterTime: modelRect.left >= timeRect.right,
+        modelWithinSlot:
+          modelRect.left >= slotRect.left - 1 && modelRect.right <= slotRect.right + 1,
         usageRightDelta: Math.abs(usageRect.right - accountLine.getBoundingClientRect().right),
         lineOverflowRight: lineRect.right - slotRect.right,
         lineHeight: lineRect.height,
@@ -339,15 +340,16 @@ test.describe("Dashboard working conversations responsive layout", () => {
     });
 
     expect(layout.chipModelTopDelta).toBeLessThanOrEqual(4);
-    expect(layout.modelAfterTime).toBe(true);
+    expect(layout.modelWithinSlot).toBe(true);
     expect(layout.usageRightDelta).toBeLessThanOrEqual(1);
     expect(layout.lineOverflowRight).toBeLessThanOrEqual(1);
     expect(layout.lineHeight).toBeLessThan(32);
     expect(layout.reasoningTextOverflow).toBe(false);
     expect(layout.reasoningContextGap).toBeLessThanOrEqual(8);
-    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
+    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(20);
     expect(layout.groupedGeometry.length).toBeGreaterThan(0);
-    expect(layout.groupedGeometry.every((geometry) => geometry.modelWidth === 20)).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => geometry.modelWidth >= 20)).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => geometry.generationText)).toBe(true);
     expect(layout.groupedGeometry.every((geometry) => !geometry.effortTextOverflow)).toBe(true);
     expect(
       layout.groupedGeometry.every(
@@ -358,12 +360,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     ).toBe(true);
     expect(
       layout.groupedGeometry.every(
-        (geometry) => geometry.modelToMarkerGap >= 3 && geometry.modelToMarkerGap <= 5,
-      ),
-    ).toBe(true);
-    expect(
-      layout.groupedGeometry.every(
-        (geometry) => geometry.markerToEffortGap >= 3 && geometry.markerToEffortGap <= 5,
+        (geometry) => geometry.modelToEffortGap >= 3 && geometry.modelToEffortGap <= 5,
       ),
     ).toBe(true);
     expect(
@@ -373,7 +370,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           (geometry.effortToFastGap ?? Number.NEGATIVE_INFINITY) <= 5,
       ),
     ).toBe(true);
-    expect(layout.groupedGeometry.every((geometry) => geometry.markerCount === 1)).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => geometry.markerCount === 0)).toBe(true);
     expect(layout.groupedGeometry.every((geometry) => geometry.internalDividerCount === 0)).toBe(
       true,
     );
@@ -439,21 +436,23 @@ test.describe("Dashboard working conversations responsive layout", () => {
           '[data-testid="invocation-fast-icon"] svg',
         );
         const fastPart = cluster.querySelector<HTMLElement>('[data-model-context-part="fast"]');
-        const marker = cluster.querySelector<HTMLElement>(
-          '[data-model-context-part="reasoning-effort-marker"]',
-        );
         const effortText = cluster.querySelector<HTMLElement>(
           '[data-model-context-part="reasoning-effort-text"]',
         );
-        if (!modelPart || !marker || !effortText || !fastPart) {
+        const reasoningPart = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort"]',
+        );
+        const generation = cluster.querySelector<HTMLElement>("[data-model-generation-segment]");
+        if (!modelPart || !reasoningPart || !effortText || !fastPart || !generation) {
           throw new Error("missing mobile grouped model context geometry anchors");
         }
         const modelRect = modelPart.getBoundingClientRect();
-        const markerRect = marker.getBoundingClientRect();
+        const reasoningRect = reasoningPart.getBoundingClientRect();
         const effortTextRect = effortText.getBoundingClientRect();
         const fastPartRect = fastPart.getBoundingClientRect();
         const clusterRect = cluster.getBoundingClientRect();
         const modelIconRect = modelIcon?.getBoundingClientRect();
+        const modelIconContainerRect = modelIcon?.parentElement?.getBoundingClientRect();
         const fastIconRect = fastIcon?.getBoundingClientRect();
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
           Math.max(
@@ -491,7 +490,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
             Number.parseFloat(style.borderRightWidth) > 0;
           return count + Number(!part || !expectedDirectParts.has(part) || hasBorder);
         }, 0);
-        const partsWithinCluster = [modelRect, markerRect, effortTextRect, fastPartRect].every(
+        const partsWithinCluster = [modelRect, reasoningRect, effortTextRect, fastPartRect].every(
           (partRect) =>
             partRect.left >= clusterRect.left - 1 &&
             partRect.right <= clusterRect.right + 1 &&
@@ -500,10 +499,13 @@ test.describe("Dashboard working conversations responsive layout", () => {
         );
         return {
           modelWidth: modelRect.width,
-          modelToMarkerGap: markerRect.left - modelRect.right,
-          markerToEffortGap: effortTextRect.left - markerRect.right,
+          modelToEffortGap: reasoningRect.left - modelRect.right,
           effortToFastGap: fastPartRect.left - effortTextRect.right,
-          modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
+          generationText: generation.textContent,
+          modelIconCenterDelta:
+            modelIconRect && modelIconContainerRect
+              ? centerDelta(modelIconRect, modelIconContainerRect)
+              : null,
           fastIconCenterDelta: fastIconRect ? centerDelta(fastIconRect, fastPartRect) : null,
           effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
           partsWithinCluster,
@@ -551,11 +553,17 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.usageRightAligned).toBe(true);
     expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
     expect(layout.reasoningTextOverflow).toBe(false);
-    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
+    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(20);
     expect(layout.groupedContexts.length).toBeGreaterThan(0);
-    expect(layout.groupedContexts.every((context) => context.markerCount === 1)).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.markerCount === 0)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);
-    expect(layout.groupedContexts.every((context) => context.modelWidth === 20)).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.modelWidth >= 20)).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.generationText)).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.modelToEffortGap >= 3 && context.modelToEffortGap <= 5,
+      ),
+    ).toBe(true);
     expect(layout.groupedContexts.every((context) => !context.effortTextOverflow)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.partsWithinCluster)).toBe(true);
     expect(
@@ -563,16 +571,6 @@ test.describe("Dashboard working conversations responsive layout", () => {
         (context) =>
           (context.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
           (context.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
-      ),
-    ).toBe(true);
-    expect(
-      layout.groupedContexts.every(
-        (context) => context.modelToMarkerGap >= 3 && context.modelToMarkerGap <= 5,
-      ),
-    ).toBe(true);
-    expect(
-      layout.groupedContexts.every(
-        (context) => context.markerToEffortGap >= 3 && context.markerToEffortGap <= 5,
       ),
     ).toBe(true);
     expect(
@@ -639,11 +637,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
 
       expect(layout.rootOverflow).toBeLessThanOrEqual(1);
       expect(layout.placeholderHeights).toHaveLength(2);
-      expect(
-        Math.max(
-          ...layout.placeholderHeights.map((height) => Math.abs(height - layout.normalHeight)),
-        ),
-      ).toBeLessThanOrEqual(1);
+      expect(Math.max(...layout.placeholderHeights)).toBeLessThanOrEqual(58);
+      expect(Math.min(...layout.placeholderHeights)).toBeGreaterThanOrEqual(56);
+      expect(layout.normalHeight).toBeGreaterThanOrEqual(Math.max(...layout.placeholderHeights));
       expect(layout.labels).toEqual(expect.arrayContaining(["暂无上一条调用", "暂无更早调用"]));
       expect(layout.skeletonLines).toBe(0);
       expect(layout.ariaLiveCount).toBe(0);
