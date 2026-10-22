@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-  "codeCandidateSha": "adedc24ae5e573edbde2370ff4372c38f935d819",
+  "codeCandidateSha": "37429ca3595b323391252239ccf71d1441cd6892",
   "documentationCarrier": {
-    "codeCandidateSha": "adedc24ae5e573edbde2370ff4372c38f935d819",
+    "codeCandidateSha": "37429ca3595b323391252239ccf71d1441cd6892",
     "identity": "the signed documentation-only commit containing this record",
     "scope": "This record is a documentation carrier for the immediately preceding signed code candidate; the carrier contains exactly the four documentation records listed by CI, including IMPLEMENTATION.md, and does not change the validated source tree. CI binds documentationCarrierSha to the current checkout, asserts its parent is codeCandidateSha, and verifies the carrier diff is documentation-only."
   },
@@ -23,7 +23,7 @@
   "currentHeadCi": {
     "workflow": "CI PR",
     "runId": null,
-    "headSha": "adedc24ae5e573edbde2370ff4372c38f935d819",
+    "headSha": "37429ca3595b323391252239ccf71d1441cd6892",
     "status": "pending"
   },
   "passed": {
@@ -126,8 +126,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "adedc24ae5e573edbde2370ff4372c38f935d819",
-    "reviewedHead": "adedc24ae5e573edbde2370ff4372c38f935d819",
+    "candidateSha": "37429ca3595b323391252239ccf71d1441cd6892",
+    "reviewedHead": "37429ca3595b323391252239ccf71d1441cd6892",
     "status": "pending",
     "lanes": [],
     "findings": [],
@@ -149,7 +149,7 @@
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
     "previousCandidateSha": "b55217f9fdef1cb241af39ddc3175cdf48f3999a",
     "fixedFinding": "The migration validators now seed owner-specific candidates and assert dry-run read-only facts plus real-run committed mutations for every retention owner.",
-    "newFocusedRegression": "The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, seed owner-specific candidates, assert discovered and selected facts, require dry-run committed=0 with unchanged owner state, require real-run committed work with reduced owner state, verify rawFilesPlanned and raw-file removal plus database reference release, verify shared raw ownership is preserved until the second owner runs, and verify changed archive manifests are completed, present, SHA-256 consistent, contain the owner fixture exactly once, and preserve its raw path identity; owner-v2 facts bind to adedc24a. Retention raw deletion plans now acquire an exclusive raw-directory fence before reference checks, carry file identity through commit, recheck identity before unlink, defer busy writers, and preserve changed files for inventory reconciliation; archive, detail, timestamped-attempt, and prepared-recovery paths share this plan, with regressions for writer fencing and replacement identity. Owner-v2 finalization, including retention_archive, and catch-up cleanup now commit in one transaction, with regressions covering both current run generations. Release fixtures now pull manifest-pinned image digests and verify docker inspect RepoDigests before execution. The quality-gates contract now locks the migration job's producer dependency, full-history carrier checkout, executable fixture and validator commands, both validators, candidate identity assertions, and fail-closed evidence upload; CI compares the carrier file set as a sorted set and asserts the documentation carrier is the direct parent of this code candidate. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
+    "newFocusedRegression": "The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, seed owner-specific candidates, assert discovered and selected facts, require dry-run committed=0 with unchanged owner state, require real-run committed work with reduced owner state, verify rawFilesPlanned and raw-file removal plus database reference release, verify shared raw ownership is preserved until the second owner runs, and verify changed archive manifests are completed, present, SHA-256 consistent, contain the owner fixture exactly once, and preserve its raw path identity; owner-v2 facts bind to 37429ca3. Retention raw deletion plans now acquire an exclusive raw-directory fence before reference checks, carry file identity through commit, recheck identity before unlink, defer busy writers, and preserve changed files for inventory reconciliation; archive, detail, timestamped-attempt, and prepared-recovery paths share this plan, with regressions for writer fencing and replacement identity. Owner-v2 finalization, including retention_archive, and catch-up cleanup now commit in one transaction, with regressions covering both current run generations. Release fixtures now pull manifest-pinned image digests and verify docker inspect RepoDigests before execution. The quality-gates contract now locks the migration job's producer dependency, full-history carrier checkout, executable fixture and validator commands, both validators, candidate identity assertions, and fail-closed evidence upload; CI compares the carrier file set as a sorted set and asserts the documentation carrier is the direct parent of this code candidate. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -157,14 +157,14 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-    "headSha": "adedc24ae5e573edbde2370ff4372c38f935d819",
+    "headSha": "37429ca3595b323391252239ccf71d1441cd6892",
     "requiredCi": {
       "workflow": "CI PR",
       "runId": null,
       "status": "pending"
     },
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the signed code candidate adedc24a after the b67bc3ae main sync. The current checkout is the documentation carrier identity; CI records its exact SHA, asserts its parent is codeCandidateSha, verifies the carrier diff is exactly the four documentation records including IMPLEMENTATION.md, and binds both validator result digests to its checkout and binary identity artifact."
+    "note": "candidate_head_sha binds the signed code candidate 37429ca3 after the b67bc3ae main sync. The current checkout is the documentation carrier identity; CI records its exact SHA, asserts its parent is codeCandidateSha, verifies the carrier diff is exactly the four documentation records including IMPLEMENTATION.md, and binds both validator result digests to its checkout and binary identity artifact."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
