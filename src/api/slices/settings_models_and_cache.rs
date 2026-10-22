@@ -2052,7 +2052,6 @@ impl<'de> Deserialize<'de> for SummaryQuery {
 struct TimeseriesQueryWire {
     range: Option<String>,
     bucket: Option<String>,
-    #[allow(dead_code)]
     settlement_hour: Option<u8>,
     time_zone: Option<String>,
     upstream_account_id: Option<i64>,
