@@ -1,19 +1,25 @@
 {
   "schemaVersion": 1,
-  "status": "current-head-validation-pending",
-  "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-  "codeCandidateSha": "370be26c0053419000ff199796dffa0ba3376cf2",
+  "status": "current-head-ci-and-formal-review-passed-ui-confirmation-pending",
+  "baseSha": "bd312e0bbcdbb4807829685062486648059a2135",
+  "codeCandidateSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
   "sourceInputCount": 263,
-  "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
+  "candidateBinarySha256": null,
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 18,
+    "repairBatchesUsed": 19,
     "prCreated": true,
-    "currentFormalReviewLaunched": false
+    "currentFormalReviewLaunched": true
+  },
+  "currentHeadCi": {
+    "workflow": "CI PR",
+    "runId": 39760631680,
+    "headSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "status": "success"
   },
   "passed": {
     "rustSourceQuality": true,
@@ -110,14 +116,13 @@
     "scopeProofLocator": ".codex/evidence/retention-maintenance/repair7/retained-scope-proof.json"
   },
   "pending": [
-    "formalTier4Review",
-    "postEvidenceRefreshCi",
+    "currentHeadVisualOwnerConfirmation",
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "370be26c0053419000ff199796dffa0ba3376cf2",
-    "reviewedHead": "370be26c0053419000ff199796dffa0ba3376cf2",
-    "status": "pending",
+    "candidateSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "reviewedHead": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "status": "passed",
     "lanes": [
       "contract",
       "state-concurrency",
@@ -126,7 +131,7 @@
       "database-migration"
     ],
     "findings": [],
-    "note": "Repair batch 18 is bound to 370be26c and addresses the fresh review findings from f28248f6; the five-lane read-only review for the current candidate is pending."
+    "note": "Five independent read-only lanes reviewed 27eb5b13 and found no actionable P0-P2 findings. Residual gaps are non-empty owner exclusion integration coverage and real ACK write/fsync failure recovery coverage."
   },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -140,22 +145,26 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "ownerAuthorizedRepairBatch": 18,
+    "ownerAuthorizedRepairBatch": 19,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "f28248f6c45c6822a4d8fa289a5273258069251a",
-    "fixedFinding": "Repair batch 18 schedules retry state before releasing active-run finalization, preserves unknown versus known hasMore facts, separates planned raw files from actual removals, prevents dry-run owner catch-up clearing, drains no-progress native workers, carries progress through historical inflate, and puts archive hashing behind the external file watchdog.",
-    "newFocusedRegression": "Rust format and diff checks pass. Code candidate 370be26c is committed and signed; exact-head CI, migration replay, fresh formal review, and current-head UI evidence refresh remain pending.",
+    "previousCandidateSha": "3508ab41d9c7a1b7bfc9212a46dfc20e7a27c3ae",
+    "fixedFinding": "After the serial observability bundle landed on main, the candidate-source drift regression fixture was updated to copy ADR 0047, keeping its temporary source tree complete for the contract digest.",
+    "newFocusedRegression": "Code candidate 27eb5b13 is committed and signed; CI PR run 39760631680 passed all required checks and the fresh five-lane formal review is clear. Migration replay and current-head UI owner confirmation remain pending.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
   "currentCandidateBinding": {
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
-    "baseSha": "1fb520b2a3a93126ffca3c7aaadd72768c257cb7",
-    "headSha": "370be26c0053419000ff199796dffa0ba3376cf2",
-    "requiredCi": null,
-    "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the implementation commit 370be26c; this validation record is carried by a subsequent documentation-only commit. Older retained evidence and the failed CI for prior heads are historical and cannot substitute for current-head review or the CI run after this repair."
+    "baseSha": "bd312e0bbcdbb4807829685062486648059a2135",
+    "headSha": "27eb5b13afdd4bdf99f9f2c4c12632167ca53b03",
+    "requiredCi": {
+      "workflow": "CI PR",
+      "runId": 39760631680,
+      "status": "success"
+    },
+    "formalTier4Review": "passed",
+    "note": "candidate_head_sha binds the implementation commit 27eb5b13; the required CI run and fresh five-lane read-only review are current. Older retained execution evidence remains historical and does not substitute for the pending migration replay or current-head UI owner confirmation."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
@@ -170,7 +179,7 @@
   "visualEvidence": {
     "source": "storybook_canvas",
     "ownerConfirmedAssets": 6,
-    "currentComparison": "consistent",
+    "currentComparison": "consistent-owner-confirmation-pending",
     "currentStory": "System/RetentionOwnerRunFacts/Mobile",
     "currentAsset": "docs/specs/retention-maintenance-task-ownership/assets/retention-owner-run-facts-mobile.png",
     "currentSnapshot": "/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__53477e66/2026/10/22/20261022T063517Z-retention-owner-run-facts-mobile-20261022-49b15b08.png",
@@ -179,7 +188,7 @@
     "captureScope": "element",
     "surfaceSelector": "[data-visual-evidence-surface]",
     "targetSelector": "[data-visual-evidence-target]",
-    "retentionProof": "The controlled Storybook mobile capture was rerun after the UI condition-only change. The source-managed owner v2 facts surface rendered without overflow or overlap; the 24px margins were within the required 16-48px range, and the surface had no border, radius or shadow. The legacy retention_archive label is now restricted to non-v2 records in the system task detail view."
+    "retentionProof": "The controlled Storybook mobile capture was rerun after the UI condition-only change. The source-managed owner v2 facts surface rendered without overflow or overlap; the 24px margins were within the required 16-48px range, and the surface had no border, radius or shadow. The legacy retention_archive label is now restricted to non-v2 records in the system task detail view. Current-head dry-run variant owner confirmation remains pending."
   },
   "productionBuildSettings": {
     "command": "cargo build --locked",
