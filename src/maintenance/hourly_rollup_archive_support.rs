@@ -701,7 +701,7 @@ where
             Option<CancellationToken>,
             Arc<AtomicBool>,
             Arc<Mutex<ArchiveFileProgress>>,
-        ) -> Result<()>
+        ) -> Result<T>
         + Send
         + 'static,
 {
@@ -1209,8 +1209,10 @@ mod tests {
         let suffix = RETENTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let work_path = PathBuf::from(format!("archive-timeout-worker-{suffix}.sqlite"));
         let worker_started = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::new(AtomicBool::new(false));
         let worker_release = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&worker_started);
+        let cancelled = Arc::clone(&worker_cancelled);
         let release = Arc::clone(&worker_release);
         let task = tokio::spawn(run_archive_file_work_with_deadline(
             ArchiveFileWorkRequest {
@@ -1223,11 +1225,12 @@ mod tests {
                 timeout: Some(Duration::from_millis(20)),
                 shutdown: None,
             },
-            move |_, _, _, _| {
+            move |_, _, cancellation, _| {
                 started.store(true, Ordering::Release);
-                while !release.load(Ordering::Acquire) {
+                while !cancellation.load(Ordering::Acquire) && !release.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(1));
                 }
+                cancelled.store(cancellation.load(Ordering::Acquire), Ordering::Release);
                 Ok(())
             },
         ));
@@ -1256,16 +1259,8 @@ mod tests {
             }
         };
         assert!(result.is_err());
-        assert!(is_archive_file_operation_active(&work_path));
-        worker_release.store(true, Ordering::Release);
-
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while is_archive_file_operation_active(&work_path) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("archive worker should drain and release its lease");
+        assert!(worker_cancelled.load(Ordering::Acquire));
+        assert!(!is_archive_file_operation_active(&work_path));
     }
 
     #[tokio::test]
