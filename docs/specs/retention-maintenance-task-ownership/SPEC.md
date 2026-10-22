@@ -187,6 +187,48 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
   evidence_note: Mobile owner-facts surface shows the independent scope, unit, global backlog, discovered, selected, committed, batch, raw-file and has-more facts without overlap or horizontal overflow.
   image: ![Retention owner run facts mobile](./assets/retention-owner-run-facts-mobile.png)
 
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1280x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: seven retention owner detail pages with independent scheduling and scope facts
+  demo_route: `/#/system/tasks/<owner-key>?demoTheme=light`; `retention_archive` uses `&demoRetentionOwners=v2` for the new owner record fixture
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: Desktop gallery covers all seven retention-policy owner detail pages and shows each page title, task key, schedule context, independent data range and owner-specific progress facts.
+  image: ![Seven retention owner desktop pages](./assets/retention-owner-seven-desktop-top-gallery.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 393x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: seven retention owner detail pages with mobile owner facts
+  demo_route: `/#/system/tasks/<owner-key>?demoTheme=light`; `retention_archive` uses `&demoRetentionOwners=v2` for the new owner record fixture
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: Mobile gallery covers the same seven pages at 393x852 CSS px, showing independent scope, unit, backlog, discovered, selected, committed, batch and window-coverage facts without horizontal overflow.
+  image: ![Seven retention owner mobile facts](./assets/retention-owner-seven-mobile-facts-gallery.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1280x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: retention owner task catalog with seven owner entries
+  demo_route: `/#/system/tasks?demoTheme=light`
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: Full task catalog shows the seven retention-policy owner entries together, including their independent task keys and status rows, so page-level evidence is tied back to the split task directory.
+  image: ![Retention owner task catalog](./assets/retention-owner-task-catalog-desktop.png)
+
 ## Related ADRs
 
 - [Runtime SQLite write admission](../../adr/0015-coordinated-runtime-sqlite-write-admission.md)
