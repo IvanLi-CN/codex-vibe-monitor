@@ -113,7 +113,7 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
 def require_observability_performance_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
     performance_job = job_config(workflow, "observability-performance", workflow_path)
     image_job = job_config(workflow, "observability-performance-image", workflow_path)
-    opt_in_if = "github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'"
+    opt_in_if = "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
     require(performance_job.get("name") == "Observability Acceptance (${{ matrix.lane }})" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 15 and image_job.get("timeout-minutes") == 15,
             "image and test jobs must finish within 15 minutes")
@@ -140,7 +140,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
                 "preparation including download retries must share the execution deadline")
     require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
     require(image_job.get("if") == opt_in_if and performance_job.get("if") == opt_in_if,
-            "observability performance jobs must require the explicit opt-in label")
+            "observability performance jobs must require explicit label or manual opt-in")
     require_job_and_steps_fail_closed(
         performance_job,
         "ci-pr.yml.jobs.observability-performance",
@@ -310,17 +310,31 @@ def validate_observability_performance(path: Path) -> None:
     )
     on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
     require("pull_request" not in on_section and "merge_group" not in on_section, f"{workflow_path} must not run on untrusted pull_request or merge_group events")
-    require("workflow_dispatch" not in on_section, f"{workflow_path} must remain label-triggered")
+    dispatch = event_config(workflow, "workflow_dispatch", workflow_path)
+    dispatch_inputs = require_mapping(dispatch.get("inputs"), f"{workflow_path}.on.workflow_dispatch.inputs")
+    candidate_input = require_mapping(dispatch_inputs.get("candidate_sha"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_sha")
+    require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
+            f"{workflow_path} manual acceptance must require a string candidate_sha")
     assert_event_types(event_config(workflow, "pull_request_target", workflow_path), {"labeled"}, f"{workflow_path}.on.pull_request_target")
     permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
     require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")
     image = job_config(workflow, "observability-performance-image", workflow_path)
+    resolver = step_config(image, "Resolve performance sources", f"{workflow_path}.jobs.observability-performance-image")
+    resolver_run = str(resolver.get("run", ""))
+    require(
+        resolver.get("id") == "refs"
+        and "WORKFLOW_REF" in resolver_run
+        and 'refs/heads/main' in resolver_run
+        and "candidate_repository" in resolver_run
+        and "trusted_ref" in resolver_run,
+        f"{workflow_path} must resolve and bind the manual trusted/candidate sources",
+    )
     image_checkout = checkout_step(image, "Checkout performance candidate", f"{workflow_path}.jobs.observability-performance-image")
     require(
-        image_checkout.get("repository") == "${{ github.event.pull_request.head.repo.full_name }}"
+        image_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
         and image_checkout.get("path") == "candidate"
-        and image_checkout.get("ref") == "${{ github.event.pull_request.head.sha }}",
-        f"{workflow_path} image job must build only the explicit candidate checkout",
+        and image_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}",
+        f"{workflow_path} image job must build only the resolved candidate checkout",
     )
     for job_id, job_name in [("observability-performance", "performance"), ("observability-performance-result", "aggregation"), ("observability-diagnostics", "diagnosis")]:
         job = job_config(workflow, job_id, workflow_path)
@@ -328,15 +342,15 @@ def validate_observability_performance(path: Path) -> None:
         candidate = checkout_step(job, "Checkout candidate identity", f"{workflow_path}.jobs.{job_id}")
         require(
             trusted.get("repository") == "${{ github.repository }}"
-            and trusted.get("ref") == "${{ github.event.pull_request.base.sha }}"
+            and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}"
             and trusted.get("path") == "trusted",
-            f"{workflow_path} {job_name} must run the harness from the base checkout",
+            f"{workflow_path} {job_name} must run the harness from the resolved trusted checkout",
         )
         require(
-            candidate.get("repository") == "${{ github.event.pull_request.head.repo.full_name }}"
+            candidate.get("repository") == "${{ needs.observability-performance-image.outputs.candidate_repository }}"
             and candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}"
             and candidate.get("path") == "candidate",
-            f"{workflow_path} {job_name} must use candidate checkout only for identity",
+            f"{workflow_path} {job_name} must use the resolved candidate checkout only for identity",
         )
     require_observability_performance_contract(workflow, workflow_path)
     require_observability_diagnostic_contract(workflow, workflow_path)
