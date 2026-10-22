@@ -1007,50 +1007,68 @@ pub(crate) async fn find_existing_import_match(
     chatgpt_account_id: &str,
     email: &str,
 ) -> Result<Option<UpstreamAccountRow>> {
+    find_existing_import_match_with_executor(pool, chatgpt_user_id, chatgpt_account_id, email).await
+}
+
+pub(crate) async fn find_existing_import_match_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    chatgpt_user_id: Option<&str>,
+    chatgpt_account_id: &str,
+    email: &str,
+) -> Result<Option<UpstreamAccountRow>> {
     let normalized_chatgpt_user_id = chatgpt_user_id
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let candidates = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
+        r#"
+        SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
+        FROM pool_upstream_accounts
+        WHERE kind = ?1
+          AND (
+                (?2 <> '' AND lower(trim(COALESCE(chatgpt_user_id, ''))) = lower(trim(?2)))
+             OR lower(trim(COALESCE(email, ''))) = lower(trim(?3))
+             OR (
+                    chatgpt_account_id = ?4
+                AND lower(trim(COALESCE(email, ''))) = lower(trim(?3))
+                AND lower(trim(COALESCE(chatgpt_user_id, ''))) = ''
+             )
+          )
+        ORDER BY updated_at DESC, id DESC
+        "#
+    ))
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(normalized_chatgpt_user_id.unwrap_or_default())
+    .bind(email)
+    .bind(chatgpt_account_id)
+    .fetch_all(executor)
+    .await?;
+
     if let Some(chatgpt_user_id) = normalized_chatgpt_user_id {
-        let user_id_matches = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
-            r#"
-            SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
-            FROM pool_upstream_accounts
-            WHERE kind = ?1
-              AND lower(trim(COALESCE(chatgpt_user_id, ''))) = lower(trim(?2))
-            ORDER BY updated_at DESC, id DESC
-            "#
-        ))
-        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-        .bind(chatgpt_user_id)
-        .fetch_all(pool)
-        .await?;
+        let user_id_matches = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.chatgpt_user_id
+                    .as_deref()
+                    .is_some_and(|stored| stored.trim().eq_ignore_ascii_case(chatgpt_user_id))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
         if user_id_matches.len() > 1 {
             bail!(
                 "multiple existing OAuth accounts match chatgpt_user_id {}",
                 chatgpt_user_id
             );
         }
-        if let Some(row) = user_id_matches.into_iter().next() {
-            return Ok(Some(row));
+        if let Some(index) = user_id_matches.into_iter().next() {
+            return Ok(candidates.into_iter().nth(index));
         }
     }
 
-    let email_matches = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
-        r#"
-        SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
-        FROM pool_upstream_accounts
-        WHERE kind = ?1
-          AND lower(trim(COALESCE(email, ''))) = lower(trim(?2))
-        ORDER BY updated_at DESC, id DESC
-        "#
-    ))
-    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-    .bind(email)
-    .fetch_all(pool)
-    .await?;
-    let email_matches = email_matches
-        .into_iter()
-        .filter(|row| {
+    let email_matches = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
             let stored_user_id = row
                 .chatgpt_user_id
                 .as_deref()
@@ -1063,41 +1081,45 @@ pub(crate) async fn find_existing_import_match(
                 None => stored_user_id.is_none(),
             }
         })
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
     if email_matches.len() > 1 {
         bail!("multiple existing OAuth accounts match email {}", email);
     }
-    if let Some(row) = email_matches.into_iter().next() {
-        return Ok(Some(row));
+    if let Some(index) = email_matches.into_iter().next() {
+        return Ok(candidates.into_iter().nth(index));
     }
 
     if normalized_chatgpt_user_id.is_some() {
         return Ok(None);
     }
 
-    let account_id_matches = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
-        r#"
-        SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
-        FROM pool_upstream_accounts
-        WHERE kind = ?1
-          AND chatgpt_account_id = ?2
-          AND lower(trim(COALESCE(email, ''))) = lower(trim(?3))
-          AND lower(trim(COALESCE(chatgpt_user_id, ''))) = ''
-        ORDER BY updated_at DESC, id DESC
-        "#
-    ))
-    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-    .bind(chatgpt_account_id)
-    .bind(email)
-    .fetch_all(pool)
-    .await?;
+    let account_id_matches = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row.chatgpt_account_id.as_deref() == Some(chatgpt_account_id)
+                && row
+                    .email
+                    .as_deref()
+                    .is_some_and(|stored| stored.trim().eq_ignore_ascii_case(email.trim()))
+                && row
+                    .chatgpt_user_id
+                    .as_deref()
+                    .is_none_or(|stored| stored.trim().is_empty())
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
     if account_id_matches.len() > 1 {
         bail!(
             "multiple existing OAuth accounts match account_id {}",
             chatgpt_account_id
         );
     }
-    Ok(account_id_matches.into_iter().next())
+    Ok(account_id_matches
+        .into_iter()
+        .next()
+        .and_then(|index| candidates.into_iter().nth(index)))
 }
 
 pub(crate) async fn probe_imported_oauth_credentials(

@@ -5,10 +5,10 @@
 - Canonical spec: `docs/specs/pd77h-oauth-inline-adapter/SPEC.md`
 - sub2api compatibility: 前端识别无顶层格式标记、`sub2api-data` 与 `sub2api-bundle` 导出包；前后端从导出字段或 token 声明归一化身份和有效期，缺少 ID token 时生成现有 Session 兼容的身份载体。API Key 与其他平台按成员拒绝，凭据存储格式与既有账号元数据更新规则保持不变。
 - Focused regression coverage: `web/src/pages/account-pool/UpstreamAccountCreate.sub2api.test.ts` 与 `src/upstream_accounts/tests/lightweight/sub2api_oauth_import.rs` 覆盖缺失格式标记、无 ID/refresh token、成员身份、有效期来源、身份冲突、JWT alias 与错误类型声明及既有凭据格式回读。
-- Local validation: 两个相关 Web 测试文件共 171 项通过，`typecheck:web`、`lint:web` 与 Web production build 通过；lint 保留仓库既有 93 条 warning。Rust 的 `sub2api_oauth` 16 项、`normalize_imported_oauth_credentials` 10 项与共享成员匹配回归 4 项选择器均通过，去除跨选择器重复后覆盖 29 个不同测试；`cargo fmt --all -- --check` 与 Rust source-quality policy 检查通过。
+- Local validation: 两个相关 Web 测试文件共 171 项通过，`typecheck:web` 与 Web production build 通过；仓库级 `lint:web` 仍受既有错误与 93 条 warning 阻断，但本次变更文件的定向 Biome 检查通过。Rust 的 `sub2api_oauth` 16 项、`normalize_imported_oauth_credentials` 10 项、共享成员匹配回归 5 项与验证缓存摘要绑定回归均通过，去除跨选择器重复后覆盖 31 个不同测试；`cargo fmt --all -- --check` 与 Rust source-quality policy 检查通过。
 - Rust test environment: macOS 默认 test profile 的 `sqlx-macros` 动态库加载报 `mis-aligned LINKEDIT string pool`；仅在上述本地测试命令追加 `--config 'profile.test.package.sqlx-macros.debug=1'` 绕过，没有修改仓库构建配置。
 - Remaining validation: 本次按 `agent-vm` 合同申请并复用 `sub2api-oauth-d74c`，guest 启动在 300 秒 readiness 预算内以 `guest_readiness_timeout` 结束；此前 guest 曾因 `rustc` 编译触发 OOM killer，最终 `effective_lease=false`、`guest_available=false`、实例为 stopped/cached，未取得可执行 guest。完整 backend profiles、all-target/all-feature check 与 Clippy 尚未执行，需由 PR CI 补齐。UI mock demo 已验证两个无 ID token 的不同成员入队及 API Key 跳过；主人已确认导入区紧凑提示视觉证据，桌面与 393px 移动截图已归档。
-- Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记；新增账号页的 `导入 Session` 会把 ChatGPT Web session JSON 转换到现有 OAuth 导入队列；OAuth JSON 导入忽略 `type` 来源值，单条本地校验可一次性展示多个字段错误；前端导入现在兼容单条 `sub2api` OAuth object 与整份 `sub2api-data` 导出包，并在本地展开成多个标准化单账号 payload；成员级去重与服务端既有账号匹配优先使用 `chatgpt_user_id`，无成员 ID 时只匹配同样缺少成员 ID 且邮箱相同的历史账号，并以账号 ID+邮箱作为批内去重键；共享 `account_id` 但 `chatgpt_user_id` 不同的成员不会再被误判成重复导入，同时 `k12` 作为一等 plan 类型参与 badge、分组顺序与文案显示。
+- Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记；新增账号页的 `导入 Session` 会把 ChatGPT Web session JSON 转换到现有 OAuth 导入队列；OAuth JSON 导入忽略 `type` 来源值，单条本地校验可一次性展示多个字段错误；前端导入现在兼容单条 `sub2api` OAuth object 与整份 `sub2api-data` 导出包，并在本地展开成多个标准化单账号 payload；成员级去重与服务端既有账号匹配优先使用 `chatgpt_user_id`，无成员 ID 时只匹配同样缺少成员 ID 且邮箱相同的历史账号，并以账号 ID+邮箱作为批内去重键；服务端验证缓存绑定源 ID、文件名和原始内容摘要，写入新账号前在 `BEGIN IMMEDIATE` 事务内重新匹配身份，避免输入替换和跨请求重复；共享 `account_id` 但 `chatgpt_user_id` 不同的成员不会再被误判成重复导入，同时 `k12` 作为一等 plan 类型参与 badge、分组顺序与文案显示。
 
 ## Migrated Implementation Notes
 
@@ -24,7 +24,7 @@
 
 - Unit tests: OAuth adapter 请求改写、模型列表归一化、SSE completed/error 提取、错误摘要。
 - Integration tests: pool OAuth route 的 invalid_grant / token invalidated / 一次 stale token 恢复 / 单服务路径。
-- Account pool tests: 无 RT imported OAuth 解析与持久化、自动刷新跳过、`hasRefreshToken=false` 序列化、Web flat/list/grid badge、非 `codex` 导入类型放行、单条导入本地多错误校验、既有账号导入匹配完整读取 `compact_support_*` 字段。
+- Account pool tests: 无 RT imported OAuth 解析与持久化、自动刷新跳过、`hasRefreshToken=false` 序列化、Web flat/list/grid badge、非 `codex` 导入类型放行、单条导入本地多错误校验、既有账号导入匹配完整读取 `compact_support_*` 字段、验证缓存输入摘要绑定与写事务内并发去重重查。
 - Web import tests: ChatGPT Web session 单对象与嵌套数组转换、`导入 Session` Storybook 粘贴入队。
 - E2E tests (if applicable): 线上等价流程的账号详情错误口径与重新授权后的路由表现。
 
