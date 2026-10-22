@@ -1,6 +1,6 @@
 # Observability Acceptance Hardware Admission
 
-Status: Accepted
+Status: Superseded by ADR 0047
 
 ## Context
 
