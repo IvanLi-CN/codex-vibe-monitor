@@ -2064,6 +2064,66 @@ async fn raw_writer_fences_allow_concurrent_writers_and_block_sweep_lock() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_raw_deletion_plan_defers_while_writer_holds_fence() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-delete-fence").await;
+    let raw_path = config.proxy_raw_dir.join("delete-fence.bin");
+    fs::write(&raw_path, b"old").expect("write raw candidate");
+    let _writer_fence = crate::maintenance::acquire_retention_raw_write_fence(&raw_path)
+        .expect("hold raw writer fence");
+    let mut connection = pool.acquire().await.expect("acquire retention connection");
+    let plan = crate::maintenance::filter_unreferenced_proxy_raw_paths(
+        &mut connection,
+        &[Some(raw_path.to_string_lossy().into_owned())],
+        None,
+    )
+    .await
+    .expect("build deferred raw deletion plan");
+    assert_eq!(
+        plan.paths,
+        vec![Some(raw_path.to_string_lossy().into_owned())]
+    );
+    assert!(plan.identities.is_empty());
+    let removed =
+        crate::maintenance::delete_proxy_raw_paths(plan, None).expect("skip deferred raw deletion");
+    assert_eq!(removed, 0);
+    assert!(raw_path.exists());
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_raw_deletion_plan_preserves_replaced_identity() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-delete-identity").await;
+    let raw_path = config.proxy_raw_dir.join("delete-identity.bin");
+    fs::write(&raw_path, b"old").expect("write raw candidate");
+    let mut connection = pool.acquire().await.expect("acquire retention connection");
+    let plan = crate::maintenance::filter_unreferenced_proxy_raw_paths(
+        &mut connection,
+        &[Some(raw_path.to_string_lossy().into_owned())],
+        None,
+    )
+    .await
+    .expect("build identity-bound raw deletion plan");
+    fs::write(&raw_path, b"replacement-with-new-identity")
+        .expect("replace raw candidate after identity check");
+    let removed =
+        crate::maintenance::delete_proxy_raw_paths(plan, None).expect("skip replaced raw deletion");
+    assert_eq!(removed, 0);
+    assert_eq!(
+        fs::read(&raw_path).expect("read replacement raw file"),
+        b"replacement-with-new-identity"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_orphan_sweep_defers_a_busy_directory_lock_without_holding_write_admission() {
     use crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass;
 

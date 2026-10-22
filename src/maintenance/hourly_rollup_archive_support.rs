@@ -226,14 +226,37 @@ pub(crate) fn count_planned_proxy_raw_paths(
 }
 
 pub(crate) fn delete_proxy_raw_paths(
-    raw_paths: &[Option<String>],
+    plan: super::retention::ProxyRawDeletionPlan,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<usize> {
+    let super::retention::ProxyRawDeletionPlan {
+        paths: raw_paths,
+        fences,
+        identities,
+    } = plan;
+    // Keep every exclusive raw-directory fence until all identity checks and unlinks finish.
+    let _fences = fences;
     let mut removed = 0usize;
     let mut seen = HashSet::new();
     for raw_path in raw_paths.iter().flatten() {
         for candidate in resolved_raw_path_read_candidates(raw_path, raw_path_fallback_root) {
             if !seen.insert(candidate.clone()) {
+                continue;
+            }
+            let Some(expected) = identities.iter().find(|entry| entry.path == candidate) else {
+                continue;
+            };
+            let metadata = match fs::metadata(&candidate) {
+                Ok(metadata) if metadata.file_type().is_file() => metadata,
+                Ok(_) | Err(_) => continue,
+            };
+            if retention_raw_file_identity(&metadata) != expected.identity
+                || metadata.len() != expected.byte_size
+            {
+                warn!(
+                    path = %candidate.display(),
+                    "retaining raw payload because its identity changed before deletion"
+                );
                 continue;
             }
             match fs::remove_file(&candidate) {

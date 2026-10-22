@@ -559,7 +559,7 @@ async fn reuse_task_month_archive_if_proven(
 }
 
 struct RetentionBatchCommit {
-    raw_paths: Vec<Option<String>>,
+    raw_deletion_plan: ProxyRawDeletionPlan,
     raw_reference_check_elapsed: Option<Duration>,
     commit_started: Instant,
     prompt_cache_keys: Vec<String>,
@@ -1029,7 +1029,7 @@ pub(crate) async fn prune_old_invocation_details(
                             }
                             let raw_reference_check_started = Instant::now();
                             let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-                            let raw_paths = filter_unreferenced_proxy_raw_paths(
+                            let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
                                 tx.as_mut(),
                                 &raw_paths,
                                 raw_path_fallback_root,
@@ -1039,7 +1039,7 @@ pub(crate) async fn prune_old_invocation_details(
                                 .then(|| raw_reference_check_started.elapsed());
                             let commit_started = Instant::now();
                     Ok(RetentionBatchCommit {
-                        raw_paths,
+                        raw_deletion_plan,
                         raw_reference_check_elapsed,
                         commit_started,
                         prompt_cache_keys: Vec::new(),
@@ -1083,7 +1083,7 @@ pub(crate) async fn prune_old_invocation_details(
                     return Err(error);
                 }
                 transaction_resources.mark_transaction_finished();
-                let raw_paths = commit.raw_paths;
+                let raw_deletion_plan = commit.raw_deletion_plan;
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
                     admission_mode,
@@ -1112,10 +1112,10 @@ pub(crate) async fn prune_old_invocation_details(
                     ));
                 }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                if !raw_paths.is_empty() {
+                if !raw_deletion_plan.paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
-                let removed = delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
                 raw_files_removed += removed;
                 batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
@@ -1769,7 +1769,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     }
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-                    let raw_paths = filter_unreferenced_proxy_raw_paths(
+                    let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
                         tx.as_mut(),
                         &raw_paths,
                         raw_path_fallback_root,
@@ -1779,7 +1779,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                     let commit_started = Instant::now();
                     Ok(RetentionBatchCommit {
-                        raw_paths,
+                        raw_deletion_plan,
                         raw_reference_check_elapsed,
                         commit_started,
                         prompt_cache_keys: archived_prompt_cache_keys,
@@ -1824,7 +1824,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 }
                 transaction_resources.mark_transaction_finished();
                 prompt_cache_keys.extend(commit.prompt_cache_keys);
-                let raw_paths = commit.raw_paths;
+                let raw_deletion_plan = commit.raw_deletion_plan;
                 workload::record_processed_count(group.len());
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_archive",
@@ -1859,11 +1859,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     ));
                 }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                if !raw_paths.is_empty() {
+                if !raw_deletion_plan.paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 retention_recovery_record_progress();
-                let removed = delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
                 raw_files_removed += removed;
                 batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
@@ -2399,24 +2399,24 @@ pub(crate) async fn archive_timestamped_dataset(
                     &materialized_forward_proxy_rows,
                 )
                 .await?;
-                let (raw_paths, raw_reference_check_elapsed) = if spec.dataset
+                let (raw_deletion_plan, raw_reference_check_elapsed) = if spec.dataset
                     == "pool_upstream_request_attempts"
                 {
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates =
                         pool_attempt_raw_paths.iter().any(Option::is_some);
-                    let raw_paths = filter_unreferenced_proxy_raw_paths(
+                    let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
                         tx.as_mut(),
                         &pool_attempt_raw_paths,
                         config.database_path.parent(),
                     )
                     .await?;
                     (
-                        raw_paths,
+                        raw_deletion_plan,
                         had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed()),
                     )
                 } else {
-                    (Vec::new(), None)
+                    (ProxyRawDeletionPlan::empty(), None)
                 };
                 let commit_started = Instant::now();
                 Ok(Some(RetentionBatchCommit {
@@ -2475,7 +2475,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     recovery_diagnostic.mark_stop();
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
-                let raw_paths = commit.raw_paths;
+                let raw_deletion_plan = commit.raw_deletion_plan;
                 let breached = retention_record_commit_with_reference_check!(
                     "timestamped_archive",
                     admission_mode,
@@ -2499,13 +2499,13 @@ pub(crate) async fn archive_timestamped_dataset(
                 }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if spec.dataset == "pool_upstream_request_attempts" {
-                    if !raw_paths.is_empty() {
+                    if !raw_deletion_plan.paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;
                     }
                     rows_archived += group.len();
                     committed_rows += group.len();
                     let removed =
-                        delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                        delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?;
                     raw_files_removed += removed;
                     batch_observation.raw_files_removed(removed);
                 } else {
