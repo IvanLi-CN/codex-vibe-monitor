@@ -175,6 +175,13 @@ impl RetentionOwnerRunSummary {
 }
 
 fn classify_retention_owner_error(error: &anyhow::Error) -> (&'static str, Option<String>) {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<SystemTaskRunRetentionPressureDeferred>()
+            .is_some()
+    }) {
+        return ("deferred", Some("sqlite_pressure".to_string()));
+    }
     if is_retention_archive_file_operation_budget_exhausted(error) {
         return (
             "deferred",
@@ -1129,6 +1136,17 @@ struct SystemTaskRunRetentionPartialError {
     cause: anyhow::Error,
 }
 
+#[derive(Debug)]
+struct SystemTaskRunRetentionPressureDeferred;
+
+impl std::fmt::Display for SystemTaskRunRetentionPressureDeferred {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("system task run retention deferred by SQLite pressure cooldown")
+    }
+}
+
+impl std::error::Error for SystemTaskRunRetentionPressureDeferred {}
+
 impl std::fmt::Display for SystemTaskRunRetentionPartialError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -1153,17 +1171,18 @@ fn system_task_run_retention_partial_error(
 }
 
 pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
-    prune_system_task_runs_inner(pool, dry_run, true).await
+    prune_system_task_runs_inner(pool, dry_run, true, false).await
 }
 
 async fn prune_system_task_runs_for_owner(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
-    prune_system_task_runs_inner(pool, dry_run, false).await
+    prune_system_task_runs_inner(pool, dry_run, false, true).await
 }
 
 async fn prune_system_task_runs_inner(
     pool: &Pool<Sqlite>,
     dry_run: bool,
     respect_process_schedule: bool,
+    propagate_pressure: bool,
 ) -> Result<usize> {
     let now_epoch_ms = system_task_run_retention_now_epoch_ms();
     if respect_process_schedule && !system_task_run_retention_pass_is_due(now_epoch_ms) {
@@ -1173,7 +1192,7 @@ async fn prune_system_task_runs_inner(
     let success_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::days(30));
     let failed_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::days(180));
     if dry_run {
-        let candidates: i64 = sqlx::query_scalar(
+        let candidates: i64 = match sqlx::query_scalar(
             r#"
             WITH ranked AS (
                 SELECT
@@ -1209,15 +1228,23 @@ async fn prune_system_task_runs_inner(
         .bind(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS as i64 + 1)
         .fetch_one(pool)
         .await
-        .map_err(anyhow::Error::from)
-        .or_else(|error| {
-            if system_task_run_retention_handle_pressure(&error) {
-                Ok(0)
-            } else {
-                Err(error.context("failed to count system task retention candidates"))
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                if system_task_run_retention_handle_pressure(&error) {
+                    if propagate_pressure {
+                        return Err(system_task_run_retention_partial_error(0, error));
+                    }
+                    0
+                } else {
+                    return Err(system_task_run_retention_partial_error(
+                        0,
+                        error.context("failed to count system task retention candidates"),
+                    ));
+                }
             }
-        })
-        .map_err(|error| system_task_run_retention_partial_error(0, error))?;
+        };
         return Ok((candidates.max(0) as usize).min(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS));
     }
     let mut pruned = 0usize;
@@ -1261,6 +1288,9 @@ async fn prune_system_task_runs_inner(
         Err(error) => {
             let error = anyhow::Error::from(error);
             if system_task_run_retention_handle_pressure(&error) {
+                if propagate_pressure {
+                    return Err(system_task_run_retention_partial_error(0, error));
+                }
                 return Ok(0);
             }
             return Err(system_task_run_retention_partial_error(
@@ -1285,6 +1315,13 @@ async fn prune_system_task_runs_inner(
                     system_task_run_retention_now_epoch_ms(),
                     SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF,
                 );
+                retention_record_defer("system_task_run_retention", "sqlite_pressure");
+                if propagate_pressure {
+                    return Err(system_task_run_retention_partial_error(
+                        pruned,
+                        anyhow::Error::new(SystemTaskRunRetentionPressureDeferred),
+                    ));
+                }
             }
             break;
         };
@@ -1304,6 +1341,9 @@ async fn prune_system_task_runs_inner(
             Err(error) => {
                 let error = anyhow::Error::from(error);
                 if system_task_run_retention_handle_pressure(&error) {
+                    if propagate_pressure {
+                        return Err(system_task_run_retention_partial_error(pruned, error));
+                    }
                     return Ok(pruned);
                 }
                 return Err(system_task_run_retention_partial_error(
@@ -1317,6 +1357,9 @@ async fn prune_system_task_runs_inner(
             Err(error) => {
                 let error = anyhow::Error::from(error);
                 if system_task_run_retention_handle_pressure(&error) {
+                    if propagate_pressure {
+                        return Err(system_task_run_retention_partial_error(pruned, error));
+                    }
                     return Ok(pruned);
                 }
                 return Err(system_task_run_retention_partial_error(
@@ -1328,6 +1371,9 @@ async fn prune_system_task_runs_inner(
         if let Err(error) = transaction.commit().await {
             let error = anyhow::Error::from(error);
             if system_task_run_retention_handle_pressure(&error) {
+                if propagate_pressure {
+                    return Err(system_task_run_retention_partial_error(pruned, error));
+                }
                 return Ok(pruned);
             }
             return Err(system_task_run_retention_partial_error(
@@ -2376,6 +2422,26 @@ mod archive_file_budget_classification_tests {
 #[cfg(test)]
 mod owner_fact_tests {
     use super::*;
+
+    #[test]
+    fn system_task_pressure_is_an_owner_defer_with_retry_facts() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "task_run_history_cleanup",
+            "task_runs:history_retention",
+            "task-run rows",
+        );
+        summary.committed = 4;
+        let error = system_task_run_retention_partial_error(
+            4,
+            anyhow::Error::new(SystemTaskRunRetentionPressureDeferred),
+        );
+
+        apply_retention_owner_error(&mut summary, &error);
+
+        assert_eq!(summary.completion, "partial");
+        assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
+        assert!(summary.fatal_error.is_none());
+    }
 
     #[test]
     fn post_commit_owner_error_preserves_committed_facts() {
