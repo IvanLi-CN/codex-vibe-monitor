@@ -1018,6 +1018,8 @@ class AggregationTests(unittest.TestCase):
         scenarios = json.loads((self.output / "scenarios.json").read_text())
         self.assertTrue(all(scenarios[name]["status"] == "passed" for name in aggregation.RUNTIME_SCENARIOS))
         self.assertEqual(scenarios["default-observability-ab"]["error"], "required part evidence missing or invalid")
+        self.assertFalse((self.output / "ab-samples.json").exists())
+        self.assertFalse((self.output / "ab-summary.json").exists())
 
     def test_missing_auxiliary_cpu_identity_cannot_pass(self):
         self.change("pair-1", "cpu-attribution.json", lambda rows: rows[0]["containers"].pop(1))

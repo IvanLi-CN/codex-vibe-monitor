@@ -109,6 +109,12 @@ def _scenario_status(scenarios):
 
 def aggregate(source, candidate_source, root, parts, candidate):
     root.mkdir(parents=True, exist_ok=True)
+    # Derived comparison files are valid only for the current complete aggregation.
+    for name in ("ab-samples.json", "ab-summary.json"):
+        try:
+            (root / name).unlink()
+        except FileNotFoundError:
+            pass
     # The result job verifies identities from each measurement part; it is not
     # itself a measurement runner and does not need a job-scoped identity.
     context = actions_context(candidate_source, root, candidate, require_runner_identity=False)
