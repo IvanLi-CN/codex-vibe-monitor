@@ -334,6 +334,14 @@ class CpuPreparationTests(unittest.TestCase):
             source="/tmp/private/token",
         )
         self.assertEqual(diagnostic, {"stage": "unknown", "source": "cpu-attribution", "reason": "preparation_failed"})
+        self.assertEqual(
+            cpu_attribution_diagnostic(None, "prepare", source="unrecognized.cpuStat"),
+            {"stage": "prepare", "source": "cpu-attribution", "reason": "preparation_failed"},
+        )
+        self.assertEqual(
+            cpu_attribution_diagnostic(None, "prepare", source="app." + "x" * 16384),
+            {"stage": "prepare", "source": "cpu-attribution", "reason": "preparation_failed"},
+        )
 
     def test_preparation_failure_keeps_fixed_diagnostic_in_scenario_and_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

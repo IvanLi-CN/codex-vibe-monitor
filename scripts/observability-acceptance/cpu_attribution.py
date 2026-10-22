@@ -60,8 +60,10 @@ _SAFE_CPU_SOURCES = frozenset(
         "runner.cpuAffinity",
     }
 )
-_SAFE_CPU_SERVICE_SOURCE = re.compile(
-    r"[a-z0-9][a-z0-9_-]*\.(?:affinity|cgroup|containerId|cpuMax|cpuPressure|cpuStat|pid|processStat)"
+_SAFE_CPU_SERVICE_SOURCES = frozenset(
+    f"{service}.{field}"
+    for service in ("app", "mock-upstream", "client", "prometheus", "grafana", "tempo", "entry")
+    for field in ("affinity", "cgroup", "containerId", "cpuMax", "cpuPressure", "cpuStat", "pid", "processStat")
 )
 
 
@@ -87,7 +89,7 @@ def cpu_attribution_diagnostic(error: CpuAttributionError | None, stage: str, *,
     safe_source = (
         raw_source
         if isinstance(raw_source, str)
-        and (raw_source in _SAFE_CPU_SOURCES or _SAFE_CPU_SERVICE_SOURCE.fullmatch(raw_source))
+        and (raw_source in _SAFE_CPU_SOURCES or raw_source in _SAFE_CPU_SERVICE_SOURCES)
         else "cpu-attribution"
     )
     return {
