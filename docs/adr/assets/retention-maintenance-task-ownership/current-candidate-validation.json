@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-  "codeCandidateSha": "eb323bda868eede85a6abb161971fafd663d26e6",
+  "codeCandidateSha": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
   "documentationCarrier": {
-    "codeCandidateSha": "eb323bda868eede85a6abb161971fafd663d26e6",
+    "codeCandidateSha": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
     "identity": "the signed documentation-only commit containing this record",
     "scope": "This record is a documentation carrier for the immediately preceding signed code candidate; the carrier contains no source or workflow changes and does not change the validated source tree."
   },
@@ -23,7 +23,7 @@
   "currentHeadCi": {
     "workflow": "CI PR",
     "runId": null,
-    "headSha": "eb323bda868eede85a6abb161971fafd663d26e6",
+    "headSha": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
     "status": "pending"
   },
   "passed": {
@@ -126,8 +126,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "eb323bda868eede85a6abb161971fafd663d26e6",
-    "reviewedHead": "eb323bda868eede85a6abb161971fafd663d26e6",
+    "candidateSha": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
+    "reviewedHead": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
     "status": "pending",
     "lanes": [],
     "findings": [],
@@ -147,9 +147,9 @@
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "ownerAuthorizedRepairBatch": 22,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "6d69344a796db7d8018d847cbb15690247bd5600",
-    "fixedFinding": "The required PR and merge-queue migration gate now runs both released-source upgrade validation and the online runtime ownership validator.",
-    "newFocusedRegression": "The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, assert one new manual run for the requested owner, compare business/file snapshots for previews, and bind owner-v2 facts to eb323bda. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
+    "previousCandidateSha": "eb323bda868eede85a6abb161971fafd663d26e6",
+    "fixedFinding": "The required PR and merge-queue migration gate now runs both released-source upgrade validation and the online runtime ownership validator for every retention owner.",
+    "newFocusedRegression": "The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, assert one new manual run for the requested owner, compare business/file snapshots for previews, and bind owner-v2 facts to 23bc26bc. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": null
   },
@@ -157,14 +157,14 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "b67bc3aeb4f03285a715810d5e8762d7f0eaa826",
-    "headSha": "eb323bda868eede85a6abb161971fafd663d26e6",
+    "headSha": "23bc26bcc374f616c5793b4d8cb50b20b03b9f31",
     "requiredCi": {
       "workflow": "CI PR",
       "runId": null,
       "status": "pending"
     },
     "formalTier4Review": "pending",
-    "note": "candidate_head_sha binds the signed code candidate eb323bda after the b67bc3ae main sync. The documentation-only commit containing this record is the carrier identity and contains no source or workflow changes; CI and fresh Tier 4 review must bind to the carrier head while using this codeCandidateSha for executable source evidence."
+    "note": "candidate_head_sha binds the signed code candidate 23bc26bc after the b67bc3ae main sync. The documentation-only commit containing this record is the carrier identity and contains no source or workflow changes; CI and fresh Tier 4 review must bind to the carrier head while using this codeCandidateSha for executable source evidence."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
