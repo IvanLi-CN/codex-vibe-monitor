@@ -5,7 +5,7 @@ use crate::{AppConfig, OnceCell, Result, Utc, anyhow, format_utc_iso_millis};
 use chrono::{Datelike, Duration as ChronoDuration, Timelike};
 use serde::Serialize;
 use sqlx::{
-    FromRow, Pool, QueryBuilder, Sqlite,
+    Executor, FromRow, Pool, QueryBuilder, Sqlite,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
@@ -4794,6 +4794,17 @@ impl MaintenanceStore {
                 .bind(id)
                 .fetch_one(&mut *transaction)
                 .await?;
+        let is_retention_archive = automatic && task_key.as_deref() == Some("retention_archive");
+        if is_retention_archive {
+            Self::update_retention_catchup_after_finish(
+                &mut *transaction,
+                id,
+                completion,
+                details.as_deref(),
+                finished_at,
+            )
+            .await?;
+        }
         let should_clear_owner_catchup = automatic
             && owner_v2
             && matches!(
@@ -4842,14 +4853,7 @@ impl MaintenanceStore {
             .await?;
         }
         transaction.commit().await?;
-        if automatic && task_key.as_deref() == Some("retention_archive") {
-            self.update_retention_catchup_after_finish(
-                id,
-                completion,
-                details.as_deref(),
-                &format_utc_iso_millis(Utc::now()),
-            )
-            .await?;
+        if is_retention_archive {
             self.sync_retention_progress_schedule().await?;
         }
         if automatic
@@ -4877,13 +4881,16 @@ impl MaintenanceStore {
         Ok(())
     }
 
-    async fn update_retention_catchup_after_finish(
-        &self,
+    async fn update_retention_catchup_after_finish<'e, E>(
+        executor: E,
         run_id: i64,
         completion: Option<&str>,
         details: Option<&str>,
         now: &str,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let Some(details) =
             details.and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
         else {
@@ -4916,16 +4923,14 @@ impl MaintenanceStore {
             .get("waitReason")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty());
-        observe_store_write(
-            StoreOperation::Control,
-            self.update_retention_catchup_from_summary_inner(
-                completion,
-                backlog_total,
-                completed as usize,
-                wait_reason,
-                now,
-                Some(run_id),
-            ),
+        Self::update_retention_catchup_from_summary_inner(
+            executor,
+            completion,
+            backlog_total,
+            completed as usize,
+            wait_reason,
+            now,
+            Some(run_id),
         )
         .await
     }
@@ -4940,7 +4945,8 @@ impl MaintenanceStore {
     ) -> Result<()> {
         observe_store_write(
             StoreOperation::Control,
-            self.update_retention_catchup_from_summary_inner(
+            Self::update_retention_catchup_from_summary_inner(
+                &self.pool,
                 completion,
                 backlog_total,
                 completed,
@@ -4952,15 +4958,18 @@ impl MaintenanceStore {
         .await
     }
 
-    async fn update_retention_catchup_from_summary_inner(
-        &self,
+    async fn update_retention_catchup_from_summary_inner<'e, E>(
+        executor: E,
         completion: Option<&str>,
         backlog_total: Option<i64>,
         completed: usize,
         wait_reason: Option<&str>,
         now: &str,
         run_id: Option<i64>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let completed = completed.min(i64::MAX as usize) as i64;
         if completion.is_none() {
             return Ok(());
@@ -4984,7 +4993,7 @@ impl MaintenanceStore {
             .bind(now)
             .bind(run_id)
             .bind(run_id)
-            .execute(&self.pool)
+            .execute(executor)
             .await?;
             return Ok(());
         }
@@ -5016,7 +5025,7 @@ impl MaintenanceStore {
         .bind(wait_reason.unwrap_or("backlog_remaining"))
         .bind(now)
         .bind(run_id)
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(())
     }
