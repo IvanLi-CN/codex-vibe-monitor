@@ -1135,6 +1135,15 @@ class AggregationTests(unittest.TestCase):
                 shutil.copyfile(SOURCE / relative, target)
             drifted = candidate_source / "scripts/observability-acceptance/aggregate.py"
             drifted.write_text(drifted.read_text() + "\n# candidate-only drift\n")
+            candidate_harness_digest = acceptance.acceptance_harness_digest(candidate_source)
+            for lane in aggregation.LANES:
+                self.change(
+                    lane,
+                    "run-config.json",
+                    lambda row, digest=candidate_harness_digest: row.update(
+                        candidateAcceptanceHarnessDigest=digest
+                    ),
+                )
             with patch.object(aggregation, "actions_context", return_value=self.context):
                 self.assertFalse(
                     aggregation.aggregate(

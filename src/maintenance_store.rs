@@ -3542,7 +3542,11 @@ impl MaintenanceStore {
         let finished_at = format_utc_iso_millis(Utc::now());
         let mut retire_query = QueryBuilder::<Sqlite>::new(
             "UPDATE managed_task_runs
-             SET status='failed', finished_at=?, duration_ms=0,
+             SET status='failed', finished_at=",
+        );
+        retire_query.push_bind(&finished_at);
+        retire_query.push(
+            ", duration_ms=0,
                  summary='任务已停用，未执行', error_detail=NULL
              WHERE id IN (
                  SELECT candidate.id
@@ -3552,7 +3556,6 @@ impl MaintenanceStore {
                        SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
                    )",
         );
-        retire_query.push_bind(&finished_at);
         retire_query
             .push(" AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization'))");
         push_task_key_exclusion(&mut retire_query, "candidate.task_key", excluded_task_keys);
