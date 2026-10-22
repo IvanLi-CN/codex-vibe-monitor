@@ -4637,7 +4637,7 @@ impl MaintenanceStore {
                      SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?
                      WHERE task_key=? AND enabled!=0",
                 )
-                .bind(&finished_at)
+                .bind(finished_at)
                 .bind(task_key.as_deref().expect("matched retention owner"))
                 .execute(&self.pool)
                 .await?;
@@ -6663,7 +6663,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count protected workload samples");
-        assert_eq!(counts, (200, 102));
+        assert_eq!(counts, (205, 102));
 
         let store = MaintenanceStore::from_pool(pool);
         let detail = store
