@@ -221,6 +221,20 @@ fn apply_retention_owner_error(summary: &mut RetentionOwnerRunSummary, error: &a
     }
 }
 
+fn apply_retention_owner_post_commit_error(
+    summary: &mut RetentionOwnerRunSummary,
+    discovered: usize,
+    committed: usize,
+    error: &anyhow::Error,
+) {
+    // The owner has already committed its deletion before the follow-up coverage probe.
+    summary.discovered = discovered;
+    summary.selected = committed;
+    summary.committed = committed;
+    summary.has_more = true;
+    apply_retention_owner_error(summary, error);
+}
+
 fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, dataset: &str) {
     let (selected, committed, batches) = batch_plan::TASK_BATCH_METRICS
         .try_with(|metrics| {
@@ -636,36 +650,72 @@ async fn run_model_route_expiry_owner(
         "model route rows",
     );
     let candidate_limit = retention_candidate_limit(config, "model_route_purge");
-    let result: Result<(usize, usize, usize, bool)> = if dry_run {
-        crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
+    if dry_run {
+        match crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
             .await
-            .map(|(discovered, has_more)| {
-                (discovered, discovered.min(candidate_limit), 0, has_more)
-            })
-    } else {
-        let (discovered, _) =
-            crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
-                .await?;
-        let committed = crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit)
-            .await? as usize;
-        let (_, has_more) =
-            crate::upstream_accounts::inspect_expired_model_routes_bounded(pool, candidate_limit)
-                .await?;
-        Ok((discovered, committed, committed, has_more))
-    };
-    match result {
-        Ok((discovered, selected, committed, has_more)) => {
-            apply_retention_owner_success(
+        {
+            Ok((discovered, has_more)) => apply_retention_owner_success(
                 &mut summary,
                 discovered,
-                selected,
-                committed,
+                discovered.min(candidate_limit),
+                0,
                 0,
                 0,
                 has_more,
-            );
+            ),
+            Err(error) => apply_retention_owner_error(&mut summary, &error),
         }
-        Err(error) => apply_retention_owner_error(&mut summary, &error),
+    } else {
+        let (discovered, _) = match crate::upstream_accounts::inspect_expired_model_routes_bounded(
+            pool,
+            candidate_limit,
+        )
+        .await
+        {
+            Ok(facts) => facts,
+            Err(error) => {
+                apply_retention_owner_error(&mut summary, &error);
+                return Ok(summary.finish(started_at));
+            }
+        };
+        summary.discovered = discovered;
+        let committed =
+            match crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit).await
+            {
+                Ok(committed) => committed as usize,
+                Err(error) => {
+                    apply_retention_owner_error(&mut summary, &error);
+                    return Ok(summary.finish(started_at));
+                }
+            };
+        summary.selected = committed;
+        summary.committed = committed;
+        let has_more = match crate::upstream_accounts::inspect_expired_model_routes_bounded(
+            pool,
+            candidate_limit,
+        )
+        .await
+        {
+            Ok((_, has_more)) => has_more,
+            Err(error) => {
+                apply_retention_owner_post_commit_error(
+                    &mut summary,
+                    discovered,
+                    committed,
+                    &error,
+                );
+                return Ok(summary.finish(started_at));
+            }
+        };
+        apply_retention_owner_success(
+            &mut summary,
+            discovered,
+            committed,
+            committed,
+            0,
+            0,
+            has_more,
+        );
     }
     Ok(summary.finish(started_at))
 }
@@ -2122,5 +2172,29 @@ mod archive_file_budget_classification_tests {
             Some(RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON)
         );
         assert!(summary.fatal_error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod owner_fact_tests {
+    use super::*;
+
+    #[test]
+    fn post_commit_owner_error_preserves_committed_facts() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "model_route_expiry",
+            "model_routes:expiry",
+            "model route rows",
+        );
+        let error = anyhow::anyhow!("follow-up inspection failed");
+
+        apply_retention_owner_post_commit_error(&mut summary, 12, 5, &error);
+
+        assert_eq!(summary.discovered, 12);
+        assert_eq!(summary.selected, 5);
+        assert_eq!(summary.committed, 5);
+        assert!(summary.has_more);
+        assert_eq!(summary.completion, "failed");
+        assert!(summary.fatal_error.is_some());
     }
 }
