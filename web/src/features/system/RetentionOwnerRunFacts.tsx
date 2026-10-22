@@ -67,7 +67,10 @@ export function RetentionOwnerRunFacts({
           ["批次", count(selectedScope?.batches)],
           [rawFileLabel, count(rawFileCount)],
         ].map(([label, value]) => (
-          <div key={label} className="min-w-0">
+          <div
+            key={label}
+            className={`min-w-0 ${label === "范围" ? "col-span-2 sm:col-span-1" : ""}`}
+          >
             <dt className="text-base-content/60">{label}</dt>
             <dd className="mt-1 break-all font-medium tabular-nums">{value}</dd>
           </div>
