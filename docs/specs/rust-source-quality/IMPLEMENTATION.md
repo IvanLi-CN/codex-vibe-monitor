@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 23 current explicit file budgets (6 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 22 current explicit file budgets (5 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -22,7 +22,13 @@ The facade preserves the existing crate-visible helper paths and `ensure_schema`
 
 The final repair keeps helpers that were private to the original `schema` module, including `legacy_raw_blob_link_seed_completed`, at `pub(super)` visibility for sibling modules, while retaining only the original crate-visible re-exports and prompt-cache trigger visibility.
 
-All schema production files are below the 2,500-line target, so `src/schema.rs` is removed from the explicit policy inventory. The current policy now contains 23 entries (6 production and 17 test/helper) and 124 suppression declarations; the immutable preparation baseline remains 32 production and 23 test/helper candidates.
+All schema production files are below the 2,500-line target, so `src/schema.rs` is removed from the explicit policy inventory. The current policy now contains 22 entries (5 production and 17 test/helper) and 124 suppression declarations; the immutable preparation baseline remains 32 production and 23 test/helper candidates.
+
+## SQLite Batch Writer Extraction
+
+The SQLite batch writer extraction replaces the 6,901-line flat source with a 93-line facade and named batch, queue, writer, runtime, flush, and test modules while retaining the existing attempt-progress, diagnostics, invocation-identity, queue-accounting, and terminal-attempts boundaries. After rustfmt, the extracted modules are 828, 326, 1,035, 1,034, 1,512, and 2,095 lines respectively; the production modules and test helper remain below their applicable targets.
+
+The policy removes `src/sqlite_batch_writer.rs` from the explicit inventory, reducing the current policy to 22 entries with 5 production and 17 test/helper candidates. The 124-entry suppression inventory is preserved with the writer-loop allow under `runtime.rs` and the flush argument expects under `flush.rs`. Queue priority, batching, retry and pressure gates, journal durability, recovery replay, transaction boundaries, SQL, public crate paths, tests, and resource buckets remain unchanged.
 
 The prompt-cache conversation query governance extraction removes `src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs` from the selected inventory after reducing it to 10 lines, reuses the existing 1,402-line `snapshots.rs`, and assigns the other stateful tests to `metadata_and_history.rs` (1,536 lines), `statistics.rs` (617), `activity_windows.rs` (923), `pagination.rs` (681), `runtime_and_cache.rs` (903), and `test_support.rs` (16). It registers `response_payload_content_encodings.rs` (85 lines) in lightweight and `payload_metadata_backfills.rs` (591 lines) in archive/file I/O. The 60 existing tests remain exactly once with their identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup; the only fixture deduplication is the three identical count-mode row inserters, and the two parent wrappers now live in private `test_support.rs`. The final candidate also removes an unused archive-test import without changing behavior. That extraction stage left the policy at 36 entries (19 production and 17 test/helper) with 117 suppressions and immutable preparation counts 32/23; the current inventory is summarized above.
 
