@@ -90,3 +90,8 @@ export const Mobile: Story = {
   ...Committed,
   globals: { viewport: { value: "mobile393", isRotated: false } },
 };
+
+export const DeferredMobile: Story = {
+  ...Deferred,
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
