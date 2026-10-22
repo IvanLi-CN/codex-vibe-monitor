@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from cpu_attribution import CpuAttributionError, PreparedCpuAttribution
+from cpu_attribution import CpuAttributionError, PreparedCpuAttribution, cpu_attribution_diagnostic, MAX_FILE_BYTES
 from environment import AdmissionBudget, PAIR_ADMISSION_SECONDS, actions_context, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
 from deadline import AcceptanceDeadlineExceeded, ExecutionDeadline, EXECUTION_SECONDS
 
@@ -26,6 +26,60 @@ _SENSITIVE_VALUE = re.compile(
     r"(\s*[:=]\s*|\s+)(?:(?:bearer|basic)\s+)?[^\s,;)]+"
 )
 _SAFE_FAILURE_LINE = re.compile(r"(?i)(assertionerror|error|exception|traceback|failed)")
+CPU_PREPARATION_ERROR = "cpu attribution preparation unavailable"
+CPU_PREPARATION_RECORD_LIMIT = 9
+_SAFE_RESOURCE_FAILURE_CODES = frozenset(
+    {
+        "collector_error",
+        "collector_unavailable",
+        "cpu_attribution_unsupported",
+        "cpu_counter_reset",
+        "cpu_metadata_mismatch",
+        "cpu_read_failed",
+        "invalid_sample",
+        "missing_boundary_sample",
+        "pid_replaced",
+        "pressure_exceeded",
+        "sample_gap",
+    }
+)
+_SAFE_RESOURCE_FAILURES = frozenset(
+    {
+        "cumulative quiet admission budget exhausted",
+        "quiet admission budget exhausted",
+        "runner did not reach a quiet window; performance acceptance unavailable",
+        "runner pressure evidence is invalid",
+    }
+)
+
+
+class CpuAttributionPreparationError(OSError):
+    """A preparation failure with a fixed, safe diagnostic payload."""
+
+    def __init__(self, diagnostic):
+        raw = diagnostic if isinstance(diagnostic, dict) else {}
+        self.diagnostic = cpu_attribution_diagnostic(
+            None,
+            raw.get("stage", "prepare"),
+            code=raw.get("reason"),
+            source=raw.get("source"),
+        )
+        super().__init__(CPU_PREPARATION_ERROR)
+
+
+def safe_scenario_failure(error):
+    if isinstance(error, CpuAttributionPreparationError):
+        return {"status": "unavailable", "error": CPU_PREPARATION_ERROR, "diagnostic": error.diagnostic}
+    message = str(error)
+    if message in _SAFE_RESOURCE_FAILURES:
+        return {"status": "unavailable", "error": message}
+    prefix = "measured resource environment unavailable:"
+    if message.startswith(prefix):
+        codes = {code for code in message[len(prefix):].strip().split(",") if code}
+        if codes and codes <= _SAFE_RESOURCE_FAILURE_CODES:
+            return {"status": "unavailable", "error": message}
+    status = "unavailable" if isinstance(error, (OSError, subprocess.TimeoutExpired)) else "failed"
+    return {"status": status, "error": f"operation {type(error).__name__}"}
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
@@ -55,8 +109,36 @@ def digest(paths):
     for path in paths: result.update(path.read_bytes())
     return result.hexdigest()
 
-def certificate(source,candidate,context,status,rationale):
-    return {"empirical_acceptance":"required","empirical_acceptance_rationale":rationale,"empirical_evidence_status":status,"empirical_candidate_sha":candidate,"acceptance_contract_digest":digest([source/"docs/specs/performance-telemetry/SPEC.md",source/"docs/specs/performance-telemetry/METRICS.md",source/"docs/design/performance-observability.md",source/"docs/design/performance-observability-metrics.md",source/"docs/adr/0025-external-performance-observability.md",source/"docs/adr/0033-external-request-diagnostic-traces.md",source/"docs/adr/0034-shared-tempo-request-tracing.md",source/"docs/design/request-lifecycle-observability.md"]),"scenario_set_digest":digest(sorted((source/"scripts/observability-acceptance").glob("*.py"))+[source/"ops/observability/tempo_access.py",source/"ops/observability/tempo.yml",source/"ops/observability/compose.yml",source/"ops/observability/grafana/provisioning/datasources/tempo.yml"]),"evidence_locator":context["evidenceLocator"] if context else "runtime-only"}
+def certificate(source, candidate, context, status, rationale):
+    return {
+        "empirical_acceptance": "required",
+        "empirical_acceptance_rationale": rationale,
+        "empirical_evidence_status": status,
+        "empirical_candidate_sha": candidate,
+        "acceptance_contract_digest": digest(
+            [
+                source / "docs/specs/performance-telemetry/SPEC.md",
+                source / "docs/specs/performance-telemetry/METRICS.md",
+                source / "docs/design/performance-observability.md",
+                source / "docs/design/performance-observability-metrics.md",
+                source / "docs/adr/0025-external-performance-observability.md",
+                source / "docs/adr/0033-external-request-diagnostic-traces.md",
+                source / "docs/adr/0034-shared-tempo-request-tracing.md",
+                source / "docs/adr/0046-observability-acceptance-hardware-admission.md",
+                source / "docs/design/request-lifecycle-observability.md",
+            ]
+        ),
+        "scenario_set_digest": digest(
+            sorted((source / "scripts/observability-acceptance").glob("*.py"))
+            + [
+                source / "ops/observability/tempo_access.py",
+                source / "ops/observability/tempo.yml",
+                source / "ops/observability/compose.yml",
+                source / "ops/observability/grafana/provisioning/datasources/tempo.yml",
+            ]
+        ),
+        "evidence_locator": context["evidenceLocator"] if context else "runtime-only",
+    }
 
 def measurement_services(enabled):
     if enabled not in {"off", "metrics", "full"}:
@@ -142,8 +224,9 @@ class Run:
         except AcceptanceDeadlineExceeded:
             raise
         except Exception as error:
-            self.results[name]={"status":"unavailable" if isinstance(error,(OSError,subprocess.TimeoutExpired)) else "failed","error":str(error)}
-            print(name+" error: "+str(error), flush=True)
+            failure = safe_scenario_failure(error)
+            self.results[name] = failure
+            print(name+" error: "+failure["error"], flush=True)
             self._write_client_failures()
         (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
         # A/B recreates the application; preserve each scenario's diagnostics first.
@@ -263,28 +346,73 @@ class Run:
         sidecar=(copied/manifest["symbols"]).read_text()
         assert "codex_vibe_monitor" in sidecar and ("proxy" in sidecar or "sqlite_batch_writer" in sidecar),"known application hot path was not resolved"
         return {"buildId":manifest["buildId"],"originalContainerId":manifest["containerId"],"durationSeconds":30,"symbols":"resolved"}
+    def _record_cpu_attribution_diagnostic(self, window_id, diagnostic):
+        path = self.root / "cpu-attribution.json"
+        records = []
+        try:
+            if path.exists() and path.stat().st_size <= MAX_FILE_BYTES:
+                parsed = json.loads(path.read_text())
+                if isinstance(parsed, list) and all(isinstance(row, dict) for row in parsed):
+                    records = parsed
+            if len(records) >= CPU_PREPARATION_RECORD_LIMIT or any(
+                row.get("windowId") == window_id and row.get("stage") == "prepare" for row in records
+            ):
+                return
+            records.append(
+                {
+                    "windowId": window_id,
+                    "schemaVersion": 1,
+                    "status": "unavailable",
+                    "stage": diagnostic["stage"],
+                    "source": diagnostic["source"],
+                    "reason": diagnostic["reason"],
+                }
+            )
+            encoded = (json.dumps(records, indent=2) + "\n").encode("utf-8")
+            if len(encoded) <= MAX_FILE_BYTES:
+                path.write_bytes(encoded)
+        except (OSError, TypeError, ValueError, UnicodeError):
+            # The scenario retains the same fixed diagnostic when an evidence write is unavailable.
+            return
+
     def prepare_cpu_attribution(self, enabled):
         if self.context is None or self.pair_index is None:
             raise ValueError("CPU attribution requires a paired GitHub Actions window")
         services = ["app", "mock-upstream", "client"]
         services.extend(service for service, running in measurement_services(enabled).items() if running)
         containers = []
-        for service in services:
-            container = self.compose("ps", "-q", service)
-            if not re.fullmatch(r"[a-f0-9]{12,64}", container):
-                raise OSError("CPU attribution preparation missing running container")
-            metadata = json.loads(execute(["docker", "inspect", container]))[0]
-            if not metadata.get("State", {}).get("Running") or not isinstance(metadata.get("State", {}).get("Pid"), int):
-                raise OSError("CPU attribution preparation found a stopped container")
-            containers.append({"service": service, "containerId": metadata["Id"], "pid": metadata["State"]["Pid"]})
         try:
+            for service in services:
+                container = self.compose("ps", "-q", service)
+                if not re.fullmatch(r"[a-f0-9]{12,64}", container):
+                    raise OSError("missing running container")
+                metadata = json.loads(execute(["docker", "inspect", container]))[0]
+                if not metadata.get("State", {}).get("Running") or not isinstance(metadata.get("State", {}).get("Pid"), int):
+                    raise OSError("stopped container")
+                containers.append({"service": service, "containerId": metadata["Id"], "pid": metadata["State"]["Pid"]})
             return PreparedCpuAttribution(
                 self.context["cpuAffinity"],
                 self.context["measurementCpu"],
                 containers,
             )
         except CpuAttributionError as error:
-            raise OSError("CPU attribution preparation unavailable: " + error.code) from error
+            diagnostic = cpu_attribution_diagnostic(error, "prepare")
+        except (OSError, subprocess.SubprocessError):
+            diagnostic = cpu_attribution_diagnostic(
+                None,
+                "prepare",
+                code="container_unavailable",
+                source="container.discovery",
+            )
+        except Exception:
+            diagnostic = cpu_attribution_diagnostic(
+                None,
+                "prepare",
+                code="preparation_failed",
+                source="container.discovery",
+            )
+        self._record_cpu_attribution_diagnostic(f"{self.pair_index}-{enabled}", diagnostic)
+        raise CpuAttributionPreparationError(diagnostic)
     def overhead(self):
         # An SSH shell or self-hosted Actions job cannot certify the performance budget.
         if self.environment!="github-actions":
@@ -377,7 +505,7 @@ def main():
             return 0 if run.finish() else 1
     except Exception as error:
         scenario="default-observability-ab" if run.pair_index is not None else "setup"
-        run.results[scenario]={"status":"unavailable","error":str(error)}
+        run.results[scenario] = safe_scenario_failure(error)
         (run.root/"scenarios.json").write_text(json.dumps(run.results,indent=2)+"\n")
         run.finish()
         print("setup: unavailable",flush=True)
