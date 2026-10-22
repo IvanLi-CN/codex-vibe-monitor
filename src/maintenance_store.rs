@@ -3862,40 +3862,6 @@ impl MaintenanceStore {
         Ok(())
     }
 
-    pub(crate) async fn schedule_owned_work_for_run(
-        &self,
-        key: &str,
-        run_id: i64,
-        seconds: i64,
-        reason: &str,
-    ) -> Result<()> {
-        observe_store_write(
-            StoreOperation::Control,
-            self.schedule_owned_work_for_run_inner(key, run_id, seconds, reason),
-        )
-        .await
-    }
-
-    async fn schedule_owned_work_for_run_inner(
-        &self,
-        key: &str,
-        run_id: i64,
-        seconds: i64,
-        reason: &str,
-    ) -> Result<()> {
-        let mut transaction = self.pool.begin().await?;
-        Self::schedule_owned_work_for_run_in_transaction(
-            &mut transaction,
-            key,
-            run_id,
-            seconds,
-            reason,
-        )
-        .await?;
-        transaction.commit().await?;
-        Ok(())
-    }
-
     async fn schedule_owned_work_for_run_in_transaction(
         transaction: &mut sqlx::Transaction<'_, Sqlite>,
         key: &str,

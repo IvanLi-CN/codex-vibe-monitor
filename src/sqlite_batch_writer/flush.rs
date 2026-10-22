@@ -1467,7 +1467,7 @@ pub(crate) async fn flush_pending_batch_inner(
 
     if let Some(store) = maintenance_store {
         for finish in batch.system_task_finishes.values() {
-            if let Some(details) = finish.details.as_ref()
+            let result = if let Some(details) = finish.details.as_ref()
                 && let (Some(seconds), Some(reason)) = (
                     details
                         .get("scheduleRetryAfterSecs")
@@ -1475,31 +1475,38 @@ pub(crate) async fn flush_pending_batch_inner(
                     details
                         .get("scheduleRetryReason")
                         .and_then(serde_json::Value::as_str),
-                )
-            {
+                ) {
                 store
-                    .schedule_owned_work_for_run(
-                        &finish.task_key,
+                    .finish_run_with_observation_and_retry(
                         finish.run_id,
+                        finish.status.as_str(),
+                        &finish.finished_at,
+                        finish.duration_ms,
+                        finish.summary.as_deref(),
+                        finish.detail.as_deref(),
+                        finish.completion.as_deref(),
+                        finish.core_completion.as_deref(),
+                        finish.details.as_ref(),
                         seconds,
                         reason,
                     )
-                    .await?;
-            }
-            if let Err(error) = store
-                .finish_run_with_observation(
-                    finish.run_id,
-                    finish.status.as_str(),
-                    &finish.finished_at,
-                    finish.duration_ms,
-                    finish.summary.as_deref(),
-                    finish.detail.as_deref(),
-                    finish.completion.as_deref(),
-                    finish.core_completion.as_deref(),
-                    finish.details.as_ref(),
-                )
-                .await
-            {
+                    .await
+            } else {
+                store
+                    .finish_run_with_observation(
+                        finish.run_id,
+                        finish.status.as_str(),
+                        &finish.finished_at,
+                        finish.duration_ms,
+                        finish.summary.as_deref(),
+                        finish.detail.as_deref(),
+                        finish.completion.as_deref(),
+                        finish.core_completion.as_deref(),
+                        finish.details.as_ref(),
+                    )
+                    .await
+            };
+            if let Err(error) = result {
                 warn!(
                     run_id = finish.run_id,
                     error = %error,

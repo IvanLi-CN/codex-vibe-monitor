@@ -2009,41 +2009,11 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let Some(execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution(&task_key)
                     else {
-                        let retry_schedule_failed = if is_retention_owner_v2_task(&task_key) {
-                            match store
-                                .schedule_owned_work_for_run(
-                                    &task_key,
-                                    run_id,
-                                    300,
-                                    "task_execution_active",
-                                )
-                                .await
-                            {
-                                Ok(()) => false,
-                                Err(error) => {
-                                    warn!(
-                                        task = %task_key,
-                                        error = %error,
-                                        "retention owner lease-conflict retry could not be scheduled"
-                                    );
-                                    true
-                                }
-                            }
-                        } else {
-                            false
-                        };
-                        let mut finish = managed_task_lease_conflict_finish(
+                        let finish = managed_task_lease_conflict_finish(
                             run_id,
                             task_key,
                             &trigger_kind,
                         );
-                        if retry_schedule_failed
-                            && let Some(details) = finish.details.as_mut()
-                        {
-                            details["waitReason"] = json!("schedule_retry");
-                            details["scheduleRetryAfterSecs"] = json!(300);
-                            details["scheduleRetryReason"] = json!("task_execution_active");
-                        }
                         queue_managed_task_finish(&mut pending_finishes, finish);
                         continue;
                     };
@@ -2152,39 +2122,59 @@ fn is_retention_owner_v2_task(task_key: &str) -> bool {
     )
 }
 
+fn managed_task_owner_v2_failure_details(
+    task_key: &str,
+    trigger_kind: &str,
+    wait_reason: &str,
+    fatal_error: &str,
+) -> Option<Value> {
+    if !is_retention_owner_v2_task(task_key) {
+        return None;
+    }
+    let mut details = json!({
+        "ownershipVersion": 2,
+        "ownerScope": task_key,
+        "manual": trigger_kind == "manual",
+        "result": "failed",
+        "globalBacklogTotal": null,
+        "total": null,
+        "backlogRemaining": null,
+        "discovered": 0,
+        "selected": 0,
+        "committed": 0,
+        "processedCount": 0,
+        "completed": 0,
+        "selectedScope": {
+            "scope": task_key,
+            "unit": "unknown",
+            "selected": 0,
+            "committed": 0,
+            "batches": 0,
+            "rawFilesRemoved": 0,
+            "hasMore": true,
+        },
+        "waitReason": wait_reason,
+        "fatalError": fatal_error,
+        "elapsedMs": 0,
+    });
+    if trigger_kind != "manual" {
+        details["scheduleRetryAfterSecs"] = json!(300);
+        details["scheduleRetryReason"] = json!(wait_reason);
+    }
+    Some(details)
+}
+
 fn managed_task_lease_conflict_finish(
     run_id: i64,
     task_key: String,
     trigger_kind: &str,
 ) -> ManagedTaskFinish {
-    let details = is_retention_owner_v2_task(&task_key).then(|| {
-        json!({
-            "ownershipVersion": 2,
-            "ownerScope": task_key.as_str(),
-            "manual": trigger_kind == "manual",
-            "result": "failed",
-            "globalBacklogTotal": null,
-            "total": null,
-            "backlogRemaining": null,
-            "discovered": 0,
-            "selected": 0,
-            "committed": 0,
-            "processedCount": 0,
-            "completed": 0,
-            "selectedScope": {
-                "scope": task_key.as_str(),
-                "unit": "unknown",
-                "selected": 0,
-                "committed": 0,
-                "batches": 0,
-                "rawFilesRemoved": 0,
-                "hasMore": true,
-            },
-            "waitReason": "task_execution_active",
-            "fatalError": "同一任务已有执行实例",
-            "elapsedMs": 0,
-        })
-    });
+    let details = managed_task_owner_v2_failure_details(
+        &task_key,
+        trigger_kind,
+        "task_execution_active",
+        "同一任务已有执行实例",
+    );
     ManagedTaskFinish {
         run_id,
         task_key,
@@ -2273,6 +2263,7 @@ async fn run_managed_task_worker_guarded(
 ) -> ManagedTaskFinish {
     let fallback_task_key = task_key.clone();
     let fallback_requested_at = requested_at.clone();
+    let fallback_trigger_kind = trigger_kind.clone();
     let result = AssertUnwindSafe(run_managed_task_worker(
         state,
         task_key,
@@ -2306,7 +2297,12 @@ async fn run_managed_task_worker_guarded(
                 ),
                 completion: Some("failed".to_string()),
                 core_completion: None,
-                details: None,
+                details: managed_task_owner_v2_failure_details(
+                    &fallback_task_key,
+                    &fallback_trigger_kind,
+                    "owner_failed",
+                    "managed task worker panicked before publishing a terminal result",
+                ),
             }
         }
     }
@@ -2350,6 +2346,7 @@ async fn run_managed_task_worker(
             )
         }
         Err(error) => {
+            let error_message = error.to_string();
             if trigger_kind != "manual"
                 && matches!(
                     task_key.as_str(),
@@ -2364,10 +2361,15 @@ async fn run_managed_task_worker(
             (
                 SystemTaskStatus::Failed,
                 Some(format!("{task_key} 执行失败")),
-                Some(error.to_string()),
+                Some(error_message.clone()),
                 None,
                 None,
-                None,
+                managed_task_owner_v2_failure_details(
+                    &task_key,
+                    &trigger_kind,
+                    "owner_failed",
+                    &error_message,
+                ),
             )
         }
     };
@@ -2888,7 +2890,6 @@ async fn run_managed_task_once_with_scoped_observation(
         if !options.manual
             && !options.dry_run
             && let Some(retry) = execution.next_work_secs
-            && let Some(store) = crate::maintenance_store::global()
         {
             let retry_reason = if execution.completion == "failed" {
                 "owner_failed".to_string()
@@ -2908,20 +2909,8 @@ async fn run_managed_task_once_with_scoped_observation(
                     .unwrap_or("work_remaining")
                     .to_string()
             };
-            if let Err(error) = store
-                .schedule_owned_work_for_run(task_key, run_id, retry, &retry_reason)
-                .await
-            {
-                warn!(
-                    task = %task_key,
-                    run_id,
-                    error = %error,
-                    "managed owner retry could not be scheduled; preserving execution facts for finalizer retry"
-                );
-                execution.details["waitReason"] = json!("schedule_retry");
-                execution.details["scheduleRetryAfterSecs"] = json!(retry);
-                execution.details["scheduleRetryReason"] = json!(retry_reason);
-            }
+            execution.details["scheduleRetryAfterSecs"] = json!(retry);
+            execution.details["scheduleRetryReason"] = json!(retry_reason);
         }
         return Ok(ManagedTaskExecution {
             summary: execution.summary,
