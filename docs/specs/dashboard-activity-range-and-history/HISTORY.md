@@ -17,6 +17,10 @@
 
 - `docs/adr/0047-dashboard-live-timeline-range-independence.md`
 
+## Delivery
+
+- PR #1169 (`feat(web): unify activity ranges and history`) 已在 `f67805a6` 收敛到 current-head CI 全绿；源码质量预算修复只调整统计范围边界的模块归属，不改变本主题的外部行为或视觉证据。
+
 ## References
 
 - `./SPEC.md`

@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 已完成应用实现，候选变更进入交付验证。
+- Implementation: 已完成应用实现，候选变更已进入交付验证；源码质量修复提交 `f67805a6` 将共享范围边界拆到 `src/stats/range_bounds.rs`，不改变外部统计合同。
 - Lifecycle: implementation-complete
 - Catalog note: 全局与账号范围同步、三档七卡、独立最近时间线、统计页 180 天日历。
 
@@ -22,15 +22,15 @@
 
 - 文档验证：`python3 /Users/ivan/.codex/bin/spec_contract_check.py --path docs/specs/dashboard-activity-range-and-history/SPEC.md` 通过，`git diff --check` 通过。
 - Web 验证：`bun run test` 为 179 个文件、1927 个通过、6 个跳过；`bun run test-storybook` 为 35 个通过、38 个跳过、173 个测试通过；`bun run typecheck:web`、`bun run build` 通过。全仓 `bun run lint:web` 完成但报告 93 个 warning，其中包含未触碰的 `UpstreamAccountsGroupedRoster.tsx` exhaustive-deps 诊断及改动文件既有 warning。全量单测首次运行有一个与本变更无关的 prompt-cache 用例受测试顺序污染而失败，单独重跑及第二次全量运行均通过。
-- Rust 验证：`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings` 通过；定向 `cargo test` 被本机已有的 macOS `sqlx_macros` 动态库 `mis-aligned LINKEDIT string pool` 阻塞，后端资源 profile 尚未执行。首次 Agent VM 准入为 `resource_unverified`，重新准入完成资源分配但在 `guest_readiness_timeout` 终止，当前无有效 lease。
+- Rust 验证：`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings` 和 source-quality policy 通过；本机定向 `cargo test` 曾被 macOS `sqlx_macros` 动态库 `mis-aligned LINKEDIT string pool` 阻塞。PR #1169 current head `f67805a6` 的 CI 已通过 lightweight、stateful-sqlite、archive-file-io、representative-scale 全部后端 profile，以及完整 Web、Storybook、E2E、构建和质量门禁。
 - 视觉验证：ui_demo 已捕获总览桌面/393×852 移动及统计页桌面快照；总览三档范围、独立时间线、统计页顶部 180 日历均可见。快照运行时基线为 `8ed749c94542bc1670d095d7956fee3b911c633d`；运行时行为候选 `83ee764a` 后续只改变滚动 24 小时的比较数据来源与短标签，并补充测试；最终文档候选 `2931949b` 仅同步规格与实现记录，未改变快照覆盖的今日总览、统计页布局或移动响应结构；该行为差异由 `TodayStatsOverview.test.tsx` 回归覆盖。
 
 视觉快照：`/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112550Z-cvm-dashboard-current-721a3330.png`、`/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112636Z-cvm-dashboard-mobile-current-050edb05.png`、`/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__c00ce200/2026/10/22/20261022T112551Z-cvm-stats-current-48642f99.png`。
 
 ## Remaining Gaps
 
-- Agent VM 恢复后仍需依次执行 backend `lightweight`、`stateful-sqlite`、`archive-file-io` profiles；在此之前不宣称后端资源 profile 完整通过。
-- Tier 3 四路只读审查、候选提交后的 current-head CI 和 PR publication 仍属于交付阶段。
+- 本地定向 `cargo test` 仍受 macOS 动态库环境限制；同一候选 head 的远端资源 profile 已通过，后续仅需按既定流程进行合并或发布决策。
+- Tier 3 四路只读审查、current-head CI 和 PR publication 已完成；当前停在 merge-ready / Step 5C，不包含合并。
 
 ## References
 

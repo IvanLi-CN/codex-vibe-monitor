@@ -17,6 +17,7 @@
 - `Comparison range`: 今日对应昨日相同本地时间进度，昨日对应前日全天，24 小时对应紧邻其前的完整 24 小时。
 - `Live Invocation Timeline`: 与统计范围独立、默认最近 30 分钟的对外调用时间线；账号详情仍按当前账号过滤。
 - Interface: 复用现有 summary、rate、timeseries、parallel-work、invocation-timeline 和日历数据边界；具体内部读路径由实现决定，范围和账号作用域必须贯穿每次读取及响应提交。
+- Explicit query bounds: summary、timeseries 和 parallel-work 接受成对 UTC `from`/`to` 边界，与旧的 window/range 预设互斥且最长 48 小时；invocation-timeline 接受等价的 `scopeStart`/`scopeEnd` 别名，并继续执行有界作用域校验。
 
 ## Requirements
 
