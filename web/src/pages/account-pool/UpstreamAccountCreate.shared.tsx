@@ -1084,6 +1084,51 @@ function buildImportedOauthCandidateFromSub2apiAccount(
       sourceLabel: firstImportedNonEmptyString(account.name, account.email) ?? "account",
     };
   }
+  const explicitEmailValues = [credentials.email, account.email];
+  const explicitAccountIdValues = [
+    credentials.chatgpt_account_id,
+    credentials.account_id,
+    credentials.chatgptAccountId,
+    account.chatgpt_account_id,
+    account.account_id,
+    account.chatgptAccountId,
+  ];
+  const explicitUserIdValues = [
+    credentials.chatgpt_user_id,
+    credentials.user_id,
+    credentials.chatgptUserId,
+    account.chatgpt_user_id,
+    account.user_id,
+    account.chatgptUserId,
+  ];
+  const hasConflictingImportedValues = (values: unknown[], caseInsensitive = false) => {
+    const normalized = values
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => (caseInsensitive ? value.trim().toLowerCase() : value.trim()));
+    return normalized.some((value) => value !== normalized[0]);
+  };
+  const sourceLabel = firstImportedNonEmptyString(account.name, account.email) ?? "account";
+  if (hasConflictingImportedValues(explicitEmailValues, true)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.emailMismatch"),
+      sourceLabel,
+    };
+  }
+  if (hasConflictingImportedValues(explicitAccountIdValues)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.accountIdMismatch"),
+      sourceLabel,
+    };
+  }
+  if (hasConflictingImportedValues(explicitUserIdValues)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.userIdMismatch"),
+      sourceLabel,
+    };
+  }
   const accessToken = firstImportedNonEmptyString(
     credentials.access_token,
     credentials.accessToken,
@@ -1101,7 +1146,9 @@ function buildImportedOauthCandidateFromSub2apiAccount(
     credentials.chatgpt_account_id,
     credentials.account_id,
     credentials.chatgptAccountId,
+    account.chatgpt_account_id,
     account.account_id,
+    account.chatgptAccountId,
     idPayload && extractImportedOauthJwtAccountId(idPayload),
     accessPayload && extractImportedOauthJwtAccountId(accessPayload),
   );
@@ -1109,6 +1156,9 @@ function buildImportedOauthCandidateFromSub2apiAccount(
     credentials.chatgpt_user_id,
     credentials.user_id,
     credentials.chatgptUserId,
+    account.chatgpt_user_id,
+    account.user_id,
+    account.chatgptUserId,
     idPayload && extractImportedOauthJwtUserId(idPayload),
     accessPayload && extractImportedOauthJwtUserId(accessPayload),
   );

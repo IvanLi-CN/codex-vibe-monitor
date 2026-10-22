@@ -1448,6 +1448,38 @@ async fn find_existing_import_match_prefers_chatgpt_user_id_for_shared_account_i
 }
 
 #[tokio::test]
+async fn find_existing_import_match_does_not_cross_match_different_members_by_email() {
+    let pool = test_pool().await;
+    let existing_id = insert_oauth_account(&pool, "Existing Shared Org Member").await;
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                chatgpt_account_id = ?3,
+                chatgpt_user_id = ?4
+            WHERE id = ?1
+            "#,
+    )
+    .bind(existing_id)
+    .bind("member@example.com")
+    .bind("org_shared")
+    .bind("user_existing")
+    .execute(&pool)
+    .await
+    .expect("update existing shared-org row");
+
+    let row =
+        find_existing_import_match(&pool, Some("user_new"), "org_shared", "member@example.com")
+            .await
+            .expect("find existing import match");
+
+    assert!(
+        row.is_none(),
+        "different workspace member must remain distinct"
+    );
+}
+
+#[tokio::test]
 async fn find_existing_import_match_falls_back_to_account_id_only_for_legacy_missing_user_id() {
     let pool = test_pool().await;
     let legacy_id = insert_oauth_account(&pool, "Legacy Shared Org").await;

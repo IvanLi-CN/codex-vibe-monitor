@@ -71,6 +71,29 @@ fn sub2api_oauth_derives_identity_and_expiry_from_access_token() {
 }
 
 #[test]
+fn sub2api_oauth_rejects_identity_conflict_when_unrelated_claim_has_wrong_type() {
+    let payload = json!({
+        "email": "token@example.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct_shared",
+            "chatgpt_user_id": "user_member",
+            "chatgpt_plan_type": 123,
+        },
+        "exp": 1893456000,
+    });
+    let token = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(payload.to_string()));
+    let mut credentials = sub2api_credentials();
+    credentials["email"] = json!("different@example.com");
+    credentials["access_token"] = json!(token);
+    let error = normalize_imported_oauth_credentials(&sub2api_request(credentials))
+        .expect_err("reject identity conflict despite malformed optional claim");
+    assert!(
+        error.contains("email does not match token identity"),
+        "{error}"
+    );
+}
+
+#[test]
 fn sub2api_oauth_accepts_numeric_token_expiry() {
     for expiry in [
         json!(1893456000),
@@ -100,6 +123,25 @@ fn sub2api_oauth_rejects_token_identity_conflicts() {
         let error = normalize_imported_oauth_credentials(&sub2api_request(credentials))
             .expect_err("reject conflicting token identity");
         assert!(error.contains("does not match token identity"), "{error}");
+    }
+}
+
+#[test]
+fn sub2api_oauth_rejects_conflicting_duplicate_explicit_identity_fields() {
+    for (field, record_key) in [
+        ("email", "email"),
+        ("account_id", "account_id"),
+        ("chatgpt_user_id", "chatgpt_user_id"),
+    ] {
+        let mut credentials = sub2api_credentials();
+        credentials[field] = json!("credential-value");
+        let mut request = sub2api_request(credentials);
+        let mut record: Value = serde_json::from_str(&request.content).expect("fixture JSON");
+        record[record_key] = json!("record-value");
+        request.content = record.to_string();
+        let error = normalize_imported_oauth_credentials(&request)
+            .expect_err("reject conflicting explicit identity fields");
+        assert!(error.contains("conflicting explicit values"), "{error}");
     }
 }
 

@@ -14,6 +14,33 @@ fn import_text(record: &ImportRecord, keys: &[&str]) -> Option<String> {
     })
 }
 
+fn ensure_identity_values_agree(
+    field: &str,
+    values: impl IntoIterator<Item = String>,
+    case_insensitive: bool,
+) -> Result<(), String> {
+    let mut values = values.into_iter().filter(|value| !value.trim().is_empty());
+    let Some(first) = values.next() else {
+        return Ok(());
+    };
+    let normalized_first = if case_insensitive {
+        first.to_ascii_lowercase()
+    } else {
+        first.clone()
+    };
+    if values.any(|value| {
+        let normalized = if case_insensitive {
+            value.to_ascii_lowercase()
+        } else {
+            value
+        };
+        normalized != normalized_first
+    }) {
+        return Err(format!("{field} has conflicting explicit values"));
+    }
+    Ok(())
+}
+
 fn import_expiry(value: &Value) -> Option<String> {
     if let Some(text) = value.as_str()
         && let Some(date) = parse_rfc3339_utc(text.trim())
@@ -55,6 +82,45 @@ pub(super) fn normalize_sub2api_oauth_account(record: &ImportRecord) -> Result<V
     }) {
         return Err("id_token must be a JWT string".to_string());
     }
+    ensure_identity_values_agree(
+        "email",
+        [
+            import_text(credentials, &["email"]),
+            import_text(record, &["email"]),
+        ]
+        .into_iter()
+        .flatten(),
+        true,
+    )?;
+    ensure_identity_values_agree(
+        "account_id",
+        [
+            import_text(
+                credentials,
+                &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+            ),
+            import_text(
+                record,
+                &["chatgpt_account_id", "account_id", "chatgptAccountId"],
+            ),
+        ]
+        .into_iter()
+        .flatten(),
+        false,
+    )?;
+    ensure_identity_values_agree(
+        "chatgpt_user_id",
+        [
+            import_text(
+                credentials,
+                &["chatgpt_user_id", "user_id", "chatgptUserId"],
+            ),
+            import_text(record, &["chatgpt_user_id", "user_id", "chatgptUserId"]),
+        ]
+        .into_iter()
+        .flatten(),
+        false,
+    )?;
     let id_claims = import_claims(
         input_id_token
             .as_deref()

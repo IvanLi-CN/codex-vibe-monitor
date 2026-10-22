@@ -1007,10 +1007,10 @@ pub(crate) async fn find_existing_import_match(
     chatgpt_account_id: &str,
     email: &str,
 ) -> Result<Option<UpstreamAccountRow>> {
-    if let Some(chatgpt_user_id) = chatgpt_user_id
+    let normalized_chatgpt_user_id = chatgpt_user_id
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+        .filter(|value| !value.is_empty());
+    if let Some(chatgpt_user_id) = normalized_chatgpt_user_id {
         let user_id_matches = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
             r#"
             SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
@@ -1048,6 +1048,22 @@ pub(crate) async fn find_existing_import_match(
     .bind(email)
     .fetch_all(pool)
     .await?;
+    let email_matches = if let Some(incoming_user_id) = normalized_chatgpt_user_id {
+        email_matches
+            .into_iter()
+            .filter(|row| {
+                row.chatgpt_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none_or(|stored_user_id| {
+                        stored_user_id.eq_ignore_ascii_case(incoming_user_id)
+                    })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        email_matches
+    };
     if email_matches.len() > 1 {
         bail!("multiple existing OAuth accounts match email {}", email);
     }
@@ -1055,10 +1071,7 @@ pub(crate) async fn find_existing_import_match(
         return Ok(Some(row));
     }
 
-    if chatgpt_user_id
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-    {
+    if normalized_chatgpt_user_id.is_some() {
         return Ok(None);
     }
 

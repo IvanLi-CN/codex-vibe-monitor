@@ -86,6 +86,25 @@ describe("sub2api OAuth import compatibility", () => {
     });
   });
 
+  it("rejects token identity conflicts when an unrelated claim has the wrong type", () => {
+    const result = parse(
+      account({
+        email: "different@example.com",
+        access_token: jwt({
+          email: "member@example.com",
+          exp: 1893456000,
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acct_shared",
+            chatgpt_user_id: "user_member",
+            chatgpt_plan_type: 123,
+          },
+        }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("emailMismatch");
+  });
+
   it.each([
     1893456000,
     "1893456000",
@@ -128,6 +147,19 @@ describe("sub2api OAuth import compatibility", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("Mismatch");
+  });
+
+  it.each([
+    ["email", "email", "emailMismatch"],
+    ["account_id", "account_id", "accountIdMismatch"],
+    ["chatgpt_user_id", "chatgpt_user_id", "userIdMismatch"],
+  ])("rejects conflicting duplicate explicit %s fields", (field, recordKey, errorKey) => {
+    const result = parse({
+      ...account({ [field]: "credential-value" }),
+      [recordKey]: "record-value",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain(errorKey);
   });
 
   it("reports missing identity or expiry without requiring a fabricated ID token", () => {

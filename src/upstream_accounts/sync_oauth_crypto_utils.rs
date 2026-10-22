@@ -796,26 +796,31 @@ pub(crate) fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8
 
 pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
     let payload_bytes = decode_jwt_payload(id_token, "id_token")?;
-    let claims: ChatgptJwtOuterClaims =
+    let claims: Value =
         serde_json::from_slice(&payload_bytes).context("failed to parse id_token payload")?;
+    let claims = claims
+        .as_object()
+        .ok_or_else(|| anyhow!("failed to parse id_token payload as an object"))?;
+    let profile = claims
+        .get("https://api.openai.com/profile")
+        .or_else(|| claims.get("profile"))
+        .and_then(Value::as_object);
+    let auth = claims
+        .get("https://api.openai.com/auth")
+        .or_else(|| claims.get("auth"))
+        .and_then(Value::as_object);
+    let string_claim = |object: Option<&serde_json::Map<String, Value>>, key: &str| {
+        object
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     Ok(ChatgptJwtClaims {
-        email: claims
-            .email
-            .or_else(|| claims.profile.and_then(|value| value.email)),
-        chatgpt_plan_type: claims
-            .auth
-            .as_ref()
-            .and_then(|value| value.chatgpt_plan_type.clone()),
-        chatgpt_user_id: claims.auth.as_ref().and_then(|value| {
-            value
-                .chatgpt_user_id
-                .clone()
-                .or_else(|| value.user_id.clone())
-        }),
-        chatgpt_account_id: claims
-            .auth
-            .as_ref()
-            .and_then(|value| value.chatgpt_account_id.clone()),
+        email: string_claim(Some(claims), "email").or_else(|| string_claim(profile, "email")),
+        chatgpt_plan_type: string_claim(auth, "chatgpt_plan_type"),
+        chatgpt_user_id: string_claim(auth, "chatgpt_user_id")
+            .or_else(|| string_claim(auth, "user_id")),
+        chatgpt_account_id: string_claim(auth, "chatgpt_account_id"),
     })
 }
 
