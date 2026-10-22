@@ -33,6 +33,7 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) month_key: String,
     pub(crate) batch_rows: usize,
     pub(crate) committed_rows: usize,
+    pub(crate) raw_files_removed: usize,
     pub(crate) file_prepare_ms: Option<u64>,
     pub(crate) lock_wait_ms: u64,
     pub(crate) elapsed_ms: u64,
@@ -102,6 +103,7 @@ impl BatchObservation {
                 month_key: month.to_string(),
                 batch_rows: rows,
                 committed_rows: 0,
+                raw_files_removed: 0,
                 file_prepare_ms: None,
                 lock_wait_ms: 0,
                 elapsed_ms: 0,
@@ -127,6 +129,9 @@ impl BatchObservation {
             .metrics
             .lock_wait_ms
             .saturating_add(lock_wait.as_millis() as u64);
+    }
+    pub(crate) fn raw_files_removed(&mut self, count: usize) {
+        self.metrics.raw_files_removed = self.metrics.raw_files_removed.saturating_add(count);
     }
     pub(crate) fn source_identity_finished(&mut self, elapsed: Duration) {
         self.metrics.source_identity_ms = Some(elapsed.as_millis() as u64);

@@ -3824,7 +3824,7 @@ impl MaintenanceStore {
              WHERE task_key=? AND enabled!=0
                AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
         )
-        .bind(at)
+        .bind(&at)
         .bind(reason)
         .bind(key)
         .bind(key)
@@ -3849,10 +3849,16 @@ impl MaintenanceStore {
             .execute(&mut *transaction)
             .await?;
         } else {
-            sqlx::query("DELETE FROM maintenance_owner_retry_state WHERE task_key=?")
-                .bind(key)
-                .execute(&mut *transaction)
-                .await?;
+            sqlx::query(
+                "DELETE FROM maintenance_owner_retry_state
+                 WHERE task_key=?
+                   AND (next_eligible_at IS NULL OR next_eligible_at<=?
+                        OR reason NOT IN ('raw_safety_retry','sqlite_pressure','retry_backoff'))",
+            )
+            .bind(key)
+            .bind(format_utc_iso_millis(Utc::now()))
+            .execute(&mut *transaction)
+            .await?;
         }
         transaction.commit().await?;
         Ok(())
@@ -4747,6 +4753,13 @@ impl MaintenanceStore {
         else {
             return Ok(());
         };
+        if details
+            .get("dryRun")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let backlog_total = details
             .get("globalBacklogTotal")
             .and_then(serde_json::Value::as_i64)

@@ -1103,7 +1103,9 @@ pub(crate) async fn prune_old_invocation_details(
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
-                raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                let removed = delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                raw_files_removed += removed;
+                batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;
@@ -1846,7 +1848,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 retention_recovery_record_progress();
-                raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                let removed = delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                raw_files_removed += removed;
+                batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;
@@ -2460,8 +2464,10 @@ pub(crate) async fn archive_timestamped_dataset(
                     }
                     rows_archived += group.len();
                     committed_rows += group.len();
-                    raw_files_removed +=
+                    let removed =
                         delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                    raw_files_removed += removed;
+                    batch_observation.raw_files_removed(removed);
                 } else {
                     rows_archived += group.len();
                     committed_rows += group.len();

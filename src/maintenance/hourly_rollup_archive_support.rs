@@ -10,7 +10,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -459,7 +459,7 @@ pub(crate) fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) 
 }
 
 pub(crate) fn inflate_gzip_sqlite_file(source: &Path, destination: &Path) -> Result<()> {
-    inflate_gzip_sqlite_file_with_limits(source, destination, None, None, None)
+    inflate_gzip_sqlite_file_with_limits(source, destination, None, None, None, None)
 }
 
 pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
@@ -474,13 +474,14 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
         vec![source.clone()],
         vec![destination.clone()],
         vec![destination.clone()],
-        move |deadline, shutdown, cancellation| {
+        move |deadline, shutdown, cancellation, progress| {
             inflate_gzip_sqlite_file_with_limits(
                 &source,
                 &destination,
                 deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
             )
         },
     )
@@ -510,7 +511,7 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_elapsed_budget(
             timeout,
             shutdown: super::retention::retention_run_shutdown_token(),
         },
-        move |operation_deadline, shutdown, cancellation| {
+        move |operation_deadline, shutdown, cancellation, _progress| {
             inflate_gzip_sqlite_file_with_elapsed_limits(
                 &source,
                 &destination,
@@ -529,6 +530,7 @@ fn inflate_gzip_sqlite_file_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<Instant>>,
 ) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open archive batch {}", source.display()))?;
@@ -545,6 +547,7 @@ fn inflate_gzip_sqlite_file_with_limits(
         shutdown,
         cancellation,
         total_input_bytes,
+        progress,
     )
     .with_context(|| {
         format!(
@@ -589,7 +592,7 @@ fn inflate_gzip_sqlite_file_with_elapsed_limits(
 }
 
 pub(crate) fn deflate_sqlite_file_to_gzip(source: &Path, destination: &Path) -> Result<()> {
-    deflate_sqlite_file_to_gzip_with_limits(source, destination, None, None, None)
+    deflate_sqlite_file_to_gzip_with_limits(source, destination, None, None, None, None)
 }
 
 pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
@@ -604,13 +607,14 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
         Vec::new(),
         vec![destination.clone()],
         vec![source.clone(), destination.clone()],
-        move |deadline, shutdown, cancellation| {
+        move |deadline, shutdown, cancellation, progress| {
             deflate_sqlite_file_to_gzip_with_limits(
                 &source,
                 &destination,
                 deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
             )
         },
     )
@@ -623,6 +627,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<Instant>>,
 ) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open temp archive db {}", source.display()))?;
@@ -639,6 +644,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
         shutdown,
         cancellation,
         total_input_bytes,
+        progress,
     )
     .with_context(|| {
         format!(
@@ -663,7 +669,12 @@ async fn run_archive_file_work_with_operation_budget<F>(
     work: F,
 ) -> Result<()>
 where
-    F: FnOnce(Option<Instant>, Option<CancellationToken>, Arc<AtomicBool>) -> Result<()>
+    F: FnOnce(
+            Option<Instant>,
+            Option<CancellationToken>,
+            Arc<AtomicBool>,
+            Arc<Mutex<Instant>>,
+        ) -> Result<()>
         + Send
         + 'static,
 {
@@ -691,8 +702,8 @@ where
             timeout,
             shutdown,
         },
-        move |operation_deadline, shutdown, cancellation| {
-            work(operation_deadline, shutdown, cancellation)
+        move |operation_deadline, shutdown, cancellation, progress| {
+            work(operation_deadline, shutdown, cancellation, progress)
         },
     )
     .await
@@ -715,7 +726,12 @@ async fn run_archive_file_work_with_deadline<T, F>(
 ) -> Result<T>
 where
     T: Send + 'static,
-    F: FnOnce(Option<Instant>, Option<CancellationToken>, Arc<AtomicBool>) -> Result<T>
+    F: FnOnce(
+            Option<Instant>,
+            Option<CancellationToken>,
+            Arc<AtomicBool>,
+            Arc<Mutex<Instant>>,
+        ) -> Result<T>
         + Send
         + 'static,
 {
@@ -737,6 +753,8 @@ where
     let timed_out = Arc::clone(&lease.timed_out);
     let worker_timed_out = Arc::clone(&timed_out);
     let worker_cancellation = Arc::clone(&timed_out);
+    let progress = Arc::new(Mutex::new(Instant::now()));
+    let worker_progress = Arc::clone(&progress);
     let _cancellation_signal = ArchiveFileOperationCancellationSignal(Arc::clone(&timed_out));
     let worker = tokio::task::spawn_blocking(move || {
         let _lease = lease;
@@ -746,7 +764,7 @@ where
             }
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            work(deadline, shutdown, worker_cancellation)
+            work(deadline, shutdown, worker_cancellation, worker_progress)
         }));
         match result {
             Ok(result) => {
@@ -775,6 +793,23 @@ where
             }
         }
     });
+    let watchdog = (deadline.is_none() && timeout.is_none()).then(|| {
+        let progress = Arc::clone(&progress);
+        let timed_out = Arc::clone(&timed_out);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(ARCHIVE_FILE_NO_PROGRESS_GRACE).await;
+                let stale = progress
+                    .lock()
+                    .map(|last_progress| last_progress.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE)
+                    .unwrap_or(true);
+                if stale {
+                    timed_out.store(true, Ordering::Release);
+                    return;
+                }
+            }
+        })
+    });
     let joined = match timeout {
         Some(timeout) => match tokio::time::timeout(timeout, worker).await {
             Ok(joined) => joined,
@@ -783,7 +818,20 @@ where
                 return Err(super::retention::retention_archive_file_operation_budget_exhausted());
             }
         },
-        None => worker.await,
+        None => match watchdog {
+            Some(mut watchdog) => {
+                tokio::select! {
+                    joined = worker => {
+                        watchdog.abort();
+                        joined
+                    }
+                    _ = &mut watchdog => {
+                        return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+                    }
+                }
+            }
+            None => worker.await,
+        },
     };
     joined.with_context(|| format!("retention archive {operation} worker panicked"))?
 }
@@ -796,6 +844,7 @@ fn copy_archive_bytes_with_limits(
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
     total_input_bytes: Option<u64>,
+    progress: Option<&Mutex<Instant>>,
 ) -> Result<()> {
     let mut buffer = [0_u8; 64 * 1024];
     let mut processed_bytes = 0_u64;
@@ -838,6 +887,11 @@ fn copy_archive_bytes_with_limits(
         writer.write_all(&buffer[..read])?;
         processed_bytes = processed_bytes.saturating_add(read as u64);
         last_progress_at = Instant::now();
+        if let Some(progress) = progress
+            && let Ok(mut last_progress) = progress.lock()
+        {
+            *last_progress = last_progress_at;
+        }
     }
 }
 
@@ -1022,7 +1076,7 @@ mod tests {
                 timeout: Some(Duration::from_millis(20)),
                 shutdown: None,
             },
-            move |_, _, _| {
+            move |_, _, _, _| {
                 started.store(true, Ordering::Release);
                 while !release.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(1));
@@ -1088,7 +1142,7 @@ mod tests {
                 timeout: None,
                 shutdown: None,
             },
-            move |_, _, cancellation| {
+            move |_, _, cancellation, _| {
                 started.store(true, Ordering::Release);
                 while !cancellation.load(Ordering::Acquire)
                     && !force_release.load(Ordering::Acquire)

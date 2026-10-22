@@ -1972,8 +1972,8 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let Some(execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution(&task_key)
                     else {
-                        if is_retention_owner_v2_task(&task_key)
-                            && let Err(error) = store
+                        let retry_schedule_failed = if is_retention_owner_v2_task(&task_key) {
+                            match store
                                 .schedule_owned_work_for_run(
                                     &task_key,
                                     run_id,
@@ -1981,21 +1981,33 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                                     "task_execution_active",
                                 )
                                 .await
-                        {
-                            warn!(
-                                task = %task_key,
-                                error = %error,
-                                "retention owner lease-conflict retry could not be scheduled"
-                            );
-                        }
-                        queue_managed_task_finish(
-                            &mut pending_finishes,
-                            managed_task_lease_conflict_finish(
-                                run_id,
-                                task_key,
-                                &trigger_kind,
-                            ),
+                            {
+                                Ok(()) => false,
+                                Err(error) => {
+                                    warn!(
+                                        task = %task_key,
+                                        error = %error,
+                                        "retention owner lease-conflict retry could not be scheduled"
+                                    );
+                                    true
+                                }
+                            }
+                        } else {
+                            false
+                        };
+                        let mut finish = managed_task_lease_conflict_finish(
+                            run_id,
+                            task_key,
+                            &trigger_kind,
                         );
+                        if retry_schedule_failed
+                            && let Some(details) = finish.details.as_mut()
+                        {
+                            details["waitReason"] = json!("schedule_retry");
+                            details["scheduleRetryAfterSecs"] = json!(300);
+                            details["scheduleRetryReason"] = json!("task_execution_active");
+                        }
+                        queue_managed_task_finish(&mut pending_finishes, finish);
                         continue;
                     };
                     let initial_stages = (task_key == "retention_archive").then(|| {

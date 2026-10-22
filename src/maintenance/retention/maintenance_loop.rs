@@ -238,19 +238,20 @@ fn apply_retention_owner_post_commit_error(
 }
 
 fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, dataset: &str) {
-    let (selected, committed, batches) = batch_plan::TASK_BATCH_METRICS
+    let (selected, committed, batches, raw_files_removed) = batch_plan::TASK_BATCH_METRICS
         .try_with(|metrics| {
             metrics
                 .borrow()
                 .iter()
                 .filter(|batch| batch.dataset == dataset)
                 .fold(
-                    (0usize, 0usize, 0usize),
-                    |(selected, committed, batches), batch| {
+                    (0usize, 0usize, 0usize, 0usize),
+                    |(selected, committed, batches, raw_files_removed), batch| {
                         (
                             selected.saturating_add(batch.batch_rows),
                             committed.saturating_add(batch.committed_rows),
                             batches + 1,
+                            raw_files_removed.saturating_add(batch.raw_files_removed),
                         )
                     },
                 )
@@ -262,6 +263,7 @@ fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, da
     summary.selected = selected;
     summary.committed = committed;
     summary.batches = batches;
+    summary.raw_files_removed = raw_files_removed;
 }
 
 fn retention_owner_success_facts(
@@ -928,6 +930,13 @@ pub(crate) async fn run_retention_owner_task(
     match result {
         (Ok(mut summary), archive_batches) => {
             summary.archive_batches = archive_batches;
+            summary.raw_files_removed = summary.raw_files_removed.max(
+                summary
+                    .archive_batches
+                    .iter()
+                    .map(|batch| batch.raw_files_removed)
+                    .sum(),
+            );
             let run_seconds = started_at.elapsed().as_secs_f64();
             for batch in &mut summary.archive_batches {
                 batch.committed_rows_per_second =
@@ -938,6 +947,11 @@ pub(crate) async fn run_retention_owner_task(
         (Err(error), archive_batches) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
             summary.archive_batches = archive_batches;
+            summary.raw_files_removed = summary
+                .archive_batches
+                .iter()
+                .map(|batch| batch.raw_files_removed)
+                .sum();
             apply_retention_owner_error(&mut summary, &error);
             Ok(summary.finish(started_at))
         }
