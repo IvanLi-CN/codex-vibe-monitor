@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate each released ownership source with an already-built candidate on Linux."""
 import argparse
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -31,6 +32,79 @@ LEGACY_OWNERS = ["invocation_identity_cleanup", "raw_orphan_sweep", "prompt_cach
 OWNERS = RETENTION_OWNERS + LEGACY_OWNERS
 OWNER_VERSIONS = {key: 2 for key in RETENTION_OWNERS}
 OWNER_VERSIONS.update({key: 1 for key in LEGACY_OWNERS})
+
+OWNER_FIXTURE_PREFIX = "retention-owner-fixture"
+
+
+def seed_owner_candidates(root):
+    old_archive = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    old_retained = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    with sqlite3.connect(root / "business.sqlite") as connection:
+        connection.execute(
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response,detail_level,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-archive", old_archive, "proxy", "completed", "{}", "{}", "full", old_archive),
+        )
+        connection.execute(
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response,detail_level,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-detail", old_retained, "proxy", "completed", "{}", "{}", "full", old_retained),
+        )
+        connection.execute(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id,occurred_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status) VALUES (?,?,?,?,?,?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-pool", old_retained, "https://fixture.invalid", "fixture", 1, 1, 1, "success"),
+        )
+        connection.execute(
+            "INSERT INTO forward_proxy_attempts (proxy_key,occurred_at,is_success) VALUES (?,?,?)",
+            (f"{OWNER_FIXTURE_PREFIX}-forward", old_retained, 1),
+        )
+        connection.execute(
+            "INSERT INTO codex_quota_snapshots (captured_at,amount_limit,used_amount,remaining_amount) VALUES (?,?,?,?)",
+            ("2020-01-01T00:00:00.000Z", 100.0, 1.0, 99.0),
+        )
+        connection.execute(
+            "INSERT INTO codex_quota_snapshots (captured_at,amount_limit,used_amount,remaining_amount) VALUES (?,?,?,?)",
+            ("2020-01-01T00:01:00.000Z", 100.0, 2.0, 98.0),
+        )
+        connection.execute(
+            "INSERT INTO pool_upstream_accounts (kind,display_name,status,created_at,updated_at) VALUES (?,?,?,?,?)",
+            ("api_key_codex", f"{OWNER_FIXTURE_PREFIX}-account", "active", old_retained, old_retained),
+        )
+        account_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+        connection.execute(
+            "INSERT INTO pool_upstream_account_model_routes (account_id,model,last_seen_at) VALUES (?,?,?)",
+            (account_id, f"{OWNER_FIXTURE_PREFIX}-model", old_retained),
+        )
+        connection.executemany(
+            "INSERT INTO system_task_runs (task_kind,trigger_kind,status,summary,started_at,finished_at,duration_ms) VALUES (?,?,?,?,?,?,?)",
+            [
+                (
+                    f"{OWNER_FIXTURE_PREFIX}-history",
+                    "manual",
+                    "success",
+                    "fixture",
+                    f"2020-01-01T00:{index // 60:02d}:{index % 60:02d}.000Z",
+                    f"2020-01-01T00:{index // 60:02d}:{index % 60:02d}.000Z",
+                    1,
+                )
+                for index in range(201)
+            ],
+        )
+
+
+def owner_candidate_state(root, task_key):
+    with sqlite3.connect(root / "business.sqlite") as connection:
+        queries = {
+            "retention_archive": ("SELECT COUNT(*) FROM codex_invocations WHERE invoke_id=?", f"{OWNER_FIXTURE_PREFIX}-archive"),
+            "pool_upstream_attempt_archive": ("SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id=?", f"{OWNER_FIXTURE_PREFIX}-pool"),
+            "forward_proxy_attempt_archive": ("SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key=?", f"{OWNER_FIXTURE_PREFIX}-forward"),
+            "invocation_detail_prune": ("SELECT COUNT(*) FROM codex_invocations WHERE invoke_id=? AND detail_level='full'", f"{OWNER_FIXTURE_PREFIX}-detail"),
+            "model_route_expiry": ("SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE model=?", f"{OWNER_FIXTURE_PREFIX}-model"),
+        }
+        if task_key == "quota_snapshot_compaction":
+            return connection.execute("SELECT COUNT(*) FROM codex_quota_snapshots WHERE captured_at LIKE '2020-01-01T00:%'").fetchone()[0]
+        if task_key == "task_run_history_cleanup":
+            return connection.execute("SELECT COUNT(*) FROM system_task_runs WHERE task_kind=?", (f"{OWNER_FIXTURE_PREFIX}-history",)).fetchone()[0]
+        query, value = queries[task_key]
+        return connection.execute(query, (value,)).fetchone()[0]
 
 
 def execute(candidate, root, *arguments, expect_success=True):
@@ -82,6 +156,7 @@ def run_scoped_command(candidate, root, task_key, dry_run):
         before_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
     before_business = business_facts(root)
     before_files = file_facts(root)
+    before_owner_state = owner_candidate_state(root, task_key)
     command = retention_command(task_key, dry_run)
     execute(candidate, root, *command)
     with sqlite3.connect(root / "maintenance.sqlite") as connection:
@@ -95,6 +170,14 @@ def run_scoped_command(candidate, root, task_key, dry_run):
     assert recorded_task_key == task_key and parsed.get("ownerScope") == task_key, (task_key, record_id, parsed)
     assert parsed.get("ownershipVersion") == OWNER_VERSIONS[task_key], (task_key, parsed)
     assert parsed.get("dryRun") is dry_run, (task_key, dry_run, parsed)
+    assert parsed.get("discovered", 0) > 0 and parsed.get("selected", 0) > 0, (task_key, parsed)
+    if dry_run:
+        assert parsed.get("committed") == 0, (task_key, parsed)
+        assert owner_candidate_state(root, task_key) == before_owner_state, (task_key, parsed)
+    else:
+        assert parsed.get("committed", 0) > 0, (task_key, parsed)
+        assert parsed.get("completion") in {"complete", "partial"}, (task_key, parsed)
+        assert owner_candidate_state(root, task_key) < before_owner_state, (task_key, parsed)
     if dry_run:
         assert business_facts(root) == before_business, command
         assert file_facts(root) == before_files, command
@@ -112,6 +195,7 @@ def validate_source(candidate, source, target):
         connection.execute("INSERT INTO prompt_cache_conversations(prompt_cache_key,conversation_id,created_at,updated_at) VALUES('upgrade-protected','RZYZAB','2020-01-01','2020-01-01')")
         connection.execute("INSERT INTO hourly_invoke_prefixes(utc_hour,prefix) VALUES(1,'HZYZAA')")
         connection.execute("INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,payload,raw_response) VALUES('RZYZABAAAA','2099-01-01T00:00:00Z','proxy','running','{\"promptCacheKey\":\"upgrade-protected\"}','{}')")
+    seed_owner_candidates(target)
     (target / "raw").mkdir(exist_ok=True)
     raw = target / "raw" / "upgrade-orphan.json"
     raw.write_text('{"fixture":true}')
@@ -203,7 +287,7 @@ def validate_source(candidate, source, target):
         connection.execute("DROP TRIGGER interrupted_owner_marker")
     execute(candidate, target, "maintenance", "invocation-identity-cleanup", "--dry-run")
     execute(candidate, target, "maintenance", "invocation-identity-cleanup", "--dry-run")
-    return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "all-retention-owner-previews-read-only", "all-retention-owner-one-shots-scoped", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
+    return {"source": json.loads((source / "source.json").read_text()), "status": "passed", "claims": ["controls-preserved", "new-defaults", "retired-environment-ignored", "all-retention-owner-previews-read-only", "all-retention-owner-one-shots-mutated-owner-fixtures", "explicit-real-mode", "archive-only", "protected-identities", "paused-manual", "no-startup-recovery", "interrupted-forward-reentry"]}
 
 
 def main():

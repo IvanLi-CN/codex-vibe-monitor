@@ -70,6 +70,7 @@ def validate_online(candidate, source, target, port):
         owner_placeholders = ",".join("?" for _ in UPGRADE.OWNERS)
         controls = connection.execute(f"SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN ({owner_placeholders}) ORDER BY task_key", UPGRADE.OWNERS).fetchall()
         baseline_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
+    UPGRADE.seed_owner_candidates(target)
     environment = dict(os.environ, DATABASE_PATH=str(target / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(target / "maintenance.sqlite"), ARCHIVE_DIR=str(target / "archives"), PROXY_RAW_DIR=str(target / "raw"), HTTP_BIND=f"127.0.0.1:{port}", OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:1/", OBSERVABILITY_ENABLED="false", RUST_LOG="warn", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false")
     (target / "raw").mkdir(exist_ok=True)
     with (target / "daemon.log").open("w") as daemon_log:
@@ -191,7 +192,7 @@ def main():
     candidate = args.candidate.resolve()
     validate_unavailable(candidate, args.source_fixture, args.output_dir / "unavailable")
     validate_online(candidate, args.source_fixture, args.output_dir / "online", args.http_port)
-    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-all-retention-owner-scopes", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
+    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-all-retention-owner-scopes-mutated-owner-fixtures", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
     (args.output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results), flush=True)
 
