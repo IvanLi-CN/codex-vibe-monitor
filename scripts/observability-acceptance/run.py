@@ -84,6 +84,9 @@ def safe_scenario_failure(error):
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
 
+def source_revision(source):
+    return execute(["git", "-C", str(source), "rev-parse", "HEAD"])
+
 def sanitize_client_failure(mode, stderr):
     """Return bounded, non-sensitive client failure evidence for CI artifacts."""
     if isinstance(stderr, bytes):
@@ -109,34 +112,40 @@ def digest(paths):
     for path in paths: result.update(path.read_bytes())
     return result.hexdigest()
 
+def acceptance_harness_digest(source):
+    return digest(
+        sorted((source / "scripts/observability-acceptance").glob("*.py"))
+        + [
+            source / "ops/observability/tempo_access.py",
+            source / "ops/observability/tempo.yml",
+            source / "ops/observability/compose.yml",
+            source / "ops/observability/grafana/provisioning/datasources/tempo.yml",
+        ]
+    )
+
+def acceptance_contract_digest(source):
+    return digest(
+        [
+            source / "docs/specs/performance-telemetry/SPEC.md",
+            source / "docs/specs/performance-telemetry/METRICS.md",
+            source / "docs/design/performance-observability.md",
+            source / "docs/design/performance-observability-metrics.md",
+            source / "docs/adr/0025-external-performance-observability.md",
+            source / "docs/adr/0033-external-request-diagnostic-traces.md",
+            source / "docs/adr/0034-shared-tempo-request-tracing.md",
+            source / "docs/adr/0046-observability-acceptance-hardware-admission.md",
+            source / "docs/design/request-lifecycle-observability.md",
+        ]
+    )
+
 def certificate(source, candidate, context, status, rationale):
     return {
         "empirical_acceptance": "required",
         "empirical_acceptance_rationale": rationale,
         "empirical_evidence_status": status,
         "empirical_candidate_sha": candidate,
-        "acceptance_contract_digest": digest(
-            [
-                source / "docs/specs/performance-telemetry/SPEC.md",
-                source / "docs/specs/performance-telemetry/METRICS.md",
-                source / "docs/design/performance-observability.md",
-                source / "docs/design/performance-observability-metrics.md",
-                source / "docs/adr/0025-external-performance-observability.md",
-                source / "docs/adr/0033-external-request-diagnostic-traces.md",
-                source / "docs/adr/0034-shared-tempo-request-tracing.md",
-                source / "docs/adr/0046-observability-acceptance-hardware-admission.md",
-                source / "docs/design/request-lifecycle-observability.md",
-            ]
-        ),
-        "scenario_set_digest": digest(
-            sorted((source / "scripts/observability-acceptance").glob("*.py"))
-            + [
-                source / "ops/observability/tempo_access.py",
-                source / "ops/observability/tempo.yml",
-                source / "ops/observability/compose.yml",
-                source / "ops/observability/grafana/provisioning/datasources/tempo.yml",
-            ]
-        ),
+        "acceptance_contract_digest": acceptance_contract_digest(source),
+        "scenario_set_digest": acceptance_harness_digest(source),
         "evidence_locator": context["evidenceLocator"] if context else "runtime-only",
     }
 
@@ -185,7 +194,26 @@ class Run:
         self.root.mkdir(parents=True,exist_ok=True)
         self.execution_started_utc=float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))
         self.execution_deadline_utc=self.execution_started_utc+EXECUTION_SECONDS
-        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.pair_index is not None else None,"warmupSeconds":60 if self.pair_index is not None else None,"pairIndex":self.pair_index,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g","executionStartedUTCSeconds":float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))},indent=2)+"\n")
+        config = {
+            "candidate": args.candidate,
+            "harnessSha": source_revision(self.source),
+            "acceptanceContractDigest": acceptance_contract_digest(self.source),
+            "candidateAcceptanceContractDigest": acceptance_contract_digest(self.candidate_source),
+            "acceptanceHarnessDigest": acceptance_harness_digest(self.source),
+            "candidateAcceptanceHarnessDigest": acceptance_harness_digest(self.candidate_source),
+            "requestRate": args.rate,
+            "windowSeconds": args.seconds if self.pair_index is not None else None,
+            "warmupSeconds": 60 if self.pair_index is not None else None,
+            "pairIndex": self.pair_index,
+            "environment": self.environment,
+            "suite": self.suite,
+            "appCpuQuota": 1 if self.cpu_layout else 2,
+            "appCpuSet": self.cpu_layout["app"] if self.cpu_layout else None,
+            "auxiliaryCpuSet": self.cpu_layout["auxiliary"] if self.cpu_layout else None,
+            "appMemoryLimit": "1g",
+            "executionStartedUTCSeconds": float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC", time.time())),
+        }
+        (self.root/"run-config.json").write_text(json.dumps(config,indent=2)+"\n")
         if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
         for name in ["grafana-admin-password","tempo-ingest-token","tempo-query-token"]:

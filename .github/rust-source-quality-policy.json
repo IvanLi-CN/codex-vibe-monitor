@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 25,
+    "inventory_entries": 24,
     "suppression_entries": 123
   },
   "loc_targets": {
@@ -17,12 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/proxy/usage_persistence.rs",
-      "role": "production",
-      "line_budget": 7386,
-      "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
       "path": "src/schema.rs",
@@ -453,16 +447,16 @@
       "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/stream_gate.rs; remove it when the listed module workstream makes the item reachable."
     },
     {
-      "path": "src/proxy/usage_persistence.rs",
+      "path": "src/proxy/usage_persistence/invocation_records.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/usage_persistence.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the invocation record update bundle; remove it when the projection boundary is decomposed into smaller adapters."
     },
     {
-      "path": "src/proxy/usage_persistence.rs",
+      "path": "src/proxy/usage_persistence/attempt_persistence.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime attempt terminal adapter mirrors the established lifecycle contract.\" )]",
-      "reason": "Retain this targeted expect for the runtime attempt terminal adapter at src/proxy/usage_persistence.rs; remove it when the lifecycle boundary is split into smaller adapters."
+      "reason": "Retain this targeted expect for the runtime attempt terminal adapter; remove it when the lifecycle boundary is split into smaller adapters."
     },
     {
       "path": "src/runtime.rs",

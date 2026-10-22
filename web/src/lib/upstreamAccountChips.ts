@@ -1,4 +1,5 @@
 export type UpstreamPlanChipTone =
+  | "neutral"
   | "primary"
   | "accent"
   | "secondary"
@@ -13,7 +14,8 @@ type UpstreamPlanChipRecipe = {
 };
 
 const PLAN_VARIANTS: Record<string, UpstreamPlanChipTone> = {
-  local: "secondary",
+  local: "neutral",
+  api: "neutral",
   free: "warning",
   k12: "success",
   plus: "primary",

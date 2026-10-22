@@ -102,7 +102,7 @@ function App() {
             <Route path="live" element={<LivePage />} />
             <Route path="records" element={<RecordsPage />} />
             <Route path="account-pool" element={<AccountPoolLayout />}>
-              <Route index element={<Navigate to="/account-pool/pool" replace />} />
+              <Route index element={<Navigate to="/account-pool/transits" replace />} />
               <Route path="transits" element={<UpstreamAccountsPage />} />
               <Route path="transits/new" element={<UpstreamAccountCreatePage />} />
               <Route path="pool" element={<UpstreamAccountsPage />} />

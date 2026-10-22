@@ -9,10 +9,14 @@ import type {
   UpstreamAccountSummary,
 } from "../../lib/api";
 import {
+  enableChipTone,
+  healthChipTone,
   resolveRosterActionableStatusChips,
   resolveRosterSummaryStatusChips,
   resolveRoutingBlockCountdown,
+  syncChipTone,
   UpstreamAccountsTable,
+  workChipTone,
 } from "./UpstreamAccountsTable";
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
@@ -209,6 +213,17 @@ function renderInteractiveTable(items: UpstreamAccountSummary[], onSelect = vi.f
 }
 
 describe("UpstreamAccountsTable", () => {
+  it("keeps ordinary account metadata neutral while preserving semantic status tones", () => {
+    expect(enableChipTone("enabled")).toBe("success");
+    expect(enableChipTone("disabled")).toBe("neutral");
+    expect(workChipTone("working")).toBe("info");
+    expect(workChipTone("idle")).toBe("neutral");
+    expect(healthChipTone("error")).toBe("error");
+    expect(healthChipTone("normal")).toBe("neutral");
+    expect(syncChipTone("syncing")).toBe("warning");
+    expect(syncChipTone("idle")).toBe("neutral");
+  });
+
   it("formats an active routing block countdown and expires at the exact boundary", () => {
     const now = Date.parse("2026-07-26T12:00:00.000Z");
     expect(resolveRoutingBlockCountdown("2026-07-26T12:04:32.000Z", now)).toBe("04:32");

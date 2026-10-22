@@ -1,6 +1,12 @@
 import type { TagFastModeRewriteMode, TagPriorityTier, TagRoutingRule } from "./api";
 
-export type RoutingRuleChipTone = "primary" | "info" | "accent" | "secondary" | "warning";
+export type RoutingRuleChipTone =
+  | "neutral"
+  | "primary"
+  | "info"
+  | "accent"
+  | "secondary"
+  | "warning";
 
 type PriorityTierLabels = {
   priorityPrimary: string;
@@ -141,7 +147,7 @@ export function resolveActiveRoutingPolicyChips(
     badges.push({
       key: "concurrency",
       label: labels.policyConcurrency?.(concurrencyLimit) ?? `并发${concurrencyLimit}`,
-      variant: "secondary",
+      variant: "neutral",
     });
   }
 

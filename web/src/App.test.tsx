@@ -127,6 +127,17 @@ describe("App routes", () => {
     expect(host?.querySelector('[data-testid="location"]')?.textContent).toBe("/system/models");
   });
 
+  it("defaults the account-pool route to the transit surface", async () => {
+    await act(async () => {
+      renderApp("/account-pool");
+    });
+
+    expect(host?.textContent ?? "").toContain("upstream accounts page");
+    expect(host?.querySelector('[data-testid="location"]')?.textContent).toBe(
+      "/account-pool/transits",
+    );
+  });
+
   it("keeps a rejected lazy route recoverable", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     function RejectedRoute() {

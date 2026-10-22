@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 25 current explicit file budgets (8 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 24 current explicit file budgets (7 production and 17 test/helper), and 123 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -410,6 +410,12 @@ Validation for this extraction is the canonical source-quality runner, the sourc
 The route-selection source is now a facade over `route_semantics.rs`, `pool_resolution.rs`, `pool_forwarding.rs`, and `forward_retry.rs` under `src/proxy/route_selection/`; the existing `auth.rs` module remains the authentication and pool-route helper boundary. The semantic child retains bounded replay deserialization, sticky projection validation, request semantic CPU attribution, file-read/JSON-parse counters, slow-path logging, and image/compaction/stream/service-tier/reasoning projections. The resolution child retains prompt-cache and encrypted-session owner binding, terminal persistence, initial-account and attempt finalization, image/compaction intent, and diagnostic backfill. The forwarding child moves the complete pool orchestration state machine, and the retry child moves the complete 429 retry and response-body draining adapter. After rustfmt, the parent is 25 lines and the children are 1,199, 582, 1,724, and 274 lines; the canonical policy removes the parent and retains 25 entries with 8 production and 17 test/helper files. No API, schema, configuration, reservation, attempt trace, health, response, retry, test resource, or frozen `src/api/slices/invocations_and_summary.rs` behavior changes.
 
 Validation for this extraction is the focused route-selection/request-entry and proxy forwarding coverage, the lightweight and stateful SQLite backend profiles, the source-quality checker and fixture harness, rustfmt, locked all-target checking, all-features Clippy, quality-gate and documentation contract checks, and `git diff --check`.
+
+## Usage Persistence Extraction
+
+The usage-persistence source is now a facade over `attempt_persistence.rs`, `attempt_recovery.rs`, `invocation_records.rs`, `raw_payload_storage.rs`, `streaming_raw_payload.rs`, and `terminal_rollups.rs`. The existing `attempt_public_id_backfill.rs`, `invocation_identity.rs`, `runtime_recovery.rs`, and `terminal_metadata.rs` module boundaries remain unchanged, and `src/api/slices/invocations_and_summary.rs` remains frozen. After rustfmt, the parent is 25 lines and the new production children are 1,564, 1,031, 1,779, 1,283, 1,035, and 541 lines; the policy removes the parent entry and retains the two moved targeted suppressions under their child paths. Crate-visible call paths, persistence SQL, attempt and terminal lifecycle, raw-payload retention/compression, streaming capture, tests, and resource classification remain unchanged.
+
+Validation for this extraction is rustfmt, the explicit source-quality checker, locked all-target checking, all-features Clippy, focused raw-overflow-spool and streaming-payload tests, focused stateful SQLite runtime/persistence coverage, archive/file-I/O coverage, and `git diff --check`.
 
 ## CI Contract
 

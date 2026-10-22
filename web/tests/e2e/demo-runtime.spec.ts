@@ -11,7 +11,7 @@ const allRoutes: RouteCase[] = [
   { path: "/#/stats", expectedPath: "/stats" },
   { path: "/#/live", expectedPath: "/live" },
   { path: "/#/records", expectedPath: "/records" },
-  { path: "/#/account-pool", expectedPath: "/account-pool/pool" },
+  { path: "/#/account-pool", expectedPath: "/account-pool/transits" },
   { path: "/#/account-pool/upstream-accounts", expectedPath: "/account-pool/pool" },
   { path: "/#/account-pool/transits", expectedPath: "/account-pool/transits" },
   { path: "/#/account-pool/pool", expectedPath: "/account-pool/pool" },
