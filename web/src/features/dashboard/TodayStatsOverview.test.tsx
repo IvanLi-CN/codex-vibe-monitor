@@ -47,7 +47,7 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.secondary.vsYesterday": "vs yesterday",
         "dashboard.today.secondary.meanComparison": "vs average",
         "dashboard.today.secondary.currentVsAverage": "vs avg",
-        "dashboard.today.secondary.comparison": "Comparison",
+        "dashboard.today.secondary.comparison": "vs previous",
         "dashboard.today.secondary.perConversation": "Per conversation",
         "dashboard.today.secondary.retry": "Retry",
         "dashboard.today.secondary.inProgress": "In progress",
@@ -437,6 +437,36 @@ describe("TodayStatsOverview", () => {
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent,
     ).toContain("+175%");
+  });
+
+  it("compares rolling 24-hour success counts against the complete previous window", () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12,
+          successCount: 10,
+          failureCount: 2,
+          totalCost: 1.2,
+          totalTokens: 9999,
+        }}
+        comparisonStats={{
+          totalCount: 6,
+          successCount: 5,
+          failureCount: 1,
+          totalCost: 0.6,
+          totalTokens: 5000,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        loading={false}
+        error={null}
+        dayKind="rolling24h"
+      />,
+    );
+
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-success-ratio"]')?.textContent,
+    ).toContain("+100%");
+    expect(host?.textContent).toContain("vs previous");
   });
 
   it("uses a six-tile desktop grid when parallel conversations are hidden", () => {

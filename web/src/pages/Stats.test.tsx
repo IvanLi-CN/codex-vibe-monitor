@@ -196,6 +196,44 @@ describe("StatsPage", () => {
     });
   });
 
+  it("places the independent history calendar before the stats filter surface", () => {
+    hookMocks.useSummary.mockReturnValue({
+      summary: null,
+      isLoading: false,
+      error: null,
+    });
+    hookMocks.useTimeseries.mockReturnValue({
+      data: { points: [], bucketSeconds: 3600 },
+      isLoading: false,
+      error: null,
+    });
+    hookMocks.useErrorDistribution.mockReturnValue({
+      data: [],
+      isLoading: false,
+      error: null,
+    });
+    hookMocks.useFailureSummary.mockReturnValue({
+      data: null,
+      isLoading: false,
+      error: null,
+    });
+    hookMocks.useParallelWorkStats.mockReturnValue({
+      data: null,
+      isLoading: false,
+      error: null,
+    });
+
+    render(<StatsPage />);
+
+    const page = host?.firstElementChild;
+    const calendar = host?.querySelector('[data-testid="usage-calendar"]');
+    expect(page?.firstElementChild).toBe(calendar);
+    expect(calendar?.closest("section")).toBeNull();
+    expect(
+      calendar?.nextElementSibling?.querySelector('[data-testid="stats-range-select-trigger"]'),
+    ).not.toBeNull();
+  });
+
   it("offers minute buckets for ranges up to 24 hours", () => {
     for (const range of ["1h", "today", "1d"]) {
       expect(BUCKET_OPTION_KEYS[range]).toEqual(

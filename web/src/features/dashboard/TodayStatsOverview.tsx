@@ -644,16 +644,16 @@ export function TodayStatsOverview({
     isHistoricalDay || dayKind === "rolling24h"
       ? t("dashboard.today.secondary.meanComparison")
       : t("dashboard.today.secondary.vsYesterday");
-  const comparisonLabel = isHistoricalDay
-    ? t("dashboard.today.secondary.comparison")
-    : t("dashboard.today.secondary.vsYesterday");
+  const comparisonLabel = isTodayLiveRange
+    ? t("dashboard.today.secondary.vsYesterday")
+    : t("dashboard.today.secondary.comparison");
   const parallelComparisonLabel = isLiveRange
     ? t("dashboard.today.secondary.currentVsAverage")
     : comparisonLabel;
   const modelPerformanceTitle = t("dashboard.modelPerformance.title");
   const successComparisonDelta = percentDelta(
     successCount,
-    isLiveRange ? sameProgressUsage.successCount : comparisonStats?.successCount,
+    isTodayLiveRange ? sameProgressUsage.successCount : comparisonStats?.successCount,
   );
   const usageBreakdownLabels =
     locale === "zh"
