@@ -3832,6 +3832,39 @@ export const GPT61ModelContextCluster: Story = {
     if (!(cluster instanceof HTMLElement)) {
       throw new Error("missing GPT-6.1 model context cluster");
     }
+    const currentSlot = cluster.closest<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-slot"]',
+    );
+    const slotTime = currentSlot?.querySelector<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-slot-time"]',
+    );
+    const slotReadings = currentSlot?.querySelector<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-slot-readings"]',
+    );
+    if (!currentSlot || !slotTime || !slotReadings) {
+      throw new Error("missing GPT-6.1 slot geometry");
+    }
+    expect(
+      Math.abs(cluster.getBoundingClientRect().top - slotTime.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(3);
+    expect(
+      Math.abs(slotReadings.getBoundingClientRect().top - slotTime.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(3);
+    const header = currentSlot.querySelector<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-slot-header"]',
+    );
+    if (!header) throw new Error("missing GPT-6.1 slot header");
+    expect(
+      Math.abs(slotReadings.getBoundingClientRect().right - header.getBoundingClientRect().right),
+    ).toBeLessThanOrEqual(1);
+    const clusterRect = cluster.getBoundingClientRect();
+    const readingsRect = slotReadings.getBoundingClientRect();
+    expect(
+      clusterRect.left < readingsRect.right &&
+        clusterRect.right > readingsRect.left &&
+        clusterRect.top < readingsRect.bottom &&
+        clusterRect.bottom > readingsRect.top,
+    ).toBe(false);
 
     await expect(cluster.querySelector('[data-model-generation-segment="6.1"]')).not.toBeNull();
     await expect(cluster.querySelector('[data-model-icon="weather-night"]')).not.toBeNull();
@@ -4275,8 +4308,8 @@ export const RunningOnlyConversation: Story = {
     const currentSlotHeader = await within(currentSlot).findByTestId(
       "dashboard-working-conversation-slot-header",
     );
-    expect(currentSlotHeader).toHaveClass("grid");
-    expect(currentSlotHeader).toHaveClass("grid-cols-[minmax(0,1fr)_auto]");
+    expect(currentSlotHeader).toHaveClass("flex");
+    expect(currentSlotHeader).toHaveClass("items-center");
     await within(currentSlotHeader).findByTestId("invocation-phase-badge");
 
     const phaseLabels = Array.from(

@@ -697,7 +697,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
   evidence_surface: component
   surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
   target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
-  evidence_note: verifies the complete `6.1` generation remains visible beside the Luna glyph and explicit `none` effort in the compact slot.
+  evidence_note: verifies the complete `6.1` generation remains visible beside the Luna glyph and explicit `none` effort in the compact slot, with time, identity, and readings kept on one row and the readings right-aligned to the shared content edge.
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
@@ -715,7 +715,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
   evidence_surface: component
   surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
   target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
-  evidence_note: verifies upstream recent rows reuse the compact cluster, show `5.6`, `6`, and explicit `none`, render a directional `5.6 → 6` mismatch, and preserve horizontal containment at 393x852.
+  evidence_note: verifies upstream recent rows reuse the compact cluster, show `5.6`, `6`, and explicit `none`, keep equivalent identities on one row, render a directional `5.6 → 6` mismatch with both identities, and preserve horizontal containment at 393x852.
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data

@@ -5766,8 +5766,8 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(slotHeader instanceof HTMLElement)) {
       throw new Error("missing slot header");
     }
-    expect(slotHeader.className).toContain("grid");
-    expect(slotHeader.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+    expect(slotHeader.className).toContain("flex");
+    expect(slotHeader.className).toContain("items-center");
     const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
     if (!(statusLabel instanceof HTMLElement)) {
       throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);

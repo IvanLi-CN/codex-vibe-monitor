@@ -2496,6 +2496,7 @@ const InvocationSlot = memo(function InvocationSlot({
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
     viewModel.modelHasMismatch || resolveModelIdentityGeneration(viewModel.modelValue) != null;
+  const shouldStackModelContext = viewModel.modelHasMismatch;
   const modelContextTitle = [
     viewModel.modelHasMismatch && viewModel.requestModelValue !== FALLBACK_CELL
       ? `${viewModel.requestModelValue} -> ${viewModel.modelValue}`
@@ -2579,14 +2580,25 @@ const InvocationSlot = memo(function InvocationSlot({
         type="button"
         disabled={interactionsDisabled}
         aria-label={interactionsDisabled ? undefined : invocationActionLabel}
-        className="block w-full appearance-none border-0 bg-transparent p-0 text-left font-inherit disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-0 gap-y-1"
+        className={cn(
+          "block w-full appearance-none border-0 bg-transparent p-0 text-left font-inherit disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary min-h-5 min-w-0",
+          shouldStackModelContext
+            ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-0 gap-y-1"
+            : "flex items-center gap-1",
+        )}
         onClick={(event) => {
           event.stopPropagation();
           handleOpenInvocation();
         }}
         data-testid="dashboard-working-conversation-slot-header"
       >
-        <div className="contents">
+        <div
+          className={cn(
+            shouldStackModelContext
+              ? "contents"
+              : "col-span-2 row-start-1 flex min-w-0 items-center gap-1 overflow-hidden",
+          )}
+        >
           <div
             data-testid="dashboard-working-conversation-slot-time"
             className="shrink-0 font-mono text-[10px] text-base-content/72"
@@ -2595,7 +2607,10 @@ const InvocationSlot = memo(function InvocationSlot({
           </div>
           <div
             data-testid="dashboard-working-conversation-slot-model"
-            className="col-span-2 row-start-2 min-w-0 max-w-full truncate text-[9.5px] font-semibold text-base-content/76"
+            className={cn(
+              "min-w-0 max-w-full truncate text-[9.5px] font-semibold text-base-content/76",
+              shouldStackModelContext ? "col-span-2 row-start-2" : "flex-1",
+            )}
             title={modelContextTitle}
           >
             {shouldGroupModelContext ? (
@@ -2644,7 +2659,10 @@ const InvocationSlot = memo(function InvocationSlot({
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="col-start-2 row-start-1 flex min-w-0 flex-nowrap items-center justify-end gap-1.5"
+          className={cn(
+            "flex min-w-0 flex-nowrap items-center justify-end gap-1.5",
+            shouldStackModelContext ? "col-start-2 row-start-1" : "ml-auto shrink-0",
+          )}
         >
           <div className="flex min-w-0 shrink items-center justify-end gap-0">
             {invocation.livePhase ? (
