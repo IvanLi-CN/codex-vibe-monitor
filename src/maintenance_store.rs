@@ -2127,7 +2127,7 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
     while let Some(relative_separator) = sanitized[search_from..].find("://") {
         let separator = search_from + relative_separator;
         let authority_start = separator + 3;
-        let authority_end = sanitized[authority_start..]
+        let authority_limit = sanitized[authority_start..]
             .find(|character: char| {
                 character.is_whitespace()
                     || character == '/'
@@ -2135,6 +2135,9 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
                     || character == '#'
             })
             .map_or(sanitized.len(), |offset| authority_start + offset);
+        let authority_end = sanitized[authority_start..authority_limit]
+            .find("://")
+            .map_or(authority_limit, |offset| authority_start + offset);
         let Some(user_info_end) = sanitized[authority_start..authority_end].rfind('@') else {
             search_from = authority_end;
             continue;
@@ -7633,6 +7636,16 @@ mod tests {
         assert!(url_credentials.contains("https://[REDACTED]@example.com/v1/data"));
         assert!(!url_credentials.contains("alice"));
         assert!(!url_credentials.contains("pass;word,more"));
+        let adjacent_url_credentials = sanitize_task_detail(
+            "upstream rejected https://public.example,https://alice:password@example.com/path",
+        );
+        assert!(adjacent_url_credentials.contains("https://public.example"));
+        assert!(adjacent_url_credentials.contains("https://[REDACTED]@example.com/path"));
+        assert!(!adjacent_url_credentials.contains("password"));
+        assert_eq!(
+            sanitize_task_detail("upstream accepted https://public.example/path"),
+            "upstream accepted https://public.example/path"
+        );
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
