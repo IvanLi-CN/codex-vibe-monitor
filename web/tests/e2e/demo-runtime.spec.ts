@@ -43,6 +43,11 @@ const scenes = ["operational", "attention", "empty", "network-failure"] as const
 const nonOperationalSmokeRoutes = allRoutes.filter((route) =>
   ["/#/dashboard", "/#/records"].includes(route.path),
 );
+const networkFailureRoutes = allRoutes.filter((route) =>
+  ["/#/account-pool/maintenance-records", "/#/system/tasks", "/#/system/settings"].includes(
+    route.path,
+  ),
+);
 
 function routeLandmark(page: Page, path: string): Locator {
   switch (path) {
@@ -104,21 +109,17 @@ async function expectDemoShell(page: Page, route: RouteCase) {
 test.describe("Web Demo runtime", () => {
   test("resolves every production route in operational scene", async ({ page }) => {
     for (const route of allRoutes) {
-      const routePage = route === allRoutes[0] ? page : await page.context().newPage();
       const pageErrors: string[] = [];
       const onPageError = (error: Error) => pageErrors.push(error.message);
-      routePage.on("pageerror", onPageError);
+      page.on("pageerror", onPageError);
       try {
-        await routePage.goto(routeWithScene(route.path, "operational"), {
+        await page.goto(routeWithScene(route.path, "operational"), {
           waitUntil: "domcontentloaded",
         });
-        await expectDemoShell(routePage, route);
+        await expectDemoShell(page, route);
         expect(pageErrors).toEqual([]);
       } finally {
-        routePage.off("pageerror", onPageError);
-        if (routePage !== page) {
-          await routePage.close();
-        }
+        page.off("pageerror", onPageError);
       }
     }
   });
@@ -135,6 +136,18 @@ test.describe("Web Demo runtime", () => {
         expect(pageErrors).toEqual([]);
       });
     }
+  }
+
+  for (const route of networkFailureRoutes) {
+    test(`keeps ${route.expectedPath} error-safe in network-failure scene`, async ({ page }) => {
+      const pageErrors: string[] = [];
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      await page.goto(routeWithScene(route.path, "network-failure"), {
+        waitUntil: "domcontentloaded",
+      });
+      await expectDemoShell(page, route);
+      expect(pageErrors).toEqual([]);
+    });
   }
 
   test("round-trips query-driven scene and theme state in the shareable hash", async ({ page }) => {

@@ -253,6 +253,7 @@ export const Overview: Story = {
 
 export const Empty: Story = {
   args: { taskKey: "retention_archive", trend: emptyTrend, retentionTrend: [], state: "ready" },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     await expectEmptyChart(canvasElement, "暂无运行样本");
   },
@@ -265,6 +266,7 @@ export const SuccessfulCounterlessRun: Story = {
     trend: successfulCounterlessTrend,
     state: "ready",
   },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     await expectEmptyChart(canvasElement, "该任务不提供工作量计数");
   },
@@ -272,6 +274,7 @@ export const SuccessfulCounterlessRun: Story = {
 
 export const LegacyInterface: Story = {
   args: { taskKey: "dashboard_runtime_projection_reconcile", trend: null, state: "ready" },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     await expectEmptyChart(canvasElement, "暂无运行计量");
   },
@@ -500,6 +503,7 @@ export const RunningWithoutCounters: Story = {
 
 export const Loading: Story = {
   args: { taskKey: "retention_archive", state: "loading" },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     await expectEmptyChart(canvasElement, "加载中");
   },
@@ -507,6 +511,7 @@ export const Loading: Story = {
 
 export const ErrorState: Story = {
   args: { taskKey: "retention_archive", trend: null, state: "error", error: "维护库暂不可用" },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     await expectEmptyChart(canvasElement, "读取失败：维护库暂不可用");
   },

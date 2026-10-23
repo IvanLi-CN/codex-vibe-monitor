@@ -112,24 +112,34 @@ let currentDetail: Record<string, unknown>;
 let failDetailLoad = false;
 let failManualRun = false;
 let fetchMock: ReturnType<typeof vi.fn>;
+let subscribedRuntime: { activeRuns: Array<Record<string, unknown>> } | null = null;
+let subscribedDetail: Record<string, unknown> | null = null;
+
+function taskDetailTree(taskKey: string) {
+  return (
+    <MemoryRouter initialEntries={[`/system/tasks/${taskKey}`]}>
+      <ThemeProvider>
+        <I18nProvider>
+          <Routes>
+            <Route path="/system/tasks/:taskKey" element={<SystemTaskDetailPage />} />
+          </Routes>
+        </I18nProvider>
+      </ThemeProvider>
+    </MemoryRouter>
+  );
+}
 
 function renderPage(taskKey: string) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
-    root?.render(
-      <MemoryRouter initialEntries={[`/system/tasks/${taskKey}`]}>
-        <ThemeProvider>
-          <I18nProvider>
-            <Routes>
-              <Route path="/system/tasks/:taskKey" element={<SystemTaskDetailPage />} />
-            </Routes>
-          </I18nProvider>
-        </ThemeProvider>
-      </MemoryRouter>,
-    );
+    root?.render(taskDetailTree(taskKey));
   });
+}
+
+function rerenderPage(taskKey: string) {
+  act(() => root?.render(taskDetailTree(taskKey)));
 }
 
 async function waitForText(text: string | RegExp) {
@@ -148,13 +158,16 @@ describe("SystemTaskDetailPage", () => {
     currentDetail = makeDetail("invocation_identity_cleanup");
     failDetailLoad = false;
     failManualRun = false;
-    streamMocks.useSubscriptionTopic.mockReturnValue({
-      data: null,
+    subscribedRuntime = null;
+    subscribedDetail = null;
+    streamMocks.useSubscriptionTopic.mockImplementation((descriptor: { topic: string }) => ({
+      data:
+        descriptor.topic === "system.managed-tasks.runtime" ? subscribedRuntime : subscribedDetail,
       lastReceivedAt: null,
       error: null,
       isLoading: false,
       refresh: vi.fn(),
-    });
+    }));
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "http://test.invalid");
       if (url.pathname === "/api/system/observability") {
@@ -225,6 +238,48 @@ describe("SystemTaskDetailPage", () => {
       links.querySelector('a[href="/system/tasks/invocation_identity_cleanup"]'),
     ).not.toBeNull();
     expect(links.querySelector('a[href="/system/tasks/raw_orphan_sweep"]')).not.toBeNull();
+  });
+
+  it("applies runtime and detail subscription updates", async () => {
+    renderPage("invocation_identity_cleanup");
+    await waitForText("调用身份清理");
+
+    subscribedDetail = makeDetail("invocation_identity_cleanup", false);
+    subscribedRuntime = {
+      activeRuns: [
+        {
+          executionId: 7,
+          executionUid: "subscription-run",
+          taskKey: "invocation_identity_cleanup",
+          title: "调用身份清理",
+          triggerKind: "manual",
+          phase: "processing",
+          executionClass: "maintenance",
+          startedAt: "2026-10-04T12:00:00.000Z",
+          elapsedMs: 1200,
+          activeChildTaskKey: null,
+          activeChildTitle: "释放对话身份",
+        },
+      ],
+    };
+    rerenderPage("invocation_identity_cleanup");
+
+    await waitForText("恢复自动触发");
+    await waitForText("当前子任务：释放对话身份");
+    expect(
+      (within(host as HTMLElement).getByRole("button", { name: "运行中" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    subscribedDetail = makeDetail("invocation_identity_cleanup", true);
+    subscribedRuntime = { activeRuns: [] };
+    rerenderPage("invocation_identity_cleanup");
+
+    await waitForText("暂停自动触发");
+    expect(
+      (within(host as HTMLElement).getByRole("button", { name: "立即运行" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
   });
 
   it("keeps a paused task manually runnable and reflects the active run", async () => {
