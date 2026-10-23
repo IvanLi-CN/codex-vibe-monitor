@@ -3094,7 +3094,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
   });
 
-  it("renders the historical WebSocket transport badge only in websocket invocation slots", () => {
+  it("omits the historical WebSocket transport badge from compact invocation slots", () => {
     renderSection(
       createResponse([
         createConversation("pck-ws-transport", [
@@ -3117,9 +3117,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
-    expect(badges).toHaveLength(1);
-    expect(badges?.[0]?.textContent?.trim()).toBe("WebSocket（历史）");
-    expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket（历史）");
+    expect(badges).toHaveLength(0);
   });
 
   it("shows the persisted conversation id in the card header while keeping the raw prompt cache key non-visible", () => {
@@ -3614,6 +3612,7 @@ describe("DashboardWorkingConversationsSection", () => {
               requestModel: "gpt-5.6-sol",
               responseModel: "gpt-5.6-sol",
               reasoningEffort: "high",
+              transport: "websocket",
             },
           ],
         },
@@ -3638,6 +3637,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
     expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="invocation-transport-badge"]',
+      ),
+    ).toBeNull();
   });
 
   it("keeps the account chip inline with model metadata and surfaces compact endpoint badges", () => {
@@ -5766,8 +5770,8 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(slotHeader instanceof HTMLElement)) {
       throw new Error("missing slot header");
     }
-    expect(slotHeader.className).toContain("grid");
-    expect(slotHeader.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+    expect(slotHeader.className).toContain("flex");
+    expect(slotHeader.className).toContain("items-center");
     const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
     if (!(statusLabel instanceof HTMLElement)) {
       throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);
