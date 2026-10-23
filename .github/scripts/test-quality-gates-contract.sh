@@ -10,18 +10,10 @@ trap 'rm -rf "${tmp_dir}"' EXIT
 copy_repo_snapshot() {
   local source_root="$1"
   local dest_root="$2"
+  # The contract checker only reads .github; keep generated build, dependency and documentation
+  # artifacts out of repeated mutation repositories so this regression stays bounded.
   mkdir -p "$dest_root"
-  tar \
-    --exclude='.git' \
-    --exclude='target' \
-    --exclude='node_modules' \
-    --exclude='web/node_modules' \
-    --exclude='web/dist' \
-    --exclude='coverage' \
-    --exclude='playwright-report' \
-    -C "$source_root" \
-    -cf - \
-    . | tar -C "$dest_root" -xf -
+  tar -C "$source_root" -cf - .github | tar -C "$dest_root" -xf -
 }
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
@@ -151,14 +143,20 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 needle = """      - name: Upload retention migration evidence
-        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        if: ${{ always() && steps.retention_scope.outputs.required == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: retention-migration-validation-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/candidate-identity.json
-            ${{ runner.temp }}/retention-migration-results
-            ${{ runner.temp }}/retention-runtime-results
+            ${{ runner.temp }}/retention-migration-results/candidate.json
+            ${{ runner.temp }}/retention-migration-results/results.json
+            ${{ runner.temp }}/retention-migration-results/*/source.json
+            ${{ runner.temp }}/retention-migration-results/*/candidate.log
+            ${{ runner.temp }}/retention-migration-results/*/candidate-diagnostics.jsonl
+            ${{ runner.temp }}/retention-runtime-results/results.json
+            ${{ runner.temp }}/retention-runtime-results/*/candidate.log
+            ${{ runner.temp }}/retention-runtime-results/*/daemon.log
           if-no-files-found: error
           overwrite: true
 """
@@ -178,6 +176,95 @@ PY
 }
 
 expect_retention_upload_overwrite_rejected
+
+expect_retention_upload_always_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "        if: ${{ always() && steps.retention_scope.outputs.required == 'true' }}"
+replacement = "        if: ${{ steps.retention_scope.outputs.required == 'true' }}"
+if text.count(needle) != 1:
+    raise SystemExit("expected one retention migration always-if fixture")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/retention-upload-always.log"; then
+    echo "expected retention upload always-if fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "Upload retention migration evidence" "$tmp_dir/retention-upload-always.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_retention_upload_always_rejected
+
+expect_build_retention_dependency_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "      - retention-migration-validation\n"
+if text.count(needle) != 1:
+    raise SystemExit("expected one Build Artifacts retention dependency fixture")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/build-retention-dependency.log"; then
+    echo "expected Build Artifacts retention dependency fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "must depend on the PR smoke producer and retention validation" "$tmp_dir/build-retention-dependency.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_build_retention_dependency_rejected
+
+expect_build_merge_group_condition_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = """  build:
+    name: Build Artifacts
+    needs:
+      - build-pr-smoke-artifacts
+      - retention-migration-validation
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
+replacement = needle.replace(
+    "    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+    "    if: ${{ always() && github.event_name == 'pull_request' }}",
+    1,
+)
+if text.count(needle) != 1:
+    raise SystemExit("expected one Build Artifacts merge-group condition fixture")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/build-merge-group.log"; then
+    echo "expected Build Artifacts merge-group condition fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "ci-pr.yml.jobs.build.if must stay" "$tmp_dir/build-merge-group.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_build_merge_group_condition_rejected
 
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
 mkdir -p "$observability_artifact_repo"
@@ -1028,8 +1115,13 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "    needs: build-pr-smoke-artifacts\n"
-replacement = "    needs: backend-test-archive\n"
+needle = """  build:
+    name: Build Artifacts
+    needs:
+      - build-pr-smoke-artifacts
+      - retention-migration-validation
+"""
+replacement = needle.replace("      - build-pr-smoke-artifacts", "      - backend-test-archive", 1)
 if needle not in text:
     raise SystemExit("failed to rewrite PR smoke artifact dependency")
 path.write_text(text.replace(needle, replacement, 1))
@@ -1040,7 +1132,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "ci-pr.yml.jobs.build must depend only on the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
+grep -q "ci-pr.yml.jobs.build must depend on the PR smoke producer and retention validation" "$tmp_dir/smoke-producer.log"
 
 e2e_producer_repo="$tmp_dir/e2e-producer-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_producer_repo"

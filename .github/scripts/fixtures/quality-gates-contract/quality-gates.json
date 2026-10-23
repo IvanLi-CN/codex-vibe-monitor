@@ -29,7 +29,6 @@
           "Backend Tests (Stateful SQLite)": 15368,
           "Backend Tests (Archive / File I/O)": 15368,
           "Build Artifacts": 15368,
-          "Retention Migration Validation": 15368,
           "Review Policy Gate": 15368
         }
       }
@@ -65,7 +64,6 @@
     "Backend Tests (Stateful SQLite)",
     "Backend Tests (Archive / File I/O)",
     "Build Artifacts",
-    "Retention Migration Validation",
     "Review Policy Gate"
   ],
   "informational_checks": [],
@@ -89,15 +87,15 @@
         "Backend Tests (Lightweight)",
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
-        "Build Artifacts",
-        "Retention Migration Validation"
+        "Build Artifacts"
       ],
       "auxiliary_jobs": [
         "Backend Test Archive Producer",
         "Backend Tests (Stateful SQLite shard 1/2)",
         "Backend Tests (Stateful SQLite shard 2/2)",
         "PR E2E Test Producer",
-        "PR Smoke Artifact Producer"
+        "PR Smoke Artifact Producer",
+        "Retention Migration Validation"
       ]
     },
     {

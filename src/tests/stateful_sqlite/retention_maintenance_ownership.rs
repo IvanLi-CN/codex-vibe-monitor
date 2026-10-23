@@ -38,6 +38,142 @@ async fn ownership_manual_materialization_start_preserves_paused_schedule() {
 }
 
 #[tokio::test]
+async fn ownership_settlement_serializes_deferred_finalization_from_timeline_writer() {
+    let directory = make_temp_test_dir("maintenance-settlement-timeline-interleaving");
+    let options = SqliteConnectOptions::new()
+        .filename(directory.join("maintenance.sqlite"))
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(2));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(3)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
+    store.initialize_schema_for_test().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "invocation_identity_cleanup",
+            "2026-10-23T00:00:00.000Z",
+            "manual",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .start_timeline_session("settlement-interleaving", "2026-10-23T00:00:00.000Z")
+        .await
+        .unwrap();
+    store
+        .write_timeline_batch(
+            "settlement-interleaving",
+            &[crate::task_timeline::TimelineEvent::ExecutionStarted {
+                id: "settlement-execution".to_string(),
+                task_key: "invocation_identity_cleanup".to_string(),
+                title: "清理调用身份".to_string(),
+                trigger_kind: "manual".to_string(),
+                execution_class: Some("maintenance_legacy".to_string()),
+                started_at: "2026-10-23T00:00:00.100Z".to_string(),
+                managed_run_id: Some(run_id),
+            }],
+            0,
+            "2026-10-23T00:00:00.100Z",
+            false,
+        )
+        .await
+        .unwrap();
+
+    let hooks = store.install_settlement_interleaving_hooks();
+    let finish_store = store.clone();
+    let finish_task = tokio::spawn(async move {
+        finish_store
+            .finish_run_with_observation(
+                run_id,
+                "success",
+                "2026-10-23T00:00:01.000Z",
+                900,
+                Some("已完成"),
+                None,
+                Some("completed"),
+                Some("completed"),
+                None,
+            )
+            .await
+    });
+    hooks.finish_after_select.notified().await;
+
+    let timeline_store = store.clone();
+    let timeline_task = tokio::spawn(async move {
+        timeline_store
+            .write_timeline_batch(
+                "settlement-interleaving",
+                &[crate::task_timeline::TimelineEvent::ExecutionFinished {
+                    id: "settlement-execution".to_string(),
+                    finished_at: "2026-10-23T00:00:01.000Z".to_string(),
+                    duration_ms: 900,
+                    status: "success".to_string(),
+                }],
+                0,
+                "2026-10-23T00:00:01.000Z",
+                false,
+            )
+            .await
+    });
+    hooks.timeline_before_admission.notified().await;
+
+    // With the old deferred-transaction path, the timeline writer would acquire a write
+    // transaction here while finalization was paused after SELECT. The bounded absence check
+    // makes that interleaving observable without relying on a sleep or a retry.
+    let timeline_started_while_finalization_was_paused = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        hooks.timeline_transaction_started.notified(),
+    )
+    .await
+    .is_ok();
+    if timeline_started_while_finalization_was_paused {
+        hooks.continue_timeline.notify_one();
+        hooks.continue_finish.notify_one();
+        let finish_result = finish_task.await.expect("join finalization task");
+        let timeline_result = timeline_task.await.expect("join timeline task");
+        panic!(
+            "timeline write entered before deferred finalization settled: finish={finish_result:?}, timeline={timeline_result:?}"
+        );
+    }
+
+    hooks.continue_finish.notify_one();
+    finish_task
+        .await
+        .expect("join finalization task")
+        .expect("finalization should commit before timeline write admission");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        hooks.timeline_transaction_started.notified(),
+    )
+    .await
+    .expect("timeline writer should enter after finalization commits");
+    hooks.continue_timeline.notify_one();
+    timeline_task
+        .await
+        .expect("join timeline task")
+        .expect("timeline write should commit after finalization");
+
+    let status: String = sqlx::query_scalar("SELECT status FROM managed_task_runs WHERE id=?")
+        .bind(run_id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "success");
+    let timeline_status: String =
+        sqlx::query_scalar("SELECT status FROM task_timeline_segments WHERE segment_id=?")
+            .bind("settlement-execution")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(timeline_status, "success");
+}
+
+#[tokio::test]
 async fn ownership_v2_persists_committed_as_processed_count() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();

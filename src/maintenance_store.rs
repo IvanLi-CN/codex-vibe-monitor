@@ -249,6 +249,18 @@ fn canonical_task_execution_key(task_key: &str) -> &str {
 pub(crate) struct MaintenanceStore {
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) prompt_cache_materialization_control: Arc<PromptCacheMaterializationControl>,
+    #[cfg(test)]
+    settlement_interleaving_hooks: Arc<Mutex<Option<Arc<SettlementInterleavingTestHooks>>>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct SettlementInterleavingTestHooks {
+    pub(crate) finish_after_select: tokio::sync::Notify,
+    pub(crate) continue_finish: tokio::sync::Notify,
+    pub(crate) timeline_before_admission: tokio::sync::Notify,
+    pub(crate) timeline_transaction_started: tokio::sync::Notify,
+    pub(crate) continue_timeline: tokio::sync::Notify,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2801,7 +2813,29 @@ impl MaintenanceStore {
             prompt_cache_materialization_control: Arc::new(
                 PromptCacheMaterializationControl::default(),
             ),
+            #[cfg(test)]
+            settlement_interleaving_hooks: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_settlement_interleaving_hooks(
+        &self,
+    ) -> Arc<SettlementInterleavingTestHooks> {
+        let hooks = Arc::new(SettlementInterleavingTestHooks::default());
+        *self
+            .settlement_interleaving_hooks
+            .lock()
+            .expect("settlement interleaving hooks lock") = Some(Arc::clone(&hooks));
+        hooks
+    }
+
+    #[cfg(test)]
+    fn settlement_interleaving_hooks(&self) -> Option<Arc<SettlementInterleavingTestHooks>> {
+        self.settlement_interleaving_hooks
+            .lock()
+            .expect("settlement interleaving hooks lock")
+            .clone()
     }
 
     #[cfg(test)]
@@ -3184,6 +3218,10 @@ impl MaintenanceStore {
         observed_at: &str,
         heartbeat: bool,
     ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(hooks) = self.settlement_interleaving_hooks() {
+            hooks.timeline_before_admission.notify_one();
+        }
         let mut transaction = self.pool.begin().await?;
         sqlx::query("INSERT OR IGNORE INTO maintenance_metadata(key,value,updated_at) VALUES('task_timeline_revision','0',?)")
             .bind(observed_at)
@@ -3205,6 +3243,11 @@ impl MaintenanceStore {
                 .bind(observed_at)
                 .execute(&mut *transaction)
                 .await?;
+        }
+        #[cfg(test)]
+        if let Some(hooks) = self.settlement_interleaving_hooks() {
+            hooks.timeline_transaction_started.notify_one();
+            hooks.continue_timeline.notified().await;
         }
         let revision = sqlx::query_scalar::<_, i64>(
             "SELECT CAST(value AS INTEGER) FROM maintenance_metadata WHERE key='task_timeline_revision'",
@@ -4920,12 +4963,19 @@ impl MaintenanceStore {
             })
             .map(|value| value.max(0));
         let details = details.map(serde_json::to_string).transpose()?;
-        let mut transaction = self.pool.begin().await?;
+        // Finalization reads the run before updating it. Begin with a write intent so SQLite
+        // serializes that snapshot against every other connection that can write this store.
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let task_key: Option<String> =
             sqlx::query_scalar("SELECT task_key FROM managed_task_runs WHERE id=?")
                 .bind(id)
                 .fetch_optional(&mut *transaction)
                 .await?;
+        #[cfg(test)]
+        if let Some(hooks) = self.settlement_interleaving_hooks() {
+            hooks.finish_after_select.notify_one();
+            hooks.continue_finish.notified().await;
+        }
         let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=? AND status IN ('running','requested','queued')")
             .bind(status)
             .bind(finished_at)

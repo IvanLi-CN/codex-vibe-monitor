@@ -899,9 +899,20 @@ def require_storybook_browser_install(workflow, workflow_path: str) -> None:
     )
 
 
-def require_retention_migration_validation_contract(workflow: dict[str, Any], expected_jobs: set[str]) -> None:
+def require_retention_migration_validation_contract(
+    workflow: dict[str, Any], expected_jobs: set[str], auxiliary_jobs: set[str]
+) -> None:
     where = "ci-pr.yml.jobs.retention-migration-validation"
-    job = named_job_config(workflow, "retention-migration-validation", expected_jobs, "ci-pr.yml")
+    job = named_job_config(
+        workflow,
+        "retention-migration-validation",
+        expected_jobs | auxiliary_jobs,
+        "ci-pr.yml",
+    )
+    require(
+        job.get("name") in auxiliary_jobs,
+        f"{where} must remain auxiliary and propagate through Build Artifacts",
+    )
     require(
         job.get("needs") == "build-pr-smoke-artifacts",
         f"{where} must depend on build-pr-smoke-artifacts",
@@ -947,7 +958,6 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         "Run released-source migration validation",
         "Run runtime ownership validation",
         "Verify candidate-bound migration evidence",
-        "Upload retention migration evidence",
     ):
         require_exact_if(step_config(job, step_name, where), gated_if, f"{where}.steps['{step_name}']")
 
@@ -1052,14 +1062,29 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         require(fragment in verify_step, f"{where} evidence verification must contain {fragment!r}")
 
     upload = uses_step_config(job, "Upload retention migration evidence", "actions/upload-artifact@v7", where)
+    require_exact_if(
+        upload,
+        "${{ always() && steps.retention_scope.outputs.required == 'true' }}",
+        f"{where}.steps['Upload retention migration evidence']",
+    )
     upload_with = require_mapping(upload.get("with"), f"{where}.steps['Upload retention migration evidence'].with")
+    expected_paths = {
+        "${{ runner.temp }}/candidate-identity.json",
+        "${{ runner.temp }}/retention-migration-results/candidate.json",
+        "${{ runner.temp }}/retention-migration-results/results.json",
+        "${{ runner.temp }}/retention-migration-results/*/source.json",
+        "${{ runner.temp }}/retention-migration-results/*/candidate.log",
+        "${{ runner.temp }}/retention-migration-results/*/candidate-diagnostics.jsonl",
+        "${{ runner.temp }}/retention-runtime-results/results.json",
+        "${{ runner.temp }}/retention-runtime-results/*/candidate.log",
+        "${{ runner.temp }}/retention-runtime-results/*/daemon.log",
+    }
+    actual_paths = {line.strip() for line in str(upload_with.get("path", "")).splitlines() if line.strip()}
     require(
         upload_with.get("name") == "retention-migration-validation-${{ github.run_id }}"
-        and "candidate-identity.json" in str(upload_with.get("path", ""))
-        and "retention-migration-results" in str(upload_with.get("path", ""))
-        and "retention-runtime-results" in str(upload_with.get("path", ""))
+        and actual_paths == expected_paths
         and upload_with.get("if-no-files-found") == "error",
-        f"{where} must upload candidate-bound migration evidence fail-closed",
+        f"{where} must upload the strict candidate-bound evidence allowlist fail-closed",
     )
     require(
         upload_with.get("overwrite") is True,
@@ -1076,7 +1101,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
     require_storybook_browser_install(workflow, "ci-pr.yml")
-    require_retention_migration_validation_contract(workflow, expected_jobs)
+    require_retention_migration_validation_contract(workflow, expected_jobs, auxiliary_jobs)
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -1229,8 +1254,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     performance_declared = "Observability Performance Budget" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ())
     require(
-        build_job.get("needs") == "build-pr-smoke-artifacts",
-        "ci-pr.yml.jobs.build must depend only on the PR smoke artifact producer",
+        build_job.get("needs") == ["build-pr-smoke-artifacts", "retention-migration-validation"],
+        "ci-pr.yml.jobs.build must depend on the PR smoke producer and retention validation",
     )
     if performance_declared:
         require_observability_performance_contract(workflow)
@@ -1238,7 +1263,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         require_observability_diagnostic_contract(workflow)
     require_exact_if(
         build_job,
-        "${{ always() && github.event_name == 'pull_request' }}",
+        "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
         "ci-pr.yml.jobs.build",
     )
     producer_result_step = step_config(build_job, "Verify smoke artifact producer", "ci-pr.yml.jobs.build")
@@ -1250,6 +1275,21 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}"
         and producer_result_step.get("run") == 'test "$PRODUCER_RESULT" = success',
         "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails",
+    )
+    migration_result_step = step_config(
+        build_job,
+        "Verify retention migration validation",
+        "ci-pr.yml.jobs.build",
+    )
+    migration_result_env = require_mapping(
+        migration_result_step.get("env"),
+        "ci-pr.yml.jobs.build.steps['Verify retention migration validation'].env",
+    )
+    require(
+        migration_result_env.get("RETENTION_MIGRATION_RESULT")
+        == "${{ needs.retention-migration-validation.result }}"
+        and migration_result_step.get("run") == 'test "$RETENTION_MIGRATION_RESULT" = success',
+        "ci-pr.yml.jobs.build must fail when retention migration validation fails, cancels, or skips",
     )
     step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
     step_config(build_job, "Extract PR smoke artifacts", "ci-pr.yml.jobs.build")

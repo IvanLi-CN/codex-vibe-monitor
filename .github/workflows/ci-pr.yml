@@ -942,8 +942,10 @@ jobs:
 
   build:
     name: Build Artifacts
-    needs: build-pr-smoke-artifacts
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs:
+      - build-pr-smoke-artifacts
+      - retention-migration-validation
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -951,6 +953,11 @@ jobs:
         env:
           PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
         run: test "$PRODUCER_RESULT" = success
+
+      - name: Verify retention migration validation
+        env:
+          RETENTION_MIGRATION_RESULT: ${{ needs.retention-migration-validation.result }}
+        run: test "$RETENTION_MIGRATION_RESULT" = success
 
       - name: Checkout
         uses: actions/checkout@v7
@@ -1115,8 +1122,14 @@ jobs:
           name: retention-migration-validation-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/candidate-identity.json
-            ${{ runner.temp }}/retention-migration-results
-            ${{ runner.temp }}/retention-runtime-results
+            ${{ runner.temp }}/retention-migration-results/candidate.json
+            ${{ runner.temp }}/retention-migration-results/results.json
+            ${{ runner.temp }}/retention-migration-results/*/source.json
+            ${{ runner.temp }}/retention-migration-results/*/candidate.log
+            ${{ runner.temp }}/retention-migration-results/*/candidate-diagnostics.jsonl
+            ${{ runner.temp }}/retention-runtime-results/results.json
+            ${{ runner.temp }}/retention-runtime-results/*/candidate.log
+            ${{ runner.temp }}/retention-runtime-results/*/daemon.log
           if-no-files-found: error
           overwrite: true
           retention-days: 7
