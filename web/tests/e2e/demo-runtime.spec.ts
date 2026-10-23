@@ -54,19 +54,28 @@ const nonOperationalScenes = scenes.filter(
   (value) => value !== "operational" && value !== "network-failure",
 );
 const networkFailurePaths = new Set([
+  "/#/dashboard/invocations/demo-invocation-9002",
+  "/#/account-pool/groups",
   "/#/account-pool/maintenance-records",
   "/#/system/tasks",
   "/#/system/tasks/retention_archive",
+  "/#/system",
+  "/#/system/status",
+  "/#/system/performance",
+  "/#/system/prompt-cache",
   "/#/system/settings",
+  "/#/settings",
+  "/#/settings/legacy",
 ]);
 
-function routeLandmark(page: Page, path: string): Locator {
+function routeLandmark(page: Page, path: string, allowExpectedFailure = false): Locator {
   switch (path) {
     case "/#/":
     case "/#/dashboard":
     case "/#/not-a-route":
-    case "/#/dashboard/invocations/demo-invocation-9002":
       return page.getByTestId("dashboard-main-content");
+    case "/#/dashboard/invocations/demo-invocation-9002":
+      return page.getByTestId("dashboard-invocation-detail-drawer");
     case "/#/stats":
       return page.getByRole("heading", { name: "统计", exact: true });
     case "/#/live":
@@ -84,27 +93,32 @@ function routeLandmark(page: Page, path: string): Locator {
       return page.getByRole("heading", { name: "新增账号", exact: true });
     case "/#/account-pool/maintenance-records":
       return page.getByRole("heading", { name: "非模型调用执行记录", exact: true });
-    case "/#/account-pool/groups":
-      return page
+    case "/#/account-pool/groups": {
+      const success = page
         .getByTestId("account-pool-groups-list")
         .or(page.getByTestId("account-pool-groups-empty"))
-        .or(page.getByTestId("account-pool-groups-error"))
         .first();
+      return allowExpectedFailure
+        ? success.or(page.getByTestId("account-pool-groups-error")).first()
+        : success;
+    }
     case "/#/system":
-    case "/#/system/status":
-      return page
-        .getByTestId("system-status-overview")
-        .or(page.getByRole("heading", { name: "系统状态", exact: true }))
-        .first();
+    case "/#/system/status": {
+      const success = page.getByTestId("system-status-overview");
+      return allowExpectedFailure
+        ? success.or(page.getByRole("heading", { name: "系统状态", exact: true })).first()
+        : success;
+    }
     case "/#/system/performance":
       return page.getByTestId("system-observability-page");
     case "/#/system/tasks":
       return page.getByTestId("system-tasks-list");
-    case "/#/system/tasks/retention_archive":
-      return page
-        .getByRole("heading", { name: "数据保留与归档", exact: true })
-        .or(page.getByText(/^任务观测不可用：/))
-        .first();
+    case "/#/system/tasks/retention_archive": {
+      const success = page.getByRole("heading", { name: "数据保留与归档", exact: true });
+      return allowExpectedFailure
+        ? success.or(page.getByText(/^任务观测不可用：/)).first()
+        : success;
+    }
     case "/#/system/prompt-cache":
       return page.getByTestId("system-prompt-cache");
     case "/#/system/settings":
@@ -122,13 +136,26 @@ function routeLandmark(page: Page, path: string): Locator {
 
 function networkFailureState(page: Page, path: string): Locator {
   switch (path) {
+    case "/#/dashboard/invocations/demo-invocation-9002":
+      return page.getByTestId("dashboard-invocation-detail-error");
+    case "/#/account-pool/groups":
+      return page.getByTestId("account-pool-groups-error");
     case "/#/account-pool/maintenance-records":
       return page.getByTestId("maintenance-records-error");
     case "/#/system/tasks":
       return page.getByText(/^任务目录不可用：/);
     case "/#/system/tasks/retention_archive":
       return page.getByText(/^任务观测不可用：/);
+    case "/#/system":
+    case "/#/system/status":
+      return page.getByText(/^加载系统状态失败：/);
+    case "/#/system/performance":
+      return page.getByRole("alert").filter({ hasText: "暂时无法加载观测状态。" });
+    case "/#/system/prompt-cache":
+      return page.getByTestId("system-prompt-cache-error");
     case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
       return page.getByText(/^设置请求失败：/);
     default:
       throw new Error(`Missing network failure assertion for ${path}`);
@@ -140,29 +167,68 @@ function routeWithScene(path: string, scene: string) {
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
 }
 
-async function expectDemoShell(page: Page, route: RouteCase) {
+async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
+  await page.goto(routeWithScene(route.path, scene), {
+    waitUntil: "domcontentloaded",
+  });
+  await expect
+    .poll(() => new URL(page.url()).hash.split("?")[0], { timeout: 5_000 })
+    .toBe(`#${route.expectedPath}`);
+  const currentUrl = new URL(page.url());
+  const hashQueryIndex = currentUrl.hash.indexOf("?");
+  const hashPath =
+    hashQueryIndex === -1 ? currentUrl.hash : currentUrl.hash.slice(0, hashQueryIndex);
+  const hashSearch = hashQueryIndex === -1 ? "" : currentUrl.hash.slice(hashQueryIndex + 1);
+  const search = new URLSearchParams(hashSearch);
+  if (search.get("demoScene") === scene && search.get("demoTheme") === "light") return;
+  search.set("demoScene", scene);
+  search.set("demoTheme", "light");
+  currentUrl.hash = `${hashPath}?${search.toString()}`;
+  await page.goto(currentUrl.toString(), {
+    waitUntil: "domcontentloaded",
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+}
+
+async function expectDemoShell(
+  page: Page,
+  route: RouteCase,
+  options: { allowExpectedFailure?: boolean; expectedDetailState?: "success" | "empty" } = {},
+) {
+  const allowExpectedFailure = options.allowExpectedFailure === true;
   await expect(page.locator("#root")).toBeVisible();
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
-  await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 45_000 });
+  await expect(routeLandmark(page, route.path, allowExpectedFailure)).toBeVisible({
+    timeout: 45_000,
+  });
+  if (route.path === "/#/dashboard/invocations/demo-invocation-9002") {
+    const detailDrawer = page.getByTestId("dashboard-invocation-detail-drawer");
+    await expect(detailDrawer.getByText("demo-invocation-9002", { exact: true })).toBeVisible();
+    if (options.expectedDetailState === "success") {
+      await expect(page.locator(".invocation-detail-hero-surface")).toBeVisible();
+    } else if (options.expectedDetailState === "empty") {
+      await expect(page.getByTestId("dashboard-invocation-detail-empty")).toBeVisible();
+    }
+  }
   await expect(page.getByLabel("Loading page", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "页面加载失败", exact: true })).toHaveCount(0);
   await expect.poll(() => new URL(page.url()).hash).toContain(route.expectedPath);
 }
 
 test.describe("Web Demo runtime", () => {
-  test("resolves every production route in operational scene", { timeout: 120_000 }, async ({
-    page,
-  }) => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("resolves every production route in operational scene", async ({ page }) => {
     for (const route of allRoutes) {
       const pageErrors: string[] = [];
       const onPageError = (error: Error) => pageErrors.push(error.message);
       page.on("pageerror", onPageError);
       try {
-        await page.goto(routeWithScene(route.path, "operational"), {
-          waitUntil: "domcontentloaded",
+        await gotoDemoRoute(page, route, "operational");
+        await expectDemoShell(page, route, {
+          expectedDetailState: "success",
         });
-        await expectDemoShell(page, route);
         expect(pageErrors).toEqual([]);
       } finally {
         page.off("pageerror", onPageError);
@@ -171,18 +237,16 @@ test.describe("Web Demo runtime", () => {
   });
 
   for (const scene of nonOperationalScenes) {
-    test(`resolves every production route in ${scene} scene`, { timeout: 120_000 }, async ({
-      page,
-    }) => {
+    test(`resolves every production route in ${scene} scene`, async ({ page }) => {
       for (const route of allRoutes) {
         const pageErrors: string[] = [];
         const onPageError = (error: Error) => pageErrors.push(error.message);
         page.on("pageerror", onPageError);
         try {
-          await page.goto(routeWithScene(route.path, scene), {
-            waitUntil: "domcontentloaded",
+          await gotoDemoRoute(page, route, scene);
+          await expectDemoShell(page, route, {
+            expectedDetailState: scene === "empty" ? "empty" : "success",
           });
-          await expectDemoShell(page, route);
           expect(pageErrors).toEqual([]);
         } finally {
           page.off("pageerror", onPageError);
@@ -191,18 +255,14 @@ test.describe("Web Demo runtime", () => {
     });
   }
 
-  test("keeps every production route error-safe in network-failure scene", {
-    timeout: 120_000,
-  }, async ({ page }) => {
+  test("keeps every production route error-safe in network-failure scene", async ({ page }) => {
     for (const route of allRoutes) {
       const pageErrors: string[] = [];
       const onPageError = (error: Error) => pageErrors.push(error.message);
       page.on("pageerror", onPageError);
       try {
-        await page.goto(routeWithScene(route.path, "network-failure"), {
-          waitUntil: "domcontentloaded",
-        });
-        await expectDemoShell(page, route);
+        await gotoDemoRoute(page, route, "network-failure");
+        await expectDemoShell(page, route, { allowExpectedFailure: true });
         if (networkFailurePaths.has(route.path)) {
           await expect(networkFailureState(page, route.path)).toBeVisible();
         }
