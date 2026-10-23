@@ -3306,6 +3306,7 @@ pub(crate) struct ImportedOauthProbeOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImportedOauthValidatedImportData {
+    pub(crate) input_digest: String,
     pub(crate) normalized: NormalizedImportedOauthCredentials,
     pub(crate) probe: ImportedOauthProbeOutcome,
 }

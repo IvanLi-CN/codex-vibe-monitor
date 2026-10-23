@@ -42,7 +42,7 @@ function StorySurface({ children }: { children: ReactNode }) {
   return (
     <div
       data-visual-evidence-surface="dashboard-working-conversations"
-      className="min-h-screen bg-base-200 p-7 text-base-content"
+      className="min-h-screen bg-base-200 p-8 text-base-content"
     >
       <div data-visual-evidence-target="dashboard-working-conversations-target">
         <div className="app-shell-boundary">{children}</div>
@@ -2477,6 +2477,62 @@ const gpt6ModelContextResponse = createResponse([
   ]),
 ]);
 
+const gpt61ModelContextResponse = createResponse([
+  createConversation("story-gpt61-model-context", [
+    createPreview({
+      id: 9_610,
+      invokeId: "story-gpt61-model-context-invoke",
+      occurredAt: "2026-04-04T10:04:00Z",
+      status: "completed",
+      model: "gpt-6.1-luna",
+      requestModel: "gpt-6.1-luna",
+      responseModel: "gpt-6.1-luna",
+      reasoningEffort: "none",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      transport: "websocket",
+      totalTokens: 12_520,
+      cost: 0.014,
+    }),
+  ]),
+]);
+
+const upstreamAccountModelContextActivity = (() => {
+  const activity = createUpstreamAccountActivityStoryResponse();
+  const account = activity.accounts[0];
+  if (!account) return activity;
+
+  account.recentInvocations = account.recentInvocations.map((invocation, index) => {
+    if (index === 0) {
+      return {
+        ...invocation,
+        model: "gpt-5.6-sol",
+        requestModel: "gpt-5.6-sol",
+        responseModel: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      };
+    }
+    if (index === 1) {
+      return {
+        ...invocation,
+        model: "gpt-6-luna",
+        requestModel: "gpt-5.6-sol",
+        responseModel: "gpt-6-luna",
+        reasoningEffort: "none",
+      };
+    }
+    return {
+      ...invocation,
+      model: "gpt-6.1-luna",
+      requestModel: "gpt-6.1-luna",
+      responseModel: "gpt-6.1-luna",
+      reasoningEffort: "medium",
+    };
+  });
+
+  return activity;
+})();
+
 const upstreamAccountSortBaseResponse = createUpstreamAccountActivityStoryResponse(2);
 const upstreamAccountSortOrderingResponse: UpstreamAccountActivityResponse = {
   ...upstreamAccountSortBaseResponse,
@@ -3662,7 +3718,7 @@ export const GPT56ModelContextCluster: Story = {
     docs: {
       description: {
         story:
-          "GPT-5.6 invocation metadata keeps one error-tone max marker, reasoning effort, and FAST state in a compact reusable visual cluster.",
+          "GPT-5.6 invocation metadata keeps max reasoning effort and FAST state in a compact reusable visual cluster without a leading marker.",
       },
     },
   },
@@ -3682,10 +3738,11 @@ export const GPT56ModelContextCluster: Story = {
 
     await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
     await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
+    await expect(cluster.querySelector('[data-model-generation-segment="5.6"]')).not.toBeNull();
     await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
     await expect(
       cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
-    ).toHaveClass("bg-error/85");
+    ).toBeNull();
     await expect(
       cluster.querySelector(
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
@@ -3705,7 +3762,7 @@ export const GPT6ModelContextCluster: Story = {
     docs: {
       description: {
         story:
-          "GPT-6 invocation metadata integrates its identity tile into the existing model segment while preserving reasoning and FAST state.",
+          "GPT-6 invocation metadata integrates its identity tile into the existing model segment while preserving marker-free reasoning and FAST state.",
       },
     },
   },
@@ -3726,20 +3783,60 @@ export const GPT6ModelContextCluster: Story = {
     await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
     await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-6-astra"));
     const identity = cluster.querySelector('[data-model-icon="creation"]');
+    const generation = cluster.querySelector('[data-model-generation-segment="6"]');
     if (!(identity instanceof HTMLElement)) throw new Error("missing GPT-6 identity");
+    await expect(generation).not.toBeNull();
     await expect(identity).toHaveAttribute("aria-label", "gpt-6-astra");
     await expect(identity).toHaveAttribute("data-model-icon", "creation");
-    await expect(identity).toHaveClass("h-5", "w-5");
+    await expect(identity).toHaveClass("h-4", "w-4");
+    await expect(generation).toHaveClass("h-4", "items-center", "translate-y-px");
+    await expect(cluster).toHaveClass("px-1");
     await expect(identity).not.toHaveClass("border");
     await expect(
       cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
-    ).toHaveClass("bg-warning/85");
+    ).toBeNull();
     await expect(
       cluster.querySelector(
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
       ),
     ).toHaveTextContent("high");
     await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    await expect(cluster.querySelector('[data-model-context-part="fast"]')).toHaveClass("w-[7px]");
+  },
+};
+
+export const GPT61ModelContextCluster: Story = {
+  tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "desktop1660", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "GPT-6.1 keeps its complete visible generation label, Luna glyph, explicit none effort, and FAST state in the compact context cluster.",
+      },
+    },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(gpt61ModelContextResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const cluster = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-6.1 model context cluster");
+    }
+
+    await expect(cluster.querySelector('[data-model-generation-segment="6.1"]')).not.toBeNull();
+    await expect(cluster.querySelector('[data-model-icon="weather-night"]')).not.toBeNull();
+    await expect(cluster).toHaveTextContent("none");
+    await expect(cluster).not.toHaveTextContent("—");
   },
 };
 
@@ -3770,7 +3867,7 @@ export const GPT56ModelContextMobile393: Story = {
     docs: {
       description: {
         story:
-          "Mobile 393px renders the same GPT-5.6 max reasoning marker, effort text, and FAST state as the desktop context cluster.",
+          "Mobile 393px renders the same GPT-5.6 max reasoning text and FAST state as the desktop context cluster without a leading marker.",
       },
     },
   },
@@ -3792,7 +3889,7 @@ export const GPT56ModelContextMobile393: Story = {
     await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
     await expect(
       cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
-    ).toHaveClass("bg-error/85");
+    ).toBeNull();
     await expect(
       cluster.querySelector(
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
@@ -3809,7 +3906,7 @@ export const GPT56ModelContextWithoutReasoning: Story = {
     docs: {
       description: {
         story:
-          "When reasoning data is unavailable, the grouped context omits only the marker and effort text while retaining the model identity and FAST accessibility.",
+          "When reasoning data is unavailable, the grouped context omits the effort text while retaining the model identity and FAST accessibility.",
       },
     },
   },
@@ -3836,6 +3933,88 @@ export const GPT56ModelContextWithoutReasoning: Story = {
     await expect(cluster).not.toHaveTextContent("—");
     await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
     await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
+  },
+};
+
+export const UpstreamAccountModelContext: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-model-context", [
+          createPreview({
+            id: 9_701,
+            invokeId: "story-upstream-model-context-anchor",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={upstreamAccountModelContextActivity}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    await expect(
+      canvas.getAllByTestId("dashboard-upstream-account-recent-model-context"),
+    ).not.toHaveLength(0);
+    await expect(
+      canvasElement.querySelector('[data-model-generation-segment="5.6"]'),
+    ).not.toBeNull();
+    await expect(canvasElement.querySelector('[data-model-generation-segment="6"]')).not.toBeNull();
+    await expect(
+      canvasElement.querySelector('[data-model-generation-segment="6.1"]'),
+    ).not.toBeNull();
+    await expect(
+      canvasElement.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-model-context-routing-indicator"]',
+      ),
+    ).not.toBeNull();
+    await expect(
+      canvasElement.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-model-context"]',
+      ),
+    ).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
+
+    const upstreamGrid = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="dashboard-upstream-account-grid"]',
+    );
+    const upstreamCards = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="dashboard-upstream-account-card"]',
+      ),
+    );
+    if (!upstreamGrid || upstreamCards.length === 0) {
+      throw new Error("missing upstream account compact overflow geometry anchors");
+    }
+    const gridRect = upstreamGrid.getBoundingClientRect();
+    const cardOverflowRight = Math.max(
+      ...upstreamCards.map((card) => card.getBoundingClientRect().right - gridRect.right),
+    );
+    await expect(canvasElement.ownerDocument.documentElement.scrollWidth).toBeLessThanOrEqual(
+      canvasElement.ownerDocument.documentElement.clientWidth + 1,
+    );
+    await expect(upstreamGrid.scrollWidth).toBeLessThanOrEqual(upstreamGrid.clientWidth + 1);
+    await expect(cardOverflowRight).toBeLessThanOrEqual(1);
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "393x852 upstream recent rows reuse the compact generation and family identity contract, including a directional request-to-response mismatch and explicit none effort.",
+      },
+    },
   },
 };
 

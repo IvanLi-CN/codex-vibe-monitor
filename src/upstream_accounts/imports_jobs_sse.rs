@@ -121,10 +121,12 @@ pub(crate) async fn build_imported_oauth_validation_response(
             existing_match.as_ref().map(|row| row.id),
             &usage_scope,
         )?;
+        let input_digest = imported_oauth_validation_input_digest(item);
         let (row, validated_import) = build_imported_oauth_validation_result(
             state,
             normalized,
             matched_account,
+            input_digest,
             &refresh_scope,
             &usage_scope,
         )
@@ -364,6 +366,7 @@ pub(crate) async fn build_imported_oauth_validation_result(
     state: &AppState,
     normalized: NormalizedImportedOauthCredentials,
     matched_account: Option<ImportedOauthMatchSummary>,
+    input_digest: String,
     refresh_scope: &ForwardProxyRouteScope,
     usage_scope: &ForwardProxyRouteScope,
 ) -> (
@@ -394,6 +397,7 @@ pub(crate) async fn build_imported_oauth_validation_result(
                 attempts: 1,
             },
             Some(ImportedOauthValidatedImportData {
+                input_digest,
                 normalized,
                 probe: outcome,
             }),
@@ -419,6 +423,29 @@ pub(crate) async fn build_imported_oauth_validation_result(
             None,
         ),
     }
+}
+
+pub(crate) fn imported_oauth_validation_input_digest(
+    item: &ImportOauthCredentialFileRequest,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(item.source_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(item.file_name.as_bytes());
+    hasher.update([0]);
+    hasher.update(item.content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn cached_imported_oauth_validation_result(
+    cache: &HashMap<String, ImportedOauthValidatedImportData>,
+    item: &ImportOauthCredentialFileRequest,
+) -> Option<ImportedOauthValidatedImportData> {
+    let input_digest = imported_oauth_validation_input_digest(item);
+    cache
+        .get(&item.source_id)
+        .filter(|cached| cached.input_digest == input_digest)
+        .cloned()
 }
 
 pub(crate) async fn update_imported_oauth_validation_job_row(
@@ -823,10 +850,12 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                     &usage_scope,
                 )
                 .map_err(|err| err.to_string())?;
+                let input_digest = imported_oauth_validation_input_digest(item);
                 let (row, validated_import) = build_imported_oauth_validation_result(
                     state.as_ref(),
                     normalized,
                     matched_account,
+                    input_digest,
                     &refresh_scope,
                     &usage_scope,
                 )
@@ -1427,7 +1456,8 @@ pub(crate) async fn import_validated_oauth_accounts(
             continue;
         }
 
-        let cached_validation = cached_validation_results.get(&item.source_id).cloned();
+        let cached_validation =
+            cached_imported_oauth_validation_result(&cached_validation_results, &item);
         let normalized = match cached_validation.as_ref() {
             Some(cached) => cached.normalized.clone(),
             None => match normalize_imported_oauth_credentials(&item) {
@@ -1562,71 +1592,90 @@ pub(crate) async fn import_validated_oauth_accounts(
             &StoredCredentials::Oauth(probe.credentials.clone()),
         )
         .map_err(internal_error_tuple)?;
-        let (persisted_account_id, import_warning) = if let Some(existing_row) =
-            existing_match.as_ref()
-        {
-            let warning = state
-                .upstream_accounts
-                .account_ops
-                .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
-                .await?;
-            (existing_row.id, warning)
-        } else {
-            let persisted_account_id = {
-                let mut tx = state
-                    .pool
-                    .begin_with("BEGIN IMMEDIATE")
+        let (persisted_account_id, persisted_as_existing, import_warning) =
+            if let Some(existing_row) = existing_match.as_ref() {
+                let warning = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
+                    .await?;
+                (existing_row.id, true, warning)
+            } else {
+                let (persisted_account_id, persisted_as_existing) = {
+                    let mut tx = state
+                        .pool
+                        .begin_with("BEGIN IMMEDIATE")
+                        .await
+                        .map_err(internal_error_tuple)?;
+                    let locked_existing_match = find_existing_import_match_with_executor(
+                        &mut *tx,
+                        normalized.chatgpt_user_id.as_deref(),
+                        &normalized.chatgpt_account_id,
+                        &normalized.email,
+                    )
                     .await
                     .map_err(internal_error_tuple)?;
-                ensure_display_name_available_for_oauth_identity(
-                    &mut *tx,
-                    &normalized.display_name,
-                    None,
-                    probe.claims.chatgpt_account_id.as_deref(),
-                    probe.claims.chatgpt_user_id.as_deref(),
-                    group_name.as_deref(),
-                    probe.claims.chatgpt_plan_type.as_deref(),
-                )
-                .await?;
-                let account_id = upsert_oauth_account(
-                    &mut tx,
-                    OauthAccountUpsert {
-                        account_id: None,
-                        display_name: &normalized.display_name,
-                        chosen_email: Some(normalized.email.clone()),
-                        verified_email: normalize_email_value(probe.claims.email.clone()),
-                        group_name: group_name.clone(),
-                        is_mother: false,
-                        note: None,
-                        tag_ids: tag_ids.clone(),
-                        requested_group_metadata_changes: requested_group_metadata_changes.clone(),
-                        claims: &probe.claims,
-                        encrypted_credentials,
-                        has_refresh_token: oauth_credentials_have_refresh_token(&probe.credentials),
-                        token_expires_at: &probe.token_expires_at,
-                        external_identity: None,
-                    },
-                )
-                .await
-                .map_err(internal_error_tuple)?;
-                tx.commit().await.map_err(internal_error_tuple)?;
-                account_id
+                    let (account_id, persisted_as_existing) = if let Some(existing_row) =
+                        locked_existing_match
+                    {
+                        (existing_row.id, true)
+                    } else {
+                        ensure_display_name_available_for_oauth_identity(
+                            &mut *tx,
+                            &normalized.display_name,
+                            None,
+                            probe.claims.chatgpt_account_id.as_deref(),
+                            probe.claims.chatgpt_user_id.as_deref(),
+                            group_name.as_deref(),
+                            probe.claims.chatgpt_plan_type.as_deref(),
+                        )
+                        .await?;
+                        let account_id = upsert_oauth_account(
+                            &mut tx,
+                            OauthAccountUpsert {
+                                account_id: None,
+                                display_name: &normalized.display_name,
+                                chosen_email: Some(normalized.email.clone()),
+                                verified_email: normalize_email_value(probe.claims.email.clone()),
+                                group_name: group_name.clone(),
+                                is_mother: false,
+                                note: None,
+                                tag_ids: tag_ids.clone(),
+                                requested_group_metadata_changes: requested_group_metadata_changes
+                                    .clone(),
+                                claims: &probe.claims,
+                                encrypted_credentials,
+                                has_refresh_token: oauth_credentials_have_refresh_token(
+                                    &probe.credentials,
+                                ),
+                                token_expires_at: &probe.token_expires_at,
+                                external_identity: None,
+                            },
+                        )
+                        .await
+                        .map_err(internal_error_tuple)?;
+                        (account_id, false)
+                    };
+                    tx.commit().await.map_err(internal_error_tuple)?;
+                    (account_id, persisted_as_existing)
+                };
+
+                let warning = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
+                    .await?;
+                if !persisted_as_existing {
+                    publish_new_account_routing_availability_if_selectable(
+                        state.as_ref(),
+                        persisted_account_id,
+                    )
+                    .await;
+                }
+                (persisted_account_id, persisted_as_existing, warning)
             };
 
-            let warning = state
-                .upstream_accounts
-                .account_ops
-                .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
-                .await?;
-            publish_new_account_routing_availability_if_selectable(
-                state.as_ref(),
-                persisted_account_id,
-            )
-            .await;
-            (persisted_account_id, warning)
-        };
-
-        if existing_match.is_some() {
+        if persisted_as_existing {
             updated_existing += 1;
         } else {
             created += 1;
@@ -1640,7 +1689,7 @@ pub(crate) async fn import_validated_oauth_accounts(
             email: Some(normalized.email),
             chatgpt_account_id: Some(normalized.chatgpt_account_id),
             account_id: Some(persisted_account_id),
-            status: if existing_match.is_some() {
+            status: if persisted_as_existing {
                 IMPORT_RESULT_STATUS_UPDATED_EXISTING.to_string()
             } else {
                 IMPORT_RESULT_STATUS_CREATED.to_string()

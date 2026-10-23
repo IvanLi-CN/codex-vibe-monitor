@@ -8,6 +8,26 @@ This context describes the Dashboard's live data surfaces and the performance co
 The owner-facing data for the currently selected Dashboard window, including live activity, working conversations, parallel work, and open-window timeseries.
 _Avoid_: dashboard snapshot, which can also mean a closed historical response.
 
+**Visible Model Generation**:
+The complete version segment shown in a model identity, such as `5.6`, `6`, or `6.1`, used to distinguish model generations independently from the family glyph and reasoning effort.
+_Avoid_: model level, reasoning effort, generation icon.
+
+**Compact Model Context**:
+The owner-facing model identity grouping used in a compact working-conversation or invocation surface, combining the visible model generation, family glyph, and available reasoning effort while retaining the full model ID as secondary identity information.
+_Avoid_: simplified display, model label, model level.
+
+**Model Identity Fallback**:
+The explicit textual representation used when a model cannot be recognized as a supported identity or when its value is absent; it never infers a generation or family from incomplete data.
+_Avoid_: guessed model, default model, blank identity.
+
+**Model Routing Mismatch**:
+A request model and response model that remain different after normalization, requiring both model identities and their directional relationship to stay understandable in compact diagnostics.
+_Avoid_: model error, generation mismatch.
+
+**Missing Reasoning Effort**:
+An invocation has no collected reasoning-effort value, or only the display placeholder `—`; compact model context omits the effort segment, while an explicit `none` remains a real value.
+_Avoid_: default reasoning effort, inferred effort, no reasoning.
+
 **Hot Projection**:
 A continuously maintained current-state read model whose updates are driven by typed runtime revisions and bounded deltas.
 _Avoid_: live snapshot, which hides whether the update is incremental or a rebuilt full payload.
@@ -93,5 +113,23 @@ Recent invocation activity shown in its own time viewport, independent of the se
 _Avoid_: yesterday's timeline when Yesterday is selected for statistics.
 
 **Historical Activity Calendar**:
-A daily view of global invocation counts, cost, or Token usage across 180 consecutive browser-local dates ending today.
+A daily view of global invocation counts, cost, or Token usage across 365 consecutive browser-local dates ending today.
 _Avoid_: six calendar months, a calendar controlled by the selected statistics range.
+
+## Account Import Language
+
+**Upstream Account**:
+An OpenAI connection available to the account pool through either a ChatGPT OAuth identity or an API key for an upstream service.
+_Avoid_: account when the distinction between an OAuth identity and an API key connection matters.
+
+**OAuth Upstream Account**:
+An upstream account backed by a ChatGPT login identity and its OAuth credentials.
+_Avoid_: API Key transit, which uses a different credential type and management model.
+
+**sub2api Account Record**:
+An exported representation of one sub2api account, including its platform, credential type, credentials, and associated management settings.
+_Avoid_: export package when referring to one account record.
+
+**sub2api Export Package**:
+A portable collection of sub2api account records and optional proxy definitions. A package may contain accounts from multiple platforms and with different credential types.
+_Avoid_: OAuth credential when referring to the whole package.

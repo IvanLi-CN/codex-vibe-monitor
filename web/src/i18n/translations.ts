@@ -596,9 +596,14 @@ const baseTranslations = {
       "expired must be a valid RFC3339 timestamp.",
     "accountPool.upstreamAccounts.import.local.missingExpiry":
       "expired is required when token exp is unavailable.",
-    "accountPool.upstreamAccounts.import.local.emailMismatch": "email does not match id_token.",
+    "accountPool.upstreamAccounts.import.local.emailMismatch":
+      "email does not match token identity.",
     "accountPool.upstreamAccounts.import.local.accountIdMismatch":
-      "account_id does not match id_token.",
+      "account_id does not match token identity.",
+    "accountPool.upstreamAccounts.import.local.userIdMismatch":
+      "chatgpt_user_id does not match token identity.",
+    "accountPool.upstreamAccounts.import.local.invalidSub2apiExport":
+      "A sub2api export must contain an accounts array, with no type marker or type=sub2api-data/sub2api-bundle.",
     "accountPool.upstreamAccounts.import.local.pasteDuplicate":
       "This credential is already queued.",
     "accountPool.upstreamAccounts.import.local.fileRejected": 'Skipped "{{fileName}}": {{reason}}',
@@ -4207,9 +4212,13 @@ const baseTranslations = {
       "expired 必须是合法 RFC3339 时间戳。",
     "accountPool.upstreamAccounts.import.local.missingExpiry":
       "当 token 缺少 exp 时，必须提供 expired。",
-    "accountPool.upstreamAccounts.import.local.emailMismatch": "email 与 id_token 不一致。",
+    "accountPool.upstreamAccounts.import.local.emailMismatch": "email 与 token 中的身份不一致。",
     "accountPool.upstreamAccounts.import.local.accountIdMismatch":
-      "account_id 与 id_token 不一致。",
+      "account_id 与 token 中的身份不一致。",
+    "accountPool.upstreamAccounts.import.local.userIdMismatch":
+      "chatgpt_user_id 与 token 中的身份不一致。",
+    "accountPool.upstreamAccounts.import.local.invalidSub2apiExport":
+      "sub2api 导出包必须包含 accounts 数组，type 可省略，或为 sub2api-data / sub2api-bundle。",
     "accountPool.upstreamAccounts.import.local.pasteDuplicate": "这条凭据已经在待验证列表里了。",
     "accountPool.upstreamAccounts.import.local.fileRejected": "已跳过 {{fileName}}：{{reason}}",
     "accountPool.upstreamAccounts.import.local.duplicateSkipped":

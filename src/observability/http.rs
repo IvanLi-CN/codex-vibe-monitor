@@ -94,91 +94,116 @@ pub(super) fn method_index(method: &'static str) -> usize {
 pub(super) struct HttpMetricHandles {
     route: &'static str,
     method: &'static str,
-    header_duration: std::sync::OnceLock<metrics::Histogram>,
-    body_duration: std::sync::OnceLock<metrics::Histogram>,
-    requests: [std::sync::OnceLock<metrics::Counter>; 5],
-    body_ends: [std::sync::OnceLock<metrics::Counter>; 3],
+    header_duration: metrics::Histogram,
+    body_duration: metrics::Histogram,
+    requests_2xx: metrics::Counter,
+    requests_other: [std::sync::OnceLock<metrics::Counter>; 4],
+    body_complete: metrics::Counter,
+    body_ends_other: [std::sync::OnceLock<metrics::Counter>; 2],
 }
 impl HttpMetricHandles {
-    pub(super) fn new(route: &'static str, method: &'static str) -> Self {
+    pub(super) fn new(
+        metrics: &ObservabilityRuntime,
+        route: &'static str,
+        method: &'static str,
+    ) -> Self {
+        let histogram = |name: &'static str| {
+            if metrics.enabled {
+                metrics.register_histogram(ObservabilityRuntime::key(
+                    name,
+                    &[("route", route), ("method", method)],
+                ))
+            } else {
+                metrics::Histogram::noop()
+            }
+        };
+        let counter = |name: &'static str, labels: &[(&'static str, &'static str)]| {
+            if metrics.enabled {
+                metrics.register_counter(ObservabilityRuntime::key(name, labels))
+            } else {
+                metrics::Counter::noop()
+            }
+        };
         Self {
             route,
             method,
-            header_duration: std::sync::OnceLock::new(),
-            body_duration: std::sync::OnceLock::new(),
-            requests: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            body_ends: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            header_duration: histogram("cvm_http_header_duration_seconds"),
+            body_duration: histogram("cvm_http_body_duration_seconds"),
+            requests_2xx: counter(
+                "cvm_http_requests_total",
+                &[
+                    ("route", route),
+                    ("method", method),
+                    ("status_class", "2xx"),
+                ],
+            ),
+            requests_other: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            body_complete: counter(
+                "cvm_http_body_ends_total",
+                &[("route", route), ("outcome", "complete")],
+            ),
+            body_ends_other: std::array::from_fn(|_| std::sync::OnceLock::new()),
         }
     }
-    fn header_duration(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
-        self.header_duration.get_or_init(|| {
-            if metrics.enabled {
-                metrics.register_histogram(ObservabilityRuntime::key(
-                    "cvm_http_header_duration_seconds",
-                    &[("route", self.route), ("method", self.method)],
-                ))
-            } else {
-                metrics::Histogram::noop()
-            }
-        })
+    fn header_duration(&self) -> &metrics::Histogram {
+        &self.header_duration
     }
-    fn body_duration(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
-        self.body_duration.get_or_init(|| {
-            if metrics.enabled {
-                metrics.register_histogram(ObservabilityRuntime::key(
-                    "cvm_http_body_duration_seconds",
-                    &[("route", self.route), ("method", self.method)],
-                ))
-            } else {
-                metrics::Histogram::noop()
-            }
-        })
+    fn body_duration(&self) -> &metrics::Histogram {
+        &self.body_duration
     }
     fn request(
         &self,
         metrics: &ObservabilityRuntime,
         status_class: &'static str,
     ) -> Option<&metrics::Counter> {
-        ["1xx", "2xx", "3xx", "4xx", "5xx"]
-            .iter()
-            .position(|candidate| *candidate == status_class)
-            .map(|index| {
-                self.requests[index].get_or_init(|| {
-                    if metrics.enabled {
-                        metrics.register_counter(ObservabilityRuntime::key(
-                            "cvm_http_requests_total",
-                            &[
-                                ("route", self.route),
-                                ("method", self.method),
-                                ("status_class", status_class),
-                            ],
-                        ))
-                    } else {
-                        metrics::Counter::noop()
-                    }
-                })
-            })
+        if status_class == "2xx" {
+            return Some(&self.requests_2xx);
+        }
+        let index = match status_class {
+            "1xx" => 0,
+            "3xx" => 1,
+            "4xx" => 2,
+            "5xx" => 3,
+            _ => return None,
+        };
+        Some(self.requests_other[index].get_or_init(|| {
+            if metrics.enabled {
+                metrics.register_counter(ObservabilityRuntime::key(
+                    "cvm_http_requests_total",
+                    &[
+                        ("route", self.route),
+                        ("method", self.method),
+                        ("status_class", status_class),
+                    ],
+                ))
+            } else {
+                metrics::Counter::noop()
+            }
+        }))
     }
     fn body_end(
         &self,
         metrics: &ObservabilityRuntime,
         outcome: &'static str,
     ) -> Option<&metrics::Counter> {
-        ["complete", "error", "cancelled"]
-            .iter()
-            .position(|candidate| *candidate == outcome)
-            .map(|index| {
-                self.body_ends[index].get_or_init(|| {
-                    if metrics.enabled {
-                        metrics.register_counter(ObservabilityRuntime::key(
-                            "cvm_http_body_ends_total",
-                            &[("route", self.route), ("outcome", outcome)],
-                        ))
-                    } else {
-                        metrics::Counter::noop()
-                    }
-                })
-            })
+        if outcome == "complete" {
+            return Some(&self.body_complete);
+        }
+        let index = match outcome {
+            "error" => 0,
+            "cancelled" => 1,
+            _ => return None,
+        };
+        Some(self.body_ends_other[index].get_or_init(|| {
+            if metrics.enabled {
+                metrics.register_counter(ObservabilityRuntime::key(
+                    "cvm_http_body_ends_total",
+                    &[("route", self.route), ("outcome", outcome)],
+                ))
+            } else {
+                metrics::Counter::noop()
+            }
+        }))
     }
 }
 struct RequestLifetime {
@@ -201,7 +226,7 @@ impl RequestLifetime {
             context.finish_response(outcome, self.status_class);
         }
         self.http
-            .body_duration(&self.metrics)
+            .body_duration()
             .record(self.started.elapsed().as_secs_f64());
         if let Some(counter) = self.http.body_end(&self.metrics, outcome) {
             counter.increment(1);
@@ -323,7 +348,7 @@ pub(crate) async fn observability_http_middleware(
             1,
         );
     }
-    http.header_duration(&metrics)
+    http.header_duration()
         .record(started.elapsed().as_secs_f64());
     let (parts, body) = response.into_parts();
     if body.is_end_stream() {
