@@ -50,6 +50,12 @@ const allRoutes: RouteCase[] = [
 ];
 
 const scenes = ["operational", "attention", "empty", "network-failure"] as const;
+type DemoScene = (typeof scenes)[number];
+type DemoFetchResult = {
+  outcome: "failed" | "resolved";
+  method: string;
+  path: string;
+};
 const DEMO_ROUTE_TIMEOUT_MS = 45_000;
 const nonOperationalScenes = scenes.filter(
   (value) => value !== "operational" && value !== "network-failure",
@@ -118,6 +124,58 @@ function routeLandmark(page: Page, path: string, allowExpectedFailure = false): 
       return page.getByRole("heading", { name: "代理", exact: true });
     default:
       throw new Error(`Missing route landmark for ${path}`);
+  }
+}
+
+async function expectSceneTerminalState(page: Page, path: string, scene: DemoScene) {
+  switch (path) {
+    case "/#/stats": {
+      const summaryPanel = page
+        .getByRole("heading", { name: "统计", exact: true })
+        .locator("xpath=../../../..");
+      await expect(summaryPanel.locator(".metric-value").first()).toBeVisible();
+      await expect(summaryPanel.getByText("…", { exact: true })).toHaveCount(0);
+      if (scene === "empty") {
+        await expect(summaryPanel.locator(".metric-value").first()).toHaveText(/^0+$/);
+      } else {
+        await expect(summaryPanel.locator(".metric-value").first()).not.toHaveText(/^0+$/);
+      }
+      return;
+    }
+    case "/#/live": {
+      const routingPanel = page.getByTestId("model-routing-live-panel");
+      if (scene === "empty") {
+        await expect(
+          routingPanel.getByText("没有符合筛选条件的 API Key 模型路由状态。", { exact: true }),
+        ).toBeVisible();
+        await expect(routingPanel.getByTestId("model-routing-gantt")).toHaveCount(0);
+      } else {
+        await expect(routingPanel.getByTestId("model-routing-gantt")).toBeVisible();
+      }
+      return;
+    }
+    case "/#/records": {
+      await expect(page.getByTestId("invocation-records-table-loading")).toHaveCount(0);
+      await expect(page.getByTestId("invocation-records-table-error")).toHaveCount(0);
+      if (scene === "empty") {
+        await expect(page.getByTestId("invocation-records-table-empty")).toBeVisible();
+      } else {
+        await expect(
+          page.locator('[data-testid="invocation-records-model"]:visible').first(),
+        ).toBeVisible();
+      }
+      return;
+    }
+    case "/#/account-pool/groups": {
+      if (scene === "empty") {
+        await expect(page.getByTestId("account-pool-groups-empty")).toBeVisible();
+      } else {
+        await expect(page.getByTestId("account-pool-groups-list")).toBeVisible();
+      }
+      return;
+    }
+    default:
+      return;
   }
 }
 
@@ -191,9 +249,11 @@ function networkFailureApiPath(path: string): string {
     case "/#/":
     case "/#/dashboard":
     case "/#/not-a-route":
+      return "/events";
     case "/#/stats":
+      return "/api/stats/errors";
     case "/#/live":
-      return "/api/stats/summary";
+      return "/api/pool/model-routing-live";
     case "/#/dashboard/invocations/demo-invocation-9002":
       return "/api/invocations";
     case "/#/records":
@@ -280,7 +340,11 @@ async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
 async function expectDemoShell(
   page: Page,
   route: RouteCase,
-  options: { allowExpectedFailure?: boolean; expectedDetailState?: "success" | "empty" } = {},
+  options: {
+    allowExpectedFailure?: boolean;
+    expectedDetailState?: "success" | "empty";
+    scene?: DemoScene;
+  } = {},
 ) {
   const allowExpectedFailure = options.allowExpectedFailure === true;
   await expect(page.locator("#root")).toBeVisible();
@@ -289,6 +353,9 @@ async function expectDemoShell(
   await expect(routeLandmark(page, route.path, allowExpectedFailure)).toBeVisible({
     timeout: DEMO_ROUTE_TIMEOUT_MS,
   });
+  if (!allowExpectedFailure && options.scene) {
+    await expectSceneTerminalState(page, route.path, options.scene);
+  }
   if (route.path === "/#/system/performance" && !allowExpectedFailure) {
     await expect(page.getByRole("navigation", { name: "Grafana", exact: true })).toBeVisible({
       timeout: DEMO_ROUTE_TIMEOUT_MS,
@@ -339,6 +406,7 @@ test.describe("Web Demo runtime", () => {
         await gotoDemoRoute(page, route, "operational");
         await expectDemoShell(page, route, {
           expectedDetailState: "success",
+          scene: "operational",
         });
         expect(pageErrors).toEqual([]);
       } finally {
@@ -357,6 +425,7 @@ test.describe("Web Demo runtime", () => {
           await gotoDemoRoute(page, route, scene);
           await expectDemoShell(page, route, {
             expectedDetailState: scene === "empty" ? "empty" : "success",
+            scene,
           });
           expect(pageErrors).toEqual([]);
         } finally {
@@ -369,11 +438,27 @@ test.describe("Web Demo runtime", () => {
   test("keeps every production route error-safe in network-failure scene", async ({ page }) => {
     await page.addInitScript(() => {
       const initialFetch = window.fetch.bind(window);
-      const fetchResults: Array<{ outcome: "failed" | "resolved"; path: string }> = [];
+      const fetchResults: DemoFetchResult[] = [];
       let currentFetch: typeof window.fetch = initialFetch;
+      const recordFailedRequest = (requestUrl: URL, method = "GET") => {
+        if (requestUrl.pathname.startsWith("/api/") || requestUrl.pathname === "/events") {
+          fetchResults.push({ outcome: "failed", method, path: requestUrl.pathname });
+        }
+      };
+      let createEventSource: ((path: string) => EventSource) | undefined;
       Object.defineProperty(window, "__CVM_DEMO_FETCH_RESULTS__", {
         configurable: true,
         value: fetchResults,
+      });
+      Object.defineProperty(window, "__CVM_DEMO_CREATE_EVENT_SOURCE__", {
+        configurable: true,
+        get: () => createEventSource,
+        set: (next: (path: string) => EventSource) => {
+          createEventSource = (path) => {
+            recordFailedRequest(new URL(path, window.location.href));
+            return next(path);
+          };
+        },
       });
       Object.defineProperty(window, "fetch", {
         configurable: true,
@@ -385,6 +470,8 @@ test.describe("Web Demo runtime", () => {
               requestInput instanceof Request ? requestInput.url : String(requestInput),
               window.location.href,
             );
+            const method =
+              requestInput instanceof Request ? requestInput.method : (args[1]?.method ?? "GET");
             if (!requestUrl.pathname.startsWith("/api/")) return nextFetch(...args);
             try {
               const result = nextFetch(...args);
@@ -392,13 +479,14 @@ test.describe("Web Demo runtime", () => {
                 (response) =>
                   fetchResults.push({
                     outcome: response.ok ? "resolved" : "failed",
+                    method,
                     path: requestUrl.pathname,
                   }),
-                () => fetchResults.push({ outcome: "failed", path: requestUrl.pathname }),
+                () => fetchResults.push({ outcome: "failed", method, path: requestUrl.pathname }),
               );
               return result;
             } catch (error) {
-              fetchResults.push({ outcome: "failed", path: requestUrl.pathname });
+              fetchResults.push({ outcome: "failed", method, path: requestUrl.pathname });
               throw error;
             }
           }) as typeof window.fetch;
@@ -411,7 +499,13 @@ test.describe("Web Demo runtime", () => {
       const onPageError = (error: Error) => pageErrors.push(error.message);
       page.on("pageerror", onPageError);
       try {
+        await page.evaluate(() => {
+          const results = (window as Window & { __CVM_DEMO_FETCH_RESULTS__?: DemoFetchResult[] })
+            .__CVM_DEMO_FETCH_RESULTS__;
+          if (results) results.length = 0;
+        });
         await gotoDemoRoute(page, route, "network-failure");
+        await page.reload({ waitUntil: "domcontentloaded" });
         await expectDemoShell(page, route, { allowExpectedFailure: true });
         await expect(networkFailureState(page, route.path)).toBeVisible({
           timeout: DEMO_ROUTE_TIMEOUT_MS,
@@ -424,17 +518,12 @@ test.describe("Web Demo runtime", () => {
                 const results =
                   (
                     window as Window & {
-                      __CVM_DEMO_FETCH_RESULTS__?: Array<{
-                        outcome: "failed" | "resolved";
-                        path: string;
-                      }>;
+                      __CVM_DEMO_FETCH_RESULTS__?: DemoFetchResult[];
                     }
                   ).__CVM_DEMO_FETCH_RESULTS__ ?? [];
                 return {
                   matched: results.some(
-                    (result) =>
-                      result.outcome === "failed" &&
-                      (result.path === expectedPath || result.path.startsWith(`${expectedPath}/`)),
+                    (result) => result.outcome === "failed" && result.path === expectedPath,
                   ),
                   results,
                 };

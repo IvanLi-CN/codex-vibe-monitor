@@ -359,6 +359,9 @@ function publicModelRoutingRecord(record: ModelRoutingTimelineRecord) {
 }
 
 function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
+  if (demoModel.snapshot.scene === "empty") {
+    return { generatedAt: demoNow(), groups: [], records: [] };
+  }
   const model = query.model?.trim() || null;
   const state = query.state?.trim() || null;
   const windowMinutes =
