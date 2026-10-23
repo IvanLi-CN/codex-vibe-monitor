@@ -4786,6 +4786,7 @@ impl MaintenanceStore {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn finish_run_with_observation_and_retry(
         &self,
         id: i64,

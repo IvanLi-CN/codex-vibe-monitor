@@ -2251,8 +2251,7 @@ async fn finish_managed_task_and_schedule_retry(
     store: &crate::maintenance_store::MaintenanceStore,
     finish: &ManagedTaskFinish,
 ) -> Result<()> {
-    let retry = managed_task_schedule_retry(finish.details.as_ref())
-        .map(|(seconds, reason)| (seconds, reason));
+    let retry = managed_task_schedule_retry(finish.details.as_ref());
     finish_managed_task_run_bounded(store, finish, retry.as_ref()).await?;
     Ok(())
 }

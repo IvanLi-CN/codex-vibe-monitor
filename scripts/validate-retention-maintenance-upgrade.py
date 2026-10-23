@@ -150,7 +150,9 @@ def execute(candidate, root, *arguments, expect_success=True):
     result = subprocess.run([str(candidate), *arguments], env=environment, capture_output=True, text=True, timeout=90)
     with (root / "candidate.log").open("a") as log:
         log.write(json.dumps({"arguments": arguments, "exitCode": result.returncode}) + "\n" + result.stdout + result.stderr)
-    assert (result.returncode == 0) == expect_success, result.stderr[-2000:]
+    assert (result.returncode == 0) == expect_success, (
+        result.stdout[-4000:] + result.stderr[-2000:]
+    )
     return result
 
 
