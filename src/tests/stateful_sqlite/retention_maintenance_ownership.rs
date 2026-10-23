@@ -364,6 +364,50 @@ async fn stale_terminal_replay_cannot_overwrite_recovered_retry_state() {
 }
 
 #[tokio::test]
+async fn owner_progress_schedule_sync_preserves_stale_workload_freshness() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "pool_upstream_attempt_archive";
+    sqlx::query(
+        "UPDATE managed_task_progress
+         SET total=9,completed=3,updated_at='2020-01-01T00:00:00.000Z',freshness='stale'
+         WHERE task_key=?",
+    )
+    .bind(task_key)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE managed_tasks
+         SET next_catchup_at='2026-10-01T00:00:00.000Z',catchup_reason='owner_failed'
+         WHERE task_key=?",
+    )
+    .bind(task_key)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    store
+        .sync_retention_owner_progress_schedule(task_key)
+        .await
+        .unwrap();
+
+    let progress: (Option<i64>, Option<i64>, String, String, Option<String>) = sqlx::query_as(
+        "SELECT total,completed,freshness,updated_at,catchup_state
+         FROM managed_task_progress WHERE task_key=?",
+    )
+    .bind(task_key)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(progress.0, Some(9));
+    assert_eq!(progress.1, Some(3));
+    assert_eq!(progress.2, "stale");
+    assert_eq!(progress.3, "2020-01-01T00:00:00.000Z");
+    assert_eq!(progress.4.as_deref(), Some("scheduled"));
+}
+
+#[tokio::test]
 async fn successful_owner_run_clears_prior_retry_state() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();

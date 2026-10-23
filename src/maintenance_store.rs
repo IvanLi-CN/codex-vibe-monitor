@@ -2102,7 +2102,9 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
             let value_start = start + marker.len();
             let value_slice = &sanitized[value_start..];
             let secret_start = value_start + value_slice.len() - value_slice.trim_start().len();
-            let value_end = if marker.eq_ignore_ascii_case("Authorization:") {
+            let value_end = if marker.eq_ignore_ascii_case("Authorization:")
+                || marker.eq_ignore_ascii_case("authorization=")
+            {
                 sanitized.len()
             } else {
                 sanitized[secret_start..]
@@ -5212,8 +5214,8 @@ impl MaintenanceStore {
              FROM managed_tasks
              WHERE task_key=?2
              ON CONFLICT(task_key) DO UPDATE SET
-                 updated_at=excluded.updated_at,
-                 freshness='fresh',
+                 updated_at=managed_task_progress.updated_at,
+                 freshness=managed_task_progress.freshness,
                  next_inspection_at=excluded.next_inspection_at,
                  next_catchup_at=excluded.next_catchup_at,
                  catchup_state=excluded.catchup_state",
@@ -7569,6 +7571,11 @@ mod tests {
         );
         assert!(!digest.contains("username=alice"));
         assert!(!digest.contains("nonce-secret"));
+        let configured = sanitize_task_detail(
+            "upstream rejected authorization=Digest username=alice, realm=example, nonce=nonce-secret",
+        );
+        assert!(!configured.contains("Digest"));
+        assert!(!configured.contains("nonce-secret"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 

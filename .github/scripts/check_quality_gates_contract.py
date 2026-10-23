@@ -1054,6 +1054,10 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         and upload_with.get("if-no-files-found") == "error",
         f"{where} must upload candidate-bound migration evidence fail-closed",
     )
+    require(
+        upload_with.get("overwrite") is True,
+        f"{where} must overwrite evidence artifacts on reruns",
+    )
 
 
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
