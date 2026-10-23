@@ -49,8 +49,14 @@ test("keeps maintenance layouts usable at 393px", async ({ page }) => {
 
   await page.goto("/#/system/tasks/invocation_identity_cleanup?demoTheme=light");
   await expectTaskHeading(page, "调用身份清理");
-  await expect(page.getByRole("button", { name: "立即运行", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "暂停自动触发", exact: true }).click();
+  await expect(page.getByRole("button", { name: "恢复自动触发", exact: true })).toBeVisible();
+  const run = page.getByRole("button", { name: "立即运行", exact: true });
+  await expect(run).toBeEnabled();
   await expect(page.getByText(/对话身份 32 个已检查.*小时前缀 32 个已检查/)).toBeVisible();
+  await run.click();
+  await expect(page.getByRole("button", { name: "运行中", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "恢复自动触发", exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page, width);
 
   await page.goto("/#/system/tasks/raw_orphan_sweep?demoTheme=light");
