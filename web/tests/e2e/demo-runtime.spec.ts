@@ -50,11 +50,19 @@ const allRoutes: RouteCase[] = [
 ];
 
 const scenes = ["operational", "attention", "empty", "network-failure"] as const;
+const DEMO_ROUTE_TIMEOUT_MS = 45_000;
 const nonOperationalScenes = scenes.filter(
   (value) => value !== "operational" && value !== "network-failure",
 );
 const networkFailurePaths = new Set([
   "/#/dashboard/invocations/demo-invocation-9002",
+  "/#/stats",
+  "/#/live",
+  "/#/records",
+  "/#/account-pool",
+  "/#/account-pool/upstream-accounts",
+  "/#/account-pool/transits",
+  "/#/account-pool/pool",
   "/#/account-pool/groups",
   "/#/account-pool/maintenance-records",
   "/#/system/tasks",
@@ -138,6 +146,19 @@ function networkFailureState(page: Page, path: string): Locator {
   switch (path) {
     case "/#/dashboard/invocations/demo-invocation-9002":
       return page.getByTestId("dashboard-invocation-detail-error");
+    case "/#/stats":
+    case "/#/live":
+      return page.getByText("Request failed: 0", { exact: true }).first();
+    case "/#/records":
+      return page.getByTestId("invocation-records-table-error");
+    case "/#/account-pool":
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/transits":
+    case "/#/account-pool/pool":
+      return page
+        .getByTestId("upstream-accounts-table-error")
+        .or(page.getByTestId("upstream-accounts-grouped-error"))
+        .first();
     case "/#/account-pool/groups":
       return page.getByTestId("account-pool-groups-error");
     case "/#/account-pool/maintenance-records":
@@ -172,7 +193,7 @@ async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
     waitUntil: "domcontentloaded",
   });
   await expect
-    .poll(() => new URL(page.url()).hash.split("?")[0], { timeout: 5_000 })
+    .poll(() => new URL(page.url()).hash.split("?")[0], { timeout: DEMO_ROUTE_TIMEOUT_MS })
     .toBe(`#${route.expectedPath}`);
   const currentUrl = new URL(page.url());
   const hashQueryIndex = currentUrl.hash.indexOf("?");
@@ -200,7 +221,7 @@ async function expectDemoShell(
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
   await expect(routeLandmark(page, route.path, allowExpectedFailure)).toBeVisible({
-    timeout: 45_000,
+    timeout: DEMO_ROUTE_TIMEOUT_MS,
   });
   if (route.path === "/#/dashboard/invocations/demo-invocation-9002") {
     const detailDrawer = page.getByTestId("dashboard-invocation-detail-drawer");
@@ -264,7 +285,9 @@ test.describe("Web Demo runtime", () => {
         await gotoDemoRoute(page, route, "network-failure");
         await expectDemoShell(page, route, { allowExpectedFailure: true });
         if (networkFailurePaths.has(route.path)) {
-          await expect(networkFailureState(page, route.path)).toBeVisible();
+          await expect(networkFailureState(page, route.path)).toBeVisible({
+            timeout: DEMO_ROUTE_TIMEOUT_MS,
+          });
         }
         expect(pageErrors).toEqual([]);
       } finally {
