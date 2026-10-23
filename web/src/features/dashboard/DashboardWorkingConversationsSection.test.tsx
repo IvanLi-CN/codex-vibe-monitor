@@ -3612,6 +3612,7 @@ describe("DashboardWorkingConversationsSection", () => {
               requestModel: "gpt-5.6-sol",
               responseModel: "gpt-5.6-sol",
               reasoningEffort: "high",
+              transport: "websocket",
             },
           ],
         },
@@ -3636,6 +3637,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
     expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="invocation-transport-badge"]',
+      ),
+    ).toBeNull();
   });
 
   it("keeps the account chip inline with model metadata and surfaces compact endpoint badges", () => {

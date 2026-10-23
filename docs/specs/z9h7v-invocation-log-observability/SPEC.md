@@ -662,7 +662,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
   evidence_surface: component
   surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
   target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
-  evidence_note: verifies the compact working-conversation slot keeps the model row readable as `5.6` plus the Sol glyph, reasoning effort, and FAST indicator without colliding with transport or latency metadata.
+  evidence_note: verifies the compact working-conversation slot keeps the model row readable as `5.6` plus the Sol glyph, reasoning effort, and FAST indicator without reserving a transport badge slot or colliding with latency metadata.
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
