@@ -364,6 +364,72 @@ async fn stale_terminal_replay_cannot_overwrite_recovered_retry_state() {
 }
 
 #[tokio::test]
+async fn successful_owner_run_clears_prior_retry_state() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "retention_archive";
+    let failed_run = store
+        .begin_run(task_key, "2026-10-01T00:00:00.000Z", "schedule", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation_and_retry(
+            failed_run,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("owner failed"),
+            None,
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "result": "failed",
+                "selectedScope": {"committed": 0, "hasMore": true},
+                "waitReason": "owner_failed"
+            })),
+            300,
+            "owner_failed",
+        )
+        .await
+        .unwrap();
+
+    let successful_run = store
+        .begin_run(task_key, "2026-10-01T00:01:00.000Z", "manual", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            successful_run,
+            "success",
+            "2026-10-01T00:01:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "selectedScope": {"committed": 0, "hasMore": false},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let retry_reason: Option<String> =
+        sqlx::query_scalar("SELECT reason FROM maintenance_owner_retry_state WHERE task_key=?")
+            .bind(task_key)
+            .fetch_optional(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(retry_reason, None);
+}
+
+#[tokio::test]
 async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();

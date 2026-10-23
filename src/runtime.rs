@@ -1973,6 +1973,13 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         continue;
                     };
                     let blocked_task_keys = blocked_task_keys.into_iter().collect::<Vec<_>>();
+                    if blocked_task_keys.iter().any(|task_key| {
+                        task_key == crate::terminal_journal::UNKNOWN_SYSTEM_TASK_RECOVERY_TASK_KEY
+                    }) {
+                        // Legacy recovery records do not identify their managed owner. Keep the
+                        // dispatcher stopped until replay resolves the run_id to its real task.
+                        continue;
+                    }
                     let has_dispatch_work = match store
                         .probe_due_or_requested_runs_excluding(&blocked_task_keys)
                         .await

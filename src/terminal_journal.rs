@@ -28,6 +28,7 @@ use crate::{
 };
 
 pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const UNKNOWN_SYSTEM_TASK_RECOVERY_TASK_KEY: &str = "__unknown_system_task_recovery__";
 const SYSTEM_TASK_QUARANTINE_COMPACTION_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_SYNC_INTERVAL: Duration = Duration::from_millis(20);
@@ -2397,7 +2398,7 @@ fn load_system_task_finishes(paths: &[PathBuf]) -> VecDeque<BatchedSystemTaskFin
                     Some(BatchedSystemTaskFinish {
                         run_id: value.run_id,
                         task_key: if value.task_key.is_empty() {
-                            task_kind.as_str().to_string()
+                            UNKNOWN_SYSTEM_TASK_RECOVERY_TASK_KEY.to_string()
                         } else {
                             value.task_key
                         },
@@ -3161,6 +3162,41 @@ mod tests {
         let mut reopened =
             TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
         assert!(reopened.take_system_task_finishes(1).is_empty());
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn legacy_system_task_recovery_without_task_key_blocks_dispatch_conservatively() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-legacy-system-task-recovery-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let directory = terminal_journal_directory(&database_path);
+        fs::create_dir_all(&directory).expect("create journal directory");
+        let recovery_path = directory.join("shutdown-system-task-quarantine.jsonl");
+        fs::write(
+            &recovery_path,
+            r#"{"run_id":703,"task_kind":"startup_backfill","trigger_kind":"managed_dispatcher","status":"skipped","finished_at":"2026-07-29T00:00:03Z","duration_ms":0}"#,
+        )
+        .expect("write legacy recovery record");
+
+        let mut recovered = TerminalJournal::open(&database_path).expect("open journal");
+        assert!(
+            recovered
+                .system_task_recovery_blocked_task_keys()
+                .contains(UNKNOWN_SYSTEM_TASK_RECOVERY_TASK_KEY)
+        );
+        assert!(
+            recovered
+                .system_task_recovery_blocked_task_keys()
+                .contains("task_run_history_cleanup")
+        );
+        let replay = recovered.take_system_task_finishes(1);
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].task_key, UNKNOWN_SYSTEM_TASK_RECOVERY_TASK_KEY);
 
         fs::remove_dir_all(root).expect("remove journal test directory");
     }

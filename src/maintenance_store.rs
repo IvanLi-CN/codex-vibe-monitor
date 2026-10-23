@@ -4933,12 +4933,12 @@ impl MaintenanceStore {
             )
             .await?;
         }
-        let should_clear_owner_catchup = automatic
-            && owner_v2
+        let owner_run_is_complete_without_more_work = owner_v2
             && matches!(
                 task_key.as_deref(),
                 Some(
-                    "pool_upstream_attempt_archive"
+                    "retention_archive"
+                        | "pool_upstream_attempt_archive"
                         | "forward_proxy_attempt_archive"
                         | "invocation_detail_prune"
                         | "quota_snapshot_compaction"
@@ -4966,6 +4966,13 @@ impl MaintenanceStore {
                         .unwrap_or(false);
                     !dry_run && !has_more && wait_reason.is_none()
                 });
+        if owner_run_is_complete_without_more_work {
+            sqlx::query("DELETE FROM maintenance_owner_retry_state WHERE task_key=?")
+                .bind(task_key.as_deref().expect("matched retention owner"))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        let should_clear_owner_catchup = automatic && owner_run_is_complete_without_more_work;
         if should_clear_owner_catchup {
             sqlx::query(
                 "UPDATE managed_tasks
