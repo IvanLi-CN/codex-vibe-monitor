@@ -5119,7 +5119,7 @@ impl MaintenanceStore {
             wait_reason.or_else(|| backlog_total.is_none().then_some("backlog_unknown"))
         };
         let pending = backlog_total.map(|total| total.saturating_sub(completed));
-        if !failed && pending.is_some_and(|value| value <= 0) {
+        if !failed && wait_reason.is_none() && pending.is_some_and(|value| value <= 0) {
             sqlx::query(
                 "UPDATE managed_tasks
                  SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
@@ -8695,6 +8695,38 @@ mod tests {
         .await
         .unwrap();
         assert!(cleared.is_none());
+    }
+
+    #[tokio::test]
+    async fn known_backlog_with_unknown_observation_keeps_catchup() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention observed backlog fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore::from_pool(pool);
+
+        store
+            .update_retention_catchup_from_summary(
+                Some("partial"),
+                Some(2),
+                2,
+                Some("backlog_unknown"),
+                "2026-10-01T00:00:00.000Z",
+            )
+            .await
+            .expect("retain catch-up after unknown observation");
+        let scheduled = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read observed backlog catch-up");
+
+        assert!(scheduled.0.is_some());
+        assert_eq!(scheduled.1.as_deref(), Some("backlog_unknown"));
     }
 
     #[tokio::test]
