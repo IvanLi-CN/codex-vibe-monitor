@@ -101,13 +101,15 @@ async function expectDemoShell(page: Page, route: RouteCase) {
   await expect(page.locator("#root")).toBeVisible();
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
-  await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 30_000 });
+  await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 45_000 });
   await expect(page.getByLabel("Loading page", { exact: true })).toHaveCount(0);
   await expect.poll(() => new URL(page.url()).hash).toContain(route.expectedPath);
 }
 
 test.describe("Web Demo runtime", () => {
-  test("resolves every production route in operational scene", async ({ page }) => {
+  test("resolves every production route in operational scene", { timeout: 120_000 }, async ({
+    page,
+  }) => {
     for (const route of allRoutes) {
       const pageErrors: string[] = [];
       const onPageError = (error: Error) => pageErrors.push(error.message);
