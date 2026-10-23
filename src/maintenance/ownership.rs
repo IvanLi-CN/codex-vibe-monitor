@@ -120,9 +120,11 @@ fn retention_owner_execution(
             observation.set_processed_work(summary.committed as i64);
         }
     }
-    let selected_text = workload_observed
-        .then_some(summary.selected.to_string())
-        .unwrap_or_else(|| "未知".to_string());
+    let selected_text = if workload_observed {
+        summary.selected.to_string()
+    } else {
+        "未知".to_string()
+    };
     let retry_after_secs = summary.wait_reason.as_deref().map(|reason| match reason {
         "retention_work_budget" => 1,
         "retention_write_admission" | "sqlite_pressure" => 30,

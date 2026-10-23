@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import tempfile
 
+SHANGHAI = timezone(timedelta(hours=8))
 VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1", "v4.1.2", "v4.1.3", "v4.2.0", "v4.2.1", "v4.2.2"]
 RETENTION_OWNERS = [
     "retention_archive",
@@ -71,8 +72,9 @@ OWNER_RAW_REFERENCES = {
 
 
 def seed_owner_candidates(root):
-    old_archive = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    old_retained = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now_local = datetime.now(timezone.utc).astimezone(SHANGHAI).replace(tzinfo=None)
+    old_archive = (now_local - timedelta(days=120)).strftime("%Y-%m-%d %H:%M:%S")
+    old_retained = (now_local - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
     raw_dir = root / "raw"
     raw_dir.mkdir(exist_ok=True)
     for relative_path in {path for paths in OWNER_RAW_PATHS.values() for path in paths}:
