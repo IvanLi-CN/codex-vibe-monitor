@@ -10,7 +10,7 @@
 ## Implementation Coverage
 
 - `REQ-RMO-001`, `REQ-RMO-005`, `REQ-RMO-006`：归档移除身份清理和 raw 孤儿预演，两个清理使用共享请求／执行入口；raw 自主 worker 与旧归档 worker 已退出。身份每轮检查最多 32 个对话和 32 个小时前缀，共享独立 2 秒工作预算；raw 保留原候选上限、遍历和释放协议。巡检、工作接续与安全重试独立记录。
-- `REQ-RMO-002`, `REQ-RMO-003`, `REQ-RMO-004`：移除两项环境输入；新增控制默认启用与 300 秒巡检，事务初始化使用 `retention_maintenance_ownership_v1`，保留已有控制与计划。四项开关只控制自动请求准入，已接受手动请求与已准入有界执行保留，恢复从当前时间排期。物化在轮次准入固定控制，保留源代际和提交围栏。
+- `REQ-RMO-002`, `REQ-RMO-003`, `REQ-RMO-004`：移除两项环境输入；新增控制默认启用与 300 秒巡检，事务初始化使用 `retention_maintenance_ownership_v1`，保留已有控制与计划。七项开关只控制自动请求准入，已接受手动请求与已准入有界执行保留，恢复从当前时间排期。物化在轮次准入固定控制，保留源代际和提交围栏。
 - `REQ-RMO-007`, `REQ-RMO-008`, `REQ-RMO-009`：沿用归档源转换／统计失效／刷新入队事务；身份使用实际运行管理器和资源准入，新增小时 scope 以删除与游标同事务提交。查询超时后 SQLite 连接关闭完成前保留身份围栏；raw 保留隔离、文件身份、库存与 release-pending 保护。
 - `REQ-RMO-010`：CLI 在业务初始化和启动恢复前选择在线请求或离线独占路由。运行态锁同时绑定规范化数据库路径对、当前数据库 inode 对与两个数据库文件本身；在线请求保留服务就绪标记文件和数据库描述符证明，使用同一受保护 VFS 打开维护库，并在请求写入及轮询期间持续复核，路径替换或服务锁释放均在 SQLite 写入前拒绝。初始化、离线 CLI、混配数据库对、替换 inode 与 hard-link 别名均在打开 SQLite 前拒绝。离线多链接数据库返回不可用，避免不同日志路径写同一数据库。在线不初始化控制或回收活跃运行，离线只执行指定任务并在释放锁前关闭连接池。三个预演使用局部扫描状态，不改业务删除、正式游标或释放事实。
 - SQLite 连接固定到持锁文件的规范化路径，在原生 Unix VFS 的路径解析和实际打开边界重查路径／描述符身份及单链接证明，并使用 `SQLITE_FCNTL_HAS_MOVED` 检查 SQLite 打开的真实文件。校验发生在 journal／schema 初始化前；连接池后续连接继承同一 VFS 入口。归档 ATTACH 沿用原生实现。VFS 注册对象随进程保留以满足 SQLite 指针寿命，正确性证明使用弱引用，不延长数据库锁寿命；连接池关闭后才能释放运行态锁，包括初始化失败路径。活动连接的数据库、journal／WAL 与共享内存回调持续检查证明和文件身份；mmap 禁用以保证访问经过校验，原生文件保持独立布局及方法表。新实例取得每个协议锁时立即清除旧就绪标记。
@@ -58,7 +58,7 @@
 - 发布影响按 Minor 记录：主人明确临时环境开关不属于兼容承诺；旧部署文档将一次性 CLI 描述为归档入口，未承诺附带孤儿清理。保留归档命令、任务标识、URL 和旧历史，新增独立清理入口及自动触发控制。旧命令不再附带孤儿清理是明确披露的行为变化，不宣称执行范围完全相同；持久状态单独按可加性 Minor 验证。
 - 直接来源逐一为 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2；各来源由对应发布镜像独立生成，来源与镜像摘要保存在 [released-state-sources.json](../../adr/assets/retention-maintenance-task-ownership/released-state-sources.json)。更早 Major 必须先中间升级，不支持多版本同时写入。
 - 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `ed00c68fed0975aaf0617981db8ad7fd75ce1a1f`，保留主干统计公平队列及其回归，不重写已发布历史。
-- 最终候选工程检查、十四来源升级与进程验证已完成；发布来源夹具生成器现按 manifest digest 拉取并核对 `RepoDigests`，避免可变 tag 漂移；七个 owner-v2（含 `retention_archive`）的终结与 catch-up 更新在同一事务内提交，并有当前 run generation 回归；retention raw deletion plan 现于引用检查前取得独占 raw-directory fence，跨事务提交持有并在删除前重查文件 identity，writer 忙或 identity 被替换时保留文件并交给 inventory reconciliation；migration validation quality contract 已锁定其 producer、full-history carrier checkout、可执行的双 validator 命令、身份断言和 evidence upload；owner-specific fixture mutation、shared raw ownership、raw-file removal、replacement identity 与 archive-manifest content/identity assertions 现绑定当前代码候选 `8b9fc34e`；包含 `IMPLEMENTATION.md` 在内的四文件文档承载头、远端 CI、fresh Tier 4 只读审查和迁移回放均以当前候选验证卡及 PR #1162 的最终头为准，所有合并门禁通过后才可宣告 Step 5C Ready。
+- 最终候选工程检查、十四来源升级与进程验证已完成；发布来源夹具生成器现按 manifest digest 拉取并核对 `RepoDigests`，避免可变 tag 漂移；七个 owner-v2（含 `retention_archive`）的终结与 catch-up 更新在同一事务内提交，并有当前 run generation 回归；retention raw deletion plan 现于引用检查前取得独占 raw-directory fence，跨事务提交持有并在删除前重查文件 identity，writer 忙或 identity 被替换时保留文件并交给 inventory reconciliation；migration validation quality contract 已锁定其 producer、full-history carrier checkout、可执行的双 validator 命令、身份断言和 evidence upload；owner-specific fixture mutation、shared raw ownership、raw-file removal、replacement identity 与 archive-manifest content/identity assertions 现绑定当前代码候选 `5844bfe9`；包含 `IMPLEMENTATION.md` 在内的四文件文档承载头、远端 CI、fresh Tier 4 只读审查和迁移回放均以当前候选验证卡及 PR #1162 的最终头为准，所有合并门禁通过后才可宣告 Step 5C Ready。
 
 ## References
 
