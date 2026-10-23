@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "c215fc3ed7a4a0b3cf50bd3468ea8e0bd1388a2e",
-  "codeCandidateSha": "275c7093",
+  "codeCandidateSha": "275c709366180bf73536e8451f6687da53a23b5e",
   "documentationCarrier": {
-    "codeCandidateSha": "275c7093",
+    "codeCandidateSha": "275c709366180bf73536e8451f6687da53a23b5e",
     "identity": "the signed documentation-only commit containing this record",
     "scope": "This record is a documentation carrier for the immediately preceding signed code candidate; the carrier contains exactly the four documentation records listed by CI, including IMPLEMENTATION.md, and does not change the validated source tree. CI binds documentationCarrierSha to the current checkout, asserts its parent is codeCandidateSha, and verifies the carrier diff is documentation-only."
   },
@@ -23,7 +23,7 @@
   "currentHeadCi": {
     "workflow": "CI PR",
     "runId": null,
-    "headSha": "275c7093",
+    "headSha": "275c709366180bf73536e8451f6687da53a23b5e",
     "status": "pending"
   },
   "passed": {
@@ -126,8 +126,8 @@
     "migrationReplay"
   ],
   "formalReview": {
-    "candidateSha": "275c7093",
-    "reviewedHead": "275c7093",
+    "candidateSha": "275c709366180bf73536e8451f6687da53a23b5e",
+    "reviewedHead": "275c709366180bf73536e8451f6687da53a23b5e",
     "status": "pending",
     "lanes": [],
     "findings": [],
@@ -157,7 +157,7 @@
     "prNumber": 1162,
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
     "baseSha": "c215fc3ed7a4a0b3cf50bd3468ea8e0bd1388a2e",
-    "headSha": "275c7093",
+    "headSha": "275c709366180bf73536e8451f6687da53a23b5e",
     "requiredCi": {
       "workflow": "CI PR",
       "runId": null,
