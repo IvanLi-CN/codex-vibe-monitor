@@ -894,11 +894,11 @@ For in-flight records, missing TTFT and response duration values display elapsed
   ![Invocation image tool badge states](./assets/invocation-endpoint-image-signals-storybook.png)
 
 - source_type: storybook_canvas
-  story_id_or_title: Dashboard/WorkingConversationsSection/TransportBadgeMixed
-  state: dashboard image badge preview
-  evidence_note: verifies Dashboard current/previous invocation slots mirror Records image-badge semantics and keep endpoint/path semantics unchanged.
+  story_id_or_title: Dashboard/WorkingConversationsSection/TransportHiddenInCompactRows
+  state: dashboard compact invocation rows omit the historical WebSocket transport badge
+  evidence_note: verifies Dashboard compact invocation slots preserve model, endpoint, and reading hierarchy while omitting the historical `WebSocket（历史）` badge; transport data remains available to detailed diagnostic surfaces.
   image:
-  ![Dashboard image tool badge preview](./assets/dashboard-image-signals-storybook.png)
+  ![Dashboard compact transport badge omission](./assets/dashboard-compact-invocation-transport-hidden-desktop-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Monitoring/InvocationTable/ModelRoutingMismatch
