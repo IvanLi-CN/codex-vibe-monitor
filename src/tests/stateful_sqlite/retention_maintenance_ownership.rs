@@ -369,9 +369,8 @@ async fn owner_progress_schedule_sync_preserves_stale_workload_freshness() {
     store.apply_initial_task_defaults().await.unwrap();
     let task_key = "pool_upstream_attempt_archive";
     sqlx::query(
-        "UPDATE managed_task_progress
-         SET total=9,completed=3,updated_at='2020-01-01T00:00:00.000Z',freshness='stale'
-         WHERE task_key=?",
+        "INSERT INTO managed_task_progress(task_key,total,completed,updated_at,freshness)
+         VALUES(?,9,3,'2020-01-01T00:00:00.000Z','stale')",
     )
     .bind(task_key)
     .execute(&store.pool)

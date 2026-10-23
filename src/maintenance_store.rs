@@ -2128,13 +2128,20 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
         let separator = search_from + relative_separator;
         let authority_start = separator + 3;
         let authority_limit = sanitized[authority_start..]
-            .find(|character: char| {
-                character.is_whitespace()
+            .char_indices()
+            .find_map(|(offset, character)| {
+                let starts_adjacent_url = character == ',' && {
+                    let next = &sanitized[authority_start + offset + 1..];
+                    next.starts_with("http://") || next.starts_with("https://")
+                };
+                (character.is_whitespace()
                     || character == '/'
                     || character == '?'
                     || character == '#'
+                    || starts_adjacent_url)
+                    .then_some(authority_start + offset)
             })
-            .map_or(sanitized.len(), |offset| authority_start + offset);
+            .unwrap_or(sanitized.len());
         let authority_end = sanitized[authority_start..authority_limit]
             .find("://")
             .map_or(authority_limit, |offset| authority_start + offset);

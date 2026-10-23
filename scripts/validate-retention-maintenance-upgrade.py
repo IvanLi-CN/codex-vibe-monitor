@@ -313,7 +313,10 @@ def run_scoped_command(candidate, root, task_key, dry_run):
         assert parsed.get("committed") == 0, (task_key, parsed)
         assert owner_candidate_state(root, task_key) == before_owner_state, (task_key, parsed)
         if task_key in OWNER_RAW_PATHS:
-            assert parsed.get("rawFilesPlanned", 0) > 0, (task_key, parsed)
+            raw_files_planned = parsed.get("rawFilesPlanned")
+            if raw_files_planned is None:
+                raw_files_planned = (parsed.get("selectedScope") or {}).get("rawFilesPlanned", 0)
+            assert raw_files_planned > 0, (task_key, parsed)
     else:
         assert parsed.get("committed", 0) > 0, (task_key, parsed)
         assert parsed.get("completion") in {"complete", "partial"}, (task_key, parsed)
