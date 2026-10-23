@@ -3712,6 +3712,7 @@ export const DelayedStatistics: Story = {
 };
 
 export const GPT56ModelContextCluster: Story = {
+  tags: ["test"],
   globals: { viewport: { value: "desktop1660", isRotated: false } },
   parameters: {
     docs: {
@@ -3752,6 +3753,7 @@ export const GPT56ModelContextCluster: Story = {
 };
 
 export const GPT6ModelContextCluster: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "light",
     viewport: { value: "desktop1660", isRotated: false },
@@ -3914,12 +3916,24 @@ export const GPT56ModelContextMobile393: Story = {
       '[data-testid="dashboard-working-conversation-slot"]',
     );
     if (!slot) throw new Error("missing mobile model context slot");
+    await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
+    await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
+    await expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).toBeNull();
+    await expect(
+      cluster.querySelector(
+        '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
+      ),
+    ).toHaveTextContent("max");
+    await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
     expect(cluster.getBoundingClientRect().width).toBeGreaterThan(0);
     expect(slot.scrollWidth).toBeLessThanOrEqual(slot.clientWidth);
   },
 };
 
 export const GPT56ModelContextWithoutReasoning: Story = {
+  tags: ["test"],
   globals: { viewport: { value: "desktop1660", isRotated: false } },
   parameters: {
     docs: {

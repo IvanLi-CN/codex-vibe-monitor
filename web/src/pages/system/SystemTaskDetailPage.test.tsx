@@ -324,7 +324,7 @@ describe("SystemTaskDetailPage", () => {
     await user.click(within(host as HTMLElement).getByRole("button", { name: "立即运行" }));
     await waitFor(() =>
       expect(within(host as HTMLElement).getByRole("status").textContent).toContain(
-        "Request failed: 409",
+        'Request failed: 409 {"error":"task already has an active run"}',
       ),
     );
     expect(
@@ -339,7 +339,7 @@ describe("SystemTaskDetailPage", () => {
 
     await waitFor(() =>
       expect(within(host as HTMLElement).getByRole("status").textContent).toContain(
-        "Request failed: 503",
+        'Request failed: 503 {"error":"managed task unavailable"}',
       ),
     );
   });

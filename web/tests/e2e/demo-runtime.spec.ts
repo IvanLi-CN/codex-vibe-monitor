@@ -172,6 +172,50 @@ function networkFailureState(page: Page, path: string): Locator {
   }
 }
 
+function networkFailureApiPath(path: string): string {
+  switch (path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route":
+    case "/#/stats":
+    case "/#/live":
+      return "/api/stats/summary";
+    case "/#/dashboard/invocations/demo-invocation-9002":
+      return "/api/invocations";
+    case "/#/records":
+      return "/api/invocations";
+    case "/#/account-pool":
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/transits":
+    case "/#/account-pool/pool":
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+    case "/#/account-pool/groups":
+      return "/api/pool/upstream-accounts";
+    case "/#/account-pool/maintenance-records":
+      return "/api/pool/upstream-account-events";
+    case "/#/system":
+    case "/#/system/status":
+      return "/api/system/status";
+    case "/#/system/performance":
+      return "/api/system/observability";
+    case "/#/system/tasks":
+      return "/api/system/managed-tasks";
+    case "/#/system/tasks/retention_archive":
+      return "/api/system/managed-tasks/retention_archive";
+    case "/#/system/prompt-cache":
+      return "/api/system/prompt-cache/materialization";
+    case "/#/system/models":
+    case "/#/system/proxy":
+    case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
+      return "/api/settings";
+    default:
+      throw new Error(`Missing network failure API path for ${path}`);
+  }
+}
+
 function isDashboardRoute(path: string) {
   return path === "/#/" || path === "/#/dashboard" || path === "/#/not-a-route";
 }
@@ -231,6 +275,20 @@ async function expectDemoShell(
   await expect(routeLandmark(page, route.path, allowExpectedFailure)).toBeVisible({
     timeout: DEMO_ROUTE_TIMEOUT_MS,
   });
+  if (route.path === "/#/system/performance" && !allowExpectedFailure) {
+    await expect(page.getByRole("navigation", { name: "Grafana", exact: true })).toBeVisible({
+      timeout: DEMO_ROUTE_TIMEOUT_MS,
+    });
+  }
+  if (route.path === "/#/system/prompt-cache") {
+    const promptCachePage = page.getByTestId("system-prompt-cache");
+    await expect(
+      promptCachePage
+        .getByRole("switch")
+        .or(promptCachePage.getByTestId("system-prompt-cache-error"))
+        .first(),
+    ).toBeVisible({ timeout: DEMO_ROUTE_TIMEOUT_MS });
+  }
   if (route.path === "/#/dashboard/invocations/demo-invocation-9002") {
     const detailDrawer = page.getByTestId("dashboard-invocation-detail-drawer");
     await expect(detailDrawer.getByText("demo-invocation-9002", { exact: true })).toBeVisible();
@@ -285,6 +343,31 @@ test.describe("Web Demo runtime", () => {
   }
 
   test("keeps every production route error-safe in network-failure scene", async ({ page }) => {
+    await page.addInitScript(() => {
+      const initialFetch = window.fetch.bind(window);
+      const fetchPaths: string[] = [];
+      let currentFetch: typeof window.fetch = initialFetch;
+      Object.defineProperty(window, "__CVM_DEMO_FETCH_PATHS__", {
+        configurable: true,
+        value: fetchPaths,
+      });
+      Object.defineProperty(window, "fetch", {
+        configurable: true,
+        get: () => currentFetch,
+        set: (nextFetch: typeof window.fetch) => {
+          currentFetch = ((...args: Parameters<typeof window.fetch>) => {
+            const requestInput = args[0];
+            const requestUrl = new URL(
+              requestInput instanceof Request ? requestInput.url : String(requestInput),
+              window.location.href,
+            );
+            if (requestUrl.pathname.startsWith("/api/")) fetchPaths.push(requestUrl.pathname);
+            return nextFetch(...args);
+          }) as typeof window.fetch;
+        },
+      });
+    });
+
     for (const route of allRoutes) {
       const pageErrors: string[] = [];
       const onPageError = (error: Error) => pageErrors.push(error.message);
@@ -295,6 +378,28 @@ test.describe("Web Demo runtime", () => {
         await expect(networkFailureState(page, route.path)).toBeVisible({
           timeout: DEMO_ROUTE_TIMEOUT_MS,
         });
+        const expectedApiPath = networkFailureApiPath(route.path);
+        await expect
+          .poll(
+            () =>
+              page.evaluate((expectedPath) => {
+                const paths =
+                  (window as Window & { __CVM_DEMO_FETCH_PATHS__?: string[] })
+                    .__CVM_DEMO_FETCH_PATHS__ ?? [];
+                return {
+                  matched: paths.some(
+                    (fetchPath) =>
+                      fetchPath === expectedPath || fetchPath.startsWith(`${expectedPath}/`),
+                  ),
+                  paths,
+                };
+              }, expectedApiPath),
+            {
+              message: `Missing ${expectedApiPath} fetch for ${route.path}`,
+              timeout: DEMO_ROUTE_TIMEOUT_MS,
+            },
+          )
+          .toMatchObject({ matched: true });
         if (isDashboardRoute(route.path)) await expectDashboardApiFailure(page);
         expect(pageErrors).toEqual([]);
       } finally {
