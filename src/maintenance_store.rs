@@ -2240,7 +2240,7 @@ fn task_run_from_row(row: TaskRunRow) -> TaskRun {
         summary: row.summary,
         processed_count: row.processed_count,
         updated_count: row.updated_count,
-        error_detail: row.error_detail,
+        error_detail: row.error_detail.map(|value| sanitize_task_detail(&value)),
         completion: row.completion,
         core_completion: row.core_completion,
         details: row
@@ -5372,7 +5372,9 @@ impl MaintenanceStore {
                 duration_ms: row.actual_duration_ms,
                 result: row.status.clone(),
                 status: row.status,
-                reason: row.error_detail,
+                reason: row
+                    .error_detail
+                    .map(|value| sanitize_task_detail(&value)),
             };
             (row.task_key, summary)
         })
@@ -7627,7 +7629,7 @@ mod tests {
             "INSERT INTO managed_task_runs
              (task_key,trigger_kind,started_at,finished_at,duration_ms,status,error_detail)
              VALUES('upstream_account_maintenance','interval','2026-10-03T00:00:00.000Z',
-                    '2026-10-03T00:00:07.000Z',777,'failed','legacy duration')",
+                    '2026-10-03T00:00:07.000Z',777,'failed','legacy Authorization: Basic old-secret')",
         )
         .execute(&pool)
         .await
@@ -7696,6 +7698,14 @@ mod tests {
             .await
             .expect("load legacy workload detail")
             .expect("legacy task detail");
+        let legacy_run = legacy_detail.recent_runs.first().expect("legacy task run");
+        assert!(
+            !legacy_run
+                .error_detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("old-secret")
+        );
         assert_eq!(
             legacy_detail
                 .workload_trend
