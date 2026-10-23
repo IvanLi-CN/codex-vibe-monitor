@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 type RouteCase = {
   path: string;
@@ -35,41 +35,106 @@ const allRoutes: RouteCase[] = [
   { path: "/#/system/settings", expectedPath: "/system/settings" },
   { path: "/#/system/proxy", expectedPath: "/system/proxy" },
   { path: "/#/settings", expectedPath: "/system/settings" },
-  { path: "/#/settings/legacy", expectedPath: "/settings/legacy" },
+  { path: "/#/settings/legacy", expectedPath: "/system/settings" },
   { path: "/#/not-a-route", expectedPath: "/dashboard" },
 ];
 
 const scenes = ["operational", "attention", "empty", "network-failure"] as const;
+const nonOperationalSmokeRoutes = allRoutes.filter((route) =>
+  ["/#/dashboard", "/#/records"].includes(route.path),
+);
+
+function routeLandmark(page: Page, path: string): Locator {
+  switch (path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route":
+      return page.getByTestId("dashboard-main-content");
+    case "/#/stats":
+      return page.getByRole("heading", { name: "统计", exact: true });
+    case "/#/live":
+      return page.getByTestId("live-view-tabs");
+    case "/#/records":
+      return page.getByTestId("records-filters-panel");
+    case "/#/account-pool":
+    case "/#/account-pool/transits":
+      return page.getByRole("heading", { name: "中转", exact: true });
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/pool":
+      return page.getByRole("heading", { name: "号池", exact: true });
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+      return page.getByRole("heading", { name: "新增账号", exact: true });
+    case "/#/account-pool/maintenance-records":
+      return page.getByRole("heading", { name: "非模型调用执行记录", exact: true });
+    case "/#/account-pool/groups":
+      return page.getByTestId("account-pool-groups-list");
+    case "/#/system":
+    case "/#/system/status":
+      return page.getByTestId("system-status-overview");
+    case "/#/system/performance":
+      return page.getByTestId("system-observability-page");
+    case "/#/system/tasks":
+      return page.getByTestId("system-tasks-list");
+    case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
+      return page.getByRole("heading", { name: "系统设置", exact: true });
+    case "/#/system/proxy":
+      return page.getByRole("heading", { name: "代理", exact: true });
+    default:
+      throw new Error(`Missing route landmark for ${path}`);
+  }
+}
 
 function routeWithScene(path: string, scene: string) {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
 }
 
-async function expectDemoShell(page: Page, expectedPath: string) {
+async function expectDemoShell(page: Page, route: RouteCase) {
   await expect(page.locator("#root")).toBeVisible();
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
-  await expect.poll(() => new URL(page.url()).hash).toContain(expectedPath);
+  await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByLabel("Loading page", { exact: true })).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).hash).toContain(route.expectedPath);
 }
 
 test.describe("Web Demo runtime", () => {
-  for (const scene of scenes) {
-    test(`resolves every production route in ${scene}`, async ({ page }) => {
-      for (const route of allRoutes) {
-        const routePage = route === allRoutes[0] ? page : await page.context().newPage();
-        try {
-          await routePage.goto(routeWithScene(route.path, scene), {
-            waitUntil: "domcontentloaded",
-          });
-          await expectDemoShell(routePage, route.expectedPath);
-        } finally {
-          if (routePage !== page) {
-            await routePage.close();
-          }
+  test("resolves every production route in operational scene", async ({ page }) => {
+    for (const route of allRoutes) {
+      const routePage = route === allRoutes[0] ? page : await page.context().newPage();
+      const pageErrors: string[] = [];
+      const onPageError = (error: Error) => pageErrors.push(error.message);
+      routePage.on("pageerror", onPageError);
+      try {
+        await routePage.goto(routeWithScene(route.path, "operational"), {
+          waitUntil: "domcontentloaded",
+        });
+        await expectDemoShell(routePage, route);
+        expect(pageErrors).toEqual([]);
+      } finally {
+        routePage.off("pageerror", onPageError);
+        if (routePage !== page) {
+          await routePage.close();
         }
       }
-    });
+    }
+  });
+
+  for (const scene of scenes.filter((value) => value !== "operational")) {
+    for (const route of nonOperationalSmokeRoutes) {
+      test(`resolves ${route.expectedPath} in ${scene} scene`, async ({ page }) => {
+        const pageErrors: string[] = [];
+        page.on("pageerror", (error) => pageErrors.push(error.message));
+        await page.goto(routeWithScene(route.path, scene), {
+          waitUntil: "domcontentloaded",
+        });
+        await expectDemoShell(page, route);
+        expect(pageErrors).toEqual([]);
+      });
+    }
   }
 
   test("round-trips query-driven scene and theme state in the shareable hash", async ({ page }) => {

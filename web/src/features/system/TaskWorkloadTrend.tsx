@@ -161,7 +161,7 @@ function createEmptyBacklogData(): RetentionBacklogTrendPoint[] {
   }));
 }
 
-function workloadHint(
+export function resolveWorkloadHint(
   state: TaskWorkloadTrendProps["state"],
   error: string | null | undefined,
   trend: TaskWorkloadTrendData | null | undefined,
@@ -686,7 +686,7 @@ export function TaskWorkloadTrend({
   const axis = chartBaseTokens(themeMode);
   const isRetention = taskKey === "retention_archive";
   const backlogPoints = retentionTrend ?? [];
-  const runHint = workloadHint(state, error, trend, effectiveCapabilities);
+  const runHint = resolveWorkloadHint(state, error, trend, effectiveCapabilities);
   const runPanelHeight =
     (isCompactViewport ? 72 : 32) +
     models.length * (chartHeight + 12) +
