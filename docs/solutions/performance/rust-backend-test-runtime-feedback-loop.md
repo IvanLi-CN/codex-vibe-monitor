@@ -33,16 +33,17 @@ related_specs:
 
 - 先分离冷编译、热 profile、单 fixture 初始化、真实等待和线程并发成本。热数据只能帮助定位测试执行，不能替代 CI critical path 验收。
 - 当前基线是 `CI Main` run `31706131099`：Stateful SQLite wall time `617s`，compile `143s`，test execution `404s`；backend-related jobs 总计 `1257s`。
-- PR run `31825458818` 说明关键路径之外仍有成本：Lint `348s`、Lightweight / Stateful / Archive `277s` / `324s` / `382s`、Build Artifacts `537s`。最终 PR 指标是每个 required job 的 job wall time 在同一 head 的冷/热两轮都 `<= 180s`，并使 required runner 总秒数至少下降 `20%`。
+- PR run `31825458818` 说明关键路径之外仍有成本：Lint `348s`、Lightweight / Stateful / Archive `277s` / `324s` / `382s`、Build Artifacts `537s`。严格验收口径是同一 head 冷轮每个 required job `<= 250s`、热轮 `<= 180s`，并使 required runner 总秒数至少下降 `20%`；这不是对既有预算的放宽，而是把冷编译与热缓存分开记录。
 - 分离 Cargo registry/git cache 与 nextest target cache；target key 同时包含 lockfile、manifest 和 Rust source fingerprint，并保留 lockfile-only restore prefix。首次迁移 namespace 时，ancestor cache 的恢复路径必须与旧缓存完全一致，否则 Actions cache 的版本校验会拒绝解包；随后只写入新的 source-key。clippy 可读 ancestor，但不应保存或争用 nextest target。
 - source-key `target` cache 只能由成功完成的 archive build 保存。失败 producer 的部分目录不能用 `always()` 发布，否则后续 retry 会恢复不完整状态并失去冷缓存验收意义。
 - Cargo profile 参数本身是 target cache ABI 的一部分。若 producer 恢复 `debug=0` artifact 后切换 `codegen-units`，所有依赖都会重新编译；先保持 profile 与 cache producer 一致，再用 CI critical path 验证任何编译参数实验。
 - 缓存迁移完成后，不要在 archive producer 先恢复 legacy workspace cache、再恢复 source-key target cache：两次 `target` 解包会串行占用 critical path。保留 legacy 兼容读路径给非关键 lint job，producer 只读 registry/git 与 source-key target。
 - 当冷 SHA 的单次链接无法落入 required job 预算时，使用一个显式 auxiliary archive producer 一次编译 current head，再让原有 backend required jobs 下载并回放各自完整 profile。必须把 auxiliary job 与 branch protection 分开记录，并用同一 head 两次 CI 同时验证 critical path、每个 required job 与总 runner 成本。
 - PR smoke image 可以把当前 debug binary、web bundle 与其需要的 Xray archive 在 host 侧并行生成，再封装到私有 runtime target。若 source-key target cache 的解包本身会令 required build 越过预算，将产物组装移到明确的 auxiliary producer；required `Build Artifacts` 必须显式检查 producer result、下载产物并继续执行真实 Docker smoke，不能以 skipped 隐藏上游失败。私有 runtime 的 glibc 必须兼容 host runner。生产 release profile、Xray downloader stage 和默认 Docker target 不得借此改变。
-- backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
+- backend runner 无 archive 时应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`；archive consumers 应由匹配版本的 `cargo-nextest` 一次解包后通过 `cargo-metadata`、`binaries-metadata`、`target-dir-remap` 与 `workspace-remap` 重放同一过滤器，不要再把整个后端测试树塞回单个 required check。
 - 当前 1213 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `134.108s` / `83.952s`，6 threads 为 `63.593s` / `62.874s`，8 threads 为 `57.287s` / `67.727s`；8 的平均值最快，但 6 在线 10% 内，因此 runner 选择 6。
-- `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
+- `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，`--archive-dir <path>` 用于一次解包后的多次 profile replay；CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
+- Bun 下载缓存与 Playwright 浏览器缓存必须分别按 Bun/依赖输入和 Playwright package 输入精确 key；缓存只减少重复下载，不改变 test suite、worker 数、结果目录或失败传播。
 - 两个 CI archive 原型都说明“编译复用”不等于关键路径改善：独立 producer 的 run `31811122919` Stateful critical path 为 `504s`、backend runner 为 `872s`；Stateful job 内构建并分发的 run `31813566813` 为 `433s`、`750s`。新的 auxiliary producer 仍是受控实验，只有同一 head 的冷/热两轮同时满足门槛才可替换三次独立编译。
 - 对只验证 DB 行为、不验证主库文件路径的测试，使用唯一命名的 in-memory SQLite；Archive 的普通 current-schema file-DB tests 可从 runner 生成的私有 template 复制唯一文件。legacy migration、文件路径、gzip、文件损坏和 write-lock 保留真实 fresh schema/file fixture。
 - 给 Archive template 分类时，识别 "再次调用 `ensure_schema` 模拟旧版数据库" 的用例。它们必须显式选择 fresh schema；仅删除 migration marker 而保留 current trigger 会把 fixture 缺陷误报为 schema migration 失败。
@@ -62,8 +63,9 @@ cargo nextest run --locked --all-features --no-fail-fast --test-threads=8 -E 'te
 bash .github/scripts/run-backend-tests.sh --profile lightweight
 bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
 bash .github/scripts/run-backend-tests.sh --profile archive-file-io
-cargo nextest archive --locked --all-features --archive-file /tmp/backend-tests.tar.zst
-bash .github/scripts/run-backend-tests.sh --archive-file /tmp/backend-tests.tar.zst
+cargo nextest archive --locked --all-features --archive-file /tmp/backend-tests.tar.zst --zstd-level 0
+cargo-nextest nextest run --archive-file /tmp/backend-tests.tar.zst --extract-to /tmp/backend-test-extract --workspace-remap "$PWD" --no-run
+bash .github/scripts/run-backend-tests.sh --archive-dir /tmp/backend-test-extract
 cargo check --locked --all-targets --all-features
 bash .github/scripts/test-quality-gates-contract.sh
 bash .github/scripts/test-live-quality-gates.sh

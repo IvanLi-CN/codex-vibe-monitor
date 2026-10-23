@@ -8,7 +8,6 @@ on:
       - synchronize
       - ready_for_review
       - edited
-      - labeled
   merge_group:
     types:
       - checks_requested
@@ -50,16 +49,6 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Restore legacy Cargo workspace cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Restore Cargo registry
         id: cargo-registry-cache
         uses: actions/cache/restore@v5
@@ -83,6 +72,7 @@ jobs:
       - name: Prepare exact Cargo Clippy cache reuse
         if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
         run: |
+          # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
           find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
@@ -117,7 +107,7 @@ jobs:
   repository-tooling-checks:
     name: Repository Tooling Checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -128,6 +118,12 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
 
       - name: Install repo tooling
         run: bun install --frozen-lockfile
@@ -160,9 +156,15 @@ jobs:
             .github/scripts/metadata_gate.py \
             .github/scripts/check_live_quality_gates.py \
             .github/scripts/check_quality_gates_contract.py \
+            .github/scripts/check_rust_source_quality.py \
             .github/scripts/release_snapshot.py \
             .github/scripts/verify_manifest_platforms.py
           bash -n .github/scripts/build-smoke-image-with-retry.sh
+          bash -n .github/scripts/run-backend-tests.sh
+          bash -n .github/scripts/test-representative-scale-contract.sh
+          bash -n .github/scripts/run-rust-source-quality.sh
+          bash -n .github/scripts/test-rust-source-quality.sh
+          bash .github/scripts/test-rust-source-quality.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
@@ -194,7 +196,7 @@ jobs:
               echo "::error::merge_group ref ${GITHUB_REF} must use the gh-readonly-queue/<base_branch>/... format."
               exit 1
             fi
-            queue_ref="${GITHUB_REF#${queue_prefix}}"
+            queue_ref="${GITHUB_REF#"${queue_prefix}"}"
             if [[ "${queue_ref}" != */pr-* ]]; then
               echo "::error::Unable to derive the merge_group base branch from ${GITHUB_REF}."
               exit 1
@@ -285,12 +287,121 @@ jobs:
           bash .github/scripts/test-build-smoke-image-with-retry.sh
           bash .github/scripts/test-release-snapshot.sh
           bash .github/scripts/test-live-quality-gates.sh
+          bash .github/scripts/test-backend-test-contract.sh
+          bash .github/scripts/test-representative-scale-contract.sh
+
+      - name: Observability tooling and performance evidence checks
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 scripts/test-observability-tools.py
+          python3 scripts/test-observability-acceptance.py
+          python3 scripts/test-observability-diagnostics.py
 
       - name: Front-end lint
         run: bun run lint:web
 
       - name: Docs-site lint
         run: bun run lint:docs
+
+  frontend-tests:
+    name: Front-end Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Run front-end Vitest suite
+        working-directory: web
+        run: bun run test
+
+      - name: Build and verify PWA icon contract
+        working-directory: web
+        run: |
+          bun run build:pwa-test
+          bun run test:pwa-assets
+
+  storybook-accessibility-tests:
+    name: Storybook Accessibility Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-v1-${{ hashFiles('.bun-version', 'web/package.json', 'web/bun.lock') }}
+
+      - name: Install Playwright Chromium for Storybook
+        working-directory: web
+        run: bunx playwright install chromium
+
+      - name: Run Storybook accessibility suite
+        working-directory: web
+        run: bun run test-storybook
+
+  docs-demo-build:
+    name: Docs & Web Demo Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
 
       - name: Build Storybook static site
         working-directory: web
@@ -315,98 +426,26 @@ jobs:
           cd docs-site
           DOCS_BASE="${DOCS_BASE}" bun run build
 
+      - name: Build Web Demo static site
+        working-directory: web
+        run: VITE_DEPLOY_BASE="${DOCS_BASE}demo/" bun run demo:build
+
       - name: Assemble public docs site smoke check
         shell: bash
         run: |
           set -euo pipefail
-          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site
+          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static web/demo-dist .tmp/pages-site
           test -f .tmp/pages-site/index.html
           test -f .tmp/pages-site/storybook/index.html
+          test -f .tmp/pages-site/demo/index.html
+          test -f .tmp/pages-site/demo/mockServiceWorker.js
           test -f .tmp/pages-site/storybook.html
           grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
-
-  frontend-tests:
-    name: Front-end Tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Run front-end Vitest suite
-        working-directory: web
-        run: bun run test
-
-  storybook-accessibility-tests:
-    name: Storybook Accessibility Tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Install Playwright Chromium for Storybook
-        working-directory: web
-        run: bunx playwright install chromium
-
-      - name: Run Storybook accessibility suite
-        working-directory: web
-        run: bun run test-storybook
-
-  docs-demo-build:
-    name: Docs & Web Demo Build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install repo tooling
-        run: bun install --frozen-lockfile
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Install docs-site dependencies
-        run: bun install --cwd docs-site --frozen-lockfile
-
-      - name: Build Storybook static site
-        working-directory: web
-        run: bun run storybook:build -- --quiet
-
-      - name: Build docs and demo sites
-        run: |
-          cd docs-site && bun run build
-          cd ../web && bun run demo:build
 
   records-overlay-e2e-producer:
     name: PR E2E Test Producer
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -416,9 +455,21 @@ jobs:
         with:
           bun-version-file: .bun-version
 
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
       - name: Install front-end dependencies
         working-directory: web
         run: bun install --frozen-lockfile
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-v1-${{ hashFiles('.bun-version', 'web/package.json', 'web/bun.lock') }}
 
       - name: Install Playwright Chromium
         working-directory: web
@@ -494,6 +545,7 @@ jobs:
           path: |
             web/playwright-report-records
             web/playwright-report-demo
+            web/playwright-report-retention-ownership
             web/playwright-report-dashboard
             web/playwright-report-dashboard-performance
             web/test-results
@@ -514,6 +566,7 @@ jobs:
     needs: records-overlay-e2e-producer
     if: always()
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Verify E2E test producer
         env:
@@ -523,13 +576,32 @@ jobs:
   backend-test-archive:
     name: Backend Test Archive Producer
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          test -r /usr/include/sqlite3.h
+          command -v unzip
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
       - name: Restore Cargo registry
         id: cargo-registry-cache
         uses: actions/cache/restore@v5
         with:
-          path: ~/.cargo/registry
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
 
       - name: Restore Cargo test artifacts
         id: cargo-test-cache
@@ -543,15 +615,21 @@ jobs:
       - name: Prepare exact Cargo test cache reuse
         if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
         run: |
+          # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
           find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi
           done
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
       - name: Build backend test archive
         id: build-backend-test-archive
-        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --zstd-level 0
 
       - name: Upload backend test archive
         uses: actions/upload-artifact@v7
@@ -559,7 +637,19 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-tests.tar.zst
           if-no-files-found: error
+          retention-days: 1
           overwrite: true
+          compression-level: 0
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
@@ -569,20 +659,12 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
 
-      - name: Save Cargo registry
-        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
   backend-tests-lightweight:
     needs: backend-test-archive
     if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -592,27 +674,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
-      - name: Cache cargo directories
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -620,15 +688,28 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
     if: always()
     name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -638,16 +719,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -655,23 +733,44 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite-shard-2:
     needs: backend-test-archive
     if: always()
     name: Backend Tests (Stateful SQLite shard 2/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
           PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
         run: test "$PRODUCER_RESULT" = success
 
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -679,8 +778,21 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite:
     name: Backend Tests (Stateful SQLite)
@@ -702,12 +814,14 @@ jobs:
           test "${SHARD_ONE_RESULT}" = success
           test "${SHARD_TWO_RESULT}" = success
 
-  backend-tests-archive-file-io:
+  backend-tests-representative-scale:
+    name: Backend Tests (Representative Scale)
     needs: backend-test-archive
     if: always()
-    name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Verify backend test archive producer
         env:
@@ -717,27 +831,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
-      - name: Cache cargo directories
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -745,14 +845,102 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
+      - name: Run deterministic representative-scale acceptance
+        env:
+          NEXTEST_SUCCESS_OUTPUT: immediate
+        run: |
+          bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-dir "$RUNNER_TEMP/backend-test-extract" --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
+          bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-dir "$RUNNER_TEMP/backend-test-extract" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)'
+
+  backend-tests-archive-file-io:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Archive / File I/O)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   build-pr-smoke-artifacts:
     name: PR Smoke Artifact Producer
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          test -r /usr/include/sqlite3.h
+          command -v unzip
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       - name: Restore Cargo test artifacts
         id: cargo-test-cache
         uses: actions/cache/restore@v5
@@ -765,20 +953,84 @@ jobs:
       - name: Prepare exact Cargo test cache reuse
         if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
         run: |
+          # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
           find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi
           done
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
       - name: Build PR smoke artifacts
-        run: mkdir -p .ci-smoke
+        shell: bash
+        env:
+          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          rm -rf .ci-smoke
+          mkdir -p .ci-smoke
+          xray_core_version="$(awk -F= '$1 == "ARG XRAY_CORE_VERSION" { print $2; exit }' Dockerfile)"
+          test -n "$xray_core_version"
+          cargo build --profile test --locked > /tmp/codex-vibe-monitor-smoke-rust.log 2>&1 &
+          rust_pid=$!
+          (
+            cd web
+            VITE_APP_VERSION="$APP_EFFECTIVE_VERSION" bunx vite build
+            VITE_APP_VERSION="$APP_EFFECTIVE_VERSION" bun scripts/write-version.mjs
+          ) > /tmp/codex-vibe-monitor-smoke-web.log 2>&1 &
+          web_pid=$!
+          (
+            xray_staging_dir="$(mktemp -d)"
+            xray_archive="${xray_staging_dir}/Xray-linux-64.zip"
+            xray_primary_url="https://github.com/XTLS/Xray-core/releases/download/v${xray_core_version}/Xray-linux-64.zip"
+            xray_fallback_url="https://downloads.sourceforge.net/project/xray-core.mirror/v${xray_core_version}/Xray-linux-64.zip"
+            if ! curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o "$xray_archive" "$xray_primary_url"; then
+              curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o "$xray_archive" "$xray_fallback_url"
+            fi
+            unzip -q "$xray_archive" -d "$xray_staging_dir/unpacked"
+            install -m 0755 "$xray_staging_dir/unpacked/xray" .ci-smoke/xray
+            install -m 0644 "$xray_staging_dir/unpacked/LICENSE" .ci-smoke/xray.LICENSE
+          ) > /tmp/codex-vibe-monitor-smoke-xray.log 2>&1 &
+          xray_pid=$!
+          rust_status=0
+          web_status=0
+          xray_status=0
+          wait "$rust_pid" || rust_status=$?
+          wait "$web_pid" || web_status=$?
+          wait "$xray_pid" || xray_status=$?
+          if [[ "$rust_status" -ne 0 || "$web_status" -ne 0 || "$xray_status" -ne 0 ]]; then
+            cat /tmp/codex-vibe-monitor-smoke-rust.log || true
+            cat /tmp/codex-vibe-monitor-smoke-web.log || true
+            cat /tmp/codex-vibe-monitor-smoke-xray.log || true
+            exit 1
+          fi
+          install -m 0755 target/debug/codex-vibe-monitor .ci-smoke/codex-vibe-monitor
+          cp -R web/dist .ci-smoke/web
+          tar -C .ci-smoke -cf "$RUNNER_TEMP/pr-smoke-artifacts.tar" .
 
       - name: Upload PR smoke artifacts
         uses: actions/upload-artifact@v7
         with:
           name: pr-smoke-artifacts-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts.tar
+          if-no-files-found: error
           overwrite: true
+          retention-days: 1
+
 
   build:
     name: Build Artifacts
@@ -806,31 +1058,31 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: pr-smoke-artifacts-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts
 
       - name: Extract PR smoke artifacts
-        run: mkdir -p .ci-smoke
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        run: |
+          mkdir .ci-smoke
+          tar -C .ci-smoke -xf "$RUNNER_TEMP/pr-smoke-artifacts/pr-smoke-artifacts.tar"
 
       - name: Build smoke image (linux/amd64, load)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          load: true
-          platforms: ${{ env.PLATFORM_AMD64 }}
-          tags: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          build-args: |
-            APP_EFFECTIVE_VERSION=pr-${{ github.run_id }}-${{ github.run_attempt }}
-          cache-from: type=gha,scope=pr-smoke-amd64
-          cache-to: type=gha,mode=max,scope=pr-smoke-amd64
+        shell: bash
+        env:
+          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}
+          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --target ci-smoke-runtime \
+            --tag "$SMOKE_TAG" \
+            --build-arg "APP_EFFECTIVE_VERSION=$APP_EFFECTIVE_VERSION" \
+            .
 
       - name: Smoke test image (linux/amd64)
         shell: bash
         env:
-          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 

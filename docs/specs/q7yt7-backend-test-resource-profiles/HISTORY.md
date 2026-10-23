@@ -39,6 +39,8 @@
 - 2026-09-30：PR #1056 的首轮优化 run `36723460863` 中，Archive / File I/O `149s`，Lightweight `115s` 但因 freshness 回归失败，Stateful SQLite `304s`。失败说明测试仅把 rolling 快照时间改旧、却没有像 production maintenance 一样通过 generation fence 续租 freshness；修复为直接调用该生产 helper，并把共享 schema-template 支撑代码移入独立测试模块以恢复 Rust 文件行数预算。修复结果记录在下一条。
 - 2026-09-30：PR #1056 repair run `36726941619` 在 head `844d691c` 上所有 checks 通过。Lightweight `1,228/1,228`，nextest 执行 `77.715s`、job wall `113s`；Archive / File I/O `299/299`、job wall `146s`；Stateful SQLite `1,370/1,370`、job wall `314s`。原始 Lightweight 单线程执行 `427.558s`、job wall 约 `464s`，因此链接 job 的执行时间下降约 `82%`、job wall 下降约 `76%`。Stateful `314s`、Representative Scale `314s`、Lint `190s` 仍超过 `180s`，全 required-job 预算没有完成。
 - 2026-10-01：PR #1057 同一 head 的 cold/hot Actions 显示 Clippy Lint `220s`/`57s`、archive producer `236s`/`26s`，required runner 成本低于原门槛。冷编译测量支持 cold `250s`、hot `180s` 的分档预算，并保留原 runner 总成本与 Stateful 限值。热轮还暴露四个基于 `Utc::now()` 的 invocation timeline fixtures 在 UTC 午夜后越过自然日边界；后续候选将时间固定到当天中午。
+- 2026-10-23：当前 CI 候选保留既有 required checks、Stateful 双分片、Representative Scale、完整 E2E 与 PR smoke 语义；仅移除 CI PR 的 `labeled` 全量触发，删除 Lint 的重复 legacy Cargo registry restore，并把 archive consumer 收敛为固定 `cargo-nextest@0.9.138` 的一次解包、多 profile metadata replay。Bun 与 Playwright 下载缓存按版本和锁文件输入隔离。
+- 2026-10-23：本地 workflow/backend contract 与 runner archive-dir/archive-file 行为测试通过；按照既有规范，尚未将 C/D 的 E2E producer 合并和 Main/Pages artifact coupling 视为收益成立，必须等待真实 Actions 冷/热、成本与发布延迟证据后再决定保留或回滚。
 
 ## Key Reasons / Replacements
 

@@ -6,7 +6,7 @@ source_snapshot_root="$(cd "$repo_root" && pwd -P)"
 
 usage() {
   cat <<'EOF'
-Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH] [--test-filter EXPR] [--partition hash:N/M]
+Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH|--archive-dir PATH] [--test-filter EXPR] [--partition hash:N/M]
 
 Profiles:
   lightweight
@@ -18,6 +18,9 @@ If --profile is omitted, all three profiles run sequentially.
 When --archive-file is set, run profiles from an existing cargo-nextest archive
 instead of building test binaries in this invocation.
 
+When --archive-dir is set, run profiles from an already extracted cargo-nextest
+archive instead of unpacking it for each profile invocation.
+
 When --test-filter is set, replace the profile's default nextest filter while
 retaining the profile's schema-template and workspace contract.
 
@@ -28,6 +31,7 @@ EOF
 
 profile="all"
 archive_file=""
+archive_dir_input=""
 test_filter_override=""
 partition=""
 while [[ $# -gt 0 ]]; do
@@ -48,6 +52,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       archive_file="$2"
+      shift 2
+      ;;
+    --archive-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "::error::--archive-dir requires a path." >&2
+        usage >&2
+        exit 1
+      fi
+      archive_dir_input="$2"
       shift 2
       ;;
     --test-filter)
@@ -79,6 +92,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$archive_file" && -n "$archive_dir_input" ]]; then
+  echo "::error::--archive-file and --archive-dir are mutually exclusive." >&2
+  exit 64
+fi
 
 if [[ -n "$partition" ]]; then
   if [[ ! "$partition" =~ ^hash:([0-9]+)/([0-9]+)$ ]]; then
@@ -227,6 +245,23 @@ ensure_writable_dir CARGO_TARGET_DIR "$cargo_target_dir"
 export CARGO_HOME="$cargo_home"
 export CARGO_TARGET_DIR="$cargo_target_dir"
 
+archive_dir=""
+archive_extract_dir=""
+if [[ -n "$archive_dir_input" ]]; then
+  archive_dir="$(canonical_dir_path ARCHIVE_DIR "$archive_dir_input")"
+  if [[ ! -d "$archive_dir" ]]; then
+    echo "::error::ARCHIVE_DIR must resolve to an extracted archive directory." >&2
+    exit 64
+  fi
+  if path_overlaps "$archive_dir" "$source_snapshot_root" \
+    || path_overlaps "$archive_dir" "$cargo_home" \
+    || path_overlaps "$archive_dir" "$cargo_target_dir" \
+    || path_overlaps "$archive_dir" "$backend_test_workspace"; then
+    echo "::error::ARCHIVE_DIR must remain separate from the source snapshot, Cargo directories, and test workspace." >&2
+    exit 64
+  fi
+fi
+
 offline_mode="online"
 case "${CARGO_NET_OFFLINE:-}" in
   1|true|yes) offline_mode="offline" ;;
@@ -248,7 +283,14 @@ cleanup_schema_template() {
   fi
   schema_template_dir=""
 }
-trap cleanup_schema_template EXIT
+
+cleanup() {
+  cleanup_schema_template
+  if [[ -n "$archive_extract_dir" && -d "$archive_extract_dir" ]]; then
+    rm -rf "$archive_extract_dir"
+  fi
+}
+trap cleanup EXIT
 
 # The pool routing/live-first test profiles now exercise async paths that exceed the
 # default Rust thread stack on CI workers. Raise the per-thread minimum for the
@@ -262,6 +304,45 @@ if ! command -v cargo-nextest >/dev/null 2>&1; then
   echo "::error::cargo-nextest is not installed. Install it before running backend tests."
   exit 1
 fi
+
+if [[ -n "$archive_file" ]]; then
+  if ! path_is_normalized_absolute "$archive_file" || path_has_parent_component "$archive_file" || [[ ! -f "$archive_file" ]]; then
+    echo "::error::ARCHIVE_FILE must be an existing normalized absolute archive path." >&2
+    exit 64
+  fi
+  archive_extract_dir="$(mktemp -d "$backend_test_workspace/archive-extract.XXXXXX")"
+  archive_dir="$archive_extract_dir"
+  cargo-nextest nextest run \
+    --archive-file "$archive_file" \
+    --extract-to "$archive_dir" \
+    --workspace-remap "$source_snapshot_root" \
+    --no-run
+fi
+
+archive_replay_args=()
+if [[ -n "$archive_dir" ]]; then
+  archive_cargo_metadata="$archive_dir/target/nextest/cargo-metadata.json"
+  archive_binaries_metadata="$archive_dir/target/nextest/binaries-metadata.json"
+  archive_target_dir="$archive_dir/target"
+  if [[ ! -f "$archive_cargo_metadata" || ! -f "$archive_binaries_metadata" || ! -d "$archive_target_dir" ]]; then
+    echo "::error::ARCHIVE_DIR is missing cargo-nextest metadata or target contents." >&2
+    exit 64
+  fi
+  archive_replay_args=(
+    --cargo-metadata "$archive_cargo_metadata"
+    --binaries-metadata "$archive_binaries_metadata"
+    --target-dir-remap "$archive_target_dir"
+    --workspace-remap "$source_snapshot_root"
+  )
+fi
+
+run_nextest() {
+  if [[ -n "$archive_dir" ]]; then
+    cargo-nextest nextest run "${archive_replay_args[@]}" "$@"
+  else
+    cargo nextest run --locked --all-features "$@"
+  fi
+}
 
 prepare_schema_template() {
   local selected_profile="$1"
@@ -288,11 +369,7 @@ prepare_schema_template() {
   esac
 
   local template_filter='test(=tests::prepare_current_schema_template_for_profile)'
-  if [[ -n "$archive_file" ]]; then
-    cargo nextest run --archive-file "$archive_file" --no-fail-fast -E "$template_filter"
-  else
-    cargo nextest run --locked --all-features --no-fail-fast -E "$template_filter"
-  fi
+  run_nextest --no-fail-fast -E "$template_filter"
 }
 
 run_profile() {
@@ -343,12 +420,7 @@ run_profile() {
   if [[ "$selected_profile" == "lightweight" || "$selected_profile" == "stateful-sqlite" || "$selected_profile" == "archive-file-io" ]]; then
     prepare_schema_template "$selected_profile"
   fi
-  nextest_args=(nextest run)
-  if [[ -n "$archive_file" ]]; then
-    nextest_args+=(--archive-file "$archive_file" --no-fail-fast)
-  else
-    nextest_args+=(--locked --all-features --no-fail-fast)
-  fi
+  nextest_args=(--no-fail-fast)
   if [[ -n "$test_threads" ]]; then
     echo "backend_test_profile_test_threads_${selected_profile//-/_}=$test_threads"
     nextest_args+=(--test-threads "$test_threads")
@@ -357,7 +429,7 @@ run_profile() {
     nextest_args+=(--partition "$partition")
   fi
   nextest_args+=(-E "$filter_expr")
-  cargo "${nextest_args[@]}"
+  run_nextest "${nextest_args[@]}"
   if [[ "$selected_profile" == "stateful-sqlite" ]]; then
     unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
   fi

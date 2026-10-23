@@ -251,14 +251,6 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Restore legacy Cargo workspace cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-
       - name: Restore Cargo registry
         id: cargo-registry-cache
         uses: actions/cache/restore@v5
@@ -326,6 +318,12 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
 
       - name: Install repo tooling
         run: bun install --frozen-lockfile
@@ -439,6 +437,12 @@ jobs:
         with:
           bun-version-file: .bun-version
 
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
       - name: Install front-end dependencies
         working-directory: web
         run: bun install --frozen-lockfile
@@ -460,9 +464,21 @@ jobs:
         with:
           bun-version-file: .bun-version
 
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
       - name: Install front-end dependencies
         working-directory: web
         run: bun install --frozen-lockfile
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-v1-${{ hashFiles('.bun-version', 'web/package.json', 'web/bun.lock') }}
 
       - name: Install Playwright Chromium for Storybook
         working-directory: web
@@ -484,6 +500,12 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
 
       - name: Install repo tooling
         run: bun install --frozen-lockfile
@@ -547,9 +569,21 @@ jobs:
         with:
           bun-version-file: .bun-version
 
+      - name: Cache Bun downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}
+
       - name: Install front-end dependencies
         working-directory: web
         run: bun install --frozen-lockfile
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-v1-${{ hashFiles('.bun-version', 'web/package.json', 'web/bun.lock') }}
 
       - name: Install Playwright Chromium
         working-directory: web
@@ -704,11 +738,13 @@ jobs:
           done
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
 
       - name: Build backend test archive
         id: build-backend-test-archive
-        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --zstd-level 0
 
       - name: Upload backend test archive
         uses: actions/upload-artifact@v7
@@ -718,6 +754,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           overwrite: true
+          compression-level: 0
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -752,16 +789,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -769,8 +803,21 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
@@ -787,16 +834,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -804,8 +848,21 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite-shard-2:
     needs: backend-test-archive
@@ -822,16 +879,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -839,8 +893,21 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   backend-tests-stateful-sqlite:
     name: Backend Tests (Stateful SQLite)
@@ -877,16 +944,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.96.0
-
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Verify cargo-nextest runtime
+        run: test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -894,8 +958,21 @@ jobs:
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
+      - name: Prepare backend test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/backend-test-extract"
+          test ! -e "$archive_dir"
+          mkdir "$archive_dir"
+          cargo-nextest nextest run \
+            --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \
+            --extract-to "$archive_dir" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-run
+
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-dir "$RUNNER_TEMP/backend-test-extract"
 
   release-snapshot:
     name: Release Snapshot

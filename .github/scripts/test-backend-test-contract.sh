@@ -94,6 +94,24 @@ external_target_dir="$tmp_root/external-target"
 mkdir -p "$contract_bin"
 cat >"$contract_bin/cargo-nextest" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
+printf 'cargo_nextest_home=%s cargo_nextest_target_dir=%s ' \
+  "${CARGO_HOME:-}" "${CARGO_TARGET_DIR:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf '%q ' "$@" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf '\n' >>"${BACKEND_CONTRACT_RECORD:?}"
+extract_dir=""
+for ((index = 1; index <= $#; index++)); do
+  if [[ "${!index}" == --extract-to ]]; then
+    next_index=$((index + 1))
+    extract_dir="${!next_index}"
+    break
+  fi
+done
+if [[ -n "$extract_dir" ]]; then
+  mkdir -p "$extract_dir/target/nextest"
+  : >"$extract_dir/target/nextest/cargo-metadata.json"
+  : >"$extract_dir/target/nextest/binaries-metadata.json"
+fi
 exit 0
 EOF
 cat >"$contract_bin/cargo" <<'EOF'
@@ -132,6 +150,37 @@ grep -q "cargo_home=$default_workspace/cargo-home" "$contract_record"
 grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
 grep -q 'maintenance::archive::archive_writers::tests' "$contract_record"
 grep -q 'maintenance::retention::retention_recovery_race_tests' "$contract_record"
+
+archive_dir="$tmp_root/extracted-archive"
+mkdir -p "$archive_dir/target/nextest"
+: >"$archive_dir/target/nextest/cargo-metadata.json"
+: >"$archive_dir/target/nextest/binaries-metadata.json"
+: >"$contract_record"
+archive_dir_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight --archive-dir "$archive_dir" 2>&1)"
+grep -q 'backend_test_lightweight_schema_template=prepared' <<<"$archive_dir_output"
+grep -q -- '--cargo-metadata' "$contract_record"
+grep -q -- '--binaries-metadata' "$contract_record"
+grep -q -- '--target-dir-remap' "$contract_record"
+grep -q -- '--workspace-remap' "$contract_record"
+! grep -q '^cargo_home=' "$contract_record"
+
+archive_file="$tmp_root/backend-tests.tar.zst"
+: >"$archive_file"
+: >"$contract_record"
+archive_file_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight --archive-file "$archive_file" 2>&1)"
+grep -q 'backend_test_lightweight_schema_template=prepared' <<<"$archive_file_output"
+grep -q -- '--archive-file' "$contract_record"
+grep -q -- '--extract-to' "$contract_record"
+grep -q -- '--cargo-metadata' "$contract_record"
+! grep -q '^cargo_home=' "$contract_record"
 [[ -d "$default_workspace/cargo-home" && -d "$default_workspace/target" ]]
 
 : >"$contract_record"

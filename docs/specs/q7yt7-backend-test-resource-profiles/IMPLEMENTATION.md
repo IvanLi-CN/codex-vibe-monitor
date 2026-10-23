@@ -13,6 +13,8 @@
 - Representative-scale acceptance: `src/tests/stateful_sqlite/representative_scale_acceptance.rs` is a deterministic, data-blind exact-oracle test selected by `--test-filter`; it crosses the retired 64 MiB aggregate source boundary and enforces 30-second bootstrap / 1800-second all-time budgets.
 - Release consumes the same target SHA's successful CI Main result and runtime-image smoke. Representative-scale acceptance remains a deterministic PR/Main gate and has no external receipt or production-copy input.
 - Catalog note: 三路 backend profile 合同保持不变；本轮收敛可移植 Rust 编译缓存输入、Archive file fixture、PR smoke build 与非 backend required-job 资源边界
+- Current CI candidate: `CI PR` removes `labeled` from the full-CI trigger while Label Gate retains label events; backend archive consumers use `cargo-nextest@0.9.138`, extract once to a runner-local directory, and replay the unchanged filters through archive metadata. Lint no longer restores the duplicate legacy Cargo cache; Bun downloads and version-matched Playwright Chromium use explicit cache keys.
+- Local contract evidence: `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`, `bash .github/scripts/test-quality-gates-contract.sh`, and `bash .github/scripts/test-backend-test-contract.sh` pass on this candidate. Real GitHub Actions cold/hot receipts, required runner totals, and merge-to-release/Pages timing remain open acceptance inputs.
 
 ## Lightweight runtime investigation
 
