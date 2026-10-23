@@ -79,7 +79,9 @@ function routeLandmark(page: Page, path: string): Locator {
         .or(page.getByTestId("account-pool-groups-error"));
     case "/#/system":
     case "/#/system/status":
-      return page.getByTestId("system-status-overview");
+      return page
+        .getByTestId("system-status-overview")
+        .or(page.getByRole("heading", { name: "系统状态", exact: true }));
     case "/#/system/performance":
       return page.getByTestId("system-observability-page");
     case "/#/system/tasks":
