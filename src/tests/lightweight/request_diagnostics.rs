@@ -166,23 +166,54 @@ fn request_diagnostics_nonstream_ttft_is_not_applicable() {
         context.finish_response("complete", "2xx");
     }
     let context = DiagnosticContext::begin(metrics.clone(), "responses").unwrap();
+    let detailed = context.state().detail_bucket == 0;
     context.ttft_applicable(true);
     context.milestone("model_delta");
     context.finish_response("complete", "2xx");
     let spans = exporter.0.lock().unwrap();
-    assert_eq!(spans.len(), 4);
-    for root in &spans[..3] {
+    let expected_child_spans = if detailed { 1 } else { 0 };
+    assert_eq!(spans.len(), 4 + expected_child_spans);
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span.name == "cvm.proxy.response")
+            .count(),
+        4
+    );
+    let nonstream_roots: Vec<_> = spans
+        .iter()
+        .filter(|span| {
+            span.name == "cvm.proxy.response"
+                && attribute(span, "cvm.ttft_state").as_deref() == Some("not_applicable")
+        })
+        .collect();
+    assert_eq!(nonstream_roots.len(), 3);
+    for root in nonstream_roots {
         assert_eq!(
             attribute(root, "cvm.ttft_state").as_deref(),
             Some("not_applicable")
         );
         assert!(attribute(root, "cvm.model_delta_ms").is_none());
     }
+    let observed_root = spans
+        .iter()
+        .find(|span| {
+            span.name == "cvm.proxy.response"
+                && attribute(span, "cvm.ttft_state").as_deref() == Some("observed")
+        })
+        .unwrap();
     assert_eq!(
-        attribute(&spans[3], "cvm.ttft_state").as_deref(),
+        attribute(observed_root, "cvm.ttft_state").as_deref(),
         Some("observed")
     );
-    assert!(attribute(&spans[3], "cvm.model_delta_ms").is_some());
+    assert!(attribute(observed_root, "cvm.model_delta_ms").is_some());
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span.name == "milestone.model_delta")
+            .count(),
+        expected_child_spans
+    );
 }
 
 #[test]
