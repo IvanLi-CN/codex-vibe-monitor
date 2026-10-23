@@ -143,7 +143,13 @@
     "candidate_base_sha": "5f4a413fcbe83c8045c8d819a8a3684768b850ea",
     "candidate_head_sha": "7a93a2539b2f90e79a343e7c2ebf685018933c44",
     "status": "current-head-validation-pending-migration-replay-pending",
-    "ddl_structural_changes": [],
+    "ddl_structural_changes": [
+      {
+        "id": "maintenance-owner-retry-state",
+        "description": "Idempotently create maintenance_owner_retry_state(task_key PRIMARY KEY,failure_count,next_eligible_at,reason) in the maintenance database; no existing deployed migration is edited.",
+        "order": 0
+      }
+    ],
     "dml_changes": [
       "Insert six managed-task catalog rows and apply retention_owner_schedule_v2 once only when their interval and cron fields are unset.",
       "Persist ownershipVersion=2, ownerScope, globalBacklogTotal, selectedScope, discovered, selected, committed, and one of no-work/complete/partial/deferred/failed in the existing managed_task_runs.details JSON, including explicit task_execution_active lease-conflict facts.",

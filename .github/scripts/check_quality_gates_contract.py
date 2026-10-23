@@ -914,6 +914,32 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
     require(job.get("timeout-minutes") == 60, f"{where}.timeout-minutes must stay 60")
     require_job_and_steps_fail_closed(job, where)
 
+    scope = step_config(job, "Detect retention migration scope", where)
+    require(scope.get("id") == "retention_scope", f"{where} scope detection must expose retention_scope")
+    scope_command = step_run(scope, f"{where}.steps['Detect retention migration scope']")
+    for fragment in (
+        "git diff --name-only",
+        "BASE_SHA",
+        "src/*",
+        "docs/adr/assets/retention-maintenance-task-ownership/*",
+        "required=",
+        "$GITHUB_OUTPUT",
+    ):
+        require(fragment in scope_command, f"{where} scope detection must contain {fragment!r}")
+
+    gated_if = "${{ steps.retention_scope.outputs.required == 'true' }}"
+    for step_name in (
+        "Verify smoke artifact producer",
+        "Download PR smoke artifacts",
+        "Extract candidate binary",
+        "Generate released-source fixtures",
+        "Run released-source migration validation",
+        "Run runtime ownership validation",
+        "Verify candidate-bound migration evidence",
+        "Upload retention migration evidence",
+    ):
+        require_exact_if(step_config(job, step_name, where), gated_if, f"{where}.steps['{step_name}']")
+
     producer = step_config(job, "Verify smoke artifact producer", where)
     producer_env = require_mapping(producer.get("env"), f"{where}.steps['Verify smoke artifact producer'].env")
     require(
