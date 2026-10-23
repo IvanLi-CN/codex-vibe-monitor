@@ -727,7 +727,7 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
     require_fixed_cargo_nextest_install(job, where)
     runtime = step_config(job, "Verify cargo-nextest runtime", where)
     require(
-        runtime.get("run") == 'test "$(cargo-nextest --version)" = "cargo-nextest 0.9.138"',
+        runtime.get("run") == 'test "$(cargo-nextest --version | head -n1)" = "cargo-nextest 0.9.138"',
         f"{where} must verify the fixed cargo-nextest runtime",
     )
     producer_check = step_config(job, "Verify backend test archive producer", where)
