@@ -76,12 +76,14 @@ function routeLandmark(page: Page, path: string): Locator {
       return page
         .getByTestId("account-pool-groups-list")
         .or(page.getByTestId("account-pool-groups-empty"))
-        .or(page.getByTestId("account-pool-groups-error"));
+        .or(page.getByTestId("account-pool-groups-error"))
+        .first();
     case "/#/system":
     case "/#/system/status":
       return page
         .getByTestId("system-status-overview")
-        .or(page.getByRole("heading", { name: "系统状态", exact: true }));
+        .or(page.getByRole("heading", { name: "系统状态", exact: true }))
+        .first();
     case "/#/system/performance":
       return page.getByTestId("system-observability-page");
     case "/#/system/tasks":
