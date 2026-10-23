@@ -351,6 +351,12 @@ def retention_command(task_key, dry_run):
     return command + (("--dry-run",) if dry_run else ())
 
 
+def assert_real_owner_result(details, task_key):
+    result = details.get("result")
+    assert result in {"complete", "partial"}, (task_key, details)
+    return result
+
+
 def run_scoped_command(candidate, root, task_key, dry_run):
     with sqlite3.connect(root / "maintenance.sqlite") as connection:
         before_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
@@ -383,7 +389,7 @@ def run_scoped_command(candidate, root, task_key, dry_run):
             assert raw_files_planned > 0, (task_key, parsed)
     else:
         assert parsed.get("committed", 0) > 0, (task_key, parsed)
-        assert parsed.get("completion") in {"complete", "partial"}, (task_key, parsed)
+        assert_real_owner_result(parsed, task_key)
         assert owner_candidate_state(root, task_key) < before_owner_state, (task_key, parsed)
         if archive_dataset:
             changed_archives = assert_new_archive_manifests(root, archive_dataset, before_archives)

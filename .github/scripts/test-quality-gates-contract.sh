@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 

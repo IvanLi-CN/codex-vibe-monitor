@@ -158,6 +158,8 @@ def validate_online(candidate, source, target, port):
                     details = json.loads(details)
                     assert details["ownershipVersion"] == UPGRADE.OWNER_VERSIONS[key] and details["ownerScope"] == key
                     assert isinstance(details["dryRun"], bool)
+                    if key in UPGRADE.RETENTION_OWNERS and details["dryRun"] is False:
+                        UPGRADE.assert_real_owner_result(details, key)
         finally:
             if blocker is not None:
                 blocker.rollback()
