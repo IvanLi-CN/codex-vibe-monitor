@@ -70,6 +70,7 @@ export function useParallelWorkStats({
   const [httpLoading, setHttpLoading] = useState(useHttp);
   const [httpError, setHttpError] = useState<string | null>(null);
   const httpRequestSeqRef = useRef(0);
+  const httpQueryKey = JSON.stringify([range, bucket ?? null, upstreamAccountId ?? null]);
   const httpQueryKeyRef = useRef<string | null>(null);
   const loadHttp = useCallback(async () => {
     const requestSeq = httpRequestSeqRef.current + 1;
@@ -78,9 +79,8 @@ export function useParallelWorkStats({
       setHttpLoading(false);
       return;
     }
-    const queryKey = JSON.stringify([range, bucket ?? null, upstreamAccountId ?? null]);
-    if (httpQueryKeyRef.current !== queryKey) {
-      httpQueryKeyRef.current = queryKey;
+    if (httpQueryKeyRef.current !== httpQueryKey) {
+      httpQueryKeyRef.current = httpQueryKey;
       setHttpData(null);
       setHttpError(null);
     }
@@ -103,15 +103,17 @@ export function useParallelWorkStats({
         setHttpLoading(false);
       }
     }
-  }, [bucket, range, upstreamAccountId, useHttp]);
+  }, [bucket, httpQueryKey, range, upstreamAccountId, useHttp]);
   useEffect(() => {
     void loadHttp();
   }, [loadHttp]);
 
+  const hasCurrentHttpQuery = httpQueryKeyRef.current === httpQueryKey;
+
   return {
-    data: useHttp ? httpData : data,
-    isLoading: useHttp ? httpLoading : isLoading,
-    error: useHttp ? httpError : error,
+    data: useHttp && hasCurrentHttpQuery ? httpData : useHttp ? null : data,
+    isLoading: useHttp ? (hasCurrentHttpQuery ? httpLoading : true) : isLoading,
+    error: useHttp && hasCurrentHttpQuery ? httpError : useHttp ? null : error,
     refresh: useHttp ? loadHttp : refresh,
   };
 }

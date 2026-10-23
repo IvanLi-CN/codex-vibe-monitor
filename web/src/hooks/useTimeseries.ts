@@ -1139,13 +1139,23 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     ? null
     : supportsPureSse
       ? (sse.data ?? (sse.error == null ? (initialCachedTimeseries?.data ?? null) : null))
-      : httpData;
+      : httpQueryKeyRef.current === httpQueryKey
+        ? httpData
+        : null;
   const isLoading = !enabled
     ? false
     : supportsPureSse
       ? sse.isLoading && data == null
-      : httpLoading;
-  const error = !enabled ? null : supportsPureSse ? sse.error : httpError;
+      : httpQueryKeyRef.current === httpQueryKey
+        ? httpLoading
+        : true;
+  const error = !enabled
+    ? null
+    : supportsPureSse
+      ? sse.error
+      : httpQueryKeyRef.current === httpQueryKey
+        ? httpError
+        : null;
   const refresh = enabled ? (supportsPureSse ? sse.refresh : loadHttpTimeseries) : async () => {};
 
   return {
