@@ -151,8 +151,11 @@ export function UpstreamAccountCreateImportSection() {
           </div>
         ) : null}
         {importSelectionFeedback?.messages?.length ? (
-          <Alert variant={importSelectionFeedback.variant} className="mt-3">
-            <div className="space-y-1">
+          <Alert
+            variant={importSelectionFeedback.variant}
+            className="mt-3 items-center gap-2 rounded-lg px-2.5 py-1 text-xs leading-4"
+          >
+            <div className="min-w-0 space-y-1">
               {importSelectionFeedback.messages.map((message: string) => (
                 <div key={message}>{message}</div>
               ))}

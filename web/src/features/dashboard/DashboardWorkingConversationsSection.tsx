@@ -118,7 +118,7 @@ import {
   buildAdaptivePercentTextSpec,
   buildAdaptiveTextSpec,
 } from "../shared/adaptiveMetricValueSpec";
-import { ModelIdentity, resolveModelIdentityGeneration } from "../shared/ModelIdentity";
+import { resolveModelIdentityGeneration } from "../shared/ModelIdentity";
 import { DashboardNetworkRecentPopover } from "./DashboardNetworkRecentPopover";
 import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 import {
@@ -660,57 +660,6 @@ function DashboardImageToolIconChip({
     >
       <AppIcon name="image-outline" className="h-3.5 w-3.5" aria-hidden />
     </Chip>
-  );
-}
-
-function renderUpstreamAccountRecentModelDisplay(
-  hasMismatch: boolean,
-  modelValue: string,
-  requestModelValue: string,
-  responseModelValue: string,
-  t: ReturnType<typeof useTranslation>["t"],
-) {
-  const shouldRenderMismatch =
-    hasMismatch && requestModelValue !== FALLBACK_CELL && responseModelValue !== FALLBACK_CELL;
-
-  if (!shouldRenderMismatch) {
-    return renderInvocationModelChip(modelValue, {
-      t,
-      hasMismatch: false,
-      className: "max-w-full",
-      textClassName: "font-mono",
-      iconClassName: "h-3 w-3",
-      testId: "dashboard-upstream-account-recent-model",
-    });
-  }
-
-  return (
-    <div
-      data-testid="dashboard-upstream-account-recent-model"
-      className="flex min-w-0 items-center gap-1"
-      title={`${requestModelValue} -> ${responseModelValue}`}
-    >
-      <ModelIdentity
-        model={requestModelValue}
-        className="min-w-0 max-w-full"
-        textClassName="truncate font-mono leading-none text-base-content/84"
-        title={requestModelValue}
-      />
-      <span
-        className="inline-flex h-4 w-4 flex-none items-center justify-center text-base-content/55"
-        aria-label={t("table.model.routingMismatchAria")}
-        data-testid="dashboard-upstream-account-recent-model-routing-indicator"
-        role="img"
-      >
-        <AppIcon name="compare-horizontal" className="h-3 w-3" aria-hidden />
-      </span>
-      <ModelIdentity
-        model={responseModelValue}
-        className="min-w-0 max-w-full"
-        textClassName="truncate font-mono leading-none text-base-content/88"
-        title={responseModelValue}
-      />
-    </div>
   );
 }
 
@@ -2167,8 +2116,6 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
   const conversationIdentityTone = displayPromptCacheKey
     ? resolveConversationIdentityTone(displayPromptCacheKey)
     : null;
-  const requestModelValue = viewModel.requestModelValue;
-  const responseModelValue = viewModel.responseModelValue;
   const recentSummaryFields = useMemo(
     () =>
       buildInvocationSummaryFields({
@@ -2188,7 +2135,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
     : null;
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
-    !viewModel.modelHasMismatch && resolveModelIdentityGeneration(viewModel.modelValue) != null;
+    viewModel.modelHasMismatch || resolveModelIdentityGeneration(viewModel.modelValue) != null;
 
   const handleOpenInvocation = useCallback(() => {
     onOpenInvocation?.({
@@ -2329,6 +2276,8 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
             {shouldGroupModelContext ? (
               <InvocationModelContextCluster
                 modelValue={viewModel.modelValue}
+                requestModelValue={viewModel.requestModelValue}
+                modelHasMismatch={viewModel.modelHasMismatch}
                 reasoningEffortValue={viewModel.reasoningEffortValue}
                 fastIndicatorState={viewModel.fastIndicatorState}
                 grouped
@@ -2339,13 +2288,14 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
             ) : (
               <>
                 <span className="min-w-0">
-                  {renderUpstreamAccountRecentModelDisplay(
-                    viewModel.modelHasMismatch,
-                    viewModel.modelValue,
-                    requestModelValue,
-                    responseModelValue,
+                  {renderInvocationModelChip(viewModel.modelValue, {
                     t,
-                  )}
+                    hasMismatch: viewModel.modelHasMismatch,
+                    className: "max-w-full",
+                    textClassName: "font-mono",
+                    iconClassName: "h-3 w-3",
+                    testId: "dashboard-upstream-account-recent-model",
+                  })}
                 </span>
                 {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
                   <>
@@ -2545,11 +2495,15 @@ const InvocationSlot = memo(function InvocationSlot({
 
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
-    !viewModel.modelHasMismatch && resolveModelIdentityGeneration(viewModel.modelValue) != null;
-  const modelContextTitle =
-    shouldGroupModelContext && viewModel.reasoningEffortValue === FALLBACK_CELL
-      ? viewModel.modelValue
-      : `${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`;
+    viewModel.modelHasMismatch || resolveModelIdentityGeneration(viewModel.modelValue) != null;
+  const modelContextTitle = [
+    viewModel.modelHasMismatch && viewModel.requestModelValue !== FALLBACK_CELL
+      ? `${viewModel.requestModelValue} -> ${viewModel.modelValue}`
+      : viewModel.modelValue,
+    viewModel.reasoningEffortValue === FALLBACK_CELL ? null : viewModel.reasoningEffortValue,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const displayConversationId = conversationId;
   const usageSummaryFields = useMemo(
     () =>
@@ -2632,7 +2586,7 @@ const InvocationSlot = memo(function InvocationSlot({
         }}
         data-testid="dashboard-working-conversation-slot-header"
       >
-        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+        <div className="contents">
           <div
             data-testid="dashboard-working-conversation-slot-time"
             className="shrink-0 font-mono text-[10px] text-base-content/72"
@@ -2641,12 +2595,14 @@ const InvocationSlot = memo(function InvocationSlot({
           </div>
           <div
             data-testid="dashboard-working-conversation-slot-model"
-            className="min-w-0 max-w-full flex-1 truncate text-[9.5px] font-semibold text-base-content/76"
+            className="col-span-2 row-start-2 min-w-0 max-w-full truncate text-[9.5px] font-semibold text-base-content/76"
             title={modelContextTitle}
           >
             {shouldGroupModelContext ? (
               <InvocationModelContextCluster
                 modelValue={viewModel.modelValue}
+                requestModelValue={viewModel.requestModelValue}
+                modelHasMismatch={viewModel.modelHasMismatch}
                 reasoningEffortValue={viewModel.reasoningEffortValue}
                 fastIndicatorState={viewModel.fastIndicatorState}
                 grouped
@@ -2688,7 +2644,7 @@ const InvocationSlot = memo(function InvocationSlot({
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="flex min-w-0 flex-nowrap items-center justify-end gap-1.5"
+          className="col-start-2 row-start-1 flex min-w-0 flex-nowrap items-center justify-end gap-1.5"
         >
           <div className="flex min-w-0 shrink items-center justify-end gap-0">
             {invocation.livePhase ? (

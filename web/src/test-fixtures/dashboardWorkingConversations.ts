@@ -6,6 +6,8 @@ export type PromptCacheConversationInvocationPreview = {
   failureClass?: string;
   routeMode?: string;
   model?: string;
+  requestModel?: string | null;
+  responseModel?: string | null;
   totalTokens?: number;
   cost?: number;
   proxyDisplayName?: string;
@@ -51,6 +53,14 @@ export function createPreview(
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
+    requestModel:
+      "requestModel" in overrides
+        ? (overrides.requestModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
+    responseModel:
+      "responseModel" in overrides
+        ? (overrides.responseModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
     totalTokens: overrides.totalTokens ?? 280,
     cost: overrides.cost ?? 0.0178,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
@@ -136,10 +146,12 @@ export function buildWorkingConversationsResponse({
   currentFirstTokenMs = 740,
   currentTtfbMs = null,
   gpt56Current = false,
+  mismatchCurrent = false,
 }: {
   currentFirstTokenMs?: number | null;
   currentTtfbMs?: number | null;
   gpt56Current?: boolean;
+  mismatchCurrent?: boolean;
 } = {}) {
   const conversations = [
     createConversation("wc-current-1", [
@@ -154,14 +166,21 @@ export function buildWorkingConversationsResponse({
         tUpstreamTtfbMs: currentTtfbMs,
         tUpstreamStreamMs: null,
         tTotalMs: null,
-        ...(gpt56Current
+        ...(mismatchCurrent
           ? {
-              model: "gpt-5.6-sol",
+              model: "gpt-6.1-luna",
               requestModel: "gpt-5.6-sol",
-              responseModel: "gpt-5.6-sol",
+              responseModel: "gpt-6.1-luna",
               reasoningEffort: "max",
             }
-          : {}),
+          : gpt56Current
+            ? {
+                model: "gpt-5.6-sol",
+                requestModel: "gpt-5.6-sol",
+                responseModel: "gpt-5.6-sol",
+                reasoningEffort: "max",
+              }
+            : {}),
       }),
       createPreview({
         id: 2,

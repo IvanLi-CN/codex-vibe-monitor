@@ -1395,6 +1395,53 @@ async fn find_existing_import_match_loads_compact_support_fields() {
 }
 
 #[tokio::test]
+async fn find_existing_import_match_rechecks_after_write_lock_acquisition() {
+    let pool = test_pool().await;
+    assert!(
+        find_existing_import_match(&pool, Some("user_race"), "org_race", "race@example.com",)
+            .await
+            .expect("preflight lookup should succeed")
+            .is_none(),
+        "the first request should observe no existing account before the competing write",
+    );
+
+    let account_id = insert_oauth_account(&pool, "Concurrent import member").await;
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                chatgpt_account_id = ?3,
+                chatgpt_user_id = ?4
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind("race@example.com")
+    .bind("org_race")
+    .bind("user_race")
+    .execute(&pool)
+    .await
+    .expect("seed competing imported account");
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .expect("begin import write transaction");
+    let matched = find_existing_import_match_with_executor(
+        &mut *tx,
+        Some("user_race"),
+        "org_race",
+        "race@example.com",
+    )
+    .await
+    .expect("transactional lookup should succeed")
+    .expect("transactional lookup should see the competing account");
+    tx.rollback().await.expect("rollback lookup transaction");
+
+    assert_eq!(matched.id, account_id);
+}
+
+#[tokio::test]
 async fn find_existing_import_match_prefers_chatgpt_user_id_for_shared_account_ids() {
     let pool = test_pool().await;
     let first_id = insert_oauth_account(&pool, "Shared Org First").await;
@@ -1448,7 +1495,48 @@ async fn find_existing_import_match_prefers_chatgpt_user_id_for_shared_account_i
 }
 
 #[tokio::test]
-async fn find_existing_import_match_falls_back_to_account_id_only_for_legacy_missing_user_id() {
+async fn find_existing_import_match_does_not_cross_match_different_members_by_email() {
+    let pool = test_pool().await;
+    let existing_id = insert_oauth_account(&pool, "Existing Shared Org Member").await;
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                chatgpt_account_id = ?3,
+                chatgpt_user_id = ?4
+            WHERE id = ?1
+            "#,
+    )
+    .bind(existing_id)
+    .bind("member@example.com")
+    .bind("org_shared")
+    .bind("user_existing")
+    .execute(&pool)
+    .await
+    .expect("update existing shared-org row");
+
+    let row =
+        find_existing_import_match(&pool, Some("user_new"), "org_shared", "member@example.com")
+            .await
+            .expect("find existing import match");
+
+    assert!(
+        row.is_none(),
+        "different workspace member must remain distinct"
+    );
+
+    let row_without_incoming_user =
+        find_existing_import_match(&pool, None, "org_shared", "member@example.com")
+            .await
+            .expect("find existing import match without incoming member id");
+    assert!(
+        row_without_incoming_user.is_none(),
+        "an import without member id must not overwrite a known member"
+    );
+}
+
+#[tokio::test]
+async fn find_existing_import_match_requires_email_for_legacy_missing_user_id() {
     let pool = test_pool().await;
     let legacy_id = insert_oauth_account(&pool, "Legacy Shared Org").await;
     sqlx::query(
@@ -1467,13 +1555,19 @@ async fn find_existing_import_match_falls_back_to_account_id_only_for_legacy_mis
     .await
     .expect("update legacy row");
 
-    let row = find_existing_import_match(&pool, None, "legacy_shared_org", "different@example.com")
+    let row = find_existing_import_match(&pool, None, "legacy_shared_org", "legacy@example.com")
         .await
         .expect("find legacy import match")
-        .expect("legacy account should match by account id");
+        .expect("legacy account should match by its email and account id");
 
     assert_eq!(row.id, legacy_id);
     assert_eq!(row.chatgpt_user_id.as_deref(), None);
+
+    let different_email =
+        find_existing_import_match(&pool, None, "legacy_shared_org", "different@example.com")
+            .await
+            .expect("reject legacy cross-member match");
+    assert!(different_email.is_none());
 }
 
 pub(crate) async fn insert_syncable_oauth_account(

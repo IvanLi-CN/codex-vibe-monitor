@@ -562,7 +562,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(startImportedOauthValidationJob).toHaveBeenCalledTimes(1);
   });
 
-  it("deduplicates repeated accounts across file imports before validation", async () => {
+  it("keeps shared account ids with different emails distinct without member ids", async () => {
     const firstFixture = createImportedOauthFixture(1, {
       email: "first-duplicate@duckmail.sbs",
       accountId: "acct_duplicate",
@@ -572,6 +572,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       accountId: "acct_duplicate",
     });
     const firstSourceId = getImportedOauthSourceId(firstFixture, 0);
+    const secondSourceId = getImportedOauthSourceId(secondFixture, 1);
     const { startImportedOauthValidationJob } =
       installImportedOauthValidationJobFlow({
         rowsBySourceId: {
@@ -580,6 +581,12 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
             firstFixture.fileName,
             firstFixture.email,
             firstFixture.chatgptAccountId,
+          ),
+          [secondSourceId]: buildImportedOauthRow(
+            secondSourceId,
+            secondFixture.fileName,
+            secondFixture.email,
+            secondFixture.chatgptAccountId,
           ),
         },
       });
@@ -596,9 +603,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     expect(pageTextContent()).toContain(firstFixture.fileName);
-    expect(pageTextContent()).toContain(
-      `Skipped duplicate credential "${secondFixture.fileName}" because the same member is already queued.`,
-    );
+    expect(pageTextContent()).toContain(secondFixture.fileName);
 
     clickButton(/validate and review/i);
     await flushAsync();
@@ -614,6 +619,11 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
           sourceId: firstSourceId,
           fileName: firstFixture.fileName,
           content: firstFixture.content,
+        }),
+        expect.objectContaining({
+          sourceId: secondSourceId,
+          fileName: secondFixture.fileName,
+          content: secondFixture.content,
         }),
       ],
     });

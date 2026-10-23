@@ -780,8 +780,8 @@ pub(crate) fn decrypt_credentials(key: &[u8; 32], payload: &str) -> Result<Store
 
 pub(crate) fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8>> {
     let mut parts = token.split('.');
-    let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(header), Some(payload), Some(sig))
+    let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(header), Some(payload), Some(sig), None)
             if !header.is_empty() && !payload.is_empty() && !sig.is_empty() =>
         {
             (header, payload, sig)
@@ -796,26 +796,99 @@ pub(crate) fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8
 
 pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
     let payload_bytes = decode_jwt_payload(id_token, "id_token")?;
-    let claims: ChatgptJwtOuterClaims =
+    let claims: Value =
         serde_json::from_slice(&payload_bytes).context("failed to parse id_token payload")?;
+    let claims = claims
+        .as_object()
+        .ok_or_else(|| anyhow!("failed to parse id_token payload as an object"))?;
+    let profiles = [
+        claims
+            .get("https://api.openai.com/profile")
+            .and_then(Value::as_object),
+        claims.get("profile").and_then(Value::as_object),
+    ];
+    let auths = [
+        claims
+            .get("https://api.openai.com/auth")
+            .and_then(Value::as_object),
+        claims.get("auth").and_then(Value::as_object),
+    ];
+    let string_claims = |objects: &[Option<&serde_json::Map<String, Value>>], key: &str| {
+        objects
+            .iter()
+            .filter_map(|object| {
+                object
+                    .as_ref()
+                    .and_then(|value| value.get(key))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>()
+    };
+    let ensure_identity_claim_types =
+        |objects: &[Option<&serde_json::Map<String, Value>>], keys: &[&str]| -> Result<()> {
+            for object in objects.iter().flatten() {
+                for key in keys {
+                    if let Some(value) = object.get(*key)
+                        && !value.is_null()
+                        && !value.is_string()
+                    {
+                        return Err(anyhow!("JWT identity claim {key} must be a string"));
+                    }
+                }
+            }
+            Ok(())
+        };
+    ensure_identity_claim_types(&[Some(claims), profiles[0], profiles[1]], &["email"])?;
+    ensure_identity_claim_types(
+        &auths,
+        &[
+            "chatgpt_account_id",
+            "account_id",
+            "chatgpt_user_id",
+            "user_id",
+        ],
+    )?;
+    let first_string_claim =
+        |field: &str, values: &[String], case_insensitive: bool| -> Result<Option<String>> {
+            let Some(first) = values.first() else {
+                return Ok(None);
+            };
+            let normalized_first = if case_insensitive {
+                first.to_ascii_lowercase()
+            } else {
+                first.clone()
+            };
+            if values.iter().skip(1).any(|value| {
+                let normalized = if case_insensitive {
+                    value.to_ascii_lowercase()
+                } else {
+                    value.clone()
+                };
+                normalized != normalized_first
+            }) {
+                return Err(anyhow!("{field} has conflicting JWT claims"));
+            }
+            Ok(Some(first.clone()))
+        };
+    let mut email_objects = vec![Some(claims)];
+    email_objects.extend(profiles);
+    let email = first_string_claim("email", &string_claims(&email_objects, "email"), true)?;
+    let mut account_id_values = string_claims(&auths, "chatgpt_account_id");
+    account_id_values.extend(string_claims(&auths, "account_id"));
+    let account_id = first_string_claim("account_id", &account_id_values, false)?;
+    let mut user_id_values = string_claims(&auths, "chatgpt_user_id");
+    user_id_values.extend(string_claims(&auths, "user_id"));
+    let user_id = first_string_claim("chatgpt_user_id", &user_id_values, false)?;
     Ok(ChatgptJwtClaims {
-        email: claims
-            .email
-            .or_else(|| claims.profile.and_then(|value| value.email)),
-        chatgpt_plan_type: claims
-            .auth
-            .as_ref()
-            .and_then(|value| value.chatgpt_plan_type.clone()),
-        chatgpt_user_id: claims.auth.as_ref().and_then(|value| {
-            value
-                .chatgpt_user_id
-                .clone()
-                .or_else(|| value.user_id.clone())
-        }),
-        chatgpt_account_id: claims
-            .auth
-            .as_ref()
-            .and_then(|value| value.chatgpt_account_id.clone()),
+        email,
+        chatgpt_plan_type: string_claims(&auths, "chatgpt_plan_type")
+            .into_iter()
+            .next(),
+        chatgpt_user_id: user_id,
+        chatgpt_account_id: account_id,
     })
 }
 
@@ -1144,10 +1217,11 @@ pub(crate) fn imported_match_key(
         return format!("user:{normalized_user_id}");
     }
     let normalized_account_id = account_id.trim().to_ascii_lowercase();
+    let normalized_email = email.trim().to_ascii_lowercase();
     if !normalized_account_id.is_empty() {
-        return format!("account:{normalized_account_id}");
+        return format!("account:{normalized_account_id}:email:{normalized_email}");
     }
-    format!("email:{}", email.trim().to_ascii_lowercase())
+    format!("email:{normalized_email}")
 }
 
 pub(crate) fn import_match_summary_from_row(row: &UpstreamAccountRow) -> ImportedOauthMatchSummary {
@@ -1215,12 +1289,16 @@ pub(crate) fn normalize_imported_oauth_credentials(
     }
     claims.email = Some(email.clone());
     claims.chatgpt_account_id = Some(chatgpt_account_id.clone());
-    let chatgpt_user_id = claims
-        .chatgpt_user_id
+    let chatgpt_user_id = normalize_optional_text(claims.chatgpt_user_id.clone())
+        .or_else(|| optional_imported_oauth_string(&normalized_value, &["chatgpt_user_id"]))
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    claims.chatgpt_user_id = chatgpt_user_id.clone();
+    claims.chatgpt_plan_type = claims.chatgpt_plan_type.or_else(|| {
+        optional_imported_oauth_string(&normalized_value, &["plan_type", "chatgpt_plan_type"])
+    });
     Ok(NormalizedImportedOauthCredentials {
         source_id,
         file_name,
@@ -1270,47 +1348,30 @@ fn normalize_imported_oauth_record_value(value: &Value) -> Result<Value, String>
     if record
         .get("platform")
         .and_then(value_as_string)
-        .is_some_and(|value| value.eq_ignore_ascii_case("openai"))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("openai"))
         && record
             .get("type")
             .and_then(value_as_string)
-            .is_some_and(|value| value.eq_ignore_ascii_case("oauth"))
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("oauth"))
     {
-        let credentials = record
-            .get("credentials")
-            .and_then(Value::as_object)
-            .ok_or_else(|| "sub2api oauth account is missing credentials".to_string())?;
-        let mut normalized = serde_json::Map::new();
-        for (target_key, source_key) in [
-            ("email", "email"),
-            ("access_token", "access_token"),
-            ("refresh_token", "refresh_token"),
-            ("id_token", "id_token"),
-            ("token_type", "token_type"),
-            ("expired", "expires_at"),
-            ("plan_type", "plan_type"),
-            ("chatgpt_user_id", "chatgpt_user_id"),
-        ] {
-            if let Some(value) = credentials.get(source_key) {
-                normalized.insert(target_key.to_string(), value.clone());
-            }
-        }
-        if let Some(value) = credentials
-            .get("chatgpt_account_id")
-            .or_else(|| credentials.get("account_id"))
-        {
-            normalized.insert("account_id".to_string(), value.clone());
-        }
-        return Ok(Value::Object(normalized));
+        return super::sync_sub2api_import::normalize_sub2api_oauth_account(record);
     }
 
-    if record
-        .get("type")
-        .and_then(value_as_string)
-        .is_some_and(|value| value.eq_ignore_ascii_case("sub2api-data"))
+    if record.contains_key("platform") && record.contains_key("credentials") {
+        return Err("only OpenAI OAuth sub2api accounts are supported".to_string());
+    }
+
+    if record.contains_key("accounts")
+        || record
+            .get("type")
+            .and_then(value_as_string)
+            .is_some_and(|value| {
+                value.eq_ignore_ascii_case("sub2api-data")
+                    || value.eq_ignore_ascii_case("sub2api-bundle")
+            })
     {
         return Err(
-            "sub2api-data export packages must be expanded into individual OpenAI OAuth accounts before validation"
+            "sub2api export packages must be expanded into individual OpenAI OAuth accounts before validation"
                 .to_string(),
         );
     }

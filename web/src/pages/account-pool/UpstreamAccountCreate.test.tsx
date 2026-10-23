@@ -1261,7 +1261,10 @@ describe("imported OAuth local validation", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(result.items.map((item) => item.matchKey)).toEqual(["account:acct_a", "account:acct_b"]);
+    expect(result.items.map((item) => item.matchKey)).toEqual([
+      "account:acct_a:email:a@example.com",
+      "account:acct_b:email:b@example.com",
+    ]);
   });
 });
 

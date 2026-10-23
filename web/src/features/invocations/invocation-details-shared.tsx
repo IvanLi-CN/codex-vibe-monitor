@@ -310,7 +310,7 @@ function formatPoolAttemptProxyBindingDisplay(
 export function renderFastIndicator(
   state: FastIndicatorState,
   t: Translator,
-  options?: { verticalAlign?: "baseline" | "center" },
+  options?: { compact?: boolean; verticalAlign?: "baseline" | "center" },
 ) {
   if (state === "none") return null;
 
@@ -326,7 +326,8 @@ export function renderFastIndicator(
   return (
     <span
       className={cn(
-        "inline-flex h-4 w-4 flex-none items-center justify-center",
+        "inline-flex flex-none items-center justify-center",
+        options?.compact ? "h-3.5 w-[7px]" : "h-4 w-4",
         isEffective ? "text-amber-500" : "text-base-content/50",
       )}
       title={t(titleKey)}
@@ -337,7 +338,10 @@ export function renderFastIndicator(
     >
       <AppIcon
         name="lightning-bolt"
-        className={cn("h-3.5 w-3.5", verticalAlign === "baseline" ? "-translate-y-px" : undefined)}
+        className={cn(
+          "h-3.5 w-3.5 flex-none",
+          verticalAlign === "baseline" ? "-translate-y-px" : undefined,
+        )}
         aria-hidden
       />
     </span>

@@ -23,6 +23,8 @@ mod sync_oauth_crypto_utils;
     reason = "Status transition adapters mirror persisted audit fields."
 )]
 mod sync_routing_status;
+#[path = "sync_sub2api_import.rs"]
+mod sync_sub2api_import;
 
 pub(crate) use sync_account_imports_tags::*;
 pub(crate) use sync_group_sessions::*;
