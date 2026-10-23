@@ -5,6 +5,8 @@ pub(crate) const RETENTION_WRITE_ADMISSION_BUDGET: Duration = Duration::from_sec
 pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON: &str =
     "retention_archive_file_operation_budget";
+pub(crate) const RETENTION_ARCHIVE_FILE_NO_PROGRESS_REASON: &str =
+    "retention_archive_file_no_progress";
 pub(crate) const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 pub(crate) const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 pub(crate) const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
@@ -837,6 +839,23 @@ fn configured_retention_archive_file_operation_budget() -> Duration {
 
 pub(crate) fn retention_archive_file_operation_deadline() -> Instant {
     Instant::now() + configured_retention_archive_file_operation_budget()
+}
+
+pub(crate) fn retention_archive_file_operation_no_progress(
+    processed_bytes: u64,
+    total_input_bytes: Option<u64>,
+) -> anyhow::Error {
+    anyhow!(
+        "{RETENTION_ARCHIVE_FILE_NO_PROGRESS_REASON}: processed_bytes={processed_bytes}; total_input_bytes={total_input_bytes:?}"
+    )
+}
+
+pub(crate) fn is_retention_archive_file_operation_no_progress(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains(RETENTION_ARCHIVE_FILE_NO_PROGRESS_REASON)
+    })
 }
 
 pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {

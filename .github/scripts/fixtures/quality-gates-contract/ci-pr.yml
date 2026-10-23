@@ -750,7 +750,7 @@ jobs:
 
   build-pr-smoke-artifacts:
     name: PR Smoke Artifact Producer
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Restore Cargo test artifacts
@@ -782,8 +782,10 @@ jobs:
 
   build:
     name: Build Artifacts
-    needs: build-pr-smoke-artifacts
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs:
+      - build-pr-smoke-artifacts
+      - retention-migration-validation
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -791,6 +793,11 @@ jobs:
         env:
           PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
         run: test "$PRODUCER_RESULT" = success
+
+      - name: Verify retention migration validation
+        env:
+          RETENTION_MIGRATION_RESULT: ${{ needs.retention-migration-validation.result }}
+        run: test "$RETENTION_MIGRATION_RESULT" = success
 
       - name: Checkout
         uses: actions/checkout@v7
@@ -826,3 +833,111 @@ jobs:
           SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}-${{ github.run_attempt }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+  retention-migration-validation:
+    name: Retention Migration Validation
+    runs-on: ubuntu-24.04
+    needs: build-pr-smoke-artifacts
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect retention migration scope
+        id: retention_scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          changed_files="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+          required=false
+          while IFS= read -r path; do
+            case "$path" in
+              .github/quality-gates.json|.github/scripts/check_quality_gates_contract.py|.github/workflows/ci-pr.yml|.cargo/config.toml|build.rs|Cargo.lock|Cargo.toml|Dockerfile|rust-toolchain.toml|src/*|vendor/hotpath/*|scripts/bind-retention-maintenance-candidate.py|scripts/generate-retention-maintenance-release-fixtures.py|scripts/validate-retention-maintenance-runtime.py|scripts/validate-retention-maintenance-upgrade.py|docs/adr/assets/retention-maintenance-task-ownership/*|docs/specs/retention-maintenance-task-ownership/*)
+                required=true
+                ;;
+            esac
+          done <<< "$changed_files"
+          printf 'required=%s\n' "$required" >> "$GITHUB_OUTPUT"
+
+      - name: Verify smoke artifact producer
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+      - name: Download PR smoke artifacts
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        uses: actions/download-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts
+
+      - name: Extract candidate binary
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-smoke
+          tar -C .ci-smoke -xf "$RUNNER_TEMP/pr-smoke-artifacts/pr-smoke-artifacts.tar"
+          test -x .ci-smoke/codex-vibe-monitor
+          binary_sha256="$(sha256sum .ci-smoke/codex-vibe-monitor | awk '{print $1}')"
+          python3 scripts/bind-retention-maintenance-candidate.py \
+            --record docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json \
+            --github-sha "$GITHUB_SHA" \
+            --binary-sha256 "$binary_sha256" \
+            --output "$RUNNER_TEMP/candidate-identity.json"
+
+      - name: Generate released-source fixtures
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        run: python3 scripts/generate-retention-maintenance-release-fixtures.py --output-dir "$RUNNER_TEMP/retention-migration-fixtures"
+
+      - name: Run released-source migration validation
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        run: python3 scripts/validate-retention-maintenance-upgrade.py --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-migration-results"
+
+      - name: Run runtime ownership validation
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        run: python3 scripts/validate-retention-maintenance-runtime.py --source-fixture "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-runtime-results" --http-port 60081
+
+      - name: Verify candidate-bound migration evidence
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        run: |
+          binary_sha256="$(sha256sum .ci-smoke/codex-vibe-monitor | awk '{print $1}')"
+          python3 - "$RUNNER_TEMP/candidate-identity.json" "$RUNNER_TEMP/retention-migration-results/candidate.json" "$RUNNER_TEMP/retention-runtime-results/results.json" "$GITHUB_SHA" "$(git rev-parse HEAD)" "$binary_sha256" <<'PY'
+          import json
+          import sys
+
+          identity = json.loads(open(sys.argv[1]).read())
+          upgrade = json.loads(open(sys.argv[2]).read())
+          runtime = json.loads(open(sys.argv[3]).read())
+          github_sha = sys.argv[4]
+          checkout_sha = sys.argv[5]
+          binary_sha256 = sys.argv[6]
+          assert identity["githubSha"] == github_sha == identity["checkoutSha"] == checkout_sha
+          assert identity["candidateSha256"] == binary_sha256
+          assert upgrade["candidateSha256"] == binary_sha256
+          assert runtime["candidateSha256"] == binary_sha256
+          print(json.dumps(identity, sort_keys=True))
+          PY
+
+      - name: Upload retention migration evidence
+        if: ${{ always() && steps.retention_scope.outputs.required == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-migration-validation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/candidate-identity.json
+            ${{ runner.temp }}/retention-migration-results/candidate.json
+            ${{ runner.temp }}/retention-migration-results/results.json
+            ${{ runner.temp }}/retention-migration-results/*/source.json
+            ${{ runner.temp }}/retention-migration-results/*/candidate.log
+            ${{ runner.temp }}/retention-migration-results/*/candidate-diagnostics.jsonl
+            ${{ runner.temp }}/retention-runtime-results/results.json
+            ${{ runner.temp }}/retention-runtime-results/*/candidate.log
+            ${{ runner.temp }}/retention-runtime-results/*/daemon.log
+          if-no-files-found: error
+          overwrite: true

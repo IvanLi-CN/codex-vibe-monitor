@@ -67,8 +67,10 @@ def validate_online(candidate, source, target, port):
     UPGRADE.execute(candidate, target, "--retention-dry-run")
     with sqlite3.connect(target / "maintenance.sqlite") as connection:
         connection.execute("UPDATE managed_tasks SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL")
-        controls = connection.execute("SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN (?,?,?,?) ORDER BY task_key", UPGRADE.OWNERS).fetchall()
+        owner_placeholders = ",".join("?" for _ in UPGRADE.OWNERS)
+        controls = connection.execute(f"SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN ({owner_placeholders}) ORDER BY task_key", UPGRADE.OWNERS).fetchall()
         baseline_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
+    UPGRADE.seed_owner_candidates(target)
     environment = dict(os.environ, DATABASE_PATH=str(target / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(target / "maintenance.sqlite"), ARCHIVE_DIR=str(target / "archives"), PROXY_RAW_DIR=str(target / "raw"), HTTP_BIND=f"127.0.0.1:{port}", OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:1/", OBSERVABILITY_ENABLED="false", RUST_LOG="warn", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false")
     (target / "raw").mkdir(exist_ok=True)
     with (target / "daemon.log").open("w") as daemon_log:
@@ -91,10 +93,14 @@ def validate_online(candidate, source, target, port):
                 connection.execute("INSERT INTO hourly_invoke_prefixes(utc_hour,prefix) VALUES(1,'JZYZAA')")
                 connection.execute("INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,payload,raw_response) VALUES('TZYZABAAAA','2099-01-01T00:00:00Z','proxy','running','{\"promptCacheKey\":\"runtime-protected\"}','{}')")
             before = UPGRADE.business_facts(target)
-            for command in [("--retention-dry-run",), ("maintenance", "invocation-identity-cleanup", "--dry-run"), ("maintenance", "raw-orphan-sweep", "--dry-run")]:
+            for task_key in UPGRADE.RETENTION_OWNERS:
+                UPGRADE.run_scoped_command(candidate, target, task_key, True)
+                assert UPGRADE.business_facts(target) == before, task_key
+            for command in [("maintenance", "invocation-identity-cleanup", "--dry-run"), ("maintenance", "raw-orphan-sweep", "--dry-run")]:
                 UPGRADE.execute(candidate, target, *command)
                 assert UPGRADE.business_facts(target) == before, command
-            UPGRADE.execute(candidate, target, "--retention-run-once")
+            for task_key in UPGRADE.RETENTION_OWNERS:
+                UPGRADE.run_scoped_command(candidate, target, task_key, False)
             with sqlite3.connect(target / "business.sqlite") as connection:
                 assert connection.execute("SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key='runtime-orphan'").fetchone() == (1,)
                 assert connection.execute("SELECT COUNT(*) FROM hourly_invoke_prefixes WHERE utc_hour=1").fetchone() == (1,)
@@ -144,14 +150,16 @@ def validate_online(candidate, source, target, port):
                 log.write(json.dumps({"arguments": ["maintenance", "invocation-identity-cleanup"], "exitCode": pending_cli.returncode, "competition": True}) + "\n" + stdout + stderr)
             pending_cli = None
             with sqlite3.connect(target / "maintenance.sqlite") as connection:
-                assert connection.execute("SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN (?,?,?,?) ORDER BY task_key", UPGRADE.OWNERS).fetchall() == controls, "manual requests changed automatic controls or planned a continuation"
-                records = connection.execute("SELECT task_key,trigger_kind,details FROM managed_task_runs WHERE id > ? AND task_key IN (?,?,?,?)", [baseline_run_id, *UPGRADE.OWNERS]).fetchall()
+                assert connection.execute(f"SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN ({owner_placeholders}) ORDER BY task_key", UPGRADE.OWNERS).fetchall() == controls, "manual requests changed automatic controls or planned a continuation"
+                records = connection.execute(f"SELECT task_key,trigger_kind,details FROM managed_task_runs WHERE id > ? AND task_key IN ({owner_placeholders})", [baseline_run_id, *UPGRADE.OWNERS]).fetchall()
                 assert records
                 for key, trigger, details in records:
                     assert trigger == "manual", (key, trigger)
                     details = json.loads(details)
-                    assert details["ownershipVersion"] == 1 and details["ownerScope"] == key
+                    assert details["ownershipVersion"] == UPGRADE.OWNER_VERSIONS[key] and details["ownerScope"] == key
                     assert isinstance(details["dryRun"], bool)
+                    if key in UPGRADE.RETENTION_OWNERS and details["dryRun"] is False:
+                        UPGRADE.assert_real_owner_result(details, key)
         finally:
             if blocker is not None:
                 blocker.rollback()
@@ -182,11 +190,12 @@ def main():
     parser.add_argument("--http-port", type=int, required=True, help="A caller-leased port, checked free before this command")
     args = parser.parse_args()
     assert 1 <= args.http_port <= 65535
+    args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=False)
     candidate = args.candidate.resolve()
     validate_unavailable(candidate, args.source_fixture, args.output_dir / "unavailable")
     validate_online(candidate, args.source_fixture, args.output_dir / "online", args.http_port)
-    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-three-read-only-scopes", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
+    results = {"candidateSha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "source": json.loads((args.source_fixture / "source.json").read_text()), "status": "passed", "claims": ["online-cli-does-not-initialize-unavailable-store", "online-all-retention-owner-scopes-mutated-owner-fixtures-with-archive-raw-proofs", "online-archive-only", "four-paused-manual-owners", "cli-page-request-competition", "no-startup-recovery", "no-manual-continuation", "graceful-lock-release"]}
     (args.output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results), flush=True)
 

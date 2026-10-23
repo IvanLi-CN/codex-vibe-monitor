@@ -10,7 +10,13 @@ pub(crate) async fn run_cli_command(
         CliCommand::Maintenance(args) => match &args.command {
             MaintenanceCommand::PreparePerformanceIndexes(_)
             | MaintenanceCommand::InvocationIdentityCleanup(_)
-            | MaintenanceCommand::RawOrphanSweep(_) => {
+            | MaintenanceCommand::RawOrphanSweep(_)
+            | MaintenanceCommand::PoolUpstreamAttemptArchive(_)
+            | MaintenanceCommand::ForwardProxyAttemptArchive(_)
+            | MaintenanceCommand::InvocationDetailPrune(_)
+            | MaintenanceCommand::QuotaSnapshotCompaction(_)
+            | MaintenanceCommand::ModelRouteExpiry(_)
+            | MaintenanceCommand::TaskRunHistoryCleanup(_) => {
                 bail!("owned maintenance must select its runtime route before startup")
             }
             MaintenanceCommand::RawCompression(opts) => {
@@ -101,6 +107,24 @@ pub(crate) fn selected_owned_maintenance(cli: &CliArgs) -> Result<Option<(&'stat
         Some(CliCommand::Maintenance(MaintenanceCliArgs {
             command: MaintenanceCommand::RawOrphanSweep(options),
         })) => Some(("raw_orphan_sweep", options.dry_run)),
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::PoolUpstreamAttemptArchive(options),
+        })) => Some(("pool_upstream_attempt_archive", options.dry_run)),
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::ForwardProxyAttemptArchive(options),
+        })) => Some(("forward_proxy_attempt_archive", options.dry_run)),
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::InvocationDetailPrune(options),
+        })) => Some(("invocation_detail_prune", options.dry_run)),
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::QuotaSnapshotCompaction(options),
+        })) => Some(("quota_snapshot_compaction", options.dry_run)),
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::ModelRouteExpiry(options),
+        })) => Some(("model_route_expiry", options.dry_run)),
+        Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::TaskRunHistoryCleanup(options),
+        })) => Some(("task_run_history_cleanup", options.dry_run)),
         _ => None,
     })
 }
@@ -229,7 +253,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                     Ok(result) => {
                         let status = match result.completion {
                             "failed" => "failed",
-                            "deferred" => "skipped",
+                            "partial" | "deferred" => "skipped",
                             _ => "success",
                         };
                         observation.finish_with_status_and_reason(status, None);

@@ -38,11 +38,622 @@ async fn ownership_manual_materialization_start_preserves_paused_schedule() {
 }
 
 #[tokio::test]
+async fn ownership_settlement_serializes_deferred_finalization_from_timeline_writer() {
+    let directory = make_temp_test_dir("maintenance-settlement-timeline-interleaving");
+    let options = SqliteConnectOptions::new()
+        .filename(directory.join("maintenance.sqlite"))
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(2));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(3)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
+    store.initialize_schema_for_test().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "invocation_identity_cleanup",
+            "2026-10-23T00:00:00.000Z",
+            "manual",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .start_timeline_session("settlement-interleaving", "2026-10-23T00:00:00.000Z")
+        .await
+        .unwrap();
+    store
+        .write_timeline_batch(
+            "settlement-interleaving",
+            &[crate::task_timeline::TimelineEvent::ExecutionStarted {
+                id: "settlement-execution".to_string(),
+                task_key: "invocation_identity_cleanup".to_string(),
+                title: "清理调用身份".to_string(),
+                trigger_kind: "manual".to_string(),
+                execution_class: Some("maintenance_legacy".to_string()),
+                started_at: "2026-10-23T00:00:00.100Z".to_string(),
+                managed_run_id: Some(run_id),
+            }],
+            0,
+            "2026-10-23T00:00:00.100Z",
+            false,
+        )
+        .await
+        .unwrap();
+
+    let hooks = store.install_settlement_interleaving_hooks();
+    let finish_store = store.clone();
+    let finish_task = tokio::spawn(async move {
+        finish_store
+            .finish_run_with_observation(
+                run_id,
+                "success",
+                "2026-10-23T00:00:01.000Z",
+                900,
+                Some("已完成"),
+                None,
+                Some("completed"),
+                Some("completed"),
+                None,
+            )
+            .await
+    });
+    hooks.finish_after_select.notified().await;
+
+    let timeline_store = store.clone();
+    let timeline_task = tokio::spawn(async move {
+        timeline_store
+            .write_timeline_batch(
+                "settlement-interleaving",
+                &[crate::task_timeline::TimelineEvent::ExecutionFinished {
+                    id: "settlement-execution".to_string(),
+                    finished_at: "2026-10-23T00:00:01.000Z".to_string(),
+                    duration_ms: 900,
+                    status: "success".to_string(),
+                }],
+                0,
+                "2026-10-23T00:00:01.000Z",
+                false,
+            )
+            .await
+    });
+    hooks.timeline_before_admission.notified().await;
+
+    // With the old deferred-transaction path, the timeline writer would acquire a write
+    // transaction here while finalization was paused after SELECT. The bounded absence check
+    // makes that interleaving observable without relying on a sleep or a retry.
+    let timeline_started_while_finalization_was_paused = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        hooks.timeline_transaction_started.notified(),
+    )
+    .await
+    .is_ok();
+    if timeline_started_while_finalization_was_paused {
+        hooks.continue_timeline.notify_one();
+        hooks.continue_finish.notify_one();
+        let finish_result = finish_task.await.expect("join finalization task");
+        let timeline_result = timeline_task.await.expect("join timeline task");
+        panic!(
+            "timeline write entered before deferred finalization settled: finish={finish_result:?}, timeline={timeline_result:?}"
+        );
+    }
+
+    hooks.continue_finish.notify_one();
+    finish_task
+        .await
+        .expect("join finalization task")
+        .expect("finalization should commit before timeline write admission");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        hooks.timeline_transaction_started.notified(),
+    )
+    .await
+    .expect("timeline writer should enter after finalization commits");
+    hooks.continue_timeline.notify_one();
+    timeline_task
+        .await
+        .expect("join timeline task")
+        .expect("timeline write should commit after finalization");
+
+    let status: String = sqlx::query_scalar("SELECT status FROM managed_task_runs WHERE id=?")
+        .bind(run_id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "success");
+    let timeline_status: String =
+        sqlx::query_scalar("SELECT status FROM task_timeline_segments WHERE segment_id=?")
+            .bind("settlement-execution")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(timeline_status, "success");
+}
+
+#[tokio::test]
+async fn ownership_v2_persists_committed_as_processed_count() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "manual",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            run_id,
+            "success",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "committed": 7,
+                "processedCount": 7,
+                "selectedScope": {"committed": 7}
+            })),
+        )
+        .await
+        .unwrap();
+    let processed_count: Option<i64> =
+        sqlx::query_scalar("SELECT processed_count FROM managed_task_runs WHERE id=?")
+            .bind(run_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(processed_count, Some(7));
+}
+
+#[tokio::test]
+async fn ownership_v2_finalization_clears_catchup_with_current_run_generation() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "pool_upstream_attempt_archive";
+    sqlx::query(
+        "UPDATE managed_tasks
+         SET next_catchup_at='2000-01-01T00:00:00.000Z',catchup_reason='backlog_remaining'
+         WHERE task_key=?",
+    )
+    .bind(task_key)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let run_id = store
+        .begin_run(task_key, "2026-10-01T00:00:00.000Z", "catchup", None)
+        .await
+        .unwrap();
+
+    store
+        .finish_run_with_observation(
+            run_id,
+            "success",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "committed": 0,
+                "selectedScope": {"committed": 0, "hasMore": false},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let state: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT runs.status,tasks.next_catchup_at,tasks.catchup_reason
+         FROM managed_task_runs runs
+         JOIN managed_tasks tasks ON tasks.task_key=runs.task_key
+         WHERE runs.id=?",
+    )
+    .bind(run_id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, ("success".to_string(), None, None));
+}
+
+#[tokio::test]
+async fn ownership_v2_archive_finalization_updates_catchup_before_commit() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    sqlx::query(
+        "UPDATE managed_tasks
+         SET next_catchup_at='2000-01-01T00:00:00.000Z',catchup_reason='backlog_remaining'
+         WHERE task_key='retention_archive'",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "catchup",
+            None,
+        )
+        .await
+        .unwrap();
+
+    store
+        .finish_run_with_observation(
+            run_id,
+            "success",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": "retention_archive",
+                "globalBacklogTotal": 0,
+                "selectedScope": {"committed": 0},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let state: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT runs.status,tasks.next_catchup_at,tasks.catchup_reason
+         FROM managed_task_runs runs
+         JOIN managed_tasks tasks ON tasks.task_key=runs.task_key
+         WHERE runs.id=?",
+    )
+    .bind(run_id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, ("success".to_string(), None, None));
+}
+
+#[tokio::test]
+async fn failed_retention_archive_run_schedules_bounded_retry() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "schedule",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            run_id,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("retention_archive 执行失败"),
+            Some("owner failed after the invocation snapshot"),
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": "retention_archive",
+                "result": "failed",
+                "globalBacklogTotal": 0,
+                "committed": 0,
+                "selectedScope": {"committed": 0},
+                "waitReason": null
+            })),
+        )
+        .await
+        .unwrap();
+    let scheduled: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(scheduled.0.is_some());
+    assert_eq!(scheduled.1.as_deref(), Some("owner_failed"));
+}
+
+#[tokio::test]
+async fn failed_retention_archive_finalization_commits_retry_with_terminal_run() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "schedule",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation_and_retry(
+            run_id,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("retention_archive 执行失败"),
+            Some("owner failed after the invocation snapshot"),
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": "retention_archive",
+                "result": "failed",
+                "globalBacklogTotal": 0,
+                "committed": 0,
+                "selectedScope": {"committed": 0},
+                "waitReason": "owner_failed"
+            })),
+            300,
+            "owner_failed",
+        )
+        .await
+        .unwrap();
+
+    let state: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT runs.status,tasks.next_catchup_at,tasks.catchup_reason,retry.reason
+         FROM managed_task_runs runs
+         JOIN managed_tasks tasks ON tasks.task_key=runs.task_key
+         LEFT JOIN maintenance_owner_retry_state retry ON retry.task_key=runs.task_key
+         WHERE runs.id=?",
+    )
+    .bind(run_id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state.0, "failed");
+    assert!(state.1.is_some());
+    assert_eq!(state.2.as_deref(), Some("owner_failed"));
+    assert_eq!(state.3.as_deref(), Some("owner_failed"));
+}
+
+#[tokio::test]
+async fn stale_terminal_replay_cannot_overwrite_recovered_retry_state() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let run_id = store
+        .begin_run(
+            "retention_archive",
+            "2026-10-01T00:00:00.000Z",
+            "schedule",
+            None,
+        )
+        .await
+        .unwrap();
+    let recovered_details = json!({
+        "ownershipVersion": 2,
+        "ownerScope": "retention_archive",
+        "result": "failed",
+        "selectedScope": {"committed": 0, "hasMore": true},
+        "waitReason": "owner_failed"
+    });
+    store
+        .finish_run_with_observation_and_retry(
+            run_id,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("recovered failure"),
+            Some("startup recovery"),
+            Some("failed"),
+            None,
+            Some(&recovered_details),
+            300,
+            "owner_failed",
+        )
+        .await
+        .unwrap();
+
+    store
+        .finish_run_with_observation(
+            run_id,
+            "success",
+            "2026-10-01T00:00:02.000Z",
+            2,
+            Some("stale replay success"),
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": "retention_archive",
+                "selectedScope": {"committed": 9, "hasMore": false},
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let state: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT runs.status,runs.summary,tasks.catchup_reason,retry.reason
+         FROM managed_task_runs runs
+         JOIN managed_tasks tasks ON tasks.task_key=runs.task_key
+         LEFT JOIN maintenance_owner_retry_state retry ON retry.task_key=runs.task_key
+         WHERE runs.id=?",
+    )
+    .bind(run_id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state.0, "failed");
+    assert_eq!(state.1.as_deref(), Some("recovered failure"));
+    assert_eq!(state.2.as_deref(), Some("owner_failed"));
+    assert_eq!(state.3.as_deref(), Some("owner_failed"));
+}
+
+#[tokio::test]
+async fn owner_progress_schedule_sync_preserves_stale_workload_freshness() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "pool_upstream_attempt_archive";
+    sqlx::query(
+        "INSERT INTO managed_task_progress(task_key,total,completed,updated_at,freshness)
+         VALUES(?,9,3,'2020-01-01T00:00:00.000Z','stale')",
+    )
+    .bind(task_key)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE managed_tasks
+         SET next_catchup_at='2026-10-01T00:00:00.000Z',catchup_reason='owner_failed'
+         WHERE task_key=?",
+    )
+    .bind(task_key)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    store
+        .sync_retention_owner_progress_schedule(task_key)
+        .await
+        .unwrap();
+
+    let progress: (Option<i64>, Option<i64>, String, String, Option<String>) = sqlx::query_as(
+        "SELECT total,completed,freshness,updated_at,catchup_state
+         FROM managed_task_progress WHERE task_key=?",
+    )
+    .bind(task_key)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(progress.0, Some(9));
+    assert_eq!(progress.1, Some(3));
+    assert_eq!(progress.2, "stale");
+    assert_eq!(progress.3, "2020-01-01T00:00:00.000Z");
+    assert_eq!(progress.4.as_deref(), Some("scheduled"));
+}
+
+#[tokio::test]
+async fn successful_owner_run_clears_prior_retry_state() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    let task_key = "retention_archive";
+    let failed_run = store
+        .begin_run(task_key, "2026-10-01T00:00:00.000Z", "schedule", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation_and_retry(
+            failed_run,
+            "failed",
+            "2026-10-01T00:00:01.000Z",
+            1,
+            Some("owner failed"),
+            None,
+            Some("failed"),
+            None,
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "result": "failed",
+                "selectedScope": {"committed": 0, "hasMore": true},
+                "waitReason": "owner_failed"
+            })),
+            300,
+            "owner_failed",
+        )
+        .await
+        .unwrap();
+
+    let successful_run = store
+        .begin_run(task_key, "2026-10-01T00:01:00.000Z", "manual", None)
+        .await
+        .unwrap();
+    store
+        .finish_run_with_observation(
+            successful_run,
+            "success",
+            "2026-10-01T00:01:01.000Z",
+            1,
+            None,
+            None,
+            Some("complete"),
+            Some("complete"),
+            Some(&json!({
+                "ownershipVersion": 2,
+                "ownerScope": task_key,
+                "selectedScope": {"committed": 0, "hasMore": false},
+                "waitReason": null,
+                "dryRun": false
+            })),
+        )
+        .await
+        .unwrap();
+
+    let retry_reason: Option<String> =
+        sqlx::query_scalar("SELECT reason FROM maintenance_owner_retry_state WHERE task_key=?")
+            .bind(task_key)
+            .fetch_optional(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(retry_reason, None);
+}
+
+#[tokio::test]
+async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    for _ in 0..70 {
+        sqlx::query(
+            "INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,status,summary) VALUES('retention_archive','test',?,'success','old run')",
+        )
+        .bind("2020-01-01T00:00:00.000Z")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    }
+    let preview = store.cleanup_expired_history_bounded(true).await.unwrap();
+    assert_eq!(preview.selected, 64);
+    assert_eq!(preview.committed, 0);
+    assert!(preview.has_more);
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM managed_task_runs")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, 70);
+
+    let result = store.cleanup_expired_history_bounded(false).await.unwrap();
+    assert_eq!(result.selected, 64);
+    assert_eq!(result.committed, 64);
+    assert!(result.has_more);
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM managed_task_runs")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(after, 6);
+}
+
+#[tokio::test]
 async fn ownership_initialization_preserves_controls_and_recovers_interrupted_schedule_write() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();
     for key in [
         "retention_archive",
+        "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive",
+        "invocation_detail_prune",
+        "quota_snapshot_compaction",
+        "model_route_expiry",
+        "task_run_history_cleanup",
         "prompt_cache_materialization",
         "invocation_identity_cleanup",
         "raw_orphan_sweep",
@@ -111,6 +722,12 @@ async fn ownership_pause_preserves_accepted_manual_requests_and_blocks_new_autom
     store.apply_initial_task_defaults().await.unwrap();
     for key in [
         "retention_archive",
+        "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive",
+        "invocation_detail_prune",
+        "quota_snapshot_compaction",
+        "model_route_expiry",
+        "task_run_history_cleanup",
         "prompt_cache_materialization",
         "invocation_identity_cleanup",
         "raw_orphan_sweep",
@@ -121,6 +738,20 @@ async fn ownership_pause_preserves_accepted_manual_requests_and_blocks_new_autom
         assert_eq!(claim.0, id);
         assert_eq!(claim.1, key);
         assert_eq!(claim.3, "manual");
+        let ownership_version = if matches!(
+            key,
+            "retention_archive"
+                | "pool_upstream_attempt_archive"
+                | "forward_proxy_attempt_archive"
+                | "invocation_detail_prune"
+                | "quota_snapshot_compaction"
+                | "model_route_expiry"
+                | "task_run_history_cleanup"
+        ) {
+            2
+        } else {
+            1
+        };
         store
             .finish_run_with_observation(
                 id,
@@ -131,7 +762,7 @@ async fn ownership_pause_preserves_accepted_manual_requests_and_blocks_new_autom
                 None,
                 Some("partial"),
                 None,
-                Some(&json!({"total":100,"completed":1,"ownershipVersion":1})),
+                Some(&json!({"total":100,"completed":1,"ownershipVersion":ownership_version})),
             )
             .await
             .unwrap();

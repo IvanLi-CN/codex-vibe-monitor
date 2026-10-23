@@ -976,16 +976,20 @@ pub(super) async fn run_terminal_journal_sync(
             _ = ticker.tick() => {
                 if let Ok(mut guard) = terminal_journal.lock()
                     && let Some(journal) = guard.as_mut()
-                    && let Some(group_commit_elapsed_ms) = journal.sync_if_due()
                 {
-                    let stats = journal.stats();
-                    debug!(
-                        group_commit_elapsed_ms,
-                        journal_pending_records = stats.pending_records,
-                        journal_pending_bytes = stats.pending_bytes,
-                        journal_segment_count = stats.segment_count,
-                        "terminal journal group commit completed"
-                    );
+                    if let Err(err) = journal.retry_system_task_acknowledgements() {
+                        warn!(error = %err, "failed to retry recovered system-task acknowledgements");
+                    }
+                    if let Some(group_commit_elapsed_ms) = journal.sync_if_due() {
+                        let stats = journal.stats();
+                        debug!(
+                            group_commit_elapsed_ms,
+                            journal_pending_records = stats.pending_records,
+                            journal_pending_bytes = stats.pending_bytes,
+                            journal_segment_count = stats.segment_count,
+                            "terminal journal group commit completed"
+                        );
+                    }
                 }
             }
         }

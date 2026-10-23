@@ -10,7 +10,7 @@ async fn quota_compaction_candidates(
     pool: &Pool<Sqlite>,
     cutoff: &str,
     candidate_limit: usize,
-) -> Result<Option<Vec<TimestampedArchiveCandidate>>> {
+) -> Result<Option<(Vec<TimestampedArchiveCandidate>, usize, bool)>> {
     let query_sql = r#"
         WITH ranked AS (
             SELECT
@@ -33,6 +33,10 @@ async fn quota_compaction_candidates(
         .unwrap_or(super::super::retention::RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET)
         .min(super::super::retention::RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET);
     if query_budget.is_zero() {
+        super::super::retention::retention_record_defer(
+            "quota_compaction",
+            "retention_work_budget",
+        );
         return Ok(None);
     }
     let deadline = Instant::now() + query_budget;
@@ -41,6 +45,7 @@ async fn quota_compaction_candidates(
         .as_ref()
         .is_some_and(CancellationToken::is_cancelled)
     {
+        super::super::retention::retention_record_defer("quota_compaction", "shutdown");
         return Ok(None);
     }
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -52,7 +57,13 @@ async fn quota_compaction_candidates(
     let mut connection =
         match tokio::time::timeout(query_budget, SqliteConnection::connect_with(&options)).await {
             Ok(connection) => connection?,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                super::super::retention::retention_record_defer(
+                    "quota_compaction",
+                    "retention_sqlite_query_budget",
+                );
+                return Ok(None);
+            }
         };
     let lock_budget_ms = deadline
         .saturating_duration_since(Instant::now())
@@ -91,7 +102,7 @@ async fn quota_compaction_candidates(
     // interruption and close the dedicated handle; never return live work to the pool.
     let result = sqlx::query_as::<_, TimestampedArchiveCandidate>(query_sql)
         .bind(cutoff)
-        .bind(candidate_limit as i64)
+        .bind(candidate_limit.saturating_add(1) as i64)
         .fetch_all(&mut connection)
         .await;
     let cleanup = connection.lock_handle().await.map(|mut handle| {
@@ -112,9 +123,17 @@ async fn quota_compaction_candidates(
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
     {
+        super::super::retention::retention_record_defer(
+            "quota_compaction",
+            "retention_sqlite_query_budget",
+        );
         return Ok(None);
     }
-    Ok(Some(result?))
+    let mut candidates = result?;
+    let discovered = candidates.len();
+    let has_more = discovered > candidate_limit;
+    candidates.truncate(candidate_limit);
+    Ok(Some((candidates, discovered, has_more)))
 }
 
 pub(crate) async fn compact_old_quota_snapshots(
@@ -126,44 +145,31 @@ pub(crate) async fn compact_old_quota_snapshots(
     let spec = archive_table_spec("codex_quota_snapshots");
 
     if dry_run {
-        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(
-            r#"
-            WITH ranked AS (
-                SELECT
-                    captured_at,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY strftime('%Y-%m-%d', datetime(captured_at, '+8 hours'))
-                        ORDER BY captured_at DESC, id DESC
-                    ) AS row_num
-                FROM codex_quota_snapshots
-                WHERE captured_at < ?1
-            )
-            SELECT strftime('%Y-%m', datetime(captured_at, '+8 hours')) AS month_key,
-                   COUNT(*) AS row_count
-            FROM ranked
-            WHERE row_num > 1
-            GROUP BY 1
-            ORDER BY 1
-            "#,
-        )
-        .bind(&cutoff)
-        .fetch_all(pool)
-        .await?;
-        for batch in &batch_counts {
+        let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
+        let Some((candidates, discovered, has_more)) =
+            quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
+        else {
+            return Ok((0, 0));
+        };
+        super::super::retention::batch_plan::record_discovered_rows(spec.dataset, discovered);
+        super::super::retention::batch_plan::record_candidate_window_has_more(
+            spec.dataset,
+            has_more,
+        );
+        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
+            *by_month.entry(month_key).or_default() += 1;
+        }
+        for (month_key, rows) in &by_month {
             info!(
                 dataset = spec.dataset,
-                month_key = %batch.month_key,
-                rows = batch.row_count,
+                month_key = %month_key,
+                rows = *rows,
                 "retention dry-run planned quota compaction batch"
             );
         }
-        return Ok((
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count as usize)
-                .sum(),
-            batch_counts.len(),
-        ));
+        return Ok((by_month.values().sum(), by_month.len()));
     }
 
     let mut rows_archived = 0usize;
@@ -171,19 +177,29 @@ pub(crate) async fn compact_old_quota_snapshots(
 
     'work_unit: {
         if !super::super::retention::batch_plan::archive_batch_can_start() {
+            super::super::retention::retention_record_defer(
+                "quota_compaction",
+                "retention_work_budget",
+            );
             break 'work_unit;
         }
         let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
-        let Some(candidates) = quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
+        let Some((candidates, discovered, has_more)) =
+            quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
         else {
             break 'work_unit;
         };
+        super::super::retention::batch_plan::record_discovered_rows(spec.dataset, discovered);
+        super::super::retention::batch_plan::record_candidate_window_has_more(
+            spec.dataset,
+            has_more,
+        );
 
         if candidates.is_empty() {
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
@@ -192,15 +208,27 @@ pub(crate) async fn compact_old_quota_snapshots(
 
         for (month_key, group) in by_month {
             if super::super::retention::retention_run_budget_expired() {
+                super::super::retention::retention_record_defer(
+                    "quota_compaction",
+                    "retention_work_budget",
+                );
                 break;
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let sizes =
                 super::super::retention::archive_source_row_sizes(pool, spec, &candidate_ids)
                     .await?;
+            let group_candidate_count = group.len();
             let group = super::super::retention::batch_plan::select_archive_batch(group, |row| {
                 sizes.get(&row.id).copied().unwrap_or(512)
             });
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                super::super::retention::batch_plan::record_candidate_window_has_more(
+                    spec.dataset,
+                    true,
+                );
+            }
             let mut observation = super::super::retention::batch_plan::BatchObservation::begin(
                 spec.dataset,
                 &month_key,
@@ -252,7 +280,13 @@ pub(crate) async fn compact_old_quota_snapshots(
                 if let Some(remaining) = remaining {
                     match tokio::time::timeout(remaining, &mut archive_future).await {
                         Ok(result) => result,
-                        Err(_) => return Ok((rows_archived, archive_batches)),
+                        Err(_) => {
+                            super::super::retention::retention_record_defer(
+                                "quota_compaction",
+                                "retention_work_budget",
+                            );
+                            return Ok((rows_archived, archive_batches));
+                        }
                     }
                 } else {
                     archive_future.await
@@ -261,6 +295,12 @@ pub(crate) async fn compact_old_quota_snapshots(
             let Some(mut archive_outcome) =
                 super::super::retention::retention_prepared_batch_or_deferred(archive_result)?
             else {
+                if super::super::retention::retention_run_defer_reason().is_none() {
+                    super::super::retention::retention_record_defer(
+                        "quota_compaction",
+                        "retention_write_admission",
+                    );
+                }
                 return Ok((rows_archived, archive_batches));
             };
             if archive_outcome.source_identity_sha256.as_deref() != Some(identity.as_str()) {
@@ -275,6 +315,10 @@ pub(crate) async fn compact_old_quota_snapshots(
             let prepare_elapsed = prepare_started.elapsed();
             observation.file_prepared(prepare_elapsed);
             if super::super::retention::retention_run_budget_expired() {
+                super::super::retention::retention_record_defer(
+                    "quota_compaction",
+                    "retention_work_budget",
+                );
                 return Ok((rows_archived, archive_batches));
             }
             let _archive_lock = super::super::retention::retention_archive_file_lock_async(
@@ -286,10 +330,10 @@ pub(crate) async fn compact_old_quota_snapshots(
                 super::super::retention::retention_archive_file_operation_deadline(),
             ) {
                 Ok(value) => value,
-                Err(_) => return Ok((rows_archived, archive_batches)),
+                Err(error) => return Err(error),
             };
             if actual_sha256 != archive_outcome.sha256 {
-                return Ok((rows_archived, archive_batches));
+                bail!("quota task-local archive artifact changed before conversion");
             }
             let mut committed_rows = 0;
             for (group, identity) in group
@@ -304,6 +348,12 @@ pub(crate) async fn compact_old_quota_snapshots(
                     )
                     .await?
                 else {
+                    if super::super::retention::retention_run_defer_reason().is_none() {
+                        super::super::retention::retention_record_defer(
+                            "quota_compaction",
+                            "retention_write_admission",
+                        );
+                    }
                     return Ok((rows_archived, archive_batches));
                 };
                 let execute_started = Instant::now();
@@ -323,6 +373,10 @@ pub(crate) async fn compact_old_quota_snapshots(
                 {
                     tx.rollback().await?;
                     drop(admission);
+                    super::super::retention::retention_record_defer(
+                        "quota_compaction",
+                        "archive_cleanup_not_active",
+                    );
                     return Ok((rows_archived, archive_batches));
                 }
                 if super::super::retention::archive_table_source_identity_sha256(
@@ -351,7 +405,7 @@ pub(crate) async fn compact_old_quota_snapshots(
                     commit_started.duration_since(execute_started),
                     commit_started.elapsed(),
                     admission.p1_waiter_count(),
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 observation.committed(group.len(), admission.lock_wait());
                 drop(admission);

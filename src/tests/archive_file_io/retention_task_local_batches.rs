@@ -1702,6 +1702,7 @@ async fn retention_task_local_older_same_month_append_preserves_archive_expiry()
                 select_sql,
                 "2020-02-01 00:00:00".to_string(),
                 false,
+                None,
             ),
         )
         .await

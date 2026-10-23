@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { ObservabilityTaskLink } from "../../features/observability/ObservabilityTaskLink";
+import { RetentionOwnerRunFacts } from "../../features/system/RetentionOwnerRunFacts";
 import { RetentionRunThroughput } from "../../features/system/RetentionRunThroughput";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
@@ -496,7 +497,8 @@ export default function SystemTaskDetailPage() {
                   <div className="flex flex-wrap justify-between gap-2">
                     <span>{run.startedAt}</span>
                     <span className="font-medium">
-                      {managedTaskRunStatusLabel(run.status)} · {formatDuration(run.durationMs)}
+                      {managedTaskRunStatusLabel(run.status, run.completion)} ·{" "}
+                      {formatDuration(run.durationMs)}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60">
@@ -518,6 +520,7 @@ export default function SystemTaskDetailPage() {
                       等待：{String(run.details.waitReason)}
                     </div>
                   ) : null}
+                  <RetentionOwnerRunFacts details={run.details} />
                   {run.details?.ownershipVersion == null && run.details?.promptCacheStats ? (
                     <div className="text-xs text-base-content/65">
                       Prompt 缓存统计：
@@ -530,7 +533,8 @@ export default function SystemTaskDetailPage() {
                   ) : null}
                   {run.details?.ownershipVersion === 1 ? (
                     <div className="text-xs text-base-content/65">
-                      {run.details.dryRun ? "只读预演" : "实际运行"} · 本任务范围
+                      {run.details.dryRun ? "只读预演" : "实际运行"} ·{" "}
+                      {managedTaskKey === "retention_archive" ? "旧版组合范围" : "本任务范围"}
                       {managedTaskKey === "invocation_identity_cleanup"
                         ? ` · 对话身份 ${String(run.details.conversationIdentitiesChecked ?? "未知")} 个已检查 / ${String(run.details.conversationIdentitiesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}；小时前缀 ${String(run.details.hourPrefixesChecked ?? "未知")} 个已检查 / ${String(run.details.hourPrefixesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}`
                         : null}
@@ -541,11 +545,13 @@ export default function SystemTaskDetailPage() {
                         ? " · 有界扫描，总体剩余量未知"
                         : null}
                     </div>
-                  ) : managedTaskKey === "retention_archive" ? (
+                  ) : managedTaskKey === "retention_archive" &&
+                    run.details?.ownershipVersion !== 2 ? (
                     <div className="text-xs text-base-content/50">旧版组合范围，保留原始结果</div>
                   ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
-                  {managedTaskKey === "retention_archive" ? (
+                  {managedTaskKey === "retention_archive" ||
+                  (run.details?.ownershipVersion === 2 && run.details.archiveBatches?.length) ? (
                     <RetentionRunThroughput details={run.details} />
                   ) : null}
                 </div>

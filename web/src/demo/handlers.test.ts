@@ -608,14 +608,23 @@ describe("demo MSW handlers", () => {
       effectivePolicy?: string;
       policySource?: string;
       executionClass?: string | null;
+      measurementCapabilities?: {
+        discovered?: { unit?: string | null };
+      };
     }>;
 
-    expect(tasks).toHaveLength(39);
+    expect(tasks).toHaveLength(45);
     expect(tasks.filter((task) => task.taskKey.startsWith("startup_backfill.")).length).toBe(16);
     expect(tasks.filter((task) => task.isManual).length).toBe(6);
     expect(tasks.map((task) => task.taskKey)).toEqual(
       expect.arrayContaining([
         "retention_archive",
+        "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive",
+        "invocation_detail_prune",
+        "quota_snapshot_compaction",
+        "model_route_expiry",
+        "task_run_history_cleanup",
         "prompt_cache_materialization",
         "startup_backfill",
         "startup_backfill.proxy_usage",
@@ -630,6 +639,15 @@ describe("demo MSW handlers", () => {
           policySource: "运行配置",
           effectivePolicy: "启动检查与保留策略周期；按配置判断是否有工作",
           executionClass: "maintenance_retention",
+        }),
+        expect.objectContaining({
+          taskKey: "pool_upstream_attempt_archive",
+          policySource: "系统默认",
+          effectivePolicy: "300 秒独立巡检；候选、已提交数量按本 owner 单独统计",
+          executionClass: "maintenance_retention",
+          measurementCapabilities: expect.objectContaining({
+            discovered: expect.objectContaining({ unit: "pool attempt rows" }),
+          }),
         }),
         expect.objectContaining({
           taskKey: "summary_snapshot",

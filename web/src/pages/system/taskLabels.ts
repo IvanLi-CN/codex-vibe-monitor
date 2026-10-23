@@ -83,7 +83,8 @@ export function managedTaskFreshnessLabel(freshness?: string | null): string {
   }
 }
 
-export function managedTaskRunStatusLabel(status: string): string {
+export function managedTaskRunStatusLabel(status: string, completion?: string | null): string {
+  if (completion === "partial") return "部分完成";
   switch (status) {
     case "success":
       return "成功";
@@ -102,8 +103,11 @@ export function managedTaskRunStatusLabel(status: string): string {
 
 export function managedTaskCompletionLabel(completion?: string | null): string {
   switch (completion) {
+    case "complete":
     case "completed":
       return "本轮完成";
+    case "no-work":
+      return "无待办";
     case "partial":
       return "部分完成";
     case "deferred":
@@ -155,6 +159,12 @@ export function managedTaskNextTriggerLabel(task: ManagedTask): string {
 export function isRetentionMaintenanceTask(taskKey: string): boolean {
   return [
     "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
     "invocation_identity_cleanup",
     "raw_orphan_sweep",
     "prompt_cache_materialization",

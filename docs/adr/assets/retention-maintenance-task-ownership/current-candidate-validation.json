@@ -1,19 +1,31 @@
 {
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
-  "baseSha": "7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7",
-  "codeCandidateSha": "5c203d70132e81e7878851b0d46d3c3c5fa3a093",
-  "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
-  "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
+  "baseSha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+  "codeCandidateSha": "bb1d65bb82f0c5d6587228506aa59e279217b9f1",
+  "documentationCarrier": {
+    "codeCandidateSha": "bb1d65bb82f0c5d6587228506aa59e279217b9f1",
+    "identity": "the signed documentation-only commit containing this record",
+    "scope": "This record is a documentation carrier for the immediately preceding synchronized signed implementation candidate; the carrier contains exactly the four documentation records listed by CI, including IMPLEMENTATION.md, and does not change the validated source tree. CI binds documentationCarrierSha to the current checkout, asserts its parent is codeCandidateSha, and verifies the carrier diff is documentation-only."
+  },
+  "sourceRustTree": "69e5c5c7946245549a50084938e7612dfd4731c8",
+  "sourceWebTree": "596ac8559c93846335c9771f1de1aecf6cd95ee3",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
   "sourceInputCount": 263,
-  "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
+  "candidateBinarySha256": null,
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 7,
+    "repairBatchesUsed": 22,
+    "repairBatchesUsedStatus": "historical aggregate from an older session; unverified and not a current authorization count",
     "prCreated": true,
     "currentFormalReviewLaunched": false
+  },
+  "currentHeadCi": {
+    "workflow": "CI PR",
+    "runId": null,
+    "headSha": "bb1d65bb82f0c5d6587228506aa59e279217b9f1",
+    "status": "pending"
   },
   "passed": {
     "rustSourceQuality": true,
@@ -110,9 +122,18 @@
     "scopeProofLocator": ".codex/evidence/retention-maintenance/repair7/retained-scope-proof.json"
   },
   "pending": [
-    "formalTier4Review",
-    "postEvidenceRefreshCi"
+    "currentHeadCi",
+    "formalReview",
+    "migrationReplay"
   ],
+  "formalReview": {
+    "candidateSha": "bb1d65bb82f0c5d6587228506aa59e279217b9f1",
+    "reviewedHead": "bb1d65bb82f0c5d6587228506aa59e279217b9f1",
+    "status": "pending",
+    "lanes": [],
+    "findings": [],
+    "note": "The previous review was invalidated by the pressure-retry repair; fresh Tier 4 lanes must bind to this candidate after remote CI is current."
+  },
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
     "generation": 12,
@@ -124,26 +145,42 @@
     "guestContinuityVerifiedAfterLiveReduction": true
   },
   "currentRepair": {
-    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1098",
-    "ownerAuthorizedRepairBatch": 7,
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
+    "ownerAuthorizedRepairBatch": 24,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "33bdf21bb39e95b24e2a6a70d63eb9ec01bbabf7",
-    "fixedFinding": "Archive marker repair preserved stale markers but stopped before filling missing sibling targets; continue the scan, fill only missing targets, and retain the stale-marker result.",
-    "newFocusedRegression": "upstream_account_archive_marker_repair_converges_across_multiple_pages passes on the current head; source-quality budget remains satisfied.",
+    "authorizationMetadataStatus": "historical legacy values above are unverified and must not be used as current authorization",
+    "previousCandidateSha": "b7928953700ba3845797c39c88672544fa1b3141",
+    "currentSupervision": {
+      "sourceThreadId": "01a167f3-23fb-7841-90a6-f79e80de13ac",
+      "ownerMessage": "\u597d\uff0c\u7ee7\u7eed",
+      "scope": [
+        "Release the retained archive/file-io test connections before pool.close, and release the writer fence first where held.",
+        "Align quota migration fixture timestamps with the published schema and real data convention without expanding the production parser.",
+        "Preserve version, owner, raw error chain, candidate.log, and managed_task_runs.details in controlled migration failure evidence while keeping real failures failing CI."
+      ]
+    },
+    "fixedFinding": "Unknown owner workload facts are no longer persisted as zero when a retention owner fails before observation, processed-work lookup no longer returns a reference tied to a locked map, restart recovery preserves null facts, and failure fallback no longer infers discovered or selected rows from committed work. The retention migration check now scopes its expensive validation to relevant changes, and the migration record names the additive retry-state table.",
+    "newFocusedRegression": "The owner execution regression keeps discovered, selected, committed, processedCount, and rawFilesRemoved null until workload observation exists while preserving real zero counts after a successful observation; deadline-expired dry-run candidate queries now remain unobserved instead of being persisted as zero; restart recovery and panic/error fallback retain null for unobserved discovered, selected, and batch facts while preserving observed committed/raw counts; terminal replay re-synchronizes retention progress after the original transaction has committed, every owner-v2 finalization and control/schedule update refreshes its progress projection after commit, and schedule-only sync does not make stale workload data fresh; owner-v2 facts bind to bb1d65bb82f0c5d6587228506aa59e279217b9f1. Authorization failure details and system-task journal/quarantine records redact the complete scheme/value credential, including Basic, comma-separated Digest parameters, and the authorization= form. The validators exercise every retention owner entrypoint in both dry-run and one-shot modes, seed owner-specific candidates, assert discovered and selected facts, require dry-run committed=0 with unchanged owner state, require real-run committed work with reduced owner state, verify rawFilesPlanned and raw-file removal plus database reference release, verify shared raw ownership is preserved until the second owner runs, and verify changed archive manifests are completed, present, SHA-256 consistent, contain the owner fixture exactly once, and preserve its raw path identity. The offline and online validators read the producer's top-level result field for real-mode complete/partial proof; the pure Python contract regression covers archive and non-archive result selection, rejects the internal completion spelling, and verifies that diagnostic reads never create a missing maintenance store. Retention raw deletion plans now acquire an exclusive raw-directory fence before reference checks, carry file identity through commit, recheck identity before unlink, defer busy writers, and preserve changed files for inventory reconciliation; archive, detail, timestamped-attempt, and prepared-recovery paths share this plan, with regressions for writer fencing and replacement identity. Owner-v2 finalization, including retention_archive, and catch-up cleanup now commit in one transaction, with regressions covering both current run generations. Release fixtures now pull manifest-pinned image digests and verify docker inspect RepoDigests before execution. The quality-gates contract now scopes retention migration validation by changed surface, including Cargo build inputs, rust-toolchain.toml, vendored hotpath sources, all declared Cargo/Docker/validator inputs, locks the migration job's producer dependency, full-history carrier checkout, executable fixture and validator commands, both validators, candidate identity assertions, fail-closed evidence upload, and artifact overwrite on reruns; CI compares the carrier file set as a sorted set and asserts the documentation carrier is the direct parent of this code candidate. This candidate also records the owner version, owner key, sanitized raw error chain, candidate.log, and managed_task_runs.details in controlled migration diagnostics while preserving fail-closed evidence upload. Remote CI, migration replay, and fresh Tier 4 review remain pending for this candidate.",
     "productionAssertionsAndLimitsUnchanged": true,
-    "candidateBinarySha256": null
+    "candidateBinarySha256": null,
+    "currentBatchFixes": [
+      "Bind the current four-file documentation carrier to the immediately preceding implementation candidate while binding future source-only and multi-PR merge-group checkouts to their actual GitHub checkout and binary identity; reject a corrupted carrier or any identity mismatch.",
+      "Canonicalize relative validator output directories before archive lookup and include owner-specific business fact tables in dry-run snapshots.",
+      "Use the real shared task-execution mutex for lease tests; when a claimed prompt-cache request loses a shared startup-backfill lease, requeue it as requested, keep unrelated tasks eligible, and allow the same request to run after release."
+    ]
   },
   "currentCandidateBinding": {
-    "prNumber": 1098,
-    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1098",
-    "baseSha": "7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7",
-    "headSha": "5c203d70132e81e7878851b0d46d3c3c5fa3a093",
+    "prNumber": 1162,
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1162",
+    "baseSha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "headSha": "bb1d65bb82f0c5d6587228506aa59e279217b9f1",
     "requiredCi": {
-      "runId": 38079670191,
-      "conclusion": "success"
+      "workflow": "CI PR",
+      "runId": null,
+      "status": "pending"
     },
     "formalTier4Review": "pending",
-    "note": "Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this documentation refresh."
+    "note": "candidate_head_sha binds the synchronized signed implementation candidate bb1d65bb82f0c5d6587228506aa59e279217b9f1 after the verified main base 207e6d6341240dd722d15a9e853485bed5e441a9. The next checkout is the documentation carrier identity; CI records its exact SHA, asserts its parent is codeCandidateSha, verifies the carrier diff is exactly the four documentation records including IMPLEMENTATION.md, and binds both validator result digests to its checkout and binary identity artifact."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
@@ -156,11 +193,18 @@
     "note": "Sixth-batch source/binary logs remain attributable to that execution. Unaffected stateful/archive/runtime/upgrades are retained using cfg(test)-only scope and verified byte-identical production binary; Web/docs evidence retains unchanged inputs."
   },
   "visualEvidence": {
-    "source": "mock-only ui_demo",
+    "source": "storybook_canvas",
     "ownerConfirmedAssets": 6,
-    "currentComparison": "consistent",
-    "renderInputsAfterMainlineStoriesRemoval": "unchanged; no product component, route, style or fixture changed",
-    "retentionProof": "No Web, demo, component, route, style or Web validation support input changed between 0c631537 and the current code candidate; six owner-confirmed mock-only images remain current."
+    "currentComparison": "consistent-owner-confirmed",
+    "currentStory": "System/RetentionOwnerRunFacts/Mobile",
+    "currentAsset": "docs/specs/retention-maintenance-task-ownership/assets/retention-owner-run-facts-mobile.png",
+    "currentSnapshot": "/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__53477e66/2026/10/22/20261022T063517Z-retention-owner-run-facts-mobile-20261022-49b15b08.png",
+    "requestedViewport": "393x852",
+    "viewportStrategy": "storybook-viewport",
+    "captureScope": "element",
+    "surfaceSelector": "[data-visual-evidence-surface]",
+    "targetSelector": "[data-visual-evidence-target]",
+    "retentionProof": "The previously shown controlled owner-v2 UI evidence was explicitly confirmed by the owner. This candidate's repair is backend-only and does not change the rendered surfaces, so that visual evidence remains applicable."
   },
   "productionBuildSettings": {
     "command": "cargo build --locked",

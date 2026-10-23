@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -1120,6 +1121,53 @@ class AggregationTests(unittest.TestCase):
     def test_candidate_acceptance_contract_drift_requires_post_merge_verification(self):
         self.change("pair-1", "run-config.json", lambda row: row.update(candidateAcceptanceContractDigest="different"))
         self.assertFalse(self.aggregate())
+        scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
+        self.assertEqual(scenario["error"], "candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
+
+    def test_candidate_acceptance_source_drift_requires_post_merge_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_source = Path(directory)
+            for relative in [
+                *[path.relative_to(SOURCE) for path in (SOURCE / "scripts/observability-acceptance").glob("*.py")],
+                "ops/observability/tempo_access.py",
+                "ops/observability/tempo.yml",
+                "ops/observability/compose.yml",
+                "ops/observability/grafana/provisioning/datasources/tempo.yml",
+                "docs/specs/performance-telemetry/SPEC.md",
+                "docs/specs/performance-telemetry/METRICS.md",
+                "docs/design/performance-observability.md",
+                "docs/design/performance-observability-metrics.md",
+                "docs/adr/0025-external-performance-observability.md",
+                "docs/adr/0033-external-request-diagnostic-traces.md",
+                "docs/adr/0034-shared-tempo-request-tracing.md",
+                "docs/adr/0046-observability-acceptance-hardware-admission.md",
+                "docs/adr/0047-observability-acceptance-single-runner-bundle.md",
+                "docs/design/request-lifecycle-observability.md",
+            ]:
+                target = candidate_source / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(SOURCE / relative, target)
+            drifted = candidate_source / "scripts/observability-acceptance/aggregate.py"
+            drifted.write_text(drifted.read_text() + "\n# candidate-only drift\n")
+            candidate_harness_digest = acceptance.acceptance_harness_digest(candidate_source)
+            for lane in aggregation.LANES:
+                self.change(
+                    lane,
+                    "run-config.json",
+                    lambda row, digest=candidate_harness_digest: row.update(
+                        candidateAcceptanceHarnessDigest=digest
+                    ),
+                )
+            with patch.object(aggregation, "actions_context", return_value=self.context):
+                self.assertFalse(
+                    aggregation.aggregate(
+                        SOURCE,
+                        candidate_source,
+                        self.output,
+                        self.parts,
+                        self.candidate,
+                    )
+                )
         scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
         self.assertEqual(scenario["error"], "candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
 
