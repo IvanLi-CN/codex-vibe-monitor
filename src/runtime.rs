@@ -2435,9 +2435,15 @@ async fn run_managed_task_worker(
         .details
         .as_ref()
         .and_then(|details| {
-            details
-                .get("globalBacklogTotal")
-                .or_else(|| details.get("total"))
+            if is_retention_owner_v2_task(&finish.task_key) {
+                details
+                    .get("selectedScope")
+                    .and_then(|scope| scope.get("selected"))
+            } else {
+                details
+                    .get("globalBacklogTotal")
+                    .or_else(|| details.get("total"))
+            }
         })
         .and_then(Value::as_i64);
     let progress_completed = finish

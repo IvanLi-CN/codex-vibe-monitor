@@ -630,7 +630,7 @@ impl TerminalJournal {
                     detail: finish
                         .detail
                         .as_ref()
-                        .map(crate::maintenance_store::sanitize_task_detail),
+                        .map(|detail| crate::maintenance_store::sanitize_task_detail(detail)),
                     finished_at: finish.finished_at.clone(),
                     duration_ms: finish.duration_ms,
                     completion: finish.completion.clone(),

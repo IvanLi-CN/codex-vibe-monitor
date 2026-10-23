@@ -2092,6 +2092,11 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
         "Bearer ",
         "Authorization:",
         "authorization=",
+        "X-API-Key:",
+        "x-api-key=",
+        "api-key:",
+        "api-key=",
+        "api_key:",
         "api_key=",
         "access_token=",
         "token=",
@@ -7584,6 +7589,17 @@ mod tests {
         );
         assert!(!configured.contains("Digest"));
         assert!(!configured.contains("nonce-secret"));
+        for detail in [
+            "upstream rejected X-API-Key: x-api-key-secret, retry",
+            "upstream rejected x-api-key=x-api-key-secret, retry",
+            "upstream rejected api-key: api-key-secret, retry",
+            "upstream rejected api-key=api-key-secret, retry",
+            "upstream rejected api_key: api-key-secret, retry",
+        ] {
+            let sanitized = sanitize_task_detail(detail);
+            assert!(!sanitized.contains("api-key-secret"));
+            assert!(!sanitized.contains("x-api-key-secret"));
+        }
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
