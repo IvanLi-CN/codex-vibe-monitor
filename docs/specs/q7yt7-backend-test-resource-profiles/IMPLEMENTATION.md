@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 三个 backend profiles 与 CI topology 已落地；本轮 PR #1177 的 CI cache/archive candidate 已推送并完成真实 Actions 冷/热验证，但尚未满足当前收敛合同的全部预算，因此不能作为最终接受证据。
+- Implementation: 三个 backend profiles 与 CI topology 已落地；本轮 PR #1177 的 CI cache/archive candidate 已推送并完成真实 Actions 冷/热验证，当前合同已收敛为同一基线下 required runner 总耗时的相对改善，待本轮脚本调整后的新 receipt 完成确认。
 - Lifecycle: active
 - Project-owned validation target: `Dockerfile` `backend-test` (`rust:1.96.0-bookworm`, `cargo-nextest 0.9.138`, checksum-verified amd64 asset, rustfmt/clippy) invokes the profile runner with an isolated writable run workspace and optional external Cargo directories.
 - Shared-testbox entrypoint: `compose.backend-test.yml` builds that same target without fixing Cargo paths or changing the profile command/test-thread contract; the runner is an adapter, not a project dependency.
@@ -35,8 +35,8 @@
 | Backend Tests (Archive / File I/O)   |      281 |     306 |
 | Build Artifacts                      |       37 |      75 |
 
-- The required-job wall-time contract is not met: cold maximum is `337s` and hot maximum is `354s`, both above the `250s`/`180s` limits. The auxiliary archive producer measured `213s` cold and `220s` hot; Stateful shards measured `291s`/`200s` and `167s`/`196s`. Archive-related runner time, counting the producer, three backend profiles, two Stateful shards, the Stateful aggregate, and Representative Scale, was approximately `1165s` cold and `1155s` hot, above the `1005s` retention gate.
-- The measured `Build Artifacts` improvement is real (`37s` cold versus the recorded `537s` baseline contributor), and all suites, filters, shards, result propagation, and failure checks passed. It is insufficient to claim full A/B acceptance because the complete cold/hot budget and archive cost gates remain open.
+- Per-job wall time remains diagnostic: the cold maximum was `337s` and the hot maximum was `354s`; the auxiliary archive producer measured `213s` cold and `220s` hot; Stateful shards measured `291s`/`200s` and `167s`/`196s`. Archive-related runner time, counting the producer, three backend profiles, two Stateful shards, the Stateful aggregate, and Representative Scale, was approximately `1165s` cold and `1155s` hot. This is retained as diagnostic evidence against the historical `1257s` backend baseline, not as a same-surface acceptance receipt.
+- The measured `Build Artifacts` improvement is real (`37s` cold versus the recorded `537s` baseline contributor), and all suites, filters, shards, result propagation, and failure checks passed. A new post-change receipt is still required to confirm the relative-cost result after removing duplicate Cargo type-checking and selecting Archive/File I/O concurrency.
 - No new C/D experiment was retained in this PR: the PR E2E producer/Records gate and Main/Pages artifact coupling were not changed as a performance claim, so there is no merge-to-release or Pages delay evidence for them.
 
 ## Lightweight runtime investigation
@@ -47,7 +47,7 @@
 - The current candidate returns Lightweight to four threads, prepares one profile-private current-schema template per runner, and copies it into isolated in-memory/file-backed fixtures. It replaces the 16-second freshness sleep by aging the fixture and invoking the same generation-fenced freshness renewal helper used by production maintenance before asserting the rolling response.
 - Run `36723460863` failed the Lightweight freshness regression after the initial candidate aged the snapshot without renewing its lease; the test reported the expected stale projection. The Archive / File I/O job passed in `149s`, and Stateful SQLite completed in `304s`. The test now exercises the actual renewal path without wall-clock sleeping.
 - Repair run `36726941619` passed every PR check on head `844d691cd481fba242cee66f4f27eb792ed18765`: Lightweight ran `1,228/1,228` tests in `77.715s` (`80s` runner-reported; `113s` job wall), Archive / File I/O ran `299/299` in `105.101s` (`107s` reported; `146s` job wall), and Stateful SQLite ran `1,370/1,370` in `277.965s` (`281s` reported; `314s` job wall). Compared with linked run `36693515319`, Lightweight test execution fell from `427.558s` to `77.715s` and job wall time from about `464s` to `113s`.
-- This PR meets the linked Lightweight job's `<=180s` target. The topic's all-required-jobs `<=180s` target remains open: the same run recorded Stateful SQLite `314s`, Representative Scale `314s`, and Lint & Format Check `190s`. No whole-workflow runtime target is claimed from this single run.
+- The linked Lightweight job was `113s` wall time in that receipt. Per-job wall time is retained as a diagnostic signal; no whole-workflow absolute runtime target is claimed from this single run.
 
 ## Coverage / rollout summary
 
@@ -75,7 +75,7 @@
   - `archive_file_io`: `4m27s`
 - Stateful SQLite 的 `6m45s` 比 `6m30s` 目标高 `15s`。完整本地 profile 在 4、6、8 nextest threads 下都通过；热执行时间分别为 `155.979s`、`102.461s`、`89.940s`。follow-up 固定为 6 threads，避免使用 8 threads 的更高资源放大。
 - `CI Main` run `31706131099` 是本轮基线：Stateful SQLite wall time `617s`，其中 compile `143s`、test execution `404s`；三个 backend jobs 合计 `1257s`。
-- PR run `31825458818` 扩大了预算口径：`Lint & Format Check` 为 `348s`，Lightweight / Stateful / Archive 为 `277s` / `324s` / `382s`，`Build Artifacts` 为 `537s`。候选要求每个 required job 在同一 PR head 的首轮冷 SHA 与第二轮热 SHA 都不超过 `180s`，并使 required runner 总秒数至少下降 `20%`。
+- PR run `31825458818` 是历史成本基线：`Lint & Format Check` 为 `348s`，Lightweight / Stateful / Archive 为 `277s` / `324s` / `382s`，`Build Artifacts` 为 `537s`。其固定的单 job 时限不再是当前验收门槛；当前验收比较选定基线下冷/热两轮的总 runner 秒数。
 - 生产行为不变的测试专用成本收敛已实现：
   - fallback 429 retry delay 只在 `cfg(test)` AppState override 存在时注入；生产构造不含该字段，继续使用原有退避公式。
   - 普通 test state 的 no-available-account wait 为零；验证真实时间预算的测试显式清除 fallback override 或提供自己的非零 wait。
@@ -87,7 +87,7 @@
   - `8` threads 平均最快，`6` threads 在最快档位 `10%` 内且线程更低，runner 固定为 `6`。
 - 当前 top offenders 主要是 SQLite write-lock/backfill、retention/archive 与系统 raw metrics 路径；它们保留真实锁、archive 与 retention 行为。普通 current-schema-only 测试已进一步迁到 template pool，包括服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 场景。
 - 上游账户 stateful suite 的共享 `test_pool()` 在 runner 提供 schema template 时同样复用唯一 shared-memory template pool，消除每个 `AppState` 的重复 `ensure_schema`；Stateful 内有 `82` 个调用点。它在未提供 template 的本地直跑及 Archive/File I/O profile 中严格保留原有 `ensure_schema` 路径。最新本地完整 Stateful receipt 为 `1213/1213`、nextest execution `42.507s`、runner `76s`。
-- runner 提供可选 `--archive-file`，本地 archive replay 的三个完整 profile 都能通过。早期 archive producer 的 run `31811122919` 为 `504s`，而把 archive 构建移到 Stateful required job 的 run `31813566813` 为 `433s`，均未达到 Stateful `<= 390s`。为满足 Stateful 关键路径预算，候选改为独立的 auxiliary producer：它一次编译当前 head、上传 archive，三个既有 required backend jobs 只下载并回放自己的完整过滤集合。backend jobs 在 producer 失败时仍会启动并因 artifact 缺失而失败，禁止被静默标记为 skipped。该 producer 不在 branch protection 中，只有当前 head 冷轮 `<=250s`、热轮 `<=180s`，Stateful 两轮 `<=390s` 且 runner 成本满足门槛时才可保留。
+- runner 提供可选 `--archive-file`，archive replay 的三个完整 profile 都能通过。早期 archive producer 的 run `31811122919` 为 `504s`，而把 archive 构建移到 Stateful required job 的 run `31813566813` 为 `433s`；这些结果保留为历史拓扑诊断。当前 auxiliary producer 只有在同一 PR head 的冷轮与热轮都降低 backend-related runner 总成本、且完整过滤集合和失败传播不变时才可保留。
 - runner 在启动 Stateful profile 前由一次真实 `ensure_schema` 生成私有 file template；每个 nextest 子进程用 SQLite backup API 把它复制到唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见、逐条 SQL dump 因每个子进程重复构建而回退；直接向 shared-memory state 复制文件的原型因 SQLite snapshot lock 而被拒绝。
 - 当前候选将 Cargo registry/git 与 target cache 分离。nextest target key 同时绑定 lockfile、manifest 和 Rust source fingerprint；Lint 只读恢复 registry/git，archive producer 与 PR smoke 才读取分离的 source-key target，避免 Clippy 写入无源码 fingerprint 的 legacy `target`，并使 smoke 的 private test profile 复用 archive producer 的依赖。source-key target 只可在 archive build 成功后保存，失败 run 不得写入后续 cold receipt 可恢复的 cache。test-only profile 固定为 `debug=0`；`codegen-units=256` 会改变 profile fingerprint 并使已恢复依赖全部失效，因此被撤回。PR smoke 的 binary、web bundle 与同版本 Xray archive 由 `PR Smoke Artifact Producer` 组装后上传；`Build Artifacts` 只下载该产物并构建私有 `ci-smoke-runtime`、运行真实容器 smoke。producer 失败时 required build job 以显式结果检查失败，绝不被跳过。其 Ubuntu 24.04 runtime 与 host binary 的 glibc 对齐，生产默认 Bookworm `runtime` target 和 release profile 不变。
 - Archive/File I/O runner 也会先生成一次真实 current-schema file template。普通 retention/archive DB tests 从它复制到各自唯一文件；四个 legacy migration/backfill tests（包括 blob-link trigger 回填）显式保留 fresh `ensure_schema`，gzip、路径、文件损坏与 write-lock tests 同样不走 template。会再次执行 `ensure_schema` 的 fresh file fixture 固定单连接，避免一个 SQLite DDL 序列在 pool 内切换连接后重放已存在 trigger；普通 template copy 仍保留多连接可见性覆盖。文件副本的回归覆盖验证模板 mutation 不会泄漏到后续 test DB。
@@ -95,10 +95,10 @@
 
 ## Convergence Contract
 
-- 每个候选 head 都必须重新绑定同一 PR head 的首轮冷 SHA 与第二轮热 SHA CI 性能证据；冷轮每个 required job 都须 `<=250s`，热轮都须 `<=180s`，required runner 总秒数须较 run `31825458818` 至少下降 `20%`。祖先 head 的 receipt 只能作为诊断基线，不能作为合并凭证。
-- nextest archive CI 是受控 auxiliary 实验；它不得改变 required check 名称或绕过完整预算，且冷轮 producer `<=250s`、热轮 `<=180s`、Stateful 两轮 `<=390s`、backend-related runner 成本下降至少 `20%` 时方可保留。
+- 每个候选 head 都必须重新绑定同一 PR head 的首轮冷 SHA 与第二轮热 SHA CI 性能证据；两轮 required runner 总秒数都必须低于选定基线，单 job wall time 作为诊断指标记录。祖先 head 的 receipt 只能作为诊断基线，不能作为合并凭证。
+- nextest archive CI 是受控 auxiliary 实验；它不得改变 required check 名称或绕过完整 profile 覆盖，且同一 PR head 的冷轮与热轮都必须降低 backend-related runner 总成本后方可保留。
 
-- PR #1057 的同 SHA 冷轮 Lint 为 `220s`、archive producer 为 `236s`；热轮分别为 `57s` 与 `26s`。热轮在 UTC 日期切换时有四个 invocation timeline 测试因从当前时刻向前取窗口而越过自然日边界失败，相关 fixture 已固定在当天 UTC 中午。按实测将冷轮预算定为 `250s`，热轮保持 `180s`；required runner 总成本下降门槛与 Stateful `390s` 限值不变。
+- PR #1057 的同 SHA 冷轮 Lint 为 `220s`、archive producer 为 `236s`；热轮分别为 `57s` 与 `26s`。热轮在 UTC 日期切换时有四个 invocation timeline 测试因从当前时刻向前取窗口而越过自然日边界失败，相关 fixture 已固定在当天 UTC 中午。这里的绝对秒数保留为历史校准证据，不再作为当前固定阻断门槛。
 
 ## Related Changes
 

@@ -26,6 +26,9 @@ retaining the profile's schema-template and workspace contract.
 
 When --partition is set, pass one deterministic cargo-nextest hash partition to
 the selected profile. The value must be hash:N/M with 1 <= N <= M.
+
+BACKEND_TEST_ARCHIVE_FILE_IO_THREADS controls Archive/File I/O concurrency and
+defaults to 4.
 EOF
 }
 
@@ -34,6 +37,11 @@ archive_file=""
 archive_dir_input=""
 test_filter_override=""
 partition=""
+archive_file_io_test_threads="${BACKEND_TEST_ARCHIVE_FILE_IO_THREADS:-4}"
+if [[ ! "$archive_file_io_test_threads" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::BACKEND_TEST_ARCHIVE_FILE_IO_THREADS must be a positive integer." >&2
+  exit 64
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -390,6 +398,7 @@ run_profile() {
       ;;
     archive-file-io)
       filter_expr='(test(/^(tests|upstream_accounts::tests)::archive_file_io::/)) or (test(/^maintenance::archive::archive_writers::tests::/)) or (test(/^maintenance::retention::retention_recovery_race_tests::/)) or (test(/^sqlite_batch_writer::tests::barrier_drain_includes_deferred_journal_terminals$/)) or (test(/^terminal_journal::tests::(replay_capacity_transfer_does_not_duplicate_obligation|replay_segment_failure_marks_journal_unavailable)$/))'
+      test_threads="$archive_file_io_test_threads"
       ;;
     *)
       echo "::error::unsupported backend test profile: $selected_profile" >&2

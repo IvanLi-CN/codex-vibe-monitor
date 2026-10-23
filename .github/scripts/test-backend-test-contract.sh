@@ -151,6 +151,24 @@ grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
 grep -q 'maintenance::archive::archive_writers::tests' "$contract_record"
 grep -q 'maintenance::retention::retention_recovery_race_tests' "$contract_record"
 
+: >"$contract_record"
+archive_default_output="$(env -u CARGO_NET_OFFLINE -u BACKEND_TEST_ARCHIVE_FILE_IO_THREADS CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile archive-file-io 2>&1)"
+grep -q 'backend_test_profile_test_threads_archive_file_io=4' <<<"$archive_default_output"
+grep -q -- '--test-threads 4' "$contract_record"
+
+: >"$contract_record"
+archive_override_output="$(env -u CARGO_NET_OFFLINE BACKEND_TEST_ARCHIVE_FILE_IO_THREADS=6 CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile archive-file-io 2>&1)"
+grep -q 'backend_test_profile_test_threads_archive_file_io=6' <<<"$archive_override_output"
+grep -q -- '--test-threads 6' "$contract_record"
+
 archive_dir="$tmp_root/extracted-archive"
 mkdir -p "$archive_dir/target/nextest"
 : >"$archive_dir/target/nextest/cargo-metadata.json"
