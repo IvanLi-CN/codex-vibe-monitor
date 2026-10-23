@@ -72,6 +72,8 @@ const networkFailurePaths = new Set([
   "/#/system/performance",
   "/#/system/prompt-cache",
   "/#/system/settings",
+  "/#/system/models",
+  "/#/system/proxy",
   "/#/settings",
   "/#/settings/legacy",
 ]);
@@ -174,6 +176,9 @@ function networkFailureState(page: Page, path: string): Locator {
       return page.getByRole("alert").filter({ hasText: "暂时无法加载观测状态。" });
     case "/#/system/prompt-cache":
       return page.getByTestId("system-prompt-cache-error");
+    case "/#/system/models":
+      return page.getByRole("alert").filter({ hasText: "Request failed: 0" }).first();
+    case "/#/system/proxy":
     case "/#/system/settings":
     case "/#/settings":
     case "/#/settings/legacy":
