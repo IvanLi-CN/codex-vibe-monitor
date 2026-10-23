@@ -73,7 +73,9 @@ function routeLandmark(page: Page, path: string): Locator {
     case "/#/account-pool/maintenance-records":
       return page.getByRole("heading", { name: "非模型调用执行记录", exact: true });
     case "/#/account-pool/groups":
-      return page.getByTestId("account-pool-groups-list");
+      return page
+        .getByTestId("account-pool-groups-list")
+        .or(page.getByTestId("account-pool-groups-empty"));
     case "/#/system":
     case "/#/system/status":
       return page.getByTestId("system-status-overview");
