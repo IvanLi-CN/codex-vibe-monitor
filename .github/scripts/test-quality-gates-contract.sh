@@ -99,6 +99,48 @@ expect_retention_command_rejected \
   '        run: true' \
   "must be a non-empty string"
 
+expect_identity_binding_rejected() {
+  local name="$1"
+  local needle="$2"
+  local expected_error="$3"
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" "$needle" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = sys.argv[2]
+if text.count(needle) != 1:
+    raise SystemExit(f"expected one identity binding fixture for {needle!r}")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/$name.log"; then
+    echo "expected $name identity binding fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "$expected_error" "$tmp_dir/$name.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_identity_binding_rejected \
+  retention-checkout-sha-binding \
+  $'          assert identity["githubSha"] == identity["checkoutSha"]\n' \
+  "evidence verification must contain"
+
+expect_identity_binding_rejected \
+  retention-carrier-parent-binding \
+  $'          test "$(git rev-parse "${documentation_carrier_sha}^")" = "$implementation_sha"\n' \
+  "candidate extraction must bind"
+
+expect_identity_binding_rejected \
+  retention-candidate-digest-binding \
+  $'          assert upgrade["candidateSha256"] == identity["candidateSha256"]\n' \
+  "evidence verification must contain"
+
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
 mkdir -p "$observability_artifact_repo"
 cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
