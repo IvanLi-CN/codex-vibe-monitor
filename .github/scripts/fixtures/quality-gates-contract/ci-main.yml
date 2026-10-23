@@ -795,7 +795,7 @@ jobs:
           tool: cargo-nextest@0.9.138
 
       - name: Verify cargo-nextest runtime
-        run: test "$(cargo-nextest --version | head -n1)" = "cargo-nextest 0.9.138"
+        run: cargo-nextest --version | grep -qE '^cargo-nextest 0\.9\.138( |$)'
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -840,7 +840,7 @@ jobs:
           tool: cargo-nextest@0.9.138
 
       - name: Verify cargo-nextest runtime
-        run: test "$(cargo-nextest --version | head -n1)" = "cargo-nextest 0.9.138"
+        run: cargo-nextest --version | grep -qE '^cargo-nextest 0\.9\.138( |$)'
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -885,7 +885,7 @@ jobs:
           tool: cargo-nextest@0.9.138
 
       - name: Verify cargo-nextest runtime
-        run: test "$(cargo-nextest --version | head -n1)" = "cargo-nextest 0.9.138"
+        run: cargo-nextest --version | grep -qE '^cargo-nextest 0\.9\.138( |$)'
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
@@ -950,7 +950,7 @@ jobs:
           tool: cargo-nextest@0.9.138
 
       - name: Verify cargo-nextest runtime
-        run: test "$(cargo-nextest --version | head -n1)" = "cargo-nextest 0.9.138"
+        run: cargo-nextest --version | grep -qE '^cargo-nextest 0\.9\.138( |$)'
 
       - name: Download backend test archive
         uses: actions/download-artifact@v7
