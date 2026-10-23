@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) const EXPLICIT_RANGE_PREFIX: &str = "__explicit_range__|";
+
 #[derive(Debug, Clone)]
 pub(crate) enum SummaryWindow {
     All,
@@ -705,6 +707,18 @@ pub(crate) fn named_range_bounds(
     now: DateTime<Utc>,
     tz: Tz,
 ) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    if let Some(encoded) = spec.strip_prefix(EXPLICIT_RANGE_PREFIX) {
+        let (start, end) = encoded.split_once('|')?;
+        let start = DateTime::parse_from_rfc3339(start)
+            .ok()?
+            .with_timezone(&Utc);
+        let end = DateTime::parse_from_rfc3339(end).ok()?.with_timezone(&Utc);
+        let duration = end.signed_duration_since(start);
+        if duration <= ChronoDuration::zero() || duration > ChronoDuration::hours(48) {
+            return None;
+        }
+        return Some((start, end));
+    }
     match spec {
         "today" => {
             let local_date = now.with_timezone(&tz).date_naive();
@@ -723,6 +737,16 @@ pub(crate) fn named_range_bounds(
                 .unwrap_or(local_date - ChronoDuration::days(1));
             let start = local_midnight_utc(previous_date, tz);
             Some((start, end))
+        }
+        "previous1d" => {
+            let local_date = now.with_timezone(&tz).date_naive();
+            let end = local_midnight_utc(local_date - ChronoDuration::days(1), tz);
+            let start = local_midnight_utc(local_date - ChronoDuration::days(2), tz);
+            Some((start, end))
+        }
+        "previous24h" => {
+            let end = now - ChronoDuration::hours(24);
+            Some((end - ChronoDuration::hours(24), end))
         }
         "recent180d" => {
             let local_date = now.with_timezone(&tz).date_naive();
@@ -920,8 +944,12 @@ pub(crate) fn parse_summary_window(
         Some("all") => Ok(SummaryWindow::All),
         Some("previous7d") => Ok(SummaryWindow::PreviousFullDays(7)),
         Some(
-            raw @ ("today" | "yesterday" | "recent180d" | "recent365d" | "thisWeek" | "thisMonth"),
+            raw @ ("today" | "yesterday" | "previous1d" | "previous24h" | "recent180d"
+            | "recent365d" | "thisWeek" | "thisMonth"),
         ) => Ok(SummaryWindow::Calendar(raw.to_string())),
+        Some(raw) if raw.starts_with(EXPLICIT_RANGE_PREFIX) => {
+            Ok(SummaryWindow::Calendar(raw.to_string()))
+        }
         Some(raw) => Ok(SummaryWindow::Duration(parse_duration_spec(raw)?)),
         None => Ok(SummaryWindow::Duration(ChronoDuration::days(1))),
     }
