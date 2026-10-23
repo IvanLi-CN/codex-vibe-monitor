@@ -725,6 +725,42 @@ For in-flight records, missing TTFT and response duration values display elapsed
   ![Dashboard upstream recent compact model context mobile](./assets/dashboard-upstream-recent-model-context-mobile393-storybook.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/GPT56ModelContextCluster
+  evidence_bound_sha: ef92714f
+  state: light desktop compact working-conversation invocation slot with the historical transport badge removed
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
+  target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
+  evidence_note: verifies a websocket-backed compact invocation keeps `5.6`, the Sol glyph, `max`, FAST, and latency readable while omitting the historical `WebSocket（历史）` badge and preserving the source-managed surface geometry.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard compact invocation without transport badge](./assets/dashboard-compact-invocation-transport-hidden-desktop-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/UpstreamAccountModelContext
+  evidence_bound_sha: ef92714f
+  state: upstream-account recent rows at source-managed 393x852 with the historical transport badge removed
+  requested_viewport: 393x852
+  viewport_strategy: browser-resize-fallback
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-working-conversations]'
+  target_selector: '[data-visual-evidence-target=dashboard-working-conversations-target]'
+  evidence_note: verifies websocket-backed upstream recent rows keep the generation, family glyph, reasoning, FAST, endpoint/status, and readings hierarchy without rendering the historical `WebSocket（历史）` badge or introducing horizontal overflow; the Storybook manager binds the source-managed mobile393 viewport and the standalone canvas uses CSS emulation to capture the complete surface.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard upstream recent rows without transport badge](./assets/dashboard-upstream-recent-transport-hidden-mobile393-storybook.png)
+
+- source_type: storybook_canvas
   story_id_or_title: Dashboard/ModelPerformanceTrigger/DesktopTooltip
   state: desktop model-performance tooltip with explicit wall-clock, cumulative, and parallelism columns
   requested_viewport: 1440x1024
