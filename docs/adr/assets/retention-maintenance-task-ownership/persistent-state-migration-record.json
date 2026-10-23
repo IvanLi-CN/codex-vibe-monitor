@@ -27,7 +27,7 @@
         "v4.2.1",
         "v4.2.2"
       ],
-      "to_program_version": "signed code candidate fa36d8a797ebd831b35e45e81823260eb8f47a32 after main c215fc3ed7a4a0b3cf50bd3468ea8e0bd1388a2e (remote validation and migration replay pending)",
+      "to_program_version": "signed code candidate 275c7093 after main 5f4a413fcbe83c8045c8d819a8a3684768b850ea (remote validation and migration replay pending)",
       "direct_major_skips_supported": false
     }
   },
@@ -141,7 +141,7 @@
     "description": "Add six independent retention-policy task rows, initialize their default schedules without overwriting operator overrides, persist ownership-version-2 result facts, retain bounded retry facts for failed or lease-conflicted owner runs, guard detail pruning behind parallel-work coverage, and keep history cleanup under the bounded cleanup owner instead of schema initialization.",
     "candidate_branch": "th/retention-maintenance-ownership",
     "candidate_base_sha": "c215fc3ed7a4a0b3cf50bd3468ea8e0bd1388a2e",
-    "candidate_head_sha": "fa36d8a797ebd831b35e45e81823260eb8f47a32",
+    "candidate_head_sha": "275c7093",
     "status": "current-head-validation-pending-migration-replay-pending",
     "ddl_structural_changes": [],
     "dml_changes": [
