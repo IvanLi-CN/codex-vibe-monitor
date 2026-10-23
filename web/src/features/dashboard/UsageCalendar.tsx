@@ -63,9 +63,9 @@ export interface UsageCalendarProps {
   timeseriesResponse?: TimeseriesResponse | null;
 }
 
-export const HISTORY_CALENDAR_RANGE = "6mo";
+export const HISTORY_CALENDAR_RANGE = "recent365d";
 export const HISTORY_CALENDAR_BUCKET = "1d";
-export const HISTORY_CALENDAR_DAY_COUNT = 180;
+export const HISTORY_CALENDAR_DAY_COUNT = 365;
 
 export function UsageCalendar({
   metric: controlledMetric,
@@ -92,6 +92,7 @@ export function UsageCalendar({
   const resolvedError = timeseriesResponse == null ? error : null;
   const skeletonMode = resolvedLoading && !resolvedData;
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null);
   // tabs width measurement removed (no longer needed for sizing)
@@ -163,17 +164,6 @@ export function UsageCalendar({
     [metric, resolvedData],
   );
 
-  // Minimum width to keep blocks at least DEFAULT_BLOCK_SIZE so vertical size feels balanced
-  const minContainerWidth = useMemo(() => {
-    const cols = Math.max(1, calendarData.weekCount || 0);
-    if (!cols) return undefined;
-    const offset = Math.max(leftOffset || WEEKDAY_LABEL_SPACE, WEEKDAY_LABEL_SPACE);
-    // Width needed so that per-column block size is at least DEFAULT_BLOCK_SIZE
-    // Derivation from sizing formula: A = L*(S + M) - M
-    const required = cols * (DEFAULT_BLOCK_SIZE + BLOCK_MARGIN) - BLOCK_MARGIN;
-    return Math.ceil(offset + required);
-  }, [calendarData.weekCount, leftOffset]);
-
   const formatMonthLabel = useCallback(
     (marker: MonthMarker) => {
       const monthValue =
@@ -184,12 +174,14 @@ export function UsageCalendar({
   );
 
   useLayoutEffect(() => {
-    if (!containerRef.current || calendarData.weekCount === 0) return;
-    const node = containerRef.current;
+    if (!viewportRef.current || !containerRef.current || calendarData.weekCount === 0) return;
+    const viewport = viewportRef.current;
+    const content = containerRef.current;
 
-    const computeByContainer = (width: number) => {
+    const computeByViewport = (width: number) => {
       if (!Number.isFinite(width) || width <= 0) return;
-      setContainerWidth((prev) => (Math.abs(prev - width) >= 1 ? width : prev));
+      const contentWidth = content.getBoundingClientRect().width;
+      setContainerWidth((prev) => (Math.abs(prev - contentWidth) >= 1 ? contentWidth : prev));
       const GAP = 6;
       const approxWidth = Math.max(0, width - leftOffset - GAP);
       const cols = Math.max(1, calendarData.weekCount);
@@ -198,24 +190,31 @@ export function UsageCalendar({
       setBlockSize((prev) => (Math.abs(prev - next) >= 1 ? next : prev));
     };
 
-    // initial and when deps change
-    computeByContainer(node.getBoundingClientRect().width);
+    // Initial sizing follows the visible viewport, while the inner content keeps its
+    // intrinsic width so a dense year remains locally scrollable on small screens.
+    computeByViewport(viewport.getBoundingClientRect().width);
     // observe container size changes
     let raf = 0;
-    let lastWidth = node.getBoundingClientRect().width;
+    let lastWidth = viewport.getBoundingClientRect().width;
     const schedule = (width: number) => {
       lastWidth = width;
       if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => computeByContainer(lastWidth));
+      raf = requestAnimationFrame(() => computeByViewport(lastWidth));
     };
     const observer = new ResizeObserver((entries) => {
       const entry = entries.at(0);
       if (!entry) return;
       schedule(entry.contentRect.width);
     });
-    observer.observe(node);
+    observer.observe(viewport);
+    const contentObserver = new ResizeObserver(() => {
+      const width = content.getBoundingClientRect().width;
+      setContainerWidth((prev) => (Math.abs(prev - width) >= 1 ? width : prev));
+    });
+    contentObserver.observe(content);
     return () => {
       observer.disconnect();
+      contentObserver.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
   }, [calendarData.weekCount, leftOffset]);
@@ -313,127 +312,126 @@ export function UsageCalendar({
       ) : (
         <div className="grid gap-3">
           <div className="min-w-0">
-            <div
-              ref={containerRef}
-              className="relative flex w-full justify-center overflow-visible [&>svg]:h-auto"
-              style={{
-                ...(minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined),
-                paddingTop: `${MONTH_LABEL_HEIGHT + MONTH_LABEL_GAP}px`,
-              }}
-              data-testid="usage-calendar-wrapper"
-            >
-              <MonthLabelOverlay
-                markers={calendarData.monthMarkers}
-                blockSize={blockSize}
-                blockMargin={BLOCK_MARGIN}
-                containerWidth={containerWidth}
-                offset={leftOffset || WEEKDAY_LABEL_SPACE}
-                formatLabel={formatMonthLabel}
-              />
-              <ActivityCalendar
-                data={calendarData.activities}
-                blockSize={blockSize}
-                // Match the subtle rounding used by the 7-day heatmap.
-                blockRadius={2}
-                blockMargin={BLOCK_MARGIN}
-                weekStart={1}
-                maxLevel={MAX_LEVEL}
-                theme={themeForMetric}
-                colorScheme={themeMode}
-                hideTotalCount
-                hideColorLegend
-                hideMonthLabels
-                labels={{
-                  legend: { less: legendLabels.low, more: legendLabels.high },
-                  weekdays: weekdayLabels,
-                }}
-                showWeekdayLabels={WEEKDAY_LABELS}
-                renderBlock={(block, activity) => {
-                  const accessibleBlock = block as AccessibleBlock;
-                  const formatted = formatMetricValue(activity.count);
-                  // During skeleton mode, avoid native browser tooltips (title="...") that
-                  // could misleadingly show "0 calls" while loading.
-                  const title = skeletonMode
-                    ? undefined
-                    : `${activity.date}${valueSeparator}${formatted}`;
-                  const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
-                    if (!containerRef.current) return;
-                    const target = event.currentTarget as Element;
-                    const rect = target.getBoundingClientRect();
-                    const containerRect = containerRef.current.getBoundingClientRect();
-                    const centerXRaw = rect.left + rect.width / 2 - containerRect.left;
-                    const y = rect.top - containerRect.top;
-                    // Clamp the tooltip center so that even on the first/last column
-                    // the bubble stays fully inside the card.
-                    const margin = 80;
-                    const minCenter = margin;
-                    const maxCenter = Math.max(margin, containerRect.width - margin);
-                    const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw));
-                    setTooltip({
-                      x,
-                      y,
-                      dateLabel: activity.date,
-                      valueLabel: formatted,
-                    });
-                  };
-                  const handleLeave = () => setTooltip(null);
-                  return cloneElement(accessibleBlock, {
-                    title,
-                    "aria-label": title,
-                    onMouseEnter: skeletonMode ? undefined : handleEnter,
-                    onMouseLeave: skeletonMode ? undefined : handleLeave,
-                    className: cn(
-                      accessibleBlock.props?.className,
-                      skeletonMode && "animate-pulse pointer-events-none",
-                    ),
-                    // Remove default stroke from react-activity-calendar to align
-                    // with the weekly heatmap appearance.
-                    style: {
-                      ...(accessibleBlock.props?.style ?? {}),
-                      stroke: "none",
-                      strokeWidth: 0,
-                    },
-                  });
-                }}
-                renderColorLegend={(block, level) => {
-                  const accessibleBlock = block as AccessibleBlock;
-                  if (level === 0)
+            <div ref={viewportRef} className="min-w-0 overflow-x-auto">
+              <div
+                ref={containerRef}
+                className="relative flex w-max min-w-full justify-center overflow-visible [&>svg]:h-auto"
+                style={{ paddingTop: `${MONTH_LABEL_HEIGHT + MONTH_LABEL_GAP}px` }}
+                data-testid="usage-calendar-wrapper"
+              >
+                <MonthLabelOverlay
+                  markers={calendarData.monthMarkers}
+                  blockSize={blockSize}
+                  blockMargin={BLOCK_MARGIN}
+                  containerWidth={containerWidth}
+                  offset={leftOffset || WEEKDAY_LABEL_SPACE}
+                  formatLabel={formatMonthLabel}
+                />
+                <ActivityCalendar
+                  data={calendarData.activities}
+                  blockSize={blockSize}
+                  // Match the subtle rounding used by the 7-day heatmap.
+                  blockRadius={2}
+                  blockMargin={BLOCK_MARGIN}
+                  weekStart={1}
+                  maxLevel={MAX_LEVEL}
+                  theme={themeForMetric}
+                  colorScheme={themeMode}
+                  hideTotalCount
+                  hideColorLegend
+                  hideMonthLabels
+                  labels={{
+                    legend: { less: legendLabels.low, more: legendLabels.high },
+                    weekdays: weekdayLabels,
+                  }}
+                  showWeekdayLabels={WEEKDAY_LABELS}
+                  renderBlock={(block, activity) => {
+                    const accessibleBlock = block as AccessibleBlock;
+                    const formatted = formatMetricValue(activity.count);
+                    // During skeleton mode, avoid native browser tooltips (title="...") that
+                    // could misleadingly show "0 calls" while loading.
+                    const title = skeletonMode
+                      ? undefined
+                      : `${activity.date}${valueSeparator}${formatted}`;
+                    const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
+                      if (!containerRef.current) return;
+                      const target = event.currentTarget as Element;
+                      const rect = target.getBoundingClientRect();
+                      const containerRect = containerRef.current.getBoundingClientRect();
+                      const centerXRaw = rect.left + rect.width / 2 - containerRect.left;
+                      const y = rect.top - containerRect.top;
+                      // Clamp the tooltip center so that even on the first/last column
+                      // the bubble stays fully inside the card.
+                      const margin = 80;
+                      const minCenter = margin;
+                      const maxCenter = Math.max(margin, containerRect.width - margin);
+                      const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw));
+                      setTooltip({
+                        x,
+                        y,
+                        dateLabel: activity.date,
+                        valueLabel: formatted,
+                      });
+                    };
+                    const handleLeave = () => setTooltip(null);
                     return cloneElement(accessibleBlock, {
-                      title: legendLabels.low,
-                      "aria-label": legendLabels.low,
+                      title,
+                      "aria-label": title,
+                      onMouseEnter: skeletonMode ? undefined : handleEnter,
+                      onMouseLeave: skeletonMode ? undefined : handleLeave,
+                      className: cn(
+                        accessibleBlock.props?.className,
+                        skeletonMode && "animate-pulse pointer-events-none",
+                      ),
+                      // Remove default stroke from react-activity-calendar to align
+                      // with the weekly heatmap appearance.
                       style: {
                         ...(accessibleBlock.props?.style ?? {}),
                         stroke: "none",
                         strokeWidth: 0,
                       },
                     });
-                  const threshold = calendarData.thresholds[level] ?? calendarData.maxValue;
-                  const formatted = formatMetricValue(threshold ?? 0);
-                  const title = `≤ ${formatted}`;
-                  return cloneElement(accessibleBlock, {
-                    title,
-                    "aria-label": title,
-                    style: {
-                      ...(accessibleBlock.props?.style ?? {}),
-                      stroke: "none",
-                      strokeWidth: 0,
-                    },
-                  });
-                }}
-              />
-              {tooltip && (
-                <div
-                  className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] leading-tight text-base-content shadow-md sm:text-xs"
-                  style={{ left: tooltip.x, top: tooltip.y - 8 }}
-                >
-                  <div className="text-[10px] text-base-content/80 sm:text-xs">
-                    {tooltip.dateLabel}
+                  }}
+                  renderColorLegend={(block, level) => {
+                    const accessibleBlock = block as AccessibleBlock;
+                    if (level === 0)
+                      return cloneElement(accessibleBlock, {
+                        title: legendLabels.low,
+                        "aria-label": legendLabels.low,
+                        style: {
+                          ...(accessibleBlock.props?.style ?? {}),
+                          stroke: "none",
+                          strokeWidth: 0,
+                        },
+                      });
+                    const threshold = calendarData.thresholds[level] ?? calendarData.maxValue;
+                    const formatted = formatMetricValue(threshold ?? 0);
+                    const title = `≤ ${formatted}`;
+                    return cloneElement(accessibleBlock, {
+                      title,
+                      "aria-label": title,
+                      style: {
+                        ...(accessibleBlock.props?.style ?? {}),
+                        stroke: "none",
+                        strokeWidth: 0,
+                      },
+                    });
+                  }}
+                />
+                {tooltip && (
+                  <div
+                    className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] leading-tight text-base-content shadow-md sm:text-xs"
+                    style={{ left: tooltip.x, top: tooltip.y - 8 }}
+                  >
+                    <div className="text-[10px] text-base-content/80 sm:text-xs">
+                      {tooltip.dateLabel}
+                    </div>
+                    <div className="mt-0.5 text-center font-mono text-sm font-semibold tracking-tight sm:text-base">
+                      {tooltip.valueLabel}
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-center font-mono text-sm font-semibold tracking-tight sm:text-base">
-                    {tooltip.valueLabel}
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -451,10 +449,10 @@ export function UsageCalendar({
 
   return (
     <section
-      className="surface-panel h-full w-full max-w-full overflow-visible lg:w-fit"
+      className="surface-panel h-full w-full max-w-full overflow-visible"
       data-testid="usage-calendar-card"
     >
-      <div className="surface-panel-body gap-4 lg:w-auto">{content}</div>
+      <div className="surface-panel-body w-full gap-4">{content}</div>
     </section>
   );
 }
@@ -468,12 +466,12 @@ interface CalendarComputation {
   monthMarkers: MonthMarker[];
 }
 
-function transformTimeseriesToActivities(
+export function transformTimeseriesToActivities(
   response: TimeseriesResponse | null,
   metric: MetricKey,
 ): CalendarComputation {
   const points = response?.points ?? [];
-  const range = resolveLocalDateRange(response);
+  const range = resolveLocalDateRange();
 
   const valuesByDate = new Map<string, number>();
   for (const point of points) {
@@ -543,24 +541,9 @@ function toLocalISODate(value: string) {
   return datePart ?? "";
 }
 
-function resolveLocalDateRange(response: TimeseriesResponse | null) {
-  // Daily time-series endpoints use [rangeStart, rangeEnd) where rangeEnd is the next local midnight.
-  // We keep the UI stable by always rendering a half-year calendar, even during the initial load.
-  const today = startOfLocalDay(new Date());
-
-  const rangeStart = response?.rangeStart;
-  const rangeEnd = response?.rangeEnd;
-  if (rangeStart && rangeEnd) {
-    const start = startOfLocalDay(new Date(rangeStart));
-    const endExclusive = startOfLocalDay(new Date(rangeEnd));
-    if (Number.isFinite(start.getTime()) && Number.isFinite(endExclusive.getTime())) {
-      const endInclusive = addLocalDays(endExclusive, -1);
-      if (start <= endInclusive) {
-        return { start, endInclusive };
-      }
-    }
-  }
-
+export function resolveLocalDateRange(now = new Date()) {
+  // The history contract is exactly one year of local calendar dates, including today.
+  const today = startOfLocalDay(now);
   const endInclusive = today;
   const start = addLocalDays(endInclusive, -(HISTORY_CALENDAR_DAY_COUNT - 1));
   return { start, endInclusive };
@@ -622,13 +605,26 @@ function MonthLabelOverlay({
   formatLabel: (marker: MonthMarker) => string;
 }) {
   if (!markers.length) return null;
+  let lastRenderedPosition = Number.NEGATIVE_INFINITY;
+  const visibleMarkers = markers.filter((marker) => {
+    const columnWidth = blockSize + blockMargin * 2;
+    const position = offset + marker.weekIndex * columnWidth + columnWidth / 2;
+    // A full year is horizontally dense on a phone. Keep enough spacing between
+    // labels to avoid collisions while the underlying date cells remain complete.
+    if (containerWidth > 0 && containerWidth < 720 && position - lastRenderedPosition < 60) {
+      return false;
+    }
+    lastRenderedPosition = position;
+    return true;
+  });
+
   return (
     <div
       className="pointer-events-none absolute left-0 right-0 top-0"
       style={{ height: `${MONTH_LABEL_HEIGHT}px` }}
       aria-hidden
     >
-      {markers.map((marker) => {
+      {visibleMarkers.map((marker) => {
         const columnWidth = blockSize + blockMargin * 2;
         const position = offset + marker.weekIndex * columnWidth + columnWidth / 2;
         const edgePadding = Math.min(MONTH_LABEL_EDGE_PADDING, Math.max(containerWidth / 2, 0));

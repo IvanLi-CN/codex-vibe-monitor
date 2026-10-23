@@ -78,6 +78,12 @@ function render(ui: React.ReactNode) {
   });
 }
 
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui);
+  });
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
@@ -111,8 +117,20 @@ function createTimeseries(points = 2): TimeseriesResponse {
   };
 }
 
-function Probe({ range }: { range: string }) {
-  const { data, isLoading } = useTimeseries(range, { bucket: "1m" });
+function Probe({
+  range,
+  upstreamAccountId,
+  enabled = true,
+}: {
+  range: string;
+  upstreamAccountId?: number;
+  enabled?: boolean;
+}) {
+  const { data, isLoading } = useTimeseries(range, {
+    bucket: "1m",
+    upstreamAccountId,
+    enabled,
+  });
   return (
     <div>
       <div data-testid="points">{String(data?.points.length ?? 0)}</div>
@@ -148,5 +166,65 @@ describe("useTimeseries", () => {
     expect(topicMocks.lastEnabled).toBe(false);
     expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
     expect(text("points")).toBe("1");
+  });
+
+  it("ignores stale HTTP responses after a range and account change", async () => {
+    let resolveFirst!: (value: TimeseriesResponse) => void;
+    let resolveSecond!: (value: TimeseriesResponse) => void;
+    const firstRequest = new Promise<TimeseriesResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondRequest = new Promise<TimeseriesResponse>((resolve) => {
+      resolveSecond = resolve;
+    });
+    apiMocks.fetchTimeseries
+      .mockImplementationOnce(() => firstRequest)
+      .mockImplementationOnce(() => secondRequest);
+
+    render(<Probe range="previous1d" upstreamAccountId={1} />);
+    rerender(<Probe range="previous24h" upstreamAccountId={2} />);
+
+    await act(async () => {
+      resolveSecond(createTimeseries(2));
+      await secondRequest;
+    });
+    expect(text("points")).toBe("2");
+
+    await act(async () => {
+      resolveFirst(createTimeseries(9));
+      await firstRequest;
+    });
+    expect(text("points")).toBe("2");
+  });
+
+  it("clears loaded HTTP data while a new account request is pending", async () => {
+    let resolveFirst!: (value: TimeseriesResponse) => void;
+    let resolveSecond!: (value: TimeseriesResponse) => void;
+    const firstRequest = new Promise<TimeseriesResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondRequest = new Promise<TimeseriesResponse>((resolve) => {
+      resolveSecond = resolve;
+    });
+    apiMocks.fetchTimeseries
+      .mockImplementationOnce(() => firstRequest)
+      .mockImplementationOnce(() => secondRequest);
+
+    render(<Probe range="previous1d" upstreamAccountId={1} />);
+    await act(async () => {
+      resolveFirst(createTimeseries(1));
+      await firstRequest;
+    });
+    expect(text("points")).toBe("1");
+
+    rerender(<Probe range="previous1d" upstreamAccountId={2} />);
+    expect(text("points")).toBe("0");
+    expect(text("loading")).toBe("true");
+
+    await act(async () => {
+      resolveSecond(createTimeseries(2));
+      await secondRequest;
+    });
+    expect(text("points")).toBe("2");
   });
 });

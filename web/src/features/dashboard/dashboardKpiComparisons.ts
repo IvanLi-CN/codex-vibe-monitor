@@ -27,6 +27,14 @@ export interface SameProgressUsageOptions {
   timeZone?: string | null;
 }
 
+interface SameProgressContext {
+  comparisonStart: number;
+  comparisonEnd: number | null;
+  comparisonCutoff: number;
+  formatter: Intl.DateTimeFormat | null;
+  currentProgress: number | null;
+}
+
 export function percentDelta(
   current: number | null | undefined,
   baseline: number | null | undefined,
@@ -94,6 +102,65 @@ function localClockProgressMs(value: string, formatter: Intl.DateTimeFormat) {
   }
 }
 
+function resolveSameProgressContext(
+  current: TimeseriesResponse | null | undefined,
+  comparisonStartValue: string | null | undefined,
+  comparisonEndValue: string | null | undefined,
+  options: SameProgressUsageOptions,
+): SameProgressContext | null {
+  const currentStart = parseEpochMs(current?.rangeStart);
+  const currentEnd = current ? rangeEndEpochMs(current) : null;
+  const comparisonStart = parseEpochMs(comparisonStartValue);
+  const comparisonEnd = parseEpochMs(comparisonEndValue);
+  if (
+    currentStart == null ||
+    currentEnd == null ||
+    comparisonStart == null ||
+    currentEnd < currentStart
+  ) {
+    return null;
+  }
+  const formatter = options.timeZone ? localClockFormatter(options.timeZone) : null;
+  const currentProgress = formatter
+    ? localClockProgressMs(new Date(currentEnd).toISOString(), formatter)
+    : null;
+  return {
+    comparisonStart,
+    comparisonEnd,
+    comparisonCutoff: comparisonStart + (currentEnd - currentStart),
+    formatter,
+    currentProgress,
+  };
+}
+
+function isPointWithinSameProgress(
+  bucketEndValue: string | null | undefined,
+  context: SameProgressContext,
+  reachedLocalProgressCutoff: boolean,
+) {
+  const bucketEnd = parseEpochMs(bucketEndValue);
+  if (bucketEnd == null) {
+    return { included: false, reachedLocalProgressCutoff };
+  }
+  if (context.formatter && context.currentProgress != null) {
+    if (reachedLocalProgressCutoff) {
+      return { included: false, reachedLocalProgressCutoff };
+    }
+    const bucketProgress = localClockProgressMs(
+      new Date(bucketEnd).toISOString(),
+      context.formatter,
+    );
+    if (bucketProgress == null || bucketProgress > context.currentProgress) {
+      return { included: false, reachedLocalProgressCutoff: true };
+    }
+    return { included: true, reachedLocalProgressCutoff };
+  }
+  return {
+    included: bucketEnd <= context.comparisonCutoff,
+    reachedLocalProgressCutoff,
+  };
+}
+
 export function buildSameProgressUsageSnapshot(
   current: TimeseriesResponse | null | undefined,
   comparison: TimeseriesResponse | null | undefined,
@@ -118,9 +185,9 @@ export function buildSameProgressUsageSnapshot(
     };
   }
 
-  const comparisonCutoff = comparisonStart + (currentEnd - currentStart);
   const currentEndIso = new Date(currentEnd).toISOString();
   const formatter = options.timeZone ? localClockFormatter(options.timeZone) : null;
+  const comparisonCutoff = comparisonStart + (currentEnd - currentStart);
   const currentProgress = formatter ? localClockProgressMs(currentEndIso, formatter) : null;
   let reachedLocalProgressCutoff = false;
   const comparisonPoints = [...(comparison.points ?? [])].sort((left, right) => {
@@ -135,7 +202,7 @@ export function buildSameProgressUsageSnapshot(
         bucketEnd == null ||
         bucketStart < comparisonStart ||
         (comparisonEnd != null && bucketStart >= comparisonEnd);
-      let outsideSameProgress = bucketEnd == null || bucketEnd > comparisonCutoff;
+      let outsideSameProgress = bucketEnd == null;
       if (currentProgress != null && formatter) {
         if (reachedLocalProgressCutoff) {
           outsideSameProgress = true;
@@ -144,6 +211,8 @@ export function buildSameProgressUsageSnapshot(
           outsideSameProgress = bucketProgress == null || bucketProgress > currentProgress;
           reachedLocalProgressCutoff = outsideSameProgress;
         }
+      } else if (bucketEnd != null) {
+        outsideSameProgress = bucketEnd > comparisonCutoff;
       }
       if (outsideComparisonRange || outsideSameProgress) {
         return snapshot;
@@ -162,6 +231,105 @@ export function buildSameProgressUsageSnapshot(
   );
 }
 
+export function trimTimeseriesToSameProgress(
+  current: TimeseriesResponse | null | undefined,
+  comparison: TimeseriesResponse | null | undefined,
+  options: SameProgressUsageOptions = {},
+): TimeseriesResponse | null {
+  const currentStart = parseEpochMs(current?.rangeStart);
+  const currentEnd = current ? rangeEndEpochMs(current) : null;
+  const comparisonStart = parseEpochMs(comparison?.rangeStart);
+  const comparisonEnd = parseEpochMs(comparison?.rangeEnd);
+  if (
+    current == null ||
+    comparison == null ||
+    currentStart == null ||
+    currentEnd == null ||
+    comparisonStart == null ||
+    comparisonEnd == null
+  ) {
+    return null;
+  }
+  const context = resolveSameProgressContext(
+    current,
+    comparison.rangeStart,
+    comparison.rangeEnd,
+    options,
+  );
+  if (!context) return null;
+  let reachedCutoff = false;
+  const points = comparison.points.filter((point) => {
+    const bucketEnd = parseEpochMs(point.bucketEnd);
+    if (
+      bucketEnd == null ||
+      bucketEnd <= context.comparisonStart ||
+      (context.comparisonEnd != null && bucketEnd > context.comparisonEnd)
+    ) {
+      return false;
+    }
+    const result = isPointWithinSameProgress(point.bucketEnd, context, reachedCutoff);
+    reachedCutoff = result.reachedLocalProgressCutoff;
+    return result.included;
+  });
+  return {
+    ...comparison,
+    rangeEnd: points.at(-1)?.bucketEnd ?? comparison.rangeStart,
+    points,
+  };
+}
+
+export function trimParallelWorkWindowToSameProgress(
+  current: TimeseriesResponse | null | undefined,
+  comparison: ParallelWorkStatsResponse["current"] | null | undefined,
+  options: SameProgressUsageOptions = {},
+): ParallelWorkStatsResponse["current"] | null {
+  if (!comparison) return null;
+  if (comparison.activeMinuteCount === null) {
+    return {
+      ...comparison,
+      avgCount: null,
+      points: [],
+    };
+  }
+  const context = resolveSameProgressContext(
+    current,
+    comparison.rangeStart,
+    comparison.rangeEnd,
+    options,
+  );
+  if (!context) return null;
+  let reachedCutoff = false;
+  const points = comparison.points.filter((point) => {
+    const bucketStart = parseEpochMs(point.bucketStart);
+    const bucketEnd = parseEpochMs(point.bucketEnd);
+    if (
+      bucketStart == null ||
+      bucketEnd == null ||
+      bucketStart < context.comparisonStart ||
+      (context.comparisonEnd != null && bucketStart >= context.comparisonEnd)
+    ) {
+      return false;
+    }
+    const result = isPointWithinSameProgress(point.bucketEnd, context, reachedCutoff);
+    reachedCutoff = result.reachedLocalProgressCutoff;
+    return result.included;
+  });
+  const values = points
+    .map((point) => point.parallelCount)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return {
+    ...comparison,
+    rangeEnd: points.at(-1)?.bucketEnd ?? comparison.rangeStart,
+    completeBucketCount: points.length,
+    activeBucketCount: points.filter((point) => point.parallelCount > 0).length,
+    minCount: values.length > 0 ? Math.min(...values) : null,
+    maxCount: values.length > 0 ? Math.max(...values) : null,
+    avgCount:
+      values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
+    points,
+  };
+}
+
 export function buildActiveMinuteAverages(
   stats: StatsResponse | null | undefined,
   response: TimeseriesResponse | null | undefined,
@@ -169,7 +337,7 @@ export function buildActiveMinuteAverages(
   const activeMinutes = (response?.points ?? []).filter(
     (point) => (point.totalCount ?? 0) > 0,
   ).length;
-  if (activeMinutes <= 0) {
+  if (stats == null || activeMinutes <= 0) {
     return {
       activeMinutes: 0,
       tokensPerMinute: null,

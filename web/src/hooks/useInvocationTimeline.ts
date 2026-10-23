@@ -76,8 +76,8 @@ function preferTimelineRecord(
 }
 
 async function fetchInvocationTimelineSnapshot(options: {
-  naturalDayStart: string;
-  naturalDayEnd: string;
+  scopeStart: string;
+  scopeEnd: string;
   from: string;
   to: string;
   upstreamAccountId?: number;
@@ -155,9 +155,7 @@ export function useInvocationTimeline({
     const endMs = parseEpoch(response?.rangeEnd);
     return startMs != null && endMs != null && endMs > startMs ? { startMs, endMs } : null;
   }, [response?.rangeEnd, response?.rangeStart]);
-  const boundsContextKey = bounds
-    ? `${bounds.startMs}:${closedNaturalDay}:${upstreamAccountId ?? "all"}`
-    : "empty";
+  const boundsContextKey = bounds ? `${closedNaturalDay}:${upstreamAccountId ?? "all"}` : "empty";
   const [requestedWindow, setRequestedWindow] = useState<InvocationTimelineWindow | null>(() =>
     resolveInitialWindow(response, closedNaturalDay),
   );
@@ -243,6 +241,17 @@ export function useInvocationTimeline({
     }
     const priorBounds = previousBounds.current;
     previousBounds.current = bounds;
+    const boundsChanged =
+      priorBounds != null &&
+      (priorBounds.startMs !== bounds.startMs || priorBounds.endMs !== bounds.endMs);
+    if (boundsChanged && !hasDataRef.current) {
+      requestSequence.current += 1;
+      abortControllerRef.current?.abort();
+      pendingAutomaticRefreshRef.current = false;
+      immediateRefreshRequiredRef.current = true;
+      setIsLoading(enabled);
+      setIsRefreshing(false);
+    }
     const current = requestedWindow;
     if (!current) {
       setRequestedWindow(resolveInitialWindow(response, closedNaturalDay));
@@ -294,10 +303,8 @@ export function useInvocationTimeline({
     const request = (async () => {
       try {
         const next = await fetchInvocationTimelineSnapshot({
-          naturalDayStart: new Date(
-            context.bounds?.startMs ?? requestedTarget.startMs,
-          ).toISOString(),
-          naturalDayEnd: new Date(context.bounds?.endMs ?? requestedTarget.endMs).toISOString(),
+          scopeStart: new Date(context.bounds?.startMs ?? requestedTarget.startMs).toISOString(),
+          scopeEnd: new Date(context.bounds?.endMs ?? requestedTarget.endMs).toISOString(),
           from: new Date(requestedTarget.startMs).toISOString(),
           to: new Date(requestedTarget.endMs).toISOString(),
           upstreamAccountId: context.upstreamAccountId,

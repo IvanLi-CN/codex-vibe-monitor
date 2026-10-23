@@ -209,7 +209,27 @@ test.describe("Dashboard working conversations responsive layout", () => {
       const lineRect = accountLine.getBoundingClientRect();
       const chipRect = accountChip.getBoundingClientRect();
       const modelRect = slotModel.getBoundingClientRect();
+      const modelVisual =
+        slotModel.querySelector<HTMLElement>('[data-model-context-grouped="true"]') ?? slotModel;
+      const modelVisualRect = modelVisual.getBoundingClientRect();
       const usageRect = usageLine.getBoundingClientRect();
+      const readingsRect = slot
+        .querySelector<HTMLElement>('[data-testid="dashboard-working-conversation-slot-readings"]')
+        ?.getBoundingClientRect();
+      const timeRect = slot
+        .querySelector<HTMLElement>('[data-testid="dashboard-working-conversation-slot-time"]')
+        ?.getBoundingClientRect();
+      const headerRect = slot
+        .querySelector<HTMLElement>('[data-testid="dashboard-working-conversation-slot-header"]')
+        ?.getBoundingClientRect();
+      if (!timeRect || !headerRect || !readingsRect) {
+        throw new Error("missing compact invocation header geometry anchors");
+      }
+      const modelReadingsOverlap =
+        modelVisualRect.left < readingsRect.right &&
+        modelVisualRect.right > readingsRect.left &&
+        modelVisualRect.top < readingsRect.bottom &&
+        modelVisualRect.bottom > readingsRect.top;
       const reasoningTextOverflow = Array.from(
         card.querySelectorAll<HTMLElement>(
           '[data-testid="dashboard-working-conversation-reasoning-effort"] span',
@@ -364,6 +384,11 @@ test.describe("Dashboard working conversations responsive layout", () => {
         chipModelTopDelta: Math.abs(chipRect.top - accountLine.getBoundingClientRect().top),
         modelWithinSlot:
           modelRect.left >= slotRect.left - 1 && modelRect.right <= slotRect.right + 1,
+        modelTimeTopDelta: Math.abs(modelVisualRect.top - timeRect.top),
+        readingsTimeTopDelta: Math.abs(readingsRect.top - timeRect.top),
+        readingsRightDelta: Math.abs(readingsRect.right - headerRect.right),
+        modelWithinHeader: modelRect.bottom <= headerRect.bottom + 1,
+        modelReadingsOverlap,
         usageRightDelta: Math.abs(usageRect.right - accountLine.getBoundingClientRect().right),
         lineOverflowRight: lineRect.right - slotRect.right,
         lineHeight: lineRect.height,
@@ -376,6 +401,11 @@ test.describe("Dashboard working conversations responsive layout", () => {
 
     expect(layout.chipModelTopDelta).toBeLessThanOrEqual(4);
     expect(layout.modelWithinSlot).toBe(true);
+    expect(layout.modelTimeTopDelta).toBeLessThanOrEqual(3);
+    expect(layout.readingsTimeTopDelta).toBeLessThanOrEqual(3);
+    expect(layout.readingsRightDelta).toBeLessThanOrEqual(1);
+    expect(layout.modelWithinHeader).toBe(true);
+    expect(layout.modelReadingsOverlap).toBe(false);
     expect(layout.usageRightDelta).toBeLessThanOrEqual(1);
     expect(layout.lineOverflowRight).toBeLessThanOrEqual(1);
     expect(layout.lineHeight).toBeLessThan(32);
@@ -612,6 +642,50 @@ test.describe("Dashboard working conversations responsive layout", () => {
           effortText: effortText.textContent,
         };
       });
+      const compactSlotHeaderRows = slots
+        .filter((slot) => !slot.querySelector('[data-model-context-identity="request"]'))
+        .map((slot) => {
+          const time = slot.querySelector<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-slot-time"]',
+          );
+          const model = slot.querySelector<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-slot-model"]',
+          );
+          if (!time || !model) throw new Error("missing mobile compact header geometry anchors");
+          const modelVisual =
+            model.querySelector<HTMLElement>('[data-model-context-grouped="true"]') ?? model;
+          const timeRect = time.getBoundingClientRect();
+          const modelRect = modelVisual.getBoundingClientRect();
+          const readings = slot.querySelector<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-slot-readings"]',
+          );
+          if (!readings) throw new Error("missing mobile compact readings geometry anchor");
+          return {
+            modelTopDelta: Math.abs(timeRect.top - modelRect.top),
+            readingsTopDelta: Math.abs(timeRect.top - readings.getBoundingClientRect().top),
+          };
+        });
+      const compactSlotHeaderOverlaps = slots
+        .filter((slot) => !slot.querySelector('[data-model-context-identity="request"]'))
+        .map((slot) => {
+          const model = slot.querySelector<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-slot-model"]',
+          );
+          const readings = slot.querySelector<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-slot-readings"]',
+          );
+          if (!model || !readings) throw new Error("missing mobile compact overlap anchors");
+          const modelVisual =
+            model.querySelector<HTMLElement>('[data-model-context-grouped="true"]') ?? model;
+          const modelRect = modelVisual.getBoundingClientRect();
+          const readingsRect = readings.getBoundingClientRect();
+          return (
+            modelRect.left < readingsRect.right &&
+            modelRect.right > readingsRect.left &&
+            modelRect.top < readingsRect.bottom &&
+            modelRect.bottom > readingsRect.top
+          );
+        });
       return {
         rootOverflow: root.scrollWidth - root.clientWidth,
         cards: cards.length,
@@ -639,6 +713,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
         reasoningTextOverflow,
         reasoningChipHeight,
         groupedContexts,
+        compactSlotHeaderRows,
+        compactSlotHeaderOverlaps,
       };
     });
 
@@ -650,6 +726,10 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
     expect(layout.reasoningTextOverflow).toBe(false);
     expect(layout.reasoningChipHeight).toBeLessThanOrEqual(20);
+    expect(layout.compactSlotHeaderRows.length).toBeGreaterThan(0);
+    expect(layout.compactSlotHeaderRows.every((row) => row.modelTopDelta <= 3)).toBe(true);
+    expect(layout.compactSlotHeaderRows.every((row) => row.readingsTopDelta <= 3)).toBe(true);
+    expect(layout.compactSlotHeaderOverlaps.every((overlap) => !overlap)).toBe(true);
     expect(layout.groupedContexts.length).toBeGreaterThan(0);
     expect(layout.groupedContexts.every((context) => context.markerCount === 0)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);

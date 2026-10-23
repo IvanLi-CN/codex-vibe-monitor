@@ -6831,11 +6831,18 @@ export async function fetchSummary(
     limit?: number;
     timeZone?: string;
     upstreamAccountId?: number;
+    from?: string;
+    to?: string;
     signal?: AbortSignal;
   },
 ) {
   const search = new URLSearchParams();
-  search.set("window", window);
+  if (options?.from || options?.to) {
+    if (options.from) search.set("from", options.from);
+    if (options.to) search.set("to", options.to);
+  } else {
+    search.set("window", window);
+  }
   search.set("timeZone", options?.timeZone ?? getBrowserTimeZone());
   if (options?.limit !== undefined) {
     search.set("limit", String(options.limit));
@@ -7107,11 +7114,18 @@ export async function fetchTimeseries(
     settlementHour?: number;
     timeZone?: string;
     upstreamAccountId?: number;
+    from?: string;
+    to?: string;
     signal?: AbortSignal;
   },
 ) {
   const search = new URLSearchParams();
-  search.set("range", range);
+  if (params?.from || params?.to) {
+    if (params.from) search.set("from", params.from);
+    if (params.to) search.set("to", params.to);
+  } else {
+    search.set("range", range);
+  }
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   if (params?.bucket) search.set("bucket", params.bucket);
   if (params?.settlementHour !== undefined)
@@ -7127,6 +7141,8 @@ export async function fetchTimeseries(
 export async function fetchInvocationTimeline(options: {
   naturalDayStart?: string;
   naturalDayEnd?: string;
+  scopeStart?: string;
+  scopeEnd?: string;
   from: string;
   to: string;
   upstreamAccountId?: number;
@@ -7139,6 +7155,8 @@ export async function fetchInvocationTimeline(options: {
   const search = new URLSearchParams({ from: options.from, to: options.to });
   if (options.naturalDayStart) search.set("naturalDayStart", options.naturalDayStart);
   if (options.naturalDayEnd) search.set("naturalDayEnd", options.naturalDayEnd);
+  if (options.scopeStart) search.set("scopeStart", options.scopeStart);
+  if (options.scopeEnd) search.set("scopeEnd", options.scopeEnd);
   if (options.upstreamAccountId != null) {
     search.set("upstreamAccountId", String(options.upstreamAccountId));
   }
@@ -7165,6 +7183,8 @@ export async function fetchParallelWorkStats(params?: {
   bucket?: string;
   timeZone?: string;
   upstreamAccountId?: number;
+  from?: string;
+  to?: string;
   signal?: AbortSignal;
 }) {
   const response = await fetchParallelWorkStatsConditional(params);
@@ -7179,6 +7199,8 @@ export async function fetchParallelWorkStatsConditional(params?: {
   bucket?: string;
   timeZone?: string;
   upstreamAccountId?: number;
+  from?: string;
+  to?: string;
   signal?: AbortSignal;
   etag?: string | null;
 }): Promise<{
@@ -7187,7 +7209,12 @@ export async function fetchParallelWorkStatsConditional(params?: {
   notModified: boolean;
 }> {
   const search = new URLSearchParams();
-  if (params?.range) search.set("range", params.range);
+  if (params?.from || params?.to) {
+    if (params.from) search.set("from", params.from);
+    if (params.to) search.set("to", params.to);
+  } else if (params?.range) {
+    search.set("range", params.range);
+  }
   if (params?.bucket) search.set("bucket", params.bucket);
   if (params?.upstreamAccountId !== undefined) {
     search.set("upstreamAccountId", String(params.upstreamAccountId));

@@ -672,7 +672,7 @@ afterEach(() => {
 function renderSection(
   response: PromptCacheConversationsResponse,
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -720,7 +720,7 @@ function renderSection(
 function renderSectionWithCards(
   cards: DashboardWorkingConversationCardModel[],
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -853,7 +853,7 @@ describe("DashboardWorkingConversationsSection model routing", () => {
 function rerenderSection(
   response: PromptCacheConversationsResponse,
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -899,7 +899,7 @@ function rerenderSection(
 function rerenderSectionWithCards(
   cards: DashboardWorkingConversationCardModel[],
   options?: {
-    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
+    activeRange?: "today" | "yesterday" | "1d";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -2313,7 +2313,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toHaveLength(9);
   });
 
-  it("disables and falls back from the upstream account tab for usage range", () => {
+  it("keeps the upstream account tab available for yesterday range", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
     const response = createResponse([
@@ -2342,14 +2342,14 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.textContent).toContain("当前活动账号 1 个");
 
     act(() => {
-      rerenderSection(response, { activeRange: "usage" });
+      rerenderSection(response, { activeRange: "yesterday" });
     });
 
-    expect(host?.textContent).toContain("当前对话 1 条");
+    expect(host?.textContent).toContain("当前活动账号 1 个");
     const accountTabAfter = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (node) => node.textContent?.includes("上游账号"),
     );
-    expect(accountTabAfter?.disabled).toBe(true);
+    expect(accountTabAfter?.disabled).toBe(false);
   });
 
   it("persists the preferred workspace view and restores it on remount", () => {
@@ -2396,7 +2396,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountTab.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("preserves the upstream-account preference when usage temporarily forces conversations", () => {
+  it("preserves the upstream-account preference across historical range changes", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
     const response = createResponse([
@@ -2423,13 +2423,13 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    rerenderSection(response, { activeRange: "usage" });
-    expect(host?.textContent).toContain("当前对话 1 条");
+    rerenderSection(response, { activeRange: "yesterday" });
+    expect(host?.textContent).toContain("当前活动账号 1 个");
     expect(readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY)).toBe(
       "upstreamAccounts",
     );
 
-    rerenderSection(response, { activeRange: "today" });
+    rerenderSection(response, { activeRange: "1d" });
     expect(host?.textContent).toContain("当前活动账号 1 个");
     const restoredAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (node) => node.textContent?.includes("上游账号"),
@@ -3094,7 +3094,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
   });
 
-  it("renders the historical WebSocket transport badge only in websocket invocation slots", () => {
+  it("omits the historical WebSocket transport badge from compact invocation slots", () => {
     renderSection(
       createResponse([
         createConversation("pck-ws-transport", [
@@ -3117,9 +3117,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
-    expect(badges).toHaveLength(1);
-    expect(badges?.[0]?.textContent?.trim()).toBe("WebSocket（历史）");
-    expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket（历史）");
+    expect(badges).toHaveLength(0);
   });
 
   it("shows the persisted conversation id in the card header while keeping the raw prompt cache key non-visible", () => {
@@ -3614,6 +3612,7 @@ describe("DashboardWorkingConversationsSection", () => {
               requestModel: "gpt-5.6-sol",
               responseModel: "gpt-5.6-sol",
               reasoningEffort: "high",
+              transport: "websocket",
             },
           ],
         },
@@ -3638,6 +3637,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
     expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="invocation-transport-badge"]',
+      ),
+    ).toBeNull();
   });
 
   it("keeps the account chip inline with model metadata and surfaces compact endpoint badges", () => {
@@ -5766,8 +5770,8 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(slotHeader instanceof HTMLElement)) {
       throw new Error("missing slot header");
     }
-    expect(slotHeader.className).toContain("grid");
-    expect(slotHeader.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+    expect(slotHeader.className).toContain("flex");
+    expect(slotHeader.className).toContain("items-center");
     const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
     if (!(statusLabel instanceof HTMLElement)) {
       throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);

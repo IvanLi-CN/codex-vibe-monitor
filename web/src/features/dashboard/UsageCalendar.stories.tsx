@@ -29,9 +29,9 @@ function buildDailyPoints() {
   endExclusive.setHours(0, 0, 0, 0);
   endExclusive.setDate(endExclusive.getDate() + 1);
   const start = new Date(endExclusive);
-  start.setDate(start.getDate() - 180);
+  start.setDate(start.getDate() - 365);
   const points: Array<Record<string, number | string>> = [];
-  for (let index = 0; index < 180; index += 1) {
+  for (let index = 0; index < 365; index += 1) {
     const bucketStart = new Date(start);
     bucketStart.setDate(start.getDate() + index);
     const bucketEnd = new Date(bucketStart);

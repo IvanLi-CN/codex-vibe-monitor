@@ -671,9 +671,9 @@ struct TimelineAccountFallbackRow {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationTimelineQuery {
-    #[serde(default)]
+    #[serde(default, alias = "scopeStart")]
     pub(crate) natural_day_start: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "scopeEnd")]
     pub(crate) natural_day_end: Option<String>,
     pub(crate) from: String,
     pub(crate) to: String,
@@ -1923,6 +1923,26 @@ mod tests {
     use chrono::TimeZone;
     use sqlx::Connection;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+
+    #[test]
+    fn invocation_timeline_accepts_scope_aliases() {
+        let query: InvocationTimelineQuery = serde_json::from_value(serde_json::json!({
+            "scopeStart": "2026-04-29T00:00:00Z",
+            "scopeEnd": "2026-04-30T00:00:00Z",
+            "from": "2026-04-29T12:00:00Z",
+            "to": "2026-04-29T13:00:00Z"
+        }))
+        .expect("deserialize timeline scope aliases");
+
+        assert_eq!(
+            query.natural_day_start.as_deref(),
+            Some("2026-04-29T00:00:00Z")
+        );
+        assert_eq!(
+            query.natural_day_end.as_deref(),
+            Some("2026-04-30T00:00:00Z")
+        );
+    }
 
     fn at(seconds: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(seconds, 0)
