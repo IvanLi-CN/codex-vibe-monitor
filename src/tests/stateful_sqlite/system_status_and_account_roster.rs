@@ -734,7 +734,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         &retention_handle,
         SystemTaskStatus::Failed,
         Some("retention failed".to_string()),
-        Some("disk full".to_string()),
+        Some("Authorization: Basic old-secret".to_string()),
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
@@ -799,7 +799,13 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         filtered.items[0].summary.as_deref(),
         Some("retention failed")
     );
-    assert_eq!(filtered.items[0].detail.as_deref(), Some("disk full"));
+    assert!(
+        !filtered.items[0]
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("old-secret")
+    );
     assert!(filtered.items[0].duration_ms.unwrap_or_default() >= 0);
 
     let all = list_system_task_runs(

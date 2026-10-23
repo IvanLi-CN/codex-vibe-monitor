@@ -5543,7 +5543,7 @@ impl MaintenanceStore {
                     // Do not relabel a legacy queue-inclusive duration as actual work time.
                     duration_ms: run.actual_duration_ms,
                     status: run.status,
-                    reason: run.error_detail,
+                    reason: run.error_detail.map(|value| sanitize_task_detail(&value)),
                     sequence: 0,
                     pending: None,
                     discovered: None,
@@ -7714,6 +7714,16 @@ mod tests {
                 .find(|sample| sample.managed_run_id.is_some())
                 .and_then(|sample| sample.duration_ms),
             None
+        );
+        assert!(
+            !legacy_detail
+                .workload_trend
+                .samples
+                .iter()
+                .find(|sample| sample.managed_run_id.is_some())
+                .and_then(|sample| sample.reason.as_deref())
+                .unwrap_or_default()
+                .contains("old-secret")
         );
     }
 

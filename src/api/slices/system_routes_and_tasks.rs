@@ -511,7 +511,9 @@ impl From<SystemTaskRunRow> for SystemTaskRunResponse {
             trigger_kind: value.trigger_kind,
             status: value.status,
             summary: value.summary,
-            detail: value.detail,
+            detail: value
+                .detail
+                .map(|detail| crate::maintenance_store::sanitize_task_detail(&detail)),
             started_at: value.started_at,
             finished_at: value.finished_at,
             duration_ms: value.duration_ms,
