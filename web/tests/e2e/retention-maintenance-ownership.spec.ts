@@ -62,6 +62,7 @@ test("keeps maintenance layouts usable at 393px", async ({ page }) => {
   await page.goto("/#/system/tasks/raw_orphan_sweep?demoTheme=light");
   await expectTaskHeading(page, "Raw 孤儿文件清理");
   await expect(page.getByText(/文件 32 个已检查.*65536 字节/)).toBeVisible();
+  await expect(page.getByText(/总体剩余量未知/)).toBeVisible();
   await expectNoHorizontalOverflow(page, width);
 
   await page.goto("/#/system/tasks/retention_archive?demoTheme=light");
