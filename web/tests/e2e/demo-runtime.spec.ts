@@ -92,6 +92,19 @@ function routeLandmark(page: Page, path: string): Locator {
   }
 }
 
+function networkFailureState(page: Page, path: string): Locator {
+  switch (path) {
+    case "/#/account-pool/maintenance-records":
+      return page.getByTestId("maintenance-records-error");
+    case "/#/system/tasks":
+      return page.getByText(/^任务目录不可用：/);
+    case "/#/system/settings":
+      return page.getByText(/^设置请求失败：/);
+    default:
+      throw new Error(`Missing network failure assertion for ${path}`);
+  }
+}
+
 function routeWithScene(path: string, scene: string) {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
@@ -148,6 +161,7 @@ test.describe("Web Demo runtime", () => {
         waitUntil: "domcontentloaded",
       });
       await expectDemoShell(page, route);
+      await expect(networkFailureState(page, route.path)).toBeVisible();
       expect(pageErrors).toEqual([]);
     });
   }

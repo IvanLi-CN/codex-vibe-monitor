@@ -298,6 +298,7 @@ export const CaptureGap: Story = {
 
 export const CaptureGapOutsideVisibleWindow: Story = {
   args: { taskKey: "retention_archive", trend: captureGapOutsideWindowTrend, state: "ready" },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     await expect(within(canvasElement).queryByRole("note")).toBeNull();
   },
