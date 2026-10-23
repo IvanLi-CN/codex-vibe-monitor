@@ -784,6 +784,7 @@ fn restore_stored_task_workload_sample(
     sample.attempted_at = row.attempted_at;
     sample.sequence = sample.sequence.max(row.sequence.max(0) as u64);
     sample.status = row.status;
+    sample.reason = sample.reason.map(|reason| sanitize_task_detail(&reason));
     sample
 }
 
@@ -2132,8 +2133,6 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
                     || character == '/'
                     || character == '?'
                     || character == '#'
-                    || character == ','
-                    || character == ';'
             })
             .map_or(sanitized.len(), |offset| authority_start + offset);
         let Some(user_info_end) = sanitized[authority_start..authority_end].rfind('@') else {
@@ -7629,11 +7628,11 @@ mod tests {
             assert!(!sanitized.contains("x-api-key-secret"));
         }
         let url_credentials = sanitize_task_detail(
-            "upstream rejected https://alice:password-secret@example.com/v1/data, retry",
+            "upstream rejected https://alice:pass;word,more@example.com/v1/data, retry",
         );
         assert!(url_credentials.contains("https://[REDACTED]@example.com/v1/data"));
         assert!(!url_credentials.contains("alice"));
-        assert!(!url_credentials.contains("password-secret"));
+        assert!(!url_credentials.contains("pass;word,more"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 

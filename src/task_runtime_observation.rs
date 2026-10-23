@@ -97,6 +97,12 @@ pub(crate) fn workload_sample(
                     .then_with(|| left.execution_uid.cmp(&right.execution_uid))
             })
             .cloned()
+            .map(|mut sample| {
+                sample.reason = sample
+                    .reason
+                    .map(|reason| crate::maintenance_store::sanitize_task_detail(&reason));
+                sample
+            })
     })
 }
 
@@ -801,7 +807,7 @@ impl TaskExecutionObservation {
                     sample.duration_ms = None;
                 }
                 if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
-                    sample.reason = Some(reason.to_string());
+                    sample.reason = Some(crate::maintenance_store::sanitize_task_detail(reason));
                 } else if status == "unknown" {
                     sample.reason = Some("execution end is unknown".to_string());
                 } else if status == "skipped" {
@@ -887,7 +893,7 @@ impl TaskWorkloadObservation {
                 sample.duration_ms = None;
             }
             if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
-                sample.reason = Some(reason.to_string());
+                sample.reason = Some(crate::maintenance_store::sanitize_task_detail(reason));
             } else if status == "skipped" {
                 sample.reason = Some("confirmed skip before measured work".to_string());
             } else if processed_count.is_none() {
@@ -1201,7 +1207,8 @@ mod tests {
             "processing",
             Some(43),
         );
-        let result: Result<(), &str> = Err("subscription refresh failed");
+        let result: Result<(), &str> =
+            Err("upstream rejected https://alice:pass;word,more@example.com/v1/data");
 
         observation.finish_from_result(&result);
 
@@ -1210,7 +1217,7 @@ mod tests {
         assert_eq!(sample.status, "failed");
         assert_eq!(
             sample.reason.as_deref(),
-            Some("subscription refresh failed")
+            Some("upstream rejected https://[REDACTED]@example.com/v1/data")
         );
     }
 
