@@ -7,6 +7,7 @@
 - `web/src/features/invocations/InvocationTable.tsx` exposes the compatibility `InvocationTable` name while rendering the shared `InvocationCardList`. It keeps the existing virtualizer and detail-panel ownership, with a single responsive card markup and a one-second timer gated by in-flight rows.
 - Implementation summary: 既有观测功能及 request/response body logging 双开关已完成；模型代次/家族展示实现、自动化验证与视觉确认均已完成，canonical evidence 已同步。
 - Shared invocation and model-performance identities use the same undecorated family glyph across generations; model-performance capsules preserve only their existing outer border and row height.
+- Candidate-bound verification for implementation head `d9aeed62`: Dashboard unit tests `131 passed`, targeted Storybook tests `22 passed`, InvocationTable/transport-chip regression `67 passed`, `bun run typecheck:web` passed, `cd web && bun run build` passed, and the Spec visual-evidence document check passed. The current evidence assets are mock-only Storybook captures approved for desktop and source-managed `393x852` mobile review.
 
 - Codex standalone search (`POST /v1/alpha/search`) 复用普通非流式 capture、OAuth passthrough、父 invocation 与 source-level hourly rollup；不新增 endpoint rollup 或搜索专属 usage 解析。
 - API Key 号池的 standalone search attempt 额外驱动独立账号能力学习与 failover 筛选；OAuth passthrough、父 invocation 和 source-level rollup 合同保持不变。

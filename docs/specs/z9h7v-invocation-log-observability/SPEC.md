@@ -725,7 +725,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
   ![Dashboard upstream recent compact model context mobile](./assets/dashboard-upstream-recent-model-context-mobile393-storybook.png)
 
 - source_type: storybook_canvas
-  story_id_or_title: Dashboard/WorkingConversationsSection/GPT56ModelContextCluster
+  story_id_or_title: Dashboard/WorkingConversationsSection/TransportHiddenInCompactRows
   evidence_bound_sha: ef92714f
   state: light desktop compact working-conversation invocation slot with the historical transport badge removed
   requested_viewport: desktop1660
