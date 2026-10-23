@@ -3612,6 +3612,13 @@ describe("DashboardWorkingConversationsSection", () => {
       icon: "creation",
     },
     {
+      label: "GPT-6.1 explicit none",
+      model: "gpt-6.1-luna",
+      reasoningEffort: "none",
+      generation: "6.1",
+      icon: "weather-night",
+    },
+    {
       label: "GPT-5.6 without reasoning",
       model: "gpt-5.6-sol",
       reasoningEffort: null,
@@ -3654,9 +3661,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(cluster.querySelector(`[data-model-generation-segment="${generation}"]`)).not.toBeNull();
     expect(cluster.querySelector(`[data-model-icon="${icon}"]`)).not.toBeNull();
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(cluster.textContent).not.toContain("—");
     if (reasoningEffort == null) {
       expect(cluster.querySelector('[data-model-context-part="reasoning-effort"]')).toBeNull();
-      expect(cluster.textContent).not.toContain("—");
     } else {
       expect(
         cluster.querySelector(
