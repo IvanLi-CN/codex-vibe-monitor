@@ -419,6 +419,7 @@ impl TerminalJournal {
         }
 
         let path = self.directory.join("system-task-quarantine.jsonl");
+        let safe_error = crate::maintenance_store::sanitize_task_detail(error);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -435,7 +436,13 @@ impl TerminalJournal {
             self.replayed_system_task_ids.insert(finish.run_id);
             self.system_task_recovery_task_keys
                 .insert(finish.run_id, finish.task_key.clone());
-            newly_deferred_finishes.push((*finish).clone());
+            let safe_detail = finish
+                .detail
+                .as_deref()
+                .map(crate::maintenance_store::sanitize_task_detail);
+            let mut safe_finish = (*finish).clone();
+            safe_finish.detail = safe_detail.clone();
+            newly_deferred_finishes.push(safe_finish);
             let entry = QuarantineEntry {
                 run_id: finish.run_id,
                 task_kind: finish.task_kind.as_str(),
@@ -443,13 +450,13 @@ impl TerminalJournal {
                 trigger_kind: &finish.trigger_kind,
                 status: finish.status.as_str(),
                 summary: &finish.summary,
-                detail: &finish.detail,
+                detail: &safe_detail,
                 finished_at: &finish.finished_at,
                 duration_ms: finish.duration_ms,
                 completion: &finish.completion,
                 core_completion: &finish.core_completion,
                 details: &finish.details,
-                error,
+                error: &safe_error,
             };
             if let Err(err) = serde_json::to_writer(&mut file, &entry) {
                 for run_id in newly_indexed_ids {
@@ -620,7 +627,10 @@ impl TerminalJournal {
                     trigger_kind: finish.trigger_kind.clone(),
                     status: finish.status.as_str().to_string(),
                     summary: finish.summary.clone(),
-                    detail: finish.detail.clone(),
+                    detail: finish
+                        .detail
+                        .as_ref()
+                        .map(crate::maintenance_store::sanitize_task_detail),
                     finished_at: finish.finished_at.clone(),
                     duration_ms: finish.duration_ms,
                     completion: finish.completion.clone(),
@@ -732,6 +742,7 @@ impl TerminalJournal {
                 directory.display()
             )
         })?;
+        let safe_error = crate::maintenance_store::sanitize_task_detail(error);
         if !terminals.is_empty() {
             let path = directory.join("shutdown-terminal-quarantine.jsonl");
             let mut file = open_shutdown_recovery_append(&path, true).with_context(|| {
@@ -783,6 +794,10 @@ impl TerminalJournal {
                     )
                 })?;
             for finish in finishes {
+                let safe_detail = finish
+                    .detail
+                    .as_deref()
+                    .map(crate::maintenance_store::sanitize_task_detail);
                 serde_json::to_writer(
                     &mut file,
                     &SystemTaskEntry {
@@ -792,13 +807,13 @@ impl TerminalJournal {
                         trigger_kind: &finish.trigger_kind,
                         status: finish.status.as_str(),
                         summary: &finish.summary,
-                        detail: &finish.detail,
+                        detail: &safe_detail,
                         finished_at: &finish.finished_at,
                         duration_ms: finish.duration_ms,
                         completion: &finish.completion,
                         core_completion: &finish.core_completion,
                         details: &finish.details,
-                        error,
+                        error: &safe_error,
                     },
                 )
                 .context("failed to encode system-task recovery entry")?;
@@ -3268,7 +3283,10 @@ mod tests {
             trigger_kind: "startup".to_string(),
             status: SystemTaskStatus::Skipped,
             summary: Some("cancelled".to_string()),
-            detail: None,
+            detail: Some(
+                "Authorization: Basic shutdown-secret, authorization=Digest nonce=nonce-secret"
+                    .to_string(),
+            ),
             finished_at: "2026-07-29T00:00:02Z".to_string(),
             duration_ms: 40,
             completion: None,
@@ -3282,9 +3300,22 @@ mod tests {
             "shutdown recovery",
         )
         .expect("persist shutdown system-task recovery");
+        let shutdown_path = terminal_journal_directory(&database_path)
+            .join("shutdown-system-task-quarantine.jsonl");
+        let persisted = fs::read_to_string(&shutdown_path).expect("read shutdown recovery");
+        assert!(!persisted.contains("shutdown-secret"));
+        assert!(!persisted.contains("nonce-secret"));
 
         let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
-        assert_eq!(recovered.take_system_task_finishes(1).len(), 1);
+        let replay = recovered.take_system_task_finishes(1);
+        assert_eq!(replay.len(), 1);
+        assert!(
+            !replay[0]
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("shutdown-secret")
+        );
         recovered
             .acknowledge_system_task_finishes(&[finish.run_id])
             .expect("acknowledge shutdown system-task recovery");

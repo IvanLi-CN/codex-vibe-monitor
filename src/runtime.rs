@@ -2362,7 +2362,7 @@ async fn run_managed_task_worker(
             )
         }
         Err(error) => {
-            let error_message = error.to_string();
+            let error_message = crate::maintenance_store::sanitize_task_detail(&error.to_string());
             if trigger_kind != "manual"
                 && matches!(
                     task_key.as_str(),

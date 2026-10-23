@@ -189,17 +189,18 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
 }
 
 fn is_retention_owner_v2_task(key: &str) -> bool {
-    matches!(
-        key,
-        "retention_archive"
-            | "pool_upstream_attempt_archive"
-            | "forward_proxy_attempt_archive"
-            | "invocation_detail_prune"
-            | "quota_snapshot_compaction"
-            | "model_route_expiry"
-            | "task_run_history_cleanup"
-    )
+    RETENTION_OWNER_V2_TASKS.contains(&key)
 }
+
+const RETENTION_OWNER_V2_TASKS: &[&str] = &[
+    "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
+];
 
 pub(crate) struct TaskExecutionLease {
     task_key: String,
@@ -4497,7 +4498,10 @@ impl MaintenanceStore {
             transaction.rollback().await?;
         }
         if enqueued > 0 {
-            self.sync_retention_progress_schedule().await?;
+            for task_key in RETENTION_OWNER_V2_TASKS {
+                self.sync_retention_owner_progress_schedule(task_key)
+                    .await?;
+            }
         }
         Ok(enqueued)
     }
@@ -5703,8 +5707,9 @@ impl MaintenanceStore {
         .bind(task_key)
         .execute(&self.pool)
         .await?;
-        if task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(task_key) {
+            self.sync_retention_owner_progress_schedule(task_key)
+                .await?;
         }
         Ok(true)
     }
@@ -5756,8 +5761,9 @@ impl MaintenanceStore {
         };
         sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, next_trigger_at=?, schedule_source='override', updated_at=? WHERE task_key=? AND is_manual=0")
         .bind(interval_secs).bind(cron_expr).bind(next_trigger_at).bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&self.pool).await?;
-        if task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(task_key) {
+            self.sync_retention_owner_progress_schedule(task_key)
+                .await?;
         }
         Ok(true)
     }
@@ -5888,8 +5894,9 @@ impl MaintenanceStore {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        if task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(task_key) {
+            self.sync_retention_owner_progress_schedule(task_key)
+                .await?;
         }
         Ok(true)
     }
@@ -5920,8 +5927,9 @@ impl MaintenanceStore {
         .bind(&task.task_key)
         .execute(&self.pool)
         .await?;
-        if task.task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(&task.task_key) {
+            self.sync_retention_owner_progress_schedule(&task.task_key)
+                .await?;
         }
         Ok(())
     }
