@@ -150,8 +150,26 @@ def execute(candidate, root, *arguments, expect_success=True):
     result = subprocess.run([str(candidate), *arguments], env=environment, capture_output=True, text=True, timeout=90)
     with (root / "candidate.log").open("a") as log:
         log.write(json.dumps({"arguments": arguments, "exitCode": result.returncode}) + "\n" + result.stdout + result.stderr)
+    recorded_task_result = None
+    try:
+        with sqlite3.connect(root / "maintenance.sqlite") as connection:
+            row = connection.execute(
+                "SELECT task_key,status,summary,details FROM managed_task_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is not None:
+            recorded_task_result = {
+                "taskKey": row[0],
+                "status": row[1],
+                "summary": row[2],
+                "details": row[3],
+            }
+    except sqlite3.Error as error:
+        recorded_task_result = {"readError": str(error)}
     assert (result.returncode == 0) == expect_success, (
-        result.stdout[-4000:] + result.stderr[-2000:]
+        result.stdout[-4000:]
+        + result.stderr[-2000:]
+        + "\nrecordedTaskResult="
+        + json.dumps(recorded_task_result, ensure_ascii=False)
     )
     return result
 
