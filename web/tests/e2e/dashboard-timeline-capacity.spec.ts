@@ -57,7 +57,7 @@ type TimelineDiagnosticsWindow = Window & {
 
 test.use({ video: "off" });
 
-function installDiagnostics(page: Page, initialRange: "today" | "yesterday" | "7d" = "today") {
+function installDiagnostics(page: Page, initialRange: "today" | "yesterday" | "1d" = "today") {
   return page.addInitScript((range) => {
     window.localStorage.setItem("dashboard.activityOverview.activeRange.v1", range);
     const diagnostics: TimelineDiagnostics = {
@@ -240,7 +240,7 @@ async function startCapacityDashboard(
   viewport: { width: number; height: number },
   measureInitialTimelineMount = false,
 ) {
-  await installDiagnostics(page, measureInitialTimelineMount ? "7d" : "today");
+  await installDiagnostics(page, measureInitialTimelineMount ? "1d" : "today");
   await page.setViewportSize(viewport);
   await page.goto(CAPACITY_DASHBOARD_URL, { waitUntil: "domcontentloaded" });
   if (viewport.width < 769) {
@@ -248,7 +248,7 @@ async function startCapacityDashboard(
     const metricSelect = page.getByTestId("dashboard-activity-metric-select");
     await expect(metricSelect).toHaveText(/count|次数/i);
     if (measureInitialTimelineMount) {
-      await expect(rangeSelect).toHaveText(/7.?day|7.?天|7.?日|7d/i);
+      await expect(rangeSelect).toHaveText(/24.?hour|24.?小时|24.?h|1d/i);
       await page.evaluate(() => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
@@ -262,9 +262,11 @@ async function startCapacityDashboard(
   } else {
     const todayTab = page.locator('[role="tablist"]').first().locator('[role="tab"]').first();
     if (measureInitialTimelineMount) {
-      await expect(
-        page.locator('[role="tablist"]').first().locator('[role="tab"]').nth(3),
-      ).toHaveAttribute("aria-selected", "true");
+      const twentyFourHourTab = page
+        .locator('[role="tablist"]')
+        .first()
+        .getByRole("tab", { name: /24.?hour|24.?小时|24.?h/i });
+      await expect(twentyFourHourTab).toHaveAttribute("aria-selected", "true");
       await expect(todayTab).toHaveAttribute("aria-selected", "false");
       await page.evaluate(() => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
