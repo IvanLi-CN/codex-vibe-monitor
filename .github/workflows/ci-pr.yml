@@ -1012,7 +1012,7 @@ jobs:
           required=false
           while IFS= read -r path; do
             case "$path" in
-              .github/quality-gates.json|.github/scripts/check_quality_gates_contract.py|.github/workflows/ci-pr.yml|.cargo/config.toml|build.rs|Cargo.lock|Cargo.toml|Dockerfile|src/*|scripts/generate-retention-maintenance-release-fixtures.py|scripts/validate-retention-maintenance-runtime.py|scripts/validate-retention-maintenance-upgrade.py|docs/adr/assets/retention-maintenance-task-ownership/*|docs/specs/retention-maintenance-task-ownership/*)
+              .github/quality-gates.json|.github/scripts/check_quality_gates_contract.py|.github/workflows/ci-pr.yml|.cargo/config.toml|build.rs|Cargo.lock|Cargo.toml|Dockerfile|src/*|vendor/hotpath/*|scripts/generate-retention-maintenance-release-fixtures.py|scripts/validate-retention-maintenance-runtime.py|scripts/validate-retention-maintenance-upgrade.py|docs/adr/assets/retention-maintenance-task-ownership/*|docs/specs/retention-maintenance-task-ownership/*)
                 required=true
                 ;;
             esac

@@ -923,6 +923,7 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         "src/*",
         "build.rs",
         ".cargo/config.toml",
+        "vendor/hotpath/*",
         "docs/adr/assets/retention-maintenance-task-ownership/*",
         "required=",
         "$GITHUB_OUTPUT",

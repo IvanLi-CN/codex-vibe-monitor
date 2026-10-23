@@ -2104,7 +2104,11 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
             let secret_start = value_start + value_slice.len() - value_slice.trim_start().len();
             let value_end = sanitized[secret_start..]
                 .find(|character: char| {
-                    character.is_whitespace() || character == ',' || character == ';'
+                    if marker.eq_ignore_ascii_case("Authorization:") {
+                        character == ',' || character == ';'
+                    } else {
+                        character.is_whitespace() || character == ',' || character == ';'
+                    }
                 })
                 .map_or(sanitized.len(), |offset| secret_start + offset);
             sanitized.replace_range(start..value_end, "[REDACTED]");
@@ -7538,6 +7542,10 @@ mod tests {
         assert!(!detail.contains("bearer-secret"));
         assert!(!detail.contains("secret"));
         assert!(!detail.contains("abc"));
+        let basic = sanitize_task_detail("upstream rejected Authorization: Basic abc123, retry");
+        assert!(!basic.contains("Basic"));
+        assert!(!basic.contains("abc123"));
+        assert!(basic.contains("retry"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
