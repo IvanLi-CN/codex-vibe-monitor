@@ -2122,6 +2122,32 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
             sanitized.replace_range(start..value_end, "[REDACTED]");
         }
     }
+    let mut search_from = 0;
+    while let Some(relative_separator) = sanitized[search_from..].find("://") {
+        let separator = search_from + relative_separator;
+        let authority_start = separator + 3;
+        let authority_end = sanitized[authority_start..]
+            .find(|character: char| {
+                character.is_whitespace()
+                    || character == '/'
+                    || character == '?'
+                    || character == '#'
+                    || character == ','
+                    || character == ';'
+            })
+            .map_or(sanitized.len(), |offset| authority_start + offset);
+        let Some(user_info_end) = sanitized[authority_start..authority_end].rfind('@') else {
+            search_from = authority_end;
+            continue;
+        };
+        if user_info_end == 0 {
+            search_from = authority_start + 1;
+            continue;
+        }
+        let user_info_end = authority_start + user_info_end + 1;
+        sanitized.replace_range(authority_start..user_info_end, "[REDACTED]@");
+        search_from = authority_start + "[REDACTED]@".len();
+    }
     sanitized
         .chars()
         .take(MAX_TASK_ERROR_DETAIL_CHARS)
@@ -7602,6 +7628,12 @@ mod tests {
             assert!(!sanitized.contains("api-key-secret"));
             assert!(!sanitized.contains("x-api-key-secret"));
         }
+        let url_credentials = sanitize_task_detail(
+            "upstream rejected https://alice:password-secret@example.com/v1/data, retry",
+        );
+        assert!(url_credentials.contains("https://[REDACTED]@example.com/v1/data"));
+        assert!(!url_credentials.contains("alice"));
+        assert!(!url_credentials.contains("password-secret"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
