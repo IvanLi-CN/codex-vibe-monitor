@@ -566,6 +566,20 @@ impl TerminalJournal {
         // the journal record for the next restart; compaction must preserve those records too.
         let recovery_paths = [path.clone(), shutdown_path.clone()];
         let recovery_finishes = load_system_task_finishes(&recovery_paths);
+        let preserve_acknowledgements = fs::metadata(&shutdown_path)
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false);
+        let mut acknowledged_ids = if preserve_acknowledgements {
+            let shutdown_ids =
+                load_system_task_quarantine_ids(std::slice::from_ref(&shutdown_path));
+            load_system_task_acknowledged_ids(&recovery_paths)
+                .into_iter()
+                .filter(|run_id| shutdown_ids.contains(run_id))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        acknowledged_ids.sort_unstable();
         let recovery_ids = recovery_finishes
             .iter()
             .map(|finish| finish.run_id)
@@ -583,6 +597,18 @@ impl TerminalJournal {
                     temp_path.display()
                 )
             })?;
+        // Keep ACK markers in the regular file while the shutdown source still exists. If the
+        // process stops after replacing the regular file but before clearing the shutdown file,
+        // the marker remains authoritative and prevents replaying an already acknowledged run.
+        for run_id in acknowledged_ids {
+            serde_json::to_writer(
+                &mut file,
+                &serde_json::json!({ "run_id": run_id, "acknowledged": true }),
+            )
+            .context("failed to encode compacted system-task acknowledgement")?;
+            file.write_all(b"\n")
+                .context("failed to append compacted system-task acknowledgement")?;
+        }
         for finish in &recovery_finishes {
             serde_json::to_writer(
                 &mut file,
@@ -2337,6 +2363,32 @@ fn load_system_task_quarantine_ids(paths: &[PathBuf]) -> HashSet<i64> {
     ids
 }
 
+fn load_system_task_acknowledged_ids(paths: &[PathBuf]) -> HashSet<i64> {
+    let mut ids = HashSet::new();
+    for path in paths {
+        let Ok(file) = File::open(path) else {
+            continue;
+        };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let Ok(read) = reader.read_line(&mut line) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            if let Ok(value) = serde_json::from_str::<SystemTaskRecoveryLine>(&line)
+                && value.acknowledged
+            {
+                ids.insert(value.run_id);
+            }
+        }
+    }
+    ids
+}
+
 fn append_system_task_acknowledgements(path: &Path, run_ids: &[i64]) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -3277,6 +3329,7 @@ mod tests {
 
         let directory = terminal_journal_directory(&database_path);
         let ordinary_path = directory.join("system-task-quarantine.jsonl");
+        let shutdown_path = directory.join("shutdown-system-task-quarantine.jsonl");
         let mut ordinary = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3314,14 +3367,43 @@ mod tests {
         recovered
             .acknowledge_system_task_finishes(&[finish.run_id])
             .expect("acknowledge shutdown system-task recovery");
+        let mut shutdown = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&shutdown_path)
+            .expect("reopen shutdown recovery after compaction");
+        serde_json::to_writer(
+            &mut shutdown,
+            &SystemTaskRecoveryLine {
+                run_id: finish.run_id,
+                acknowledged: false,
+                task_kind: finish.task_kind.as_str().to_string(),
+                task_key: finish.task_key.clone(),
+                trigger_kind: finish.trigger_kind.clone(),
+                status: finish.status.as_str().to_string(),
+                summary: finish.summary.clone(),
+                detail: finish.detail.clone(),
+                finished_at: finish.finished_at.clone(),
+                duration_ms: finish.duration_ms,
+                completion: finish.completion.clone(),
+                core_completion: finish.core_completion.clone(),
+                details: finish.details.clone(),
+                error: None,
+            },
+        )
+        .expect("encode shutdown recovery after compaction");
+        shutdown
+            .write_all(b"\n")
+            .expect("append shutdown recovery after compaction");
+        shutdown
+            .sync_data()
+            .expect("sync shutdown recovery after compaction");
         drop(recovered);
 
-        let shutdown_path = directory.join("shutdown-system-task-quarantine.jsonl");
         assert!(
             fs::read_to_string(&shutdown_path)
                 .expect("read compacted shutdown recovery")
-                .trim()
-                .is_empty()
+                .contains(&format!("\"run_id\":{}", finish.run_id))
         );
         let reopened = TerminalJournal::open(&database_path).expect("reopen compacted journal");
         assert!(
