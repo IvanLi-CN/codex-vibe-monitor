@@ -54,34 +54,6 @@ const DEMO_ROUTE_TIMEOUT_MS = 45_000;
 const nonOperationalScenes = scenes.filter(
   (value) => value !== "operational" && value !== "network-failure",
 );
-const networkFailurePaths = new Set([
-  "/#/",
-  "/#/dashboard",
-  "/#/dashboard/invocations/demo-invocation-9002",
-  "/#/stats",
-  "/#/live",
-  "/#/records",
-  "/#/account-pool",
-  "/#/account-pool/upstream-accounts",
-  "/#/account-pool/transits",
-  "/#/account-pool/pool",
-  "/#/account-pool/upstream-accounts/new?mode=apiKey",
-  "/#/account-pool/upstream-accounts/new?mode=oauth",
-  "/#/account-pool/groups",
-  "/#/account-pool/maintenance-records",
-  "/#/system/tasks",
-  "/#/system/tasks/retention_archive",
-  "/#/system",
-  "/#/system/status",
-  "/#/system/performance",
-  "/#/system/prompt-cache",
-  "/#/system/settings",
-  "/#/system/models",
-  "/#/system/proxy",
-  "/#/settings",
-  "/#/settings/legacy",
-  "/#/not-a-route",
-]);
 
 function routeLandmark(page: Page, path: string, allowExpectedFailure = false): Locator {
   switch (path) {
@@ -200,6 +172,25 @@ function networkFailureState(page: Page, path: string): Locator {
   }
 }
 
+function isDashboardRoute(path: string) {
+  return path === "/#/" || path === "/#/dashboard" || path === "/#/not-a-route";
+}
+
+async function expectDashboardApiFailure(page: Page) {
+  const result = await page.evaluate(async () => {
+    try {
+      const response = await fetch("/api/stats/summary");
+      return { failed: !response.ok, message: `HTTP ${response.status}` };
+    } catch (error) {
+      return {
+        failed: true,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+  expect(result.failed, result.message || "Dashboard API request unexpectedly resolved").toBe(true);
+}
+
 function routeWithScene(path: string, scene: string) {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
@@ -301,11 +292,10 @@ test.describe("Web Demo runtime", () => {
       try {
         await gotoDemoRoute(page, route, "network-failure");
         await expectDemoShell(page, route, { allowExpectedFailure: true });
-        if (networkFailurePaths.has(route.path)) {
-          await expect(networkFailureState(page, route.path)).toBeVisible({
-            timeout: DEMO_ROUTE_TIMEOUT_MS,
-          });
-        }
+        await expect(networkFailureState(page, route.path)).toBeVisible({
+          timeout: DEMO_ROUTE_TIMEOUT_MS,
+        });
+        if (isDashboardRoute(route.path)) await expectDashboardApiFailure(page);
         expect(pageErrors).toEqual([]);
       } finally {
         page.off("pageerror", onPageError);
