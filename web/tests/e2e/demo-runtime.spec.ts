@@ -294,6 +294,23 @@ function isDashboardRoute(path: string) {
   return path === "/#/" || path === "/#/dashboard" || path === "/#/not-a-route";
 }
 
+function capturePageErrors(page: Page) {
+  const pageErrors: string[] = [];
+  const onPageError = (error: Error) => {
+    // The production demo preview does not serve the PWA worker at /sw.js.
+    if (
+      error.message.includes("Failed to update a ServiceWorker") &&
+      error.message.includes("/sw.js") &&
+      error.message.includes("Not found")
+    ) {
+      return;
+    }
+    pageErrors.push(error.message);
+  };
+  page.on("pageerror", onPageError);
+  return { onPageError, pageErrors };
+}
+
 async function expectDashboardApiFailure(page: Page) {
   const result = await page.evaluate(async () => {
     try {
@@ -399,9 +416,7 @@ test.describe("Web Demo runtime", () => {
 
   test("resolves every production route in operational scene", async ({ page }) => {
     for (const route of allRoutes) {
-      const pageErrors: string[] = [];
-      const onPageError = (error: Error) => pageErrors.push(error.message);
-      page.on("pageerror", onPageError);
+      const { onPageError, pageErrors } = capturePageErrors(page);
       try {
         await gotoDemoRoute(page, route, "operational");
         await expectDemoShell(page, route, {
@@ -418,9 +433,7 @@ test.describe("Web Demo runtime", () => {
   for (const scene of nonOperationalScenes) {
     test(`resolves every production route in ${scene} scene`, async ({ page }) => {
       for (const route of allRoutes) {
-        const pageErrors: string[] = [];
-        const onPageError = (error: Error) => pageErrors.push(error.message);
-        page.on("pageerror", onPageError);
+        const { onPageError, pageErrors } = capturePageErrors(page);
         try {
           await gotoDemoRoute(page, route, scene);
           await expectDemoShell(page, route, {
@@ -455,8 +468,11 @@ test.describe("Web Demo runtime", () => {
         get: () => createEventSource,
         set: (next: (path: string) => EventSource) => {
           createEventSource = (path) => {
-            recordFailedRequest(new URL(path, window.location.href));
-            return next(path);
+            const eventSource = next(path);
+            eventSource.addEventListener("error", () => {
+              recordFailedRequest(new URL(path, window.location.href));
+            });
+            return eventSource;
           };
         },
       });
@@ -495,9 +511,7 @@ test.describe("Web Demo runtime", () => {
     });
 
     for (const route of allRoutes) {
-      const pageErrors: string[] = [];
-      const onPageError = (error: Error) => pageErrors.push(error.message);
-      page.on("pageerror", onPageError);
+      const { onPageError, pageErrors } = capturePageErrors(page);
       try {
         await page.evaluate(() => {
           const results = (window as Window & { __CVM_DEMO_FETCH_RESULTS__?: DemoFetchResult[] })
