@@ -2102,15 +2102,15 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
             let value_start = start + marker.len();
             let value_slice = &sanitized[value_start..];
             let secret_start = value_start + value_slice.len() - value_slice.trim_start().len();
-            let value_end = sanitized[secret_start..]
-                .find(|character: char| {
-                    if marker.eq_ignore_ascii_case("Authorization:") {
-                        character == ',' || character == ';'
-                    } else {
+            let value_end = if marker.eq_ignore_ascii_case("Authorization:") {
+                sanitized.len()
+            } else {
+                sanitized[secret_start..]
+                    .find(|character: char| {
                         character.is_whitespace() || character == ',' || character == ';'
-                    }
-                })
-                .map_or(sanitized.len(), |offset| secret_start + offset);
+                    })
+                    .map_or(sanitized.len(), |offset| secret_start + offset)
+            };
             sanitized.replace_range(start..value_end, "[REDACTED]");
         }
     }
@@ -4905,8 +4905,13 @@ impl MaintenanceStore {
                     // competing finalizer already closed this generation. Treat it as an
                     // acknowledged no-op so it cannot overwrite retry or catch-up state.
                     transaction.commit().await?;
-                    if task_key.as_deref() == Some("retention_archive") {
-                        self.sync_retention_progress_schedule().await?;
+                    if task_key.as_deref().is_some_and(is_retention_owner_v2_task) {
+                        self.sync_retention_owner_progress_schedule(
+                            task_key
+                                .as_deref()
+                                .expect("terminal managed task has a key"),
+                        )
+                        .await?;
                     }
                     Ok(())
                 }
@@ -4997,8 +5002,13 @@ impl MaintenanceStore {
             .await?;
         }
         transaction.commit().await?;
-        if is_retention_archive {
-            self.sync_retention_progress_schedule().await?;
+        if task_key.as_deref().is_some_and(is_retention_owner_v2_task) {
+            self.sync_retention_owner_progress_schedule(
+                task_key
+                    .as_deref()
+                    .expect("finished managed task has a key"),
+            )
+            .await?;
         }
         if automatic
             && completion == Some("completed")
@@ -5175,14 +5185,22 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn sync_retention_progress_schedule(&self) -> Result<()> {
+        self.sync_retention_owner_progress_schedule("retention_archive")
+            .await
+    }
+
+    pub(crate) async fn sync_retention_owner_progress_schedule(
+        &self,
+        task_key: &str,
+    ) -> Result<()> {
         observe_store_write(
             StoreOperation::Progress,
-            self.sync_retention_progress_schedule_inner(),
+            self.sync_retention_progress_schedule_inner(task_key),
         )
         .await
     }
 
-    async fn sync_retention_progress_schedule_inner(&self) -> Result<()> {
+    async fn sync_retention_progress_schedule_inner(&self, task_key: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO managed_task_progress(
                  task_key,updated_at,freshness,next_inspection_at,next_catchup_at,catchup_state
@@ -5192,7 +5210,7 @@ impl MaintenanceStore {
                          WHEN next_catchup_at IS NOT NULL THEN 'scheduled'
                          ELSE 'idle' END
              FROM managed_tasks
-             WHERE task_key='retention_archive'
+             WHERE task_key=?2
              ON CONFLICT(task_key) DO UPDATE SET
                  updated_at=excluded.updated_at,
                  freshness='fresh',
@@ -5201,6 +5219,7 @@ impl MaintenanceStore {
                  catchup_state=excluded.catchup_state",
         )
         .bind(format_utc_iso_millis(Utc::now()))
+        .bind(task_key)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -7545,7 +7564,11 @@ mod tests {
         let basic = sanitize_task_detail("upstream rejected Authorization: Basic abc123, retry");
         assert!(!basic.contains("Basic"));
         assert!(!basic.contains("abc123"));
-        assert!(basic.contains("retry"));
+        let digest = sanitize_task_detail(
+            "upstream rejected Authorization: Digest username=alice, realm=example, nonce=nonce-secret",
+        );
+        assert!(!digest.contains("username=alice"));
+        assert!(!digest.contains("nonce-secret"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 

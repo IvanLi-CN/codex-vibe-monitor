@@ -1181,7 +1181,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
-                Err(_) => return Ok((0, 0, 0, std::collections::HashSet::new())),
+                Err(_) => {
+                    bail!(
+                        "retention invocation archive candidate query exceeded the operation deadline"
+                    )
+                }
             }
         } else {
             candidates_query.await?
@@ -1915,7 +1919,11 @@ pub(crate) async fn archive_timestamped_dataset(
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
-                Err(_) => return Ok((0, 0, 0)),
+                Err(_) => {
+                    bail!(
+                        "retention timestamped archive candidate query exceeded the operation deadline"
+                    )
+                }
             }
         } else {
             candidates_query.await?
