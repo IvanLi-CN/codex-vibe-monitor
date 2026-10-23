@@ -40,7 +40,8 @@
 - 2026-09-30：PR #1056 repair run `36726941619` 在 head `844d691c` 上所有 checks 通过。Lightweight `1,228/1,228`，nextest 执行 `77.715s`、job wall `113s`；Archive / File I/O `299/299`、job wall `146s`；Stateful SQLite `1,370/1,370`、job wall `314s`。原始 Lightweight 单线程执行 `427.558s`、job wall 约 `464s`，因此链接 job 的执行时间下降约 `82%`、job wall 下降约 `76%`。Stateful `314s`、Representative Scale `314s`、Lint `190s` 仍超过 `180s`，全 required-job 预算没有完成。
 - 2026-10-01：PR #1057 同一 head 的 cold/hot Actions 显示 Clippy Lint `220s`/`57s`、archive producer `236s`/`26s`，required runner 成本低于原门槛。冷编译测量支持 cold `250s`、hot `180s` 的分档预算，并保留原 runner 总成本与 Stateful 限值。热轮还暴露四个基于 `Utc::now()` 的 invocation timeline fixtures 在 UTC 午夜后越过自然日边界；后续候选将时间固定到当天中午。
 - 2026-10-23：当前 CI 候选保留既有 required checks、Stateful 双分片、Representative Scale、完整 E2E 与 PR smoke 语义；仅移除 CI PR 的 `labeled` 全量触发，删除 Lint 的重复 legacy Cargo registry restore，并把 archive consumer 收敛为固定 `cargo-nextest@0.9.138` 的一次解包、多 profile metadata replay。Bun 与 Playwright 下载缓存按版本和锁文件输入隔离。
-- 2026-10-23：本地 workflow/backend contract 与 runner archive-dir/archive-file 行为测试通过；按照既有规范，尚未将 C/D 的 E2E producer 合并和 Main/Pages artifact coupling 视为收益成立，必须等待真实 Actions 冷/热、成本与发布延迟证据后再决定保留或回滚。
+- 2026-10-23：PR #1177 head `0fc8f283` 的真实 Actions 冷/热两轮均通过全部 required checks、三个 backend profiles、Stateful aggregate、完整 E2E producer/gate、PR smoke 和 Docs Pages。冷/热 required job 最大 wall time 为 `337s`/`354s`，Archive/File I/O 为 `281s`/`306s`，archive-related runner time 约为 `1165s`/`1155s`；因此候选没有满足 `250s`/`180s` 与 `1005s` 收敛门槛，不能宣告 A/B 全量接受。`Build Artifacts` 的 `37s` 冷轮相对记录中的 `537s` 基线贡献确有收益，但不足以覆盖整体预算缺口。
+- 2026-10-23：本地 workflow/backend contract 与 runner archive-dir/archive-file 行为测试通过；本轮没有新增或保留 C/D 的 E2E producer/Records gate 与 Main/Pages artifact coupling 性能实验，故不把它们写成已验证收益，也没有伪造 merge-to-release 或 Pages 延迟证据。
 
 ## Key Reasons / Replacements
 

@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 三个 backend profiles 与 CI topology 已落地；PR #1056 repair run `36726941619` 将目标 Lightweight job 验收到 `113s` 且所有 checks 通过。完整 workflow 与缓存冷/热运行时及 runner 成本仍需按当前收敛合同验收。
+- Implementation: 三个 backend profiles 与 CI topology 已落地；本轮 PR #1177 的 CI cache/archive candidate 已推送并完成真实 Actions 冷/热验证，但尚未满足当前收敛合同的全部预算，因此不能作为最终接受证据。
 - Lifecycle: active
 - Project-owned validation target: `Dockerfile` `backend-test` (`rust:1.96.0-bookworm`, `cargo-nextest 0.9.138`, checksum-verified amd64 asset, rustfmt/clippy) invokes the profile runner with an isolated writable run workspace and optional external Cargo directories.
 - Shared-testbox entrypoint: `compose.backend-test.yml` builds that same target without fixing Cargo paths or changing the profile command/test-thread contract; the runner is an adapter, not a project dependency.
@@ -14,7 +14,30 @@
 - Release consumes the same target SHA's successful CI Main result and runtime-image smoke. Representative-scale acceptance remains a deterministic PR/Main gate and has no external receipt or production-copy input.
 - Catalog note: 三路 backend profile 合同保持不变；本轮收敛可移植 Rust 编译缓存输入、Archive file fixture、PR smoke build 与非 backend required-job 资源边界
 - Current CI candidate: `CI PR` removes `labeled` from the full-CI trigger while Label Gate retains label events; backend archive consumers use `cargo-nextest@0.9.138`, extract once to a runner-local directory, and replay the unchanged filters through archive metadata. Lint no longer restores the duplicate legacy Cargo cache; Bun downloads and version-matched Playwright Chromium use explicit cache keys.
-- Local contract evidence: `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`, `bash .github/scripts/test-quality-gates-contract.sh`, and `bash .github/scripts/test-backend-test-contract.sh` pass on this candidate. Real GitHub Actions cold/hot receipts, required runner totals, and merge-to-release/Pages timing remain open acceptance inputs.
+- Local contract evidence: `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`, `bash .github/scripts/test-backend-test-contract.sh`, `bash .github/scripts/test-representative-scale-contract.sh`, Actionlint, YAML parsing, shell syntax, and `git diff --check` pass on this candidate. The full quality-gates negative suite was attempted but exhausted local temporary disk while copying the repository snapshot; this is an environment limitation, not a contract assertion failure.
+
+## PR #1177 Actions evidence
+
+- `[CI PR run 39942798197](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39942798197)` passed on head `0fc8f283b9bb5ec39aa5e51c769b1cd6ebbe5db5` in both the first cold attempt and the complete rerun; all required checks, backend profiles, Stateful aggregate, E2E producer/gate, and smoke artifact path passed. `[Docs Pages run 39942798122](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39942798122)` also passed in both attempts.
+- Required CI job wall time, measured from each job's `startedAt` to `completedAt`, was:
+
+| Required job                         | Cold (s) | Hot (s) |
+| ------------------------------------ | -------: | ------: |
+| Lint & Format Check                  |      337 |     354 |
+| Repository Tooling Checks            |      145 |     156 |
+| Front-end Tests                      |      113 |     171 |
+| Storybook Accessibility Tests        |      110 |     132 |
+| Docs & Web Demo Build                |      114 |     109 |
+| Records Overlay E2E                  |        4 |       3 |
+| Backend Tests (Lightweight)          |      167 |     172 |
+| Backend Tests (Stateful SQLite)      |        2 |       2 |
+| Backend Tests (Representative Scale) |       44 |      59 |
+| Backend Tests (Archive / File I/O)   |      281 |     306 |
+| Build Artifacts                      |       37 |      75 |
+
+- The required-job wall-time contract is not met: cold maximum is `337s` and hot maximum is `354s`, both above the `250s`/`180s` limits. The auxiliary archive producer measured `213s` cold and `220s` hot; Stateful shards measured `291s`/`200s` and `167s`/`196s`. Archive-related runner time, counting the producer, three backend profiles, two Stateful shards, the Stateful aggregate, and Representative Scale, was approximately `1165s` cold and `1155s` hot, above the `1005s` retention gate.
+- The measured `Build Artifacts` improvement is real (`37s` cold versus the recorded `537s` baseline contributor), and all suites, filters, shards, result propagation, and failure checks passed. It is insufficient to claim full A/B acceptance because the complete cold/hot budget and archive cost gates remain open.
+- No new C/D experiment was retained in this PR: the PR E2E producer/Records gate and Main/Pages artifact coupling were not changed as a performance claim, so there is no merge-to-release or Pages delay evidence for them.
 
 ## Lightweight runtime investigation
 
