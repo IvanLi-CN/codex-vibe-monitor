@@ -689,7 +689,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/GPT61ModelContextCluster
-  evidence_bound_sha: c1201aa3d7b7bef82fbd6315b1e7783b61fc9f39
+  evidence_bound_sha: e99817f4af04c1a571e1758b5adf54f52f8d2ee6
   state: light desktop GPT-6.1 compact invocation slot with explicit none effort
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
@@ -707,7 +707,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/UpstreamAccountModelContext
-  evidence_bound_sha: c1201aa3d7b7bef82fbd6315b1e7783b61fc9f39
+  evidence_bound_sha: e99817f4af04c1a571e1758b5adf54f52f8d2ee6
   state: upstream-account recent rows at source-managed 393x852 with request-to-response mismatch
   requested_viewport: 393x852
   viewport_strategy: storybook-viewport
