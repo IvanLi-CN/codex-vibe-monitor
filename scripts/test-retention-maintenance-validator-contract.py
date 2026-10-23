@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 
 
 SOURCE = Path(__file__).with_name("validate-retention-maintenance-upgrade.py")
@@ -42,7 +43,15 @@ def test_real_owner_result_rejects_internal_or_legacy_fields():
         raise AssertionError(f"accepted invalid owner result payload: {details}")
 
 
+def test_missing_maintenance_store_is_not_created_for_diagnostics():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        assert UPGRADE.read_recorded_task_result(root) is None
+        assert not (root / "maintenance.sqlite").exists()
+
+
 if __name__ == "__main__":
     test_archive_and_other_owner_results_use_public_result_field()
     test_real_owner_result_rejects_internal_or_legacy_fields()
+    test_missing_maintenance_store_is_not_created_for_diagnostics()
     print("test-retention-maintenance-validator-contract: all checks passed")

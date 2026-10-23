@@ -172,6 +172,27 @@ def output_text(value):
     return value
 
 
+def read_recorded_task_result(root):
+    maintenance_database = root / "maintenance.sqlite"
+    if not maintenance_database.exists():
+        return None
+    try:
+        with sqlite3.connect(f"{maintenance_database.resolve().as_uri()}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                "SELECT task_key,status,summary,details FROM managed_task_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "taskKey": row[0],
+            "status": row[1],
+            "summary": row[2],
+            "details": row[3],
+        }
+    except sqlite3.Error as error:
+        return {"readError": str(error)}
+
+
 def execute(candidate, root, *arguments, expect_success=True):
     environment = dict(os.environ, DATABASE_PATH=str(root / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(root / "maintenance.sqlite"), ARCHIVE_DIR=str(root / "archives"), PROXY_RAW_DIR=str(root / "raw"), INVOCATION_SUCCESS_FULL_DAYS="30", INVOCATION_MAX_DAYS="90", FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS="30", POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS="7", QUOTA_SNAPSHOT_FULL_DAYS="30", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false", RETENTION_DRY_RUN="true", RUST_LOG="warn")
     version = root.name
@@ -211,21 +232,7 @@ def execute(candidate, root, *arguments, expect_success=True):
             + result_record["stdout"]
             + result_record["stderr"]
         )
-    recorded_task_result = None
-    try:
-        with sqlite3.connect(root / "maintenance.sqlite") as connection:
-            row = connection.execute(
-                "SELECT task_key,status,summary,details FROM managed_task_runs ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        if row is not None:
-            recorded_task_result = {
-                "taskKey": row[0],
-                "status": row[1],
-                "summary": row[2],
-                "details": row[3],
-            }
-    except sqlite3.Error as error:
-        recorded_task_result = {"readError": str(error)}
+    recorded_task_result = read_recorded_task_result(root)
     result_record["recordedTaskResult"] = recorded_task_result
     with (root / "candidate.log").open("a") as log:
         log.write("recordedTaskResult=" + json.dumps(recorded_task_result, ensure_ascii=False) + "\n")
