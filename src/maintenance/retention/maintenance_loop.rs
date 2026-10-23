@@ -138,6 +138,7 @@ pub(crate) struct RetentionOwnerRunSummary {
     pub(crate) archive_batches: Vec<RetentionBatchMetrics>,
     pub(crate) raw_files_removed: usize,
     pub(crate) raw_files_planned: usize,
+    pub(crate) workload_observed: bool,
     pub(crate) completion: &'static str,
     pub(crate) wait_reason: Option<String>,
     pub(crate) fatal_error: Option<String>,
@@ -160,6 +161,7 @@ impl RetentionOwnerRunSummary {
             archive_batches: Vec::new(),
             raw_files_removed: 0,
             raw_files_planned: 0,
+            workload_observed: false,
             completion: "complete",
             wait_reason: None,
             fatal_error: None,
@@ -239,6 +241,7 @@ fn apply_retention_owner_post_commit_error(
     error: &anyhow::Error,
 ) {
     // The owner has already committed its deletion before the follow-up coverage probe.
+    summary.workload_observed = true;
     summary.discovered = discovered;
     summary.selected = committed;
     summary.committed = committed;
@@ -250,6 +253,9 @@ fn apply_retention_owner_batch_metrics(
     summary: &mut RetentionOwnerRunSummary,
     metrics: &[batch_plan::RetentionBatchMetrics],
 ) {
+    if !metrics.is_empty() {
+        summary.workload_observed = true;
+    }
     let (selected, committed, raw_files_removed) = metrics.iter().fold(
         (0usize, 0usize, 0usize),
         |(selected, committed, raw_files_removed), batch| {
@@ -276,9 +282,11 @@ fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, da
             .cloned()
             .collect::<Vec<_>>();
         apply_retention_owner_batch_metrics(summary, &metrics);
-        summary.discovered = batch_plan::discovered_rows(dataset)
-            .unwrap_or_default()
-            .max(summary.discovered);
+        let discovered = batch_plan::discovered_rows(dataset);
+        if discovered.is_some() {
+            summary.workload_observed = true;
+        }
+        summary.discovered = discovered.unwrap_or_default().max(summary.discovered);
     });
 }
 
@@ -360,6 +368,7 @@ fn apply_retention_owner_success(
     raw_files_removed: usize,
     has_more: Option<bool>,
 ) {
+    summary.workload_observed = true;
     summary.discovered = discovered;
     summary.selected = selected;
     summary.committed = committed;
@@ -750,6 +759,7 @@ async fn run_model_route_expiry_owner(
                 return Ok(summary.finish(started_at));
             }
         };
+        summary.workload_observed = true;
         summary.discovered = discovered;
         let Some(admission) = acquire_retention_write_admission("model_route_purge").await else {
             apply_retention_owner_success(&mut summary, discovered, 0, 0, 0, 0, Some(true));
@@ -779,6 +789,7 @@ async fn run_model_route_expiry_owner(
             usize::from(committed >= candidate_limit),
         );
         drop(admission);
+        summary.workload_observed = true;
         summary.selected = committed;
         summary.committed = committed;
         let has_more = match crate::upstream_accounts::inspect_expired_model_routes_bounded(
@@ -828,14 +839,15 @@ async fn run_task_run_history_cleanup_owner(
                 .downcast_ref::<SystemTaskRunRetentionPartialError>()
                 .map(|partial| partial.committed)
                 .unwrap_or_default();
-            summary.discovered = committed;
-            summary.selected = committed;
-            summary.committed = if dry_run { 0 } else { committed };
-            summary.batches = committed
-                .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS - 1)
-                / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS;
             summary.has_more = Some(true);
             if let Some(partial) = error.downcast_ref::<SystemTaskRunRetentionPartialError>() {
+                summary.workload_observed = true;
+                summary.discovered = committed;
+                summary.selected = committed;
+                summary.committed = if dry_run { 0 } else { committed };
+                summary.batches = committed
+                    .saturating_add(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS - 1)
+                    / SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS;
                 apply_retention_owner_error(&mut summary, &partial.cause);
             } else {
                 apply_retention_owner_error(&mut summary, &error);
@@ -850,6 +862,7 @@ async fn run_task_run_history_cleanup_owner(
         match store.cleanup_expired_history_bounded(dry_run).await {
             Ok(result) => result,
             Err(error) => {
+                summary.workload_observed = true;
                 summary.discovered = legacy_selected;
                 summary.selected = legacy_selected;
                 summary.committed = if dry_run { 0 } else { legacy_selected };

@@ -100,6 +100,7 @@ fn retention_owner_execution(
     observation: Option<&crate::TaskExecutionObservation>,
 ) -> OwnedMaintenanceExecution {
     let completion = summary.completion;
+    let workload_observed = summary.workload_observed;
     if let Some(observation) = observation {
         if summary.task_key == "retention_archive" {
             observation.set_pending_population(
@@ -110,13 +111,18 @@ fn retention_owner_execution(
                 "exact",
             );
         }
-        observation.set_discovered_work(
-            summary.discovered as i64,
-            format_utc_iso_millis(Utc::now()),
-            "run-window".to_string(),
-        );
-        observation.set_processed_work(summary.committed as i64);
+        if workload_observed {
+            observation.set_discovered_work(
+                summary.discovered as i64,
+                format_utc_iso_millis(Utc::now()),
+                "run-window".to_string(),
+            );
+            observation.set_processed_work(summary.committed as i64);
+        }
     }
+    let selected_text = workload_observed
+        .then_some(summary.selected.to_string())
+        .unwrap_or_else(|| "未知".to_string());
     let retry_after_secs = summary.wait_reason.as_deref().map(|reason| match reason {
         "retention_work_budget" => 1,
         "retention_write_admission" | "sqlite_pressure" => 30,
@@ -136,10 +142,12 @@ fn retention_owner_execution(
     };
     let summary_text = if summary.completion == "failed" {
         format!("{} 执行失败", summary.task_key)
+    } else if !workload_observed {
+        format!("{} 工作量未知，等待下一轮继续", summary.task_key)
     } else if options.dry_run {
         format!(
             "{} 计划处理 {} {}，本次未提交数据",
-            summary.task_key, summary.selected, summary.unit
+            summary.task_key, selected_text, summary.unit
         )
     } else {
         format!(
@@ -147,6 +155,13 @@ fn retention_owner_execution(
             summary.task_key, summary.committed, summary.unit, summary.batches
         )
     };
+    let backlog_remaining = workload_observed
+        .then(|| {
+            summary
+                .global_total
+                .map(|total| total.saturating_sub(summary.committed as i64))
+        })
+        .flatten();
     let timeout_count = summary
         .archive_batches
         .iter()
@@ -164,20 +179,20 @@ fn retention_owner_execution(
             "result": completion,
             "globalBacklogTotal": summary.global_total,
             "total": summary.global_total,
-            "backlogRemaining": summary.global_total.map(|total| total.saturating_sub(summary.committed as i64)),
-            "discovered": summary.discovered,
-            "selected": summary.selected,
-            "committed": summary.committed,
-            "processedCount": summary.committed,
-            "completed": summary.committed,
+            "backlogRemaining": backlog_remaining,
+            "discovered": workload_observed.then_some(summary.discovered),
+            "selected": workload_observed.then_some(summary.selected),
+            "committed": workload_observed.then_some(summary.committed),
+            "processedCount": workload_observed.then_some(summary.committed),
+            "completed": workload_observed.then_some(summary.committed),
             "selectedScope": {
                 "scope": summary.source_scope,
                 "unit": summary.unit,
-                "selected": summary.selected,
-                "committed": summary.committed,
-                "batches": summary.batches,
-                "rawFilesRemoved": summary.raw_files_removed,
-                "rawFilesPlanned": summary.raw_files_planned,
+                "selected": workload_observed.then_some(summary.selected),
+                "committed": workload_observed.then_some(summary.committed),
+                "batches": workload_observed.then_some(summary.batches),
+                "rawFilesRemoved": workload_observed.then_some(summary.raw_files_removed),
+                "rawFilesPlanned": workload_observed.then_some(summary.raw_files_planned),
                 "hasMore": summary.has_more,
             },
             "archiveBatches": summary.archive_batches,
@@ -417,4 +432,29 @@ pub(crate) async fn initialize_invocation_identity_cleanup_state(
     sqlx::query("INSERT OR IGNORE INTO prompt_cache_conversation_orphan_cleanup_state(scope) VALUES('invocation_hour_prefixes')")
         .execute(pool).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unobserved_retention_owner_facts_remain_unknown() {
+        let summary = RetentionOwnerRunSummary::new("retention_archive", "invocations", "rows");
+        let execution = retention_owner_execution(
+            summary,
+            MaintenanceExecutionOptions {
+                manual: false,
+                admitted: false,
+                dry_run: false,
+            },
+            None,
+        );
+
+        assert!(execution.details["discovered"].is_null());
+        assert!(execution.details["selected"].is_null());
+        assert!(execution.details["committed"].is_null());
+        assert!(execution.details["processedCount"].is_null());
+        assert!(execution.details["selectedScope"]["rawFilesRemoved"].is_null());
+    }
 }
