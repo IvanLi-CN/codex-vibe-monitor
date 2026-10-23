@@ -1109,7 +1109,7 @@ jobs:
           PY
 
       - name: Upload retention migration evidence
-        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        if: ${{ always() && steps.retention_scope.outputs.required == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: retention-migration-validation-${{ github.run_id }}

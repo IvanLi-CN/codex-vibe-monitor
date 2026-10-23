@@ -2089,6 +2089,8 @@ async fn retention_raw_deletion_plan_defers_while_writer_holds_fence() {
     assert_eq!(removed, 0);
     assert!(raw_path.exists());
 
+    drop(_writer_fence);
+    drop(connection);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -2118,6 +2120,7 @@ async fn retention_raw_deletion_plan_preserves_replaced_identity() {
         b"replacement-with-new-identity"
     );
 
+    drop(connection);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }

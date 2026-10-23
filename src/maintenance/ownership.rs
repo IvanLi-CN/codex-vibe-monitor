@@ -169,6 +169,12 @@ fn retention_owner_execution(
         .iter()
         .map(|batch| batch.timeout_count)
         .sum::<u64>();
+    let error_chain = summary.error_chain.as_ref().map(|chain| {
+        chain
+            .iter()
+            .map(|entry| crate::maintenance_store::sanitize_task_detail(entry))
+            .collect::<Vec<_>>()
+    });
     OwnedMaintenanceExecution {
         summary: summary_text,
         completion,
@@ -202,6 +208,7 @@ fn retention_owner_execution(
             "sourceMaxInvocationId": summary.source_max_id,
             "waitReason": summary.wait_reason,
             "fatalError": summary.fatal_error,
+            "errorChain": error_chain,
             "elapsedMs": summary.elapsed_ms,
         }),
     }

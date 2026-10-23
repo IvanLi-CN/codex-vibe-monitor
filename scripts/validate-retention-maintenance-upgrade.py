@@ -62,7 +62,7 @@ OWNER_ARCHIVE_FIXTURES = {
     "pool_upstream_attempt_archive": ("pool_upstream_request_attempts", "invoke_id", f"{OWNER_FIXTURE_PREFIX}-pool"),
     "forward_proxy_attempt_archive": ("forward_proxy_attempts", "proxy_key", f"{OWNER_FIXTURE_PREFIX}-forward"),
     "invocation_detail_prune": ("codex_invocations", "invoke_id", f"{OWNER_FIXTURE_PREFIX}-detail"),
-    "quota_snapshot_compaction": ("codex_quota_snapshots", "captured_at", "2020-01-01T00:00:00.000Z"),
+    "quota_snapshot_compaction": ("codex_quota_snapshots", "captured_at", "2020-01-01 00:00:00"),
 }
 OWNER_RAW_REFERENCES = {
     "retention_archive": (("codex_invocations", "request_raw_path"), ("codex_invocations", "response_raw_path")),
@@ -98,11 +98,11 @@ def seed_owner_candidates(root):
         )
         connection.execute(
             "INSERT INTO codex_quota_snapshots (captured_at,amount_limit,used_amount,remaining_amount) VALUES (?,?,?,?)",
-            ("2020-01-01T00:00:00.000Z", 100.0, 1.0, 99.0),
+            ("2020-01-01 00:00:00", 100.0, 1.0, 99.0),
         )
         connection.execute(
             "INSERT INTO codex_quota_snapshots (captured_at,amount_limit,used_amount,remaining_amount) VALUES (?,?,?,?)",
-            ("2020-01-01T00:01:00.000Z", 100.0, 2.0, 98.0),
+            ("2020-01-01 00:01:00", 100.0, 2.0, 98.0),
         )
         connection.execute(
             "INSERT INTO pool_upstream_accounts (kind,display_name,status,created_at,updated_at) VALUES (?,?,?,?,?)",
@@ -140,18 +140,77 @@ def owner_candidate_state(root, task_key):
             "model_route_expiry": ("SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE model=?", f"{OWNER_FIXTURE_PREFIX}-model"),
         }
         if task_key == "quota_snapshot_compaction":
-            return connection.execute("SELECT COUNT(*) FROM codex_quota_snapshots WHERE captured_at LIKE '2020-01-01T00:%'").fetchone()[0]
+            return connection.execute("SELECT COUNT(*) FROM codex_quota_snapshots WHERE captured_at LIKE '2020-01-01 00:%'").fetchone()[0]
         if task_key == "task_run_history_cleanup":
             return connection.execute("SELECT COUNT(*) FROM system_task_runs WHERE task_kind=?", (f"{OWNER_FIXTURE_PREFIX}-history",)).fetchone()[0]
         query, value = queries[task_key]
         return connection.execute(query, (value,)).fetchone()[0]
 
 
+def owner_for_arguments(arguments):
+    if arguments in {("--retention-dry-run",), ("--retention-run-once",)}:
+        return "retention_archive"
+    if len(arguments) >= 2 and arguments[:1] == ("maintenance",):
+        return {
+            "pool-upstream-attempt-archive": "pool_upstream_attempt_archive",
+            "forward-proxy-attempt-archive": "forward_proxy_attempt_archive",
+            "invocation-detail-prune": "invocation_detail_prune",
+            "quota-snapshot-compaction": "quota_snapshot_compaction",
+            "model-route-expiry": "model_route_expiry",
+            "task-run-history-cleanup": "task_run_history_cleanup",
+            "invocation-identity-cleanup": "invocation_identity_cleanup",
+            "raw-orphan-sweep": "raw_orphan_sweep",
+        }.get(arguments[1])
+    return None
+
+
+def output_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
+
+
 def execute(candidate, root, *arguments, expect_success=True):
     environment = dict(os.environ, DATABASE_PATH=str(root / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(root / "maintenance.sqlite"), ARCHIVE_DIR=str(root / "archives"), PROXY_RAW_DIR=str(root / "raw"), INVOCATION_SUCCESS_FULL_DAYS="30", INVOCATION_MAX_DAYS="90", FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS="30", POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS="7", QUOTA_SNAPSHOT_FULL_DAYS="30", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false", RETENTION_DRY_RUN="true", RUST_LOG="warn")
-    result = subprocess.run([str(candidate), *arguments], env=environment, capture_output=True, text=True, timeout=90)
+    version = root.name
+    owner = owner_for_arguments(arguments)
+    try:
+        result = subprocess.run([str(candidate), *arguments], env=environment, capture_output=True, text=True, timeout=90)
+        result_record = {
+            "version": version,
+            "owner": owner,
+            "arguments": arguments,
+            "exitCode": result.returncode,
+            "stdout": output_text(result.stdout),
+            "stderr": output_text(result.stderr),
+        }
+    except subprocess.TimeoutExpired as error:
+        result_record = {
+            "version": version,
+            "owner": owner,
+            "arguments": arguments,
+            "exitCode": None,
+            "timeoutSeconds": 90,
+            "stdout": output_text(error.stdout),
+            "stderr": output_text(error.stderr),
+        }
+        with (root / "candidate.log").open("a") as log:
+            log.write(json.dumps(result_record, ensure_ascii=False) + "\n")
+        with (root / "candidate-diagnostics.jsonl").open("a") as diagnostics:
+            diagnostics.write(json.dumps(result_record, ensure_ascii=False) + "\n")
+        raise
     with (root / "candidate.log").open("a") as log:
-        log.write(json.dumps({"arguments": arguments, "exitCode": result.returncode}) + "\n" + result.stdout + result.stderr)
+        log.write(
+            json.dumps(
+                {key: value for key, value in result_record.items() if key not in {"stdout", "stderr"}},
+                ensure_ascii=False,
+            )
+            + "\n"
+            + result_record["stdout"]
+            + result_record["stderr"]
+        )
     recorded_task_result = None
     try:
         with sqlite3.connect(root / "maintenance.sqlite") as connection:
@@ -167,6 +226,11 @@ def execute(candidate, root, *arguments, expect_success=True):
             }
     except sqlite3.Error as error:
         recorded_task_result = {"readError": str(error)}
+    result_record["recordedTaskResult"] = recorded_task_result
+    with (root / "candidate.log").open("a") as log:
+        log.write("recordedTaskResult=" + json.dumps(recorded_task_result, ensure_ascii=False) + "\n")
+    with (root / "candidate-diagnostics.jsonl").open("a") as diagnostics:
+        diagnostics.write(json.dumps(result_record, ensure_ascii=False) + "\n")
     assert (result.returncode == 0) == expect_success, (
         result.stdout[-4000:]
         + result.stderr[-2000:]

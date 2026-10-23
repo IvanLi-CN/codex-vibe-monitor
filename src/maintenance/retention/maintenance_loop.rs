@@ -142,6 +142,7 @@ pub(crate) struct RetentionOwnerRunSummary {
     pub(crate) completion: &'static str,
     pub(crate) wait_reason: Option<String>,
     pub(crate) fatal_error: Option<String>,
+    pub(crate) error_chain: Option<Vec<String>>,
     pub(crate) has_more: Option<bool>,
     pub(crate) elapsed_ms: u64,
 }
@@ -165,6 +166,7 @@ impl RetentionOwnerRunSummary {
             completion: "complete",
             wait_reason: None,
             fatal_error: None,
+            error_chain: None,
             has_more: None,
             elapsed_ms: 0,
         }
@@ -229,6 +231,7 @@ fn apply_retention_owner_error(summary: &mut RetentionOwnerRunSummary, error: &a
     };
     if completion == "failed" {
         summary.fatal_error = reason;
+        summary.error_chain = Some(error.chain().map(ToString::to_string).collect());
     } else {
         summary.wait_reason = reason;
     }
