@@ -4245,7 +4245,7 @@ export function DashboardWorkingConversationsSection({
     closeConversationBulkDialogs();
   }, [closeConversationBulkDialogs]);
   const blockedBindingFilterActive = activeBlockedBindingFilter != null;
-  const upstreamAccountsDisabled = activeRange === "usage";
+  const upstreamAccountsDisabled = false;
   const activeView: DashboardWorkspaceView = blockedBindingFilterActive
     ? "conversations"
     : upstreamAccountsDisabled && preferredView === "upstreamAccounts"

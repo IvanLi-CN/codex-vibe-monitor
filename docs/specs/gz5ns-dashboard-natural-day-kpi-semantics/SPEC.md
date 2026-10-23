@@ -2,6 +2,8 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+活动总览的范围选项、实时与昨日日均主值、比较窗口、短标签和成功百分比以[活动总览时间范围与历史活动归位](../dashboard-activity-range-and-history/SPEC.md)为准；本文与之重叠的表面规则由该主题替代，其余布局、精度与基础指标要求继续有效。
+
 ## 背景 / 问题陈述
 
 - 当前 `TodayStatsOverview` 的 7 张 KPI 卡虽然已经承载 `TPM / 消费速率 / 成功 / 进行中对话 / 首字用时 / 今日成本 / 今日 Tokens`，但二级信息仍采用“label 在上、value 在下”的两层堆叠，且右下语义位长期不完整。
@@ -189,7 +191,6 @@
   sensitive_exclusion: `N/A`
   scenario: `Dashboard today with minute-day local performance fixture`
   evidence_note: `固定本地数据下核对七卡内容、次数图、图例和时间轴；今日活动图为 1170 个分钟点，昨日比较序列为 1440 个分钟点，图表的可见网格位置与优化前一致。`
-  PR: include
   ![Dashboard minute-day KPI performance fixture](./assets/dashboard-kpi-minute-day-performance.png)
 
 - SHA `b37da68e`
@@ -205,7 +206,6 @@
   story_id_or_title: `dashboard-dashboardtodayactivitychart--tokens-cumulative`
   scenario: `desktop1440 dark with active tooltip`
   evidence_note: `验证四层累计面积、右侧 0–100% 轴、10 分钟平滑命中率折线与 1 小时平滑参考线，以及 tooltip/图例按缓存输入、缓存写入、输出、思考、总计、10 分钟缓存命中率、1 小时缓存命中率固定排序。`
-  PR: include
   ![Tokens breakdown desktop 1440 dark](./assets/tokens-breakdown-desktop1440-dark.png)
 - SHA `b37da68e`
   source_type: `storybook_canvas`
@@ -220,7 +220,6 @@
   story_id_or_title: `dashboard-dashboardtodayactivitychart--mobile-tokens-cumulative`
   scenario: `mobile393 light with active tooltip`
   evidence_note: `验证移动端四层面积、0/50/100% 紧凑右轴、双命中率折线、tooltip 完整明细、图例两行换行与无横向溢出。`
-  PR: include
   ![Tokens breakdown mobile 393 light](./assets/tokens-breakdown-mobile393-light.png)
 
 - SHA `753a5bdf`
@@ -234,21 +233,18 @@
   story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
   scenario: `desktop single-row swapped cards`
   evidence_note: `验证桌面单行七卡顺序已调整为 TPM、消费速率、进行中调用、成功、TTFT、今日成本、今日 Token；截图生成时使用的旧延迟数据口径不构成当前 TTFT 语义证据，当前口径以 #6qe6u 为准。`
-  PR: include
   ![TodayStatsOverview swapped cards](./assets/today-stats-overview-swapped-cards.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-dashboardactivityoverview--today-view`
   scenario: `activity overview desktop today`
   evidence_note: `验证活动总览桌面态中的今日七卡与图表整体效果，第五张卡右下“响应时间”已带最近 5 分钟完整调用结束的 mock 值，且主值字号已统一微调。`
-  PR: include
   ![Today activity overview with response-time secondary](./assets/dashboard-activity-overview-today-desktop.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-dashboardactivityoverview--today-view`
   scenario: `activity overview desktop precision guard`
   evidence_note: `验证集成态 Dashboard 活动总览在支持的 Desktop 1280 viewport 下，窄卡会自动把 comparison/secondary 下沉到主值下方逐行展示，同时保持主值优先精度，不再依赖字符串截断。`
-  PR: include
   ![Today activity overview precision desktop](./assets/dashboard-activity-overview-today-precision-desktop.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`

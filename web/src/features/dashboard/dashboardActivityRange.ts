@@ -1,4 +1,4 @@
-export type DashboardActivityRangeKey = "today" | "yesterday" | "1d" | "7d" | "usage";
+export type DashboardActivityRangeKey = "today" | "yesterday" | "1d";
 export type DashboardWorkspaceView = "conversations" | "upstreamAccounts";
 
 export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = "dashboard.activityOverview.activeRange.v1";
@@ -9,13 +9,7 @@ const DEFAULT_RANGE: DashboardActivityRangeKey = "today";
 const DEFAULT_WORKSPACE_VIEW: DashboardWorkspaceView = "conversations";
 
 function isRangeKey(value: string | null): value is DashboardActivityRangeKey {
-  return (
-    value === "today" ||
-    value === "yesterday" ||
-    value === "1d" ||
-    value === "7d" ||
-    value === "usage"
-  );
+  return value === "today" || value === "yesterday" || value === "1d";
 }
 
 function isDashboardWorkspaceView(value: string | null): value is DashboardWorkspaceView {

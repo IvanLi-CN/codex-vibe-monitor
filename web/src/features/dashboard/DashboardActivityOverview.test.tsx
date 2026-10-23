@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, useSyncExternalStore } from "react";
+import { act, useEffect, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DashboardActivityOverview } from "./DashboardActivityOverview";
@@ -18,6 +18,8 @@ const hookMocks = vi.hoisted(() => ({
 
 const componentState = vi.hoisted(() => ({
   chartRenderCount: 0,
+  timelineMountCount: 0,
+  timelineUnmountCount: 0,
 }));
 
 const sseState = vi.hoisted(() => ({
@@ -153,6 +155,12 @@ vi.mock("./DashboardInvocationTimeline", () => ({
     error?: string | null;
     closedNaturalDay?: boolean;
   }) => {
+    useEffect(() => {
+      componentState.timelineMountCount += 1;
+      return () => {
+        componentState.timelineUnmountCount += 1;
+      };
+    }, []);
     componentState.chartRenderCount += 1;
     return (
       <div
@@ -279,11 +287,11 @@ function createSummaryStore() {
   >();
   const listeners = new Set<() => void>();
 
-  const getFallback = () => ({
+  const fallback = {
     summary: null,
     isLoading: false,
     error: null,
-  });
+  };
 
   return {
     subscribe(listener: () => void) {
@@ -291,7 +299,7 @@ function createSummaryStore() {
       return () => listeners.delete(listener);
     },
     getSnapshot(window: string) {
-      return values.get(window) ?? getFallback();
+      return values.get(window) ?? fallback;
     },
     set(
       window: string,
@@ -357,6 +365,8 @@ afterEach(() => {
   root = null;
   window.localStorage.clear();
   componentState.chartRenderCount = 0;
+  componentState.timelineMountCount = 0;
+  componentState.timelineUnmountCount = 0;
   summaryStore.reset();
   sseState.listeners.clear();
   vi.clearAllMocks();
@@ -788,7 +798,7 @@ describe("DashboardActivityOverview", () => {
     expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain("yesterday");
   });
 
-  it("loads only the active range and keeps per-range metric memory across all five tabs", async () => {
+  it("loads only the active range and keeps per-range metric memory across the three tabs", async () => {
     installSummaryMocks();
 
     render(<DashboardActivityOverview />);
@@ -797,7 +807,11 @@ describe("DashboardActivityOverview", () => {
     expect(getFirstSeenSummaryWindows()).toEqual(["today", "yesterday", "previous7d"]);
     expect(
       hookMocks.useTimeseries.mock.calls.every(
-        ([window]) => window === "today" || window === "yesterday",
+        ([window]) =>
+          window === "today" ||
+          window === "yesterday" ||
+          window === "previous1d" ||
+          window === "1d",
       ),
     ).toBe(true);
     expect(
@@ -840,7 +854,7 @@ describe("DashboardActivityOverview", () => {
     ).toBe("true");
     expect(
       host?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')?.textContent,
-    ).toBe("timeline;loading:false;error:null;closed:true");
+    ).toBe("timeline;loading:false;error:null;closed:false");
     clickTab("Tokens");
     expect(
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
@@ -850,44 +864,9 @@ describe("DashboardActivityOverview", () => {
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
     ).toBe("metric:trend");
 
-    clickTab("History");
-    expect(
-      hookMocks.useSummary.mock.calls.every(
-        ([window]) => window === "today" || window === "yesterday" || window === "previous7d",
-      ),
-    ).toBe(true);
-    expect(
-      hookMocks.useTimeseries.mock.calls.every(
-        ([window]) => window === "today" || window === "yesterday",
-      ),
-    ).toBe(true);
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalCount;surface:false;toggle:false;meta:false;account:global;points:0",
-    );
-    clickTab("Tokens");
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalTokens;surface:false;toggle:false;meta:false;account:global;points:0",
-    );
-
-    clickTab("7 Days");
-    expect(
-      Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).some(
-        (button) => button.textContent === "Trend",
-      ),
-    ).toBe(false);
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe("total:700");
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCount;account:global;points:0",
-    );
-    clickTab("Cost");
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCost;account:global;points:0",
-    );
-
     clickTab("24 Hours");
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe("total:100");
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
-      "metric:totalCount;account:global;points:0",
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      "total:100",
     );
     clickTab("Tokens");
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
@@ -898,18 +877,10 @@ describe("DashboardActivityOverview", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
     ).toBe("metric:totalCost");
-    clickTab("History");
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalTokens;surface:false;toggle:false;meta:false;account:global;points:0",
-    );
     clickTab("Yesterday");
     expect(
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
     ).toBe("metric:trend");
-    clickTab("7 Days");
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCost;account:global;points:0",
-    );
     clickTab("24 Hours");
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
       "metric:totalTokens;account:global;points:0",
@@ -943,8 +914,22 @@ describe("DashboardActivityOverview", () => {
 
     expect(
       host?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')?.textContent,
-    ).toBe("timeline;loading:false;error:offline;closed:true");
+    ).toBe("timeline;loading:false;error:offline;closed:false");
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')).toBeNull();
+  });
+
+  it("keeps the live timeline mounted while switching statistics ranges", () => {
+    installSummaryMocks();
+    render(<DashboardActivityOverview />);
+
+    expect(componentState.timelineMountCount).toBe(1);
+    expect(componentState.timelineUnmountCount).toBe(0);
+
+    clickTab("Yesterday");
+    clickTab("24 Hours");
+
+    expect(componentState.timelineMountCount).toBe(1);
+    expect(componentState.timelineUnmountCount).toBe(0);
   });
 
   it("shows the network metric only on today, yesterday, and 24 hours, and switches those ranges to the network chart", async () => {
@@ -972,10 +957,18 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="heatmap-24h"]')).toBeNull();
     expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("1d", true, undefined);
 
-    clickTab("7 Days");
-    expect(host?.textContent).not.toContain("Trend");
-    expect(host?.textContent).not.toContain("Network");
-    expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("1d", false, undefined);
+    clickTab("Yesterday");
+    clickTab("Network");
+    await vi.waitFor(() => {
+      expect(
+        host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
+      ).toBe("points:2;loading:false;error:null");
+    });
+    expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith(
+      "yesterday",
+      false,
+      undefined,
+    );
   });
 
   it("does not surface the chart refreshing chrome when network data is already hydrated", () => {
@@ -1021,12 +1014,11 @@ describe("DashboardActivityOverview", () => {
 
     expect(
       host
-        ?.querySelector('[data-testid="dashboard-activity-range-usage"]')
+        ?.querySelector('[data-testid="dashboard-activity-range-today"]')
         ?.getAttribute("data-active"),
     ).toBe("true");
-    expect(host?.querySelector('[data-testid="usage-calendar"]')).not.toBeNull();
-    expect(hookMocks.useSummary).not.toHaveBeenCalled();
-    expect(hookMocks.useTimeseries).not.toHaveBeenCalled();
+    expect(host?.querySelector('[data-testid="usage-calendar"]')).toBeNull();
+    expect(hookMocks.useSummary).toHaveBeenCalledWith("today", undefined);
 
     act(() => {
       root?.unmount();
@@ -1048,7 +1040,7 @@ describe("DashboardActivityOverview", () => {
   it("uses account-scoped fetch options and storage without changing dashboard storage", () => {
     installSummaryMocks();
     const storageKey = `${ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX}.42`;
-    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, "usage");
+    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, "7d");
 
     render(
       <DashboardActivityOverview
@@ -1067,7 +1059,7 @@ describe("DashboardActivityOverview", () => {
         ?.querySelector('[data-testid="dashboard-activity-range-today"]')
         ?.getAttribute("data-active"),
     ).toBe("true");
-    expect(window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)).toBe("usage");
+    expect(window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)).toBe("7d");
     expect(window.localStorage.getItem(storageKey)).toBe("today");
     expect(hookMocks.useSummary).toHaveBeenCalledWith("today", {
       upstreamAccountId: 42,
@@ -1093,13 +1085,13 @@ describe("DashboardActivityOverview", () => {
       "parallelAvg:2;parallelError:null;showInProgress:true",
     );
 
-    clickTab("7 Days");
+    clickTab("24 Hours");
 
-    expect(window.localStorage.getItem(storageKey)).toBe("7d");
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCount;account:42;points:0",
+    expect(window.localStorage.getItem(storageKey)).toBe("1d");
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      "total:100",
     );
-    expect(hookMocks.useSummary).toHaveBeenCalledWith("7d", {
+    expect(hookMocks.useSummary).toHaveBeenCalledWith("1d", {
       upstreamAccountId: 42,
     });
   });
@@ -1146,16 +1138,32 @@ describe("DashboardActivityOverview", () => {
     expect(getFirstSeenSummaryWindows()).toEqual(["today", "yesterday", "previous7d"]);
 
     clickTab("Yesterday");
-    expect(getFirstSeenSummaryWindows()).toEqual(["today", "yesterday", "previous7d"]);
-
-    clickTab("7 Days");
-    expect(getFirstSeenSummaryWindows()).toEqual(["today", "yesterday", "previous7d", "7d"]);
+    expect(getFirstSeenSummaryWindows()).toEqual([
+      "today",
+      "yesterday",
+      "previous7d",
+      "previous1d",
+    ]);
 
     clickTab("24 Hours");
-    expect(getFirstSeenSummaryWindows()).toEqual(["today", "yesterday", "previous7d", "7d", "1d"]);
+    expect(getFirstSeenSummaryWindows()).toEqual([
+      "today",
+      "yesterday",
+      "previous7d",
+      "previous1d",
+      "1d",
+      "previous24h",
+    ]);
 
-    clickTab("History");
-    expect(getFirstSeenSummaryWindows()).toEqual(["today", "yesterday", "previous7d", "7d", "1d"]);
+    clickTab("Today");
+    expect(getFirstSeenSummaryWindows()).toEqual([
+      "today",
+      "yesterday",
+      "previous7d",
+      "previous1d",
+      "1d",
+      "previous24h",
+    ]);
   });
 
   it("does not rerender the today chart when only the summary hook updates", () => {
@@ -1248,7 +1256,7 @@ describe("DashboardActivityOverview", () => {
         snapshotStatus={{
           mode: "cached-offline",
           cachedAt: "2026-07-17T05:20:00.000Z",
-          readyRanges: ["today", "1d", "7d", "usage"],
+          readyRanges: ["today", "1d"],
         }}
         snapshotBundle={buildCachedSnapshotBundle("today")}
       />,
@@ -1264,11 +1272,14 @@ describe("DashboardActivityOverview", () => {
       "tpm:512;spendRate:0.31",
     );
     expect(hookMocks.useSummary).not.toHaveBeenCalled();
-    expect(hookMocks.useTimeseries).not.toHaveBeenCalled();
+    expect(hookMocks.useTimeseries).toHaveBeenCalledWith("1d", {
+      bucket: "1m",
+      enabled: false,
+    });
     expect(hookMocks.useParallelWorkStats).not.toHaveBeenCalled();
   });
 
-  it("injects cached timeseries into 24 hour, 7 day, and usage snapshot panels", () => {
+  it("injects cached timeseries into the 24 hour snapshot panel", () => {
     installSummaryMocks();
 
     render(
@@ -1277,7 +1288,7 @@ describe("DashboardActivityOverview", () => {
         snapshotStatus={{
           mode: "cached-offline",
           cachedAt: "2026-07-17T05:20:00.000Z",
-          readyRanges: ["today", "1d", "7d", "usage"],
+          readyRanges: ["today", "1d"],
         }}
         snapshotBundle={buildCachedSnapshotBundle("1d", {
           summary: { totalCount: 144 },
@@ -1286,46 +1297,10 @@ describe("DashboardActivityOverview", () => {
       />,
     );
 
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe("total:42");
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain("points:1");
-
-    act(() => {
-      root?.render(
-        <DashboardActivityOverview
-          activeRange="7d"
-          snapshotStatus={{
-            mode: "cached-offline",
-            cachedAt: "2026-07-17T05:20:00.000Z",
-            readyRanges: ["today", "1d", "7d", "usage"],
-          }}
-          snapshotBundle={buildCachedSnapshotBundle("7d", {
-            timeseries: { points: [{ bucketStart: "a", bucketEnd: "b", totalCount: 1 }] },
-          })}
-        />,
-      );
-    });
-
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toContain("points:1");
-
-    act(() => {
-      root?.render(
-        <DashboardActivityOverview
-          activeRange="usage"
-          snapshotStatus={{
-            mode: "cached-offline",
-            cachedAt: "2026-07-17T05:20:00.000Z",
-            readyRanges: ["today", "1d", "7d", "usage"],
-          }}
-          snapshotBundle={buildCachedSnapshotBundle("usage", {
-            timeseries: { points: [{ bucketStart: "a", bucketEnd: "b", totalCount: 1 }] },
-          })}
-        />,
-      );
-    });
-
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toContain(
-      "points:1",
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      "total:42",
     );
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain("points:1");
   });
 
   it("surfaces a not-cached-yet state instead of live loading when the active range has no offline snapshot", () => {
@@ -1333,7 +1308,7 @@ describe("DashboardActivityOverview", () => {
 
     render(
       <DashboardActivityOverview
-        activeRange="usage"
+        activeRange="1d"
         snapshotStatus={{
           mode: "not-cached-yet",
           cachedAt: null,
@@ -1345,6 +1320,6 @@ describe("DashboardActivityOverview", () => {
 
     expect(host?.querySelector('[data-testid="dashboard-overview-snapshot-empty"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="usage-calendar"]')).toBeNull();
-    expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')).toBeNull();
   });
 });

@@ -32,6 +32,16 @@ function buildResponse(points: TimeseriesResponse["points"]): TimeseriesResponse
 }
 
 describe("buildDashboardResponseTimeSnapshot", () => {
+  it("weights one 50ms sample and three 150ms samples to 125ms", () => {
+    const snapshot = buildDashboardResponseTimeSnapshot(
+      buildResponse([buildPoint(0, 50, 1), buildPoint(1, 150, 3)]),
+      { now: new Date("2026-04-10T00:08:00.000Z") },
+    );
+
+    expect(snapshot?.responseTimeMs).toBe(125);
+    expect(snapshot?.dayAverageMs).toBe(125);
+  });
+
   it("uses the complete selected range for a sample-weighted first-byte average", () => {
     const snapshot = buildDashboardResponseTimeSnapshot(
       buildResponse([

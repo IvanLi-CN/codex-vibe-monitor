@@ -95,7 +95,7 @@ export default function DashboardPage() {
     }
     return null;
   }, [cards, routeInvokeId]);
-  const dashboardActivityEnabled = activeRange !== "usage";
+  const dashboardActivityEnabled = true;
   const overviewSnapshotRuntime = useDashboardOverviewSnapshotRuntime(activeRange);
   const {
     data: dashboardActivity,

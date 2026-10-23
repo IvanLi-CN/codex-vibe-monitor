@@ -30,7 +30,6 @@ import {
   buildAdaptiveNumberTextSpec,
   buildAdaptivePercentTextSpec,
   buildAdaptiveRateCurrencyTextSpec,
-  buildAdaptiveTextSpec,
 } from "../shared/adaptiveMetricValueSpec";
 import {
   buildActiveMinuteAverages,
@@ -40,8 +39,9 @@ import {
   dividePerConversation,
   failureRate,
   percentDelta,
-  ratioOfCurrentToBaseline,
   sumCacheInputTokens,
+  trimParallelWorkWindowToSameProgress,
+  trimTimeseriesToSameProgress,
 } from "./dashboardKpiComparisons";
 import { buildDashboardResponseTimeSnapshot } from "./dashboardResponseTimeSnapshot";
 import type { DashboardTodayRateSnapshot } from "./dashboardTodayRateSnapshot";
@@ -67,7 +67,7 @@ export interface TodayStatsOverviewProps {
   parallelWorkStats?: ParallelWorkStatsResponse | null;
   comparisonParallelWorkStats?: ParallelWorkStatsResponse | null;
   showInProgressConversations?: boolean;
-  dayKind?: "today" | "yesterday";
+  dayKind?: "today" | "yesterday" | "rolling24h";
   showSurface?: boolean;
   showHeader?: boolean;
   showDayBadge?: boolean;
@@ -430,15 +430,6 @@ function buildRatioValueSpec(value: number | null, localeTag: string) {
   });
 }
 
-function buildBaselineRatioValueSpec(value: number | null, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) {
-    return buildAdaptiveTextSpec("—", [{ key: "placeholder", value: "—", priority: 0 }]);
-  }
-
-  const maximumFractionDigits = value >= 10 ? 0 : value >= 1 ? 2 : 3;
-  return buildAdaptiveNumberTextSpec(value, localeTag, maximumFractionDigits);
-}
-
 function comparisonTone(value: number | null) {
   if (value == null || Math.abs(value) < 0.000_001) return "text-base-content/70";
   return value > 0 ? "text-success" : "text-error";
@@ -498,22 +489,51 @@ export function TodayStatsOverview({
   const failureCount = stats?.failureCount ?? 0;
   const totalCost = stats?.totalCost ?? 0;
   const totalTokens = stats?.totalTokens ?? 0;
-  const isToday = dayKind === "today";
+  const isHistoricalDay = dayKind === "yesterday";
+  const isLiveRange = !isHistoricalDay;
+  const isTodayLiveRange = dayKind === "today";
   const previous7dDailyCost = previous7dStats
     ? previous7dStats.totalCost / PREVIOUS_FULL_DAY_COUNT
     : null;
   const activeAverages = buildActiveMinuteAverages(stats, timeseries);
-  const comparisonActiveAverages = buildActiveMinuteAverages(comparisonStats, comparisonTimeseries);
+  const comparisonProgressTimeseries = useMemo(
+    () =>
+      isTodayLiveRange
+        ? trimTimeseriesToSameProgress(timeseries, comparisonTimeseries, { timeZone })
+        : comparisonTimeseries,
+    [comparisonTimeseries, isTodayLiveRange, timeZone, timeseries],
+  );
+  const sameProgressUsage = useMemo(
+    () => buildSameProgressUsageSnapshot(timeseries, comparisonTimeseries, { timeZone }),
+    [timeseries, comparisonTimeseries, timeZone],
+  );
+  const comparisonStatsForProgress =
+    isTodayLiveRange &&
+    comparisonStats &&
+    sameProgressUsage.totalCost != null &&
+    sameProgressUsage.totalTokens != null
+      ? {
+          ...comparisonStats,
+          totalCost: sameProgressUsage.totalCost,
+          totalTokens: sameProgressUsage.totalTokens,
+        }
+      : isTodayLiveRange
+        ? null
+        : comparisonStats;
+  const comparisonActiveAverages = buildActiveMinuteAverages(
+    comparisonStatsForProgress,
+    comparisonProgressTimeseries,
+  );
   const responseTimeSnapshot = buildDashboardResponseTimeSnapshot(timeseries ?? null, {
-    closedNaturalDay: dayKind === "yesterday",
+    closedNaturalDay: isHistoricalDay,
     now,
   });
-  const comparisonResponseTimeSnapshot =
-    dayKind === "today"
-      ? buildDashboardResponseTimeSnapshot(comparisonTimeseries ?? null, {
-          closedNaturalDay: true,
-        })
-      : null;
+  const comparisonResponseTimeSnapshot = buildDashboardResponseTimeSnapshot(
+    comparisonProgressTimeseries ?? null,
+    {
+      closedNaturalDay: true,
+    },
+  );
   const tpmDailyDelta = percentDelta(
     activeAverages.tokensPerMinute,
     comparisonActiveAverages.tokensPerMinute,
@@ -526,31 +546,41 @@ export function TodayStatsOverview({
     responseTimeSnapshot?.dayAverageMs,
     comparisonResponseTimeSnapshot?.dayAverageMs,
   );
-  const sameProgressUsage = useMemo(
-    () => buildSameProgressUsageSnapshot(timeseries, comparisonTimeseries, { timeZone }),
-    [timeseries, comparisonTimeseries, timeZone],
-  );
   const totalCostDelta = percentDelta(
     totalCost,
-    isToday
-      ? (sameProgressUsage.totalCost ?? comparisonStats?.totalCost)
-      : comparisonStats?.totalCost,
+    isTodayLiveRange ? sameProgressUsage.totalCost : comparisonStats?.totalCost,
   );
   const totalTokensDelta = percentDelta(
     totalTokens,
-    isToday
-      ? (sameProgressUsage.totalTokens ?? comparisonStats?.totalTokens)
-      : comparisonStats?.totalTokens,
+    isTodayLiveRange ? sameProgressUsage.totalTokens : comparisonStats?.totalTokens,
   );
   const terminalFailureRate = failureRate(successCount, failureCount);
   const tokenCacheHitRate = cacheHitRate(sumCacheInputTokens(timeseries), totalTokens);
+  const comparisonParallelWindowForProgress =
+    isTodayLiveRange && comparisonParallelWorkStats
+      ? trimParallelWorkWindowToSameProgress(timeseries, comparisonParallelWorkStats.current, {
+          timeZone,
+        })
+      : null;
+  const comparisonParallelWorkForProgress = isTodayLiveRange
+    ? comparisonParallelWorkStats
+      ? {
+          ...comparisonParallelWorkStats,
+          current: comparisonParallelWindowForProgress ?? {
+            ...comparisonParallelWorkStats.current,
+            avgCount: null,
+            points: [],
+          },
+        }
+      : null
+    : comparisonParallelWorkStats;
   const parallelSnapshot = buildParallelWorkKpiSnapshot(
     stats,
     parallelWorkStats,
-    comparisonParallelWorkStats,
+    comparisonParallelWorkForProgress,
     {
-      preferSummaryCurrentCount: isToday,
-      allowParallelFallback: dayKind !== "yesterday",
+      preferSummaryCurrentCount: isLiveRange,
+      allowParallelFallback: isLiveRange,
     },
   );
   const phaseCounts = stats?.inProgressPhaseCounts ?? null;
@@ -564,29 +594,38 @@ export function TodayStatsOverview({
     phaseTotal > 0
       ? Math.max(phaseCounts?.requesting ?? 0, 0) + Math.max(phaseCounts?.responding ?? 0, 0)
       : activeInvocationCount;
-  const showLivePhaseSplit = showInProgressConversations && isToday;
+  const showLivePhaseSplit = showInProgressConversations && isLiveRange;
   const displayedParallelCurrentCount = showLivePhaseSplit
     ? runningInvocationCount
-    : parallelSnapshot.currentCount;
+    : isHistoricalDay
+      ? parallelSnapshot.dayAverage
+      : parallelSnapshot.currentCount;
   const parallelDelta = percentDelta(
     displayedParallelCurrentCount,
     parallelSnapshot.yesterdayAverage,
   );
-  const parallelLabel = isToday
+  const parallelLabel = isLiveRange
     ? t("dashboard.today.inProgressConversations")
-    : t("dashboard.today.parallelConversations");
-  const parallelDescription = isToday
+    : t("dashboard.today.dailyAverageParallel");
+  const parallelDescription = isLiveRange
     ? t("dashboard.today.inProgressConversationsDescription")
     : t("dashboard.today.parallelConversationsDescription");
 
-  const rateUnavailable =
-    !loading && !rateLoading && (rateError != null || rate == null || rate.available === false);
+  const rateUnavailable = isHistoricalDay
+    ? activeAverages.tokensPerMinute == null || activeAverages.spendRate == null
+    : !loading && !rateLoading && (rateError != null || rate == null || rate.available === false);
   const tokensPerMinuteUnavailable = rateUnavailable;
   const performanceComparisonUnavailable = false;
-  const responseTimeCurrentValue = rate?.currentFirstTokenAvgMs ?? null;
-  const responseTimeCurrentUnavailable = rateUnavailable || responseTimeCurrentValue == null;
-  const tokensPerMinute = rate?.tokensPerMinute ?? 0;
-  const spendRate = rate?.spendRate ?? 0;
+  const responseTimeCurrentValue = isHistoricalDay
+    ? (responseTimeSnapshot?.dayAverageMs ?? null)
+    : (rate?.currentFirstTokenAvgMs ?? null);
+  const responseTimeCurrentUnavailable =
+    (isHistoricalDay ? responseTimeCurrentValue == null : rateUnavailable) ||
+    responseTimeCurrentValue == null;
+  const tokensPerMinute = isHistoricalDay
+    ? (activeAverages.tokensPerMinute ?? 0)
+    : (rate?.tokensPerMinute ?? 0);
+  const spendRate = isHistoricalDay ? (activeAverages.spendRate ?? 0) : (rate?.spendRate ?? 0);
   const perConversationTpm = dividePerConversation(
     tokensPerMinute,
     stats?.inProgressConversationCount,
@@ -595,23 +634,27 @@ export function TodayStatsOverview({
     spendRate,
     stats?.inProgressConversationCount,
   );
-  const inProgressRetryCount =
-    dayKind === "yesterday" ? null : (stats?.inProgressRetryConversationCount ?? null);
-  const costLabel = isToday ? t("dashboard.today.todayCost") : t("dashboard.today.yesterdayCost");
-  const tokensLabel = isToday
-    ? t("dashboard.today.todayTokens")
-    : t("dashboard.today.yesterdayTokens");
+  const inProgressRetryCount = isHistoricalDay
+    ? null
+    : (stats?.inProgressRetryConversationCount ?? null);
+  const costLabel = t("metric.totalCost");
+  const tokensLabel = t("metric.totalTokens");
   const usageDetailsLabel = t("dashboard.usageBreakdown.title");
-  const comparisonLabel = isToday
+  const rateComparisonLabel =
+    isHistoricalDay || dayKind === "rolling24h"
+      ? t("dashboard.today.secondary.meanComparison")
+      : t("dashboard.today.secondary.vsYesterday");
+  const comparisonLabel = isTodayLiveRange
     ? t("dashboard.today.secondary.vsYesterday")
     : t("dashboard.today.secondary.comparison");
+  const parallelComparisonLabel = isLiveRange
+    ? t("dashboard.today.secondary.currentVsAverage")
+    : comparisonLabel;
   const modelPerformanceTitle = t("dashboard.modelPerformance.title");
-  const successComparisonRatio = isToday
-    ? ratioOfCurrentToBaseline(
-        successCount,
-        sameProgressUsage.successCount ?? comparisonStats?.successCount,
-      )
-    : null;
+  const successComparisonDelta = percentDelta(
+    successCount,
+    isTodayLiveRange ? sameProgressUsage.successCount : comparisonStats?.successCount,
+  );
   const usageBreakdownLabels =
     locale === "zh"
       ? {
@@ -706,7 +749,7 @@ export function TodayStatsOverview({
             displayText={tokensPerMinuteUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={tokensPerMinuteUnavailable}
             topRightItem={{
-              label: comparisonLabel,
+              label: rateComparisonLabel,
               valueSpec: buildPercentValueSpec(
                 tokensPerMinuteUnavailable || performanceComparisonUnavailable
                   ? null
@@ -770,7 +813,7 @@ export function TodayStatsOverview({
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
             topRightItem={{
-              label: comparisonLabel,
+              label: rateComparisonLabel,
               valueSpec: buildPercentValueSpec(spendRateDailyDelta, localeTag, {
                 signDisplay: "exceptZero",
               }),
@@ -806,7 +849,7 @@ export function TodayStatsOverview({
               }
               subdued={runningInvocationCount == null}
               topRightItem={{
-                label: comparisonLabel,
+                label: parallelComparisonLabel,
                 valueSpec: buildPercentValueSpec(parallelDelta, localeTag, {
                   signDisplay: "exceptZero",
                 }),
@@ -837,7 +880,7 @@ export function TodayStatsOverview({
             <MetricTile
               label={parallelLabel}
               description={parallelDescription}
-              value={parallelSnapshot.currentCount ?? 0}
+              value={displayedParallelCurrentCount ?? 0}
               localeTag={localeTag}
               loading={loading}
               kind="integer"
@@ -845,11 +888,11 @@ export function TodayStatsOverview({
               iconName="send"
               valueTestId="today-stats-value-in-progress-conversations"
               displayText={
-                parallelSnapshot.currentCount == null ? RATE_UNAVAILABLE_PLACEHOLDER : undefined
+                displayedParallelCurrentCount == null ? RATE_UNAVAILABLE_PLACEHOLDER : undefined
               }
-              subdued={parallelSnapshot.currentCount == null}
+              subdued={displayedParallelCurrentCount == null}
               topRightItem={{
-                label: comparisonLabel,
+                label: parallelComparisonLabel,
                 valueSpec: buildPercentValueSpec(parallelDelta, localeTag, {
                   signDisplay: "exceptZero",
                 }),
@@ -884,7 +927,7 @@ export function TodayStatsOverview({
             )}
             subdued={responseTimeCurrentUnavailable}
             topRightItem={{
-              label: comparisonLabel,
+              label: rateComparisonLabel,
               valueSpec: buildPercentValueSpec(
                 responseTimeCurrentUnavailable || performanceComparisonUnavailable
                   ? null
@@ -937,10 +980,10 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-success"
             topRightItem={{
               label: comparisonLabel,
-              valueSpec: buildBaselineRatioValueSpec(successComparisonRatio, localeTag),
-              toneClass: comparisonTone(
-                successComparisonRatio == null ? null : successComparisonRatio - 1,
-              ),
+              valueSpec: buildPercentValueSpec(successComparisonDelta, localeTag, {
+                signDisplay: "exceptZero",
+              }),
+              toneClass: comparisonTone(successComparisonDelta),
               valueTestId: "today-stats-secondary-success-ratio",
             }}
             secondaryItems={[
