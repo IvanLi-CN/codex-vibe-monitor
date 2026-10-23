@@ -55,6 +55,8 @@ const nonOperationalScenes = scenes.filter(
   (value) => value !== "operational" && value !== "network-failure",
 );
 const networkFailurePaths = new Set([
+  "/#/",
+  "/#/dashboard",
   "/#/dashboard/invocations/demo-invocation-9002",
   "/#/stats",
   "/#/live",
@@ -63,6 +65,8 @@ const networkFailurePaths = new Set([
   "/#/account-pool/upstream-accounts",
   "/#/account-pool/transits",
   "/#/account-pool/pool",
+  "/#/account-pool/upstream-accounts/new?mode=apiKey",
+  "/#/account-pool/upstream-accounts/new?mode=oauth",
   "/#/account-pool/groups",
   "/#/account-pool/maintenance-records",
   "/#/system/tasks",
@@ -76,6 +80,7 @@ const networkFailurePaths = new Set([
   "/#/system/proxy",
   "/#/settings",
   "/#/settings/legacy",
+  "/#/not-a-route",
 ]);
 
 function routeLandmark(page: Page, path: string, allowExpectedFailure = false): Locator {
@@ -146,6 +151,13 @@ function routeLandmark(page: Page, path: string, allowExpectedFailure = false): 
 
 function networkFailureState(page: Page, path: string): Locator {
   switch (path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route":
+      return page.getByText("实时更新不可用", { exact: true });
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+      return page.getByText("Request failed: 0", { exact: true }).first();
     case "/#/dashboard/invocations/demo-invocation-9002":
       return page.getByTestId("dashboard-invocation-detail-error");
     case "/#/stats":
