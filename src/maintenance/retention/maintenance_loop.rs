@@ -147,7 +147,7 @@ pub(crate) struct RetentionOwnerRunSummary {
 }
 
 impl RetentionOwnerRunSummary {
-    fn new(task_key: &str, source_scope: &str, unit: &str) -> Self {
+    pub(crate) fn new(task_key: &str, source_scope: &str, unit: &str) -> Self {
         Self {
             task_key: task_key.to_string(),
             source_scope: source_scope.to_string(),

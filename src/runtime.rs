@@ -2151,17 +2151,17 @@ fn managed_task_owner_v2_failure_details(
         "globalBacklogTotal": null,
         "total": null,
         "backlogRemaining": null,
-        "discovered": committed,
-        "selected": committed,
+        "discovered": null,
+        "selected": null,
         "committed": committed,
         "processedCount": committed,
         "completed": committed,
         "selectedScope": {
             "scope": task_key,
             "unit": "unknown",
-            "selected": committed,
+            "selected": null,
             "committed": committed,
-            "batches": 0,
+            "batches": null,
             "rawFilesRemoved": raw_files_removed,
             "hasMore": true,
         },
@@ -4495,10 +4495,12 @@ mod managed_task_lease_conflict_tests {
         )
         .expect("retention owner failure details");
 
-        assert_eq!(details["discovered"], 7);
-        assert_eq!(details["selected"], 7);
+        assert!(details["discovered"].is_null());
+        assert!(details["selected"].is_null());
         assert_eq!(details["committed"], 7);
-        assert_eq!(details["selectedScope"]["selected"], 7);
+        assert!(details["selectedScope"]["selected"].is_null());
+        assert_eq!(details["selectedScope"]["committed"], 7);
+        assert!(details["selectedScope"]["batches"].is_null());
         assert_eq!(details["selectedScope"]["rawFilesRemoved"], 2);
         assert!(
             !details["fatalError"]
