@@ -932,6 +932,7 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         "scripts/validate-retention-maintenance-runtime.py",
         "scripts/validate-retention-maintenance-upgrade.py",
         "docs/adr/assets/retention-maintenance-task-ownership/*",
+        "docs/specs/retention-maintenance-task-ownership/*",
         "required=",
         "$GITHUB_OUTPUT",
     ):

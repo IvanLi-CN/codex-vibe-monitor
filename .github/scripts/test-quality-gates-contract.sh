@@ -141,6 +141,44 @@ expect_identity_binding_rejected \
   $'          assert upgrade["candidateSha256"] == identity["candidateSha256"]\n' \
   "evidence verification must contain"
 
+expect_retention_upload_overwrite_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = """      - name: Upload retention migration evidence
+        if: ${{ steps.retention_scope.outputs.required == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-migration-validation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/candidate-identity.json
+            ${{ runner.temp }}/retention-migration-results
+            ${{ runner.temp }}/retention-runtime-results
+          if-no-files-found: error
+          overwrite: true
+"""
+replacement = needle.replace("overwrite: true", "overwrite: false", 1)
+if text.count(needle) != 1:
+    raise SystemExit("expected one retention migration evidence upload fixture")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/retention-upload-overwrite.log"; then
+    echo "expected retention upload overwrite fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "must overwrite evidence artifacts on reruns" "$tmp_dir/retention-upload-overwrite.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_retention_upload_overwrite_rejected
+
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
 mkdir -p "$observability_artifact_repo"
 cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
