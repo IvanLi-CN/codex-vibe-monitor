@@ -910,6 +910,32 @@ describe("fetchTimeseries", () => {
     expect(url).toContain("bucket=1m");
     expect(url).toContain("upstreamAccountId=42");
   });
+
+  it("uses paired explicit UTC bounds instead of a named range", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          rangeStart: "2026-04-09T00:00:00Z",
+          rangeEnd: "2026-04-09T12:00:00Z",
+          bucketSeconds: 60,
+          points: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchTimeseries("today", {
+      from: "2026-04-09T00:00:00Z",
+      to: "2026-04-09T12:00:00Z",
+      timeZone: "UTC",
+    });
+
+    const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
+    expect(url).toContain("from=2026-04-09T00%3A00%3A00Z");
+    expect(url).toContain("to=2026-04-09T12%3A00%3A00Z");
+    expect(url).not.toContain("range=");
+  });
 });
 
 describe("fetchInvocationTimeline", () => {
@@ -992,6 +1018,37 @@ describe("fetchInvocationTimeline", () => {
     });
 
     expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("includeLive=false");
+  });
+
+  it("serializes the bounded scope aliases used by the timeline hook", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 0,
+            hasMore: false,
+            nextCursor: null,
+            records: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchInvocationTimeline({
+      scopeStart: "2026-03-26T00:00:00Z",
+      scopeEnd: "2026-03-27T00:00:00Z",
+      from: "2026-03-26T12:00:00Z",
+      to: "2026-03-26T12:30:00Z",
+    });
+
+    const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
+    expect(url).toContain("scopeStart=2026-03-26T00%3A00%3A00Z");
+    expect(url).toContain("scopeEnd=2026-03-27T00%3A00%3A00Z");
+    expect(url).not.toContain("naturalDayStart=");
   });
 
   it("rejects incomplete timeline payloads so the timeline surface can show unavailable state", async () => {
@@ -1397,6 +1454,41 @@ describe("fetchParallelWorkStats", () => {
     );
   });
 
+  it("uses paired explicit UTC bounds instead of a named parallel-work range", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          current: {
+            rangeStart: "2026-04-09T00:00:00Z",
+            rangeEnd: "2026-04-09T12:00:00Z",
+            bucketSeconds: 60,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchParallelWorkStats({
+      range: "today",
+      from: "2026-04-09T00:00:00Z",
+      to: "2026-04-09T12:00:00Z",
+      timeZone: "UTC",
+    });
+
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
+    const url = String(firstArg ?? "");
+    expect(url).toContain("from=2026-04-09T00%3A00%3A00Z");
+    expect(url).toContain("to=2026-04-09T12%3A00%3A00Z");
+    expect(url).not.toContain("range=");
+  });
+
   it("sends If-None-Match and exposes 304 responses for cached parallel-work payloads", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(null, {
@@ -1640,6 +1732,33 @@ describe("fetchSummary", () => {
     const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
     expect(url).toContain("window=today");
     expect(url).toContain("upstreamAccountId=42");
+  });
+
+  it("uses paired explicit UTC bounds instead of a named window", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          totalCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          totalCost: 0,
+          totalTokens: 0,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchSummary("today", {
+      from: "2026-04-09T00:00:00Z",
+      to: "2026-04-09T12:00:00Z",
+      timeZone: "UTC",
+    });
+
+    const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
+    expect(url).toContain("from=2026-04-09T00%3A00%3A00Z");
+    expect(url).toContain("to=2026-04-09T12%3A00%3A00Z");
+    expect(url).not.toContain("window=");
   });
 
   it("preserves optional maintenance stats fields", async () => {

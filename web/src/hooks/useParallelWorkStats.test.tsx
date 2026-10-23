@@ -23,6 +23,18 @@ const topicMocks = vi.hoisted(() => ({
   },
 }));
 
+const apiMocks = vi.hoisted(() => ({
+  fetchParallelWorkStats: vi.fn(),
+}));
+
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api")>();
+  return {
+    ...actual,
+    fetchParallelWorkStats: apiMocks.fetchParallelWorkStats,
+  };
+});
+
 vi.mock("../lib/timeZone", () => ({
   getBrowserTimeZone: () => "Asia/Shanghai",
 }));
@@ -48,6 +60,7 @@ beforeEach(() => {
   topicMocks.state.data = null;
   topicMocks.state.isLoading = false;
   topicMocks.state.error = null;
+  apiMocks.fetchParallelWorkStats.mockReset();
 });
 
 afterEach(() => {
@@ -59,7 +72,7 @@ afterEach(() => {
   root = null;
 });
 
-function createStats(): ParallelWorkStatsResponse {
+function createStats(parallelCount = 1): ParallelWorkStatsResponse {
   const current = {
     rangeStart: "2026-03-01T00:00:00Z",
     rangeEnd: "2026-03-08T00:00:00Z",
@@ -70,7 +83,11 @@ function createStats(): ParallelWorkStatsResponse {
     maxCount: 3,
     avgCount: 1.2,
     points: [
-      { bucketStart: "2026-03-07T10:00:00Z", bucketEnd: "2026-03-07T10:01:00Z", parallelCount: 1 },
+      {
+        bucketStart: "2026-03-07T10:00:00Z",
+        bucketEnd: "2026-03-07T10:01:00Z",
+        parallelCount,
+      },
     ],
   };
 
@@ -125,6 +142,22 @@ function render(ui: React.ReactNode) {
   act(() => {
     root?.render(ui);
   });
+}
+
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui);
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function text(testId: string) {
@@ -194,6 +227,54 @@ describe("useParallelWorkStats helpers", () => {
 });
 
 describe("useParallelWorkStats", () => {
+  it("ignores stale HTTP responses after the range and account change", async () => {
+    const firstRequest = deferred<ParallelWorkStatsResponse>();
+    const secondRequest = deferred<ParallelWorkStatsResponse>();
+    apiMocks.fetchParallelWorkStats
+      .mockImplementationOnce(() => firstRequest.promise)
+      .mockImplementationOnce(() => secondRequest.promise);
+
+    render(<Probe range="previous1d" upstreamAccountId={1} />);
+    rerender(<Probe range="previous24h" upstreamAccountId={2} />);
+
+    await act(async () => {
+      secondRequest.resolve(createStats(2));
+      await secondRequest.promise;
+    });
+    expect(text("current-count")).toBe("2");
+
+    await act(async () => {
+      firstRequest.resolve(createStats(9));
+      await firstRequest.promise;
+    });
+    expect(text("current-count")).toBe("2");
+  });
+
+  it("clears loaded HTTP data while a new account request is pending", async () => {
+    const firstRequest = deferred<ParallelWorkStatsResponse>();
+    const secondRequest = deferred<ParallelWorkStatsResponse>();
+    apiMocks.fetchParallelWorkStats
+      .mockImplementationOnce(() => firstRequest.promise)
+      .mockImplementationOnce(() => secondRequest.promise);
+
+    render(<Probe range="previous1d" upstreamAccountId={1} />);
+    await act(async () => {
+      firstRequest.resolve(createStats(1));
+      await firstRequest.promise;
+    });
+    expect(text("current-count")).toBe("1");
+
+    rerender(<Probe range="previous1d" upstreamAccountId={2} />);
+    expect(text("current-count")).toBe("0");
+    expect(text("loading")).toBe("true");
+
+    await act(async () => {
+      secondRequest.resolve(createStats(2));
+      await secondRequest.promise;
+    });
+    expect(text("current-count")).toBe("2");
+  });
+
   it("subscribes to the parallel-work topic and exposes topic state", () => {
     topicMocks.state.data = createStats();
     topicMocks.state.error = "topic warning";

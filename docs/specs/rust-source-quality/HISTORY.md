@@ -423,3 +423,11 @@ The follow-up repair narrows extracted intra-schema helpers, including `legacy_r
 The SQLite batch writer extraction starts from verified main `784152185a40afc8a162318a3bbf64d981a516d9` and replaces the 6,901-line parent with a 93-line facade plus named batch, queue, writer, runtime, flush, and test modules. Existing attempt-progress, diagnostics, invocation-identity, queue-accounting, and terminal-attempts module paths remain intact; the extracted modules are 828, 326, 1,035, 1,034, 1,512, and 2,095 lines after rustfmt.
 
 The explicit policy inventory decreases from 23 to 22 entries, from 6 production and 17 test/helper candidates to 5 production and 17 test/helper candidates, while the immutable preparation baseline remains 32/23 and the suppression inventory remains 124. Queue priority, batching, retry and pressure gates, journal durability, recovery replay, transaction boundaries, SQL, crate-visible paths, tests, and resource buckets remain unchanged.
+
+## Statistics Module Extraction
+
+The statistics extraction starts from verified base `c215fc3ed7a4a0b3cf50bd3468ea8e0bd1388a2e` and completes governance of the original 7,192-line `src/stats/mod.rs` in one PR. The parent becomes a 175-line facade over `range_and_models.rs` (912 lines), `live_queries.rs` (210), `archive_loaders.rs` (1,804), `rollup_queries.rs` (2,106), `repair_backfill.rs` (1,658), and `rollup_ranges_and_totals.rs` (356), all below the 2,500-line production target.
+
+The canonical policy removes the parent entry, leaving 21 explicit files with 4 production and 17 test/helper candidates; immutable candidate counts remain 32/23 and suppression entries remain 124, with the archive-rebuild `#[expect]` recorded under `src/stats/repair_backfill.rs`. Existing crate-visible APIs and re-exports, SQL, transaction boundaries, archive replay, repair/backfill, concurrency, test identities, assertions, and resource classification remain unchanged. The `perf_stage_rollup_validation_tests` and `ttft_archive_compatibility_tests` modules remain intact, while `src/api/slices/invocations_and_summary.rs` and `src/schema.rs` remain untouched.
+
+Validation is the canonical source-quality runner and fixture harness, focused performance-stage and archive-compatibility tests, locked all-target all-features checking, all-features Clippy, and `git diff --check`.

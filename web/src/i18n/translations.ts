@@ -2555,6 +2555,7 @@ const baseTranslations = {
     "dashboard.today.yesterdayCost": "Yesterday cost",
     "dashboard.today.todayTokens": "Today Token",
     "dashboard.today.yesterdayTokens": "Yesterday Token",
+    "dashboard.today.dailyAverageParallel": "Daily avg parallel",
     "dashboard.today.tokensPerMinuteDescription":
       "Tokens per minute over the latest rolling 60-second window; empty traffic windows show 0.",
     "dashboard.today.spendRateDescription":
@@ -2615,7 +2616,9 @@ const baseTranslations = {
     "dashboard.today.secondary.dayAverage": "Day avg",
     "dashboard.today.secondary.previous7dAverage": "7d daily avg",
     "dashboard.today.secondary.vsYesterday": "vs yesterday",
-    "dashboard.today.secondary.comparison": "Comparison",
+    "dashboard.today.secondary.meanComparison": "vs average",
+    "dashboard.today.secondary.currentVsAverage": "vs avg",
+    "dashboard.today.secondary.comparison": "vs previous",
     "dashboard.today.secondary.failureRate": "Failure rate",
     "dashboard.today.secondary.cacheHitRate": "Cache hit",
     "dashboard.today.secondary.perConversation": "Per conversation",
@@ -6045,6 +6048,7 @@ const baseTranslations = {
     "dashboard.today.yesterdayCost": "昨日成本",
     "dashboard.today.todayTokens": "今日 Token",
     "dashboard.today.yesterdayTokens": "昨日 Token",
+    "dashboard.today.dailyAverageParallel": "日均并行",
     "dashboard.today.tokensPerMinuteDescription":
       "每分钟 Tokens，按最近 60 秒滚动窗口计算；窗口无合格流量时显示 0。",
     "dashboard.today.spendRateDescription":
@@ -6099,7 +6103,9 @@ const baseTranslations = {
     "dashboard.today.secondary.dayAverage": "日均",
     "dashboard.today.secondary.previous7dAverage": "7日均",
     "dashboard.today.secondary.vsYesterday": "较昨日",
-    "dashboard.today.secondary.comparison": "对比",
+    "dashboard.today.secondary.meanComparison": "均值环比",
+    "dashboard.today.secondary.currentVsAverage": "较均值",
+    "dashboard.today.secondary.comparison": "环比",
     "dashboard.today.secondary.failureRate": "失败率",
     "dashboard.today.secondary.cacheHitRate": "缓存命中",
     "dashboard.today.secondary.perConversation": "每对话",

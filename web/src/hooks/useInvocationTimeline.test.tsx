@@ -228,10 +228,27 @@ describe("useInvocationTimeline", () => {
 
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
     expect(timelineMocks.fetch.mock.calls[0]?.[0]).toMatchObject({
-      naturalDayStart: "2026-07-16T10:00:00.000Z",
-      naturalDayEnd: "2026-07-16T10:30:00.000Z",
+      scopeStart: "2026-07-16T10:00:00.000Z",
+      scopeEnd: "2026-07-16T10:30:00.000Z",
     });
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("offline-initial");
+  });
+
+  it("starts the live window at the previous midnight boundary across midnight", async () => {
+    timelineMocks.fetch.mockResolvedValue(
+      createTimeline("midnight-window", "2026-07-17T23:40:00.000Z", "2026-07-18T00:10:00.000Z"),
+    );
+    render(
+      <Probe response={createTimeseries("2026-07-17T23:40:00.000Z", "2026-07-18T00:10:00.000Z")} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-17T23:40:00.000Z|2026-07-18T00:10:00.000Z",
+    );
   });
 
   it("aborts and invalidates a request when timeseries bounds disappear", async () => {

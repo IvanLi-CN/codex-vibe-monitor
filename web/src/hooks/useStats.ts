@@ -17,9 +17,16 @@ const CALENDAR_SUMMARY_WINDOWS = new Set([
   "thisWeek",
   "thisMonth",
   "previous7d",
+  "previous1d",
+  "previous24h",
 ]);
 const DAY_BOUNDARY_SUMMARY_WINDOWS = new Set(["today", "yesterday", "previous7d"]);
-const CLOSED_RANGE_SUMMARY_WINDOWS = new Set(["yesterday", "previous7d"]);
+const CLOSED_RANGE_SUMMARY_WINDOWS = new Set([
+  "yesterday",
+  "previous7d",
+  "previous1d",
+  "previous24h",
+]);
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000;
 export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000;
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000;

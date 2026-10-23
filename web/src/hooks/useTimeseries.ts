@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiInvocation,
   InvocationRecordsQuery,
@@ -17,6 +17,7 @@ export interface UseTimeseriesOptions {
   settlementHour?: number;
   preferServerAggregation?: boolean;
   upstreamAccountId?: number;
+  enabled?: boolean;
 }
 
 export type TimeseriesSyncMode = "local" | "current-day-local" | "server";
@@ -1053,6 +1054,7 @@ export function upsertTimeseriesLiveRecord(
 
 export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const initialCachedTimeseries = readTimeseriesRemountCache(range, options);
+  const enabled = options?.enabled ?? true;
   const bucket = options?.bucket;
   const settlementHour = options?.settlementHour;
   const upstreamAccountId = options?.upstreamAccountId;
@@ -1065,57 +1067,96 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     }),
     [bucket, settlementHour, upstreamAccountId],
   );
-  const supportsPureSse = range !== "yesterday";
-  const topic = supportsPureSse
-    ? buildTopicDescriptor("stats.timeseries.open-window", {
-        range,
-        bucket: normalizedOptions.bucket,
-        settlementHour: normalizedOptions.settlementHour,
-        upstreamAccountId: normalizedOptions.upstreamAccountId,
-        timeZone: getBrowserTimeZone(),
-      })
-    : null;
+  const supportsPureSse =
+    range !== "yesterday" && range !== "previous1d" && range !== "previous24h";
+  const topic =
+    supportsPureSse && enabled
+      ? buildTopicDescriptor("stats.timeseries.open-window", {
+          range,
+          bucket: normalizedOptions.bucket,
+          settlementHour: normalizedOptions.settlementHour,
+          upstreamAccountId: normalizedOptions.upstreamAccountId,
+          timeZone: getBrowserTimeZone(),
+        })
+      : null;
   const sse = useSubscriptionTopic<TimeseriesResponse>(topic, supportsPureSse);
   const [httpData, setHttpData] = useState<TimeseriesResponse | null>(
     () => initialCachedTimeseries?.data ?? null,
   );
   const [httpLoading, setHttpLoading] = useState(
-    () => !supportsPureSse && initialCachedTimeseries == null,
+    () => enabled && !supportsPureSse && initialCachedTimeseries == null,
   );
   const [httpError, setHttpError] = useState<string | null>(null);
+  const httpRequestSeqRef = useRef(0);
+  const httpQueryKey = JSON.stringify([range, normalizedOptions]);
+  const httpQueryKeyRef = useRef(httpQueryKey);
 
   const loadHttpTimeseries = useCallback(async () => {
+    const requestSeq = httpRequestSeqRef.current + 1;
+    httpRequestSeqRef.current = requestSeq;
+    if (!enabled) {
+      setHttpLoading(false);
+      return;
+    }
+    if (httpQueryKeyRef.current !== httpQueryKey) {
+      httpQueryKeyRef.current = httpQueryKey;
+      setHttpData(null);
+      setHttpError(null);
+    }
     setHttpLoading(true);
     try {
       const response = await fetchTimeseries(range, normalizedOptions);
+      if (requestSeq !== httpRequestSeqRef.current) return;
       setHttpData(response);
       writeTimeseriesRemountCache(range, normalizedOptions, response, Date.now());
       setHttpError(null);
     } catch (error) {
+      if (requestSeq !== httpRequestSeqRef.current) return;
       setHttpError(error instanceof Error ? error.message : String(error));
     } finally {
-      setHttpLoading(false);
+      if (requestSeq === httpRequestSeqRef.current) {
+        setHttpLoading(false);
+      }
     }
-  }, [normalizedOptions, range]);
+  }, [enabled, httpQueryKey, normalizedOptions, range]);
 
   useEffect(() => {
-    if (!supportsPureSse) {
+    if (enabled && !supportsPureSse) {
       void loadHttpTimeseries();
     }
-  }, [loadHttpTimeseries, supportsPureSse]);
+    return () => {
+      httpRequestSeqRef.current += 1;
+    };
+  }, [enabled, loadHttpTimeseries, supportsPureSse]);
 
   useEffect(() => {
-    if (supportsPureSse && sse.data) {
+    if (enabled && supportsPureSse && sse.data) {
       writeTimeseriesRemountCache(range, normalizedOptions, sse.data, Date.now());
     }
-  }, [normalizedOptions, range, sse.data, supportsPureSse]);
+  }, [enabled, normalizedOptions, range, sse.data, supportsPureSse]);
 
-  const data = supportsPureSse
-    ? (sse.data ?? (sse.error == null ? (initialCachedTimeseries?.data ?? null) : null))
-    : httpData;
-  const isLoading = supportsPureSse ? sse.isLoading && data == null : httpLoading;
-  const error = supportsPureSse ? sse.error : httpError;
-  const refresh = supportsPureSse ? sse.refresh : loadHttpTimeseries;
+  const data = !enabled
+    ? null
+    : supportsPureSse
+      ? (sse.data ?? (sse.error == null ? (initialCachedTimeseries?.data ?? null) : null))
+      : httpQueryKeyRef.current === httpQueryKey
+        ? httpData
+        : null;
+  const isLoading = !enabled
+    ? false
+    : supportsPureSse
+      ? sse.isLoading && data == null
+      : httpQueryKeyRef.current === httpQueryKey
+        ? httpLoading
+        : true;
+  const error = !enabled
+    ? null
+    : supportsPureSse
+      ? sse.error
+      : httpQueryKeyRef.current === httpQueryKey
+        ? httpError
+        : null;
+  const refresh = enabled ? (supportsPureSse ? sse.refresh : loadHttpTimeseries) : async () => {};
 
   return {
     data,
