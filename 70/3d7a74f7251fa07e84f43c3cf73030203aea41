@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-23T06:50:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0fa09aafb22a81697395875598ca1667beb767ef",
+  "pr_number": 1176,
+  "pr_title": "test(web): align timeline capacity range fixture",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "",
+  "target_sha": "703d7a74f7251fa07e84f43c3cf73030203aea41",
+  "type_label": "type:skip"
+}
