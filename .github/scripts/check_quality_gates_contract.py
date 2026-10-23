@@ -921,6 +921,8 @@ def require_retention_migration_validation_contract(workflow: dict[str, Any], ex
         "git diff --name-only",
         "BASE_SHA",
         "src/*",
+        "build.rs",
+        ".cargo/config.toml",
         "docs/adr/assets/retention-maintenance-task-ownership/*",
         "required=",
         "$GITHUB_OUTPUT",

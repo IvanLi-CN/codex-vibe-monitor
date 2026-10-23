@@ -4901,6 +4901,9 @@ impl MaintenanceStore {
                     // competing finalizer already closed this generation. Treat it as an
                     // acknowledged no-op so it cannot overwrite retry or catch-up state.
                     transaction.commit().await?;
+                    if task_key.as_deref() == Some("retention_archive") {
+                        self.sync_retention_progress_schedule().await?;
+                    }
                     Ok(())
                 }
                 Some(status) => Err(anyhow!(
