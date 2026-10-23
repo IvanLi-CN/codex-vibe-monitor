@@ -75,7 +75,8 @@ function routeLandmark(page: Page, path: string): Locator {
     case "/#/account-pool/groups":
       return page
         .getByTestId("account-pool-groups-list")
-        .or(page.getByTestId("account-pool-groups-empty"));
+        .or(page.getByTestId("account-pool-groups-empty"))
+        .or(page.getByTestId("account-pool-groups-error"));
     case "/#/system":
     case "/#/system/status":
       return page.getByTestId("system-status-overview");
@@ -112,18 +113,13 @@ function routeWithScene(path: string, scene: string) {
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
 }
 
-async function expectDemoShell(
-  page: Page,
-  route: RouteCase,
-  options: { assertLandmark?: boolean } = {},
-) {
+async function expectDemoShell(page: Page, route: RouteCase) {
   await expect(page.locator("#root")).toBeVisible();
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
-  if (options.assertLandmark !== false) {
-    await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 45_000 });
-  }
+  await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 45_000 });
   await expect(page.getByLabel("Loading page", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "页面加载失败", exact: true })).toHaveCount(0);
   await expect.poll(() => new URL(page.url()).hash).toContain(route.expectedPath);
 }
 
@@ -179,7 +175,7 @@ test.describe("Web Demo runtime", () => {
         await page.goto(routeWithScene(route.path, "network-failure"), {
           waitUntil: "domcontentloaded",
         });
-        await expectDemoShell(page, route, { assertLandmark: false });
+        await expectDemoShell(page, route);
         if (networkFailurePaths.has(route.path)) {
           await expect(networkFailureState(page, route.path)).toBeVisible();
         }
