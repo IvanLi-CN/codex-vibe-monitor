@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.12.0",
+  "base_stable_version": "4.11.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-23T15:34:17Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.12.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0d3405a05eecdfeb992a8c0ede1bd1bce9e47eaa",
+  "pr_number": 1162,
+  "pr_title": "fix(maintenance): separate retention task ownership",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.12.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.12.0",
+  "target_sha": "adb7fa11fce5c202606acc124a90905cff605565",
+  "type_label": "type:minor"
+}
