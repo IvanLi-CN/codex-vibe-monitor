@@ -1977,10 +1977,15 @@ fn normalize_explicit_query_range<E: de::Error>(
     to: Option<String>,
     field_name: &str,
 ) -> Result<Option<String>, E> {
+    let from_present = from.is_some();
+    let to_present = to.is_some();
     let from = from.filter(|value| !value.trim().is_empty());
     let to = to.filter(|value| !value.trim().is_empty());
     match (from, to) {
-        (None, None) => Ok(range),
+        (None, None) if !from_present && !to_present => Ok(range),
+        (None, None) => Err(E::custom(format!(
+            "{field_name} from and to must not be empty"
+        ))),
         (Some(_), None) | (None, Some(_)) => Err(E::custom(format!(
             "{field_name} from and to must be provided together"
         ))),

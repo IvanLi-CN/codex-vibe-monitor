@@ -818,6 +818,8 @@ fn explicit_query_bounds_require_a_valid_bounded_pair() {
 
     for payload in [
         json!({"from": "2026-04-29T00:00:00Z"}),
+        json!({"from": "", "to": ""}),
+        json!({"from": "  ", "to": "  "}),
         json!({
             "window": "today",
             "from": "2026-04-29T00:00:00Z",
@@ -835,6 +837,26 @@ fn explicit_query_bounds_require_a_valid_bounded_pair() {
         let result = serde_json::from_value::<SummaryQuery>(payload);
         assert!(result.is_err(), "invalid explicit range should be rejected");
     }
+}
+
+#[test]
+fn explicit_future_range_clamps_to_an_empty_current_window() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 29, 12, 0, 0)
+        .single()
+        .expect("valid now");
+    let range = format!(
+        "{}2026-05-01T00:00:00Z|2026-05-02T00:00:00Z",
+        crate::stats::EXPLICIT_RANGE_PREFIX
+    );
+
+    let resolved = resolve_range_window_at(&range, chrono_tz::UTC, now)
+        .expect("future explicit range should resolve");
+
+    assert_eq!(resolved.start, resolved.end);
+    assert_eq!(resolved.duration, chrono::Duration::zero());
+    assert!(resolved.end >= now);
+    assert!(resolved.end <= now + chrono::Duration::nanoseconds(1));
 }
 
 #[test]

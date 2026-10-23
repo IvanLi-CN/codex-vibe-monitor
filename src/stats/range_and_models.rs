@@ -679,6 +679,7 @@ pub(crate) fn resolve_range_window_at(
         if raw_end > now && end == now && end.timestamp_subsec_nanos() == 0 {
             end += ChronoDuration::nanoseconds(1);
         }
+        let start = start.min(end);
         let duration = end.signed_duration_since(start).max(ChronoDuration::zero());
         return Ok(RangeWindow {
             start,
