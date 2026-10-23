@@ -2134,10 +2134,15 @@ fn managed_task_owner_v2_failure_details(
     trigger_kind: &str,
     wait_reason: &str,
     fatal_error: &str,
+    committed: Option<i64>,
+    raw_files_removed: Option<i64>,
 ) -> Option<Value> {
     if !is_retention_owner_v2_task(task_key) {
         return None;
     }
+    let committed = committed.map(|value| value.max(0));
+    let raw_files_removed = raw_files_removed.map(|value| value.max(0));
+    let fatal_error = crate::maintenance_store::sanitize_task_detail(fatal_error);
     let mut details = json!({
         "ownershipVersion": 2,
         "ownerScope": task_key,
@@ -2148,16 +2153,16 @@ fn managed_task_owner_v2_failure_details(
         "backlogRemaining": null,
         "discovered": 0,
         "selected": 0,
-        "committed": 0,
-        "processedCount": 0,
-        "completed": 0,
+        "committed": committed,
+        "processedCount": committed,
+        "completed": committed,
         "selectedScope": {
             "scope": task_key,
             "unit": "unknown",
             "selected": 0,
-            "committed": 0,
+            "committed": committed,
             "batches": 0,
-            "rawFilesRemoved": 0,
+            "rawFilesRemoved": raw_files_removed,
             "hasMore": true,
         },
         "waitReason": wait_reason,
@@ -2181,6 +2186,8 @@ fn managed_task_lease_conflict_finish(
         trigger_kind,
         "task_execution_active",
         "同一任务已有执行实例",
+        Some(0),
+        Some(0),
     );
     ManagedTaskFinish {
         run_id,
@@ -2270,6 +2277,7 @@ async fn run_managed_task_worker_guarded(
     let fallback_task_key = task_key.clone();
     let fallback_requested_at = requested_at.clone();
     let fallback_trigger_kind = trigger_kind.clone();
+    let fallback_observation = observation.clone();
     let result = AssertUnwindSafe(run_managed_task_worker(
         state,
         task_key,
@@ -2308,6 +2316,8 @@ async fn run_managed_task_worker_guarded(
                     &fallback_trigger_kind,
                     "owner_failed",
                     "managed task worker panicked before publishing a terminal result",
+                    fallback_observation.processed_work_value(),
+                    None,
                 ),
             }
         }
@@ -2375,6 +2385,8 @@ async fn run_managed_task_worker(
                     &trigger_kind,
                     "owner_failed",
                     &error_message,
+                    observation.processed_work_value(),
+                    None,
                 ),
             )
         }
@@ -4469,6 +4481,40 @@ mod managed_task_lease_conflict_tests {
         assert_eq!(details["result"], "failed");
         assert_eq!(details["waitReason"], "task_execution_active");
         assert_eq!(details["selectedScope"]["hasMore"], true);
+    }
+
+    #[test]
+    fn owner_failure_details_redact_errors_and_preserve_observed_work() {
+        let details = managed_task_owner_v2_failure_details(
+            "retention_archive",
+            "schedule",
+            "owner_failed",
+            "api_key=secret-value /private/path",
+            Some(7),
+            Some(2),
+        )
+        .expect("retention owner failure details");
+
+        assert_eq!(details["committed"], 7);
+        assert_eq!(details["selectedScope"]["rawFilesRemoved"], 2);
+        assert!(
+            !details["fatalError"]
+                .as_str()
+                .unwrap()
+                .contains("secret-value")
+        );
+
+        let unknown = managed_task_owner_v2_failure_details(
+            "retention_archive",
+            "schedule",
+            "owner_failed",
+            "worker panic",
+            None,
+            None,
+        )
+        .expect("unknown retention owner failure details");
+        assert!(unknown["processedCount"].is_null());
+        assert!(unknown["selectedScope"]["rawFilesRemoved"].is_null());
     }
 
     #[test]

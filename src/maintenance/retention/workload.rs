@@ -74,6 +74,7 @@ pub(super) fn record_discovered_count(count: usize) {
 }
 
 pub(super) fn record_processed_count(count: usize) {
+    crate::record_managed_task_processed_work(&["retention_archive"], count as i64);
     let _ = RETENTION_WORKLOAD_OBSERVATION.try_with(|observation| {
         if let Some(observation) = observation.borrow().as_ref() {
             observation.add_processed_work(count as i64);

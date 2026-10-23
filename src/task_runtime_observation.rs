@@ -608,6 +608,19 @@ impl TaskExecutionObservation {
         );
     }
 
+    pub(crate) fn processed_work_value(&self) -> Option<i64> {
+        workload_observations()
+            .lock()
+            .ok()
+            .and_then(|samples| {
+                samples.get(&format!(
+                    "{}:{}",
+                    self.inner.execution_uid, self.inner.task_key
+                ))
+            })
+            .and_then(|sample| sample.processed.as_ref().and_then(|metric| metric.value))
+    }
+
     pub(crate) fn set_processed_work_if_unset(&self) {
         update_workload_sample(
             &self.inner.execution_uid,
