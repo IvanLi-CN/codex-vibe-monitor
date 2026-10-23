@@ -5700,6 +5700,37 @@ export async function handleDemoRequest(request: Request) {
     return json(systemStatus());
   }
   if (pathname === "/api/system/storage") return json(systemStorage());
+  if (pathname === "/api/system/prompt-cache/materialization" && request.method === "GET")
+    return json({
+      enabled: true,
+      phase: "stats_rebuild",
+      totalKeys: 418,
+      completedKeys: 312,
+      queuePending: 7,
+      progressPercent: 74.6,
+      estimatedRemainingMs: 126_000,
+      sourceMaxInvocationId: 9002,
+      updatedAt: demoNow(),
+      lastStartedAt: "2026-07-10T11:58:00.000Z",
+      lastFinishedAt: "2026-07-10T11:57:42.000Z",
+      lastStatus: "running",
+      recentRuns: [
+        {
+          id: 901,
+          startedAt: "2026-07-10T11:58:00.000Z",
+          finishedAt: "2026-07-10T11:58:00.000Z",
+          phase: "stats_rebuild",
+          status: "running",
+          scanned: 106,
+          updated: 81,
+          batchCount: 4,
+          lastBatchSize: 25,
+          maxBatchSize: 32,
+          batchElapsedMs: 420,
+          durationMs: 3_600,
+        },
+      ],
+    });
   if (pathname === "/api/system/tasks") {
     let items = systemTasks();
     const taskKind = url.searchParams.get("taskKind");

@@ -129,12 +129,22 @@ function networkFailureState(page: Page, path: string): Locator {
       return page.getByText("实时更新不可用", { exact: true });
     case "/#/account-pool/upstream-accounts/new?mode=apiKey":
     case "/#/account-pool/upstream-accounts/new?mode=oauth":
-      return page.getByText("Request failed: 0", { exact: true }).first();
+      return page
+        .getByRole("heading", { name: "新增账号", exact: true })
+        .locator("xpath=../../..")
+        .getByRole("status")
+        .filter({ hasText: "Request failed: 0" });
     case "/#/dashboard/invocations/demo-invocation-9002":
       return page.getByTestId("dashboard-invocation-detail-error");
     case "/#/stats":
+      return page.getByTestId("stats-error-distribution").getByText("Request failed: 0", {
+        exact: true,
+      });
     case "/#/live":
-      return page.getByText("Request failed: 0", { exact: true }).first();
+      return page
+        .getByTestId("model-routing-live-panel")
+        .getByRole("status")
+        .filter({ hasText: "Request failed: 0" });
     case "/#/records":
       return page.getByTestId("invocation-records-table-error");
     case "/#/account-pool":
@@ -161,7 +171,11 @@ function networkFailureState(page: Page, path: string): Locator {
     case "/#/system/prompt-cache":
       return page.getByTestId("system-prompt-cache-error");
     case "/#/system/models":
-      return page.getByRole("alert").filter({ hasText: "Request failed: 0" }).first();
+      return page
+        .getByRole("heading", { name: "模型", exact: true })
+        .locator("..")
+        .getByRole("alert")
+        .filter({ hasText: "Request failed: 0" });
     case "/#/system/proxy":
     case "/#/system/settings":
     case "/#/settings":
@@ -282,12 +296,22 @@ async function expectDemoShell(
   }
   if (route.path === "/#/system/prompt-cache") {
     const promptCachePage = page.getByTestId("system-prompt-cache");
+    const promptCacheState = allowExpectedFailure
+      ? promptCachePage
+          .getByRole("switch")
+          .or(promptCachePage.getByTestId("system-prompt-cache-error"))
+          .first()
+      : promptCachePage.getByRole("switch");
+    await expect(promptCacheState).toBeVisible({ timeout: DEMO_ROUTE_TIMEOUT_MS });
+  }
+  if (route.path === "/#/system/tasks" && !allowExpectedFailure) {
+    const tasksPage = page.getByTestId("system-tasks-list");
     await expect(
-      promptCachePage
-        .getByRole("switch")
-        .or(promptCachePage.getByTestId("system-prompt-cache-error"))
-        .first(),
-    ).toBeVisible({ timeout: DEMO_ROUTE_TIMEOUT_MS });
+      tasksPage.getByRole("status", { name: "正在读取任务目录", exact: true }),
+    ).toHaveCount(0);
+    await expect(tasksPage.locator("[data-task-catalog-row]:visible").first()).toBeVisible({
+      timeout: DEMO_ROUTE_TIMEOUT_MS,
+    });
   }
   if (route.path === "/#/dashboard/invocations/demo-invocation-9002") {
     const detailDrawer = page.getByTestId("dashboard-invocation-detail-drawer");
@@ -345,11 +369,11 @@ test.describe("Web Demo runtime", () => {
   test("keeps every production route error-safe in network-failure scene", async ({ page }) => {
     await page.addInitScript(() => {
       const initialFetch = window.fetch.bind(window);
-      const fetchPaths: string[] = [];
+      const fetchResults: Array<{ outcome: "failed" | "resolved"; path: string }> = [];
       let currentFetch: typeof window.fetch = initialFetch;
-      Object.defineProperty(window, "__CVM_DEMO_FETCH_PATHS__", {
+      Object.defineProperty(window, "__CVM_DEMO_FETCH_RESULTS__", {
         configurable: true,
-        value: fetchPaths,
+        value: fetchResults,
       });
       Object.defineProperty(window, "fetch", {
         configurable: true,
@@ -361,8 +385,22 @@ test.describe("Web Demo runtime", () => {
               requestInput instanceof Request ? requestInput.url : String(requestInput),
               window.location.href,
             );
-            if (requestUrl.pathname.startsWith("/api/")) fetchPaths.push(requestUrl.pathname);
-            return nextFetch(...args);
+            if (!requestUrl.pathname.startsWith("/api/")) return nextFetch(...args);
+            try {
+              const result = nextFetch(...args);
+              void result.then(
+                (response) =>
+                  fetchResults.push({
+                    outcome: response.ok ? "resolved" : "failed",
+                    path: requestUrl.pathname,
+                  }),
+                () => fetchResults.push({ outcome: "failed", path: requestUrl.pathname }),
+              );
+              return result;
+            } catch (error) {
+              fetchResults.push({ outcome: "failed", path: requestUrl.pathname });
+              throw error;
+            }
           }) as typeof window.fetch;
         },
       });
@@ -383,15 +421,22 @@ test.describe("Web Demo runtime", () => {
           .poll(
             () =>
               page.evaluate((expectedPath) => {
-                const paths =
-                  (window as Window & { __CVM_DEMO_FETCH_PATHS__?: string[] })
-                    .__CVM_DEMO_FETCH_PATHS__ ?? [];
+                const results =
+                  (
+                    window as Window & {
+                      __CVM_DEMO_FETCH_RESULTS__?: Array<{
+                        outcome: "failed" | "resolved";
+                        path: string;
+                      }>;
+                    }
+                  ).__CVM_DEMO_FETCH_RESULTS__ ?? [];
                 return {
-                  matched: paths.some(
-                    (fetchPath) =>
-                      fetchPath === expectedPath || fetchPath.startsWith(`${expectedPath}/`),
+                  matched: results.some(
+                    (result) =>
+                      result.outcome === "failed" &&
+                      (result.path === expectedPath || result.path.startsWith(`${expectedPath}/`)),
                   ),
-                  paths,
+                  results,
                 };
               }, expectedApiPath),
             {
