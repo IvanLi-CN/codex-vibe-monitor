@@ -40,14 +40,14 @@ const allRoutes: RouteCase[] = [
 ];
 
 const scenes = ["operational", "attention", "empty", "network-failure"] as const;
-const nonOperationalSmokeRoutes = allRoutes.filter((route) =>
-  ["/#/dashboard", "/#/records"].includes(route.path),
+const nonOperationalScenes = scenes.filter(
+  (value) => value !== "operational" && value !== "network-failure",
 );
-const networkFailureRoutes = allRoutes.filter((route) =>
-  ["/#/account-pool/maintenance-records", "/#/system/tasks", "/#/system/settings"].includes(
-    route.path,
-  ),
-);
+const networkFailurePaths = new Set([
+  "/#/account-pool/maintenance-records",
+  "/#/system/tasks",
+  "/#/system/settings",
+]);
 
 function routeLandmark(page: Page, path: string): Locator {
   switch (path) {
@@ -110,11 +110,17 @@ function routeWithScene(path: string, scene: string) {
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
 }
 
-async function expectDemoShell(page: Page, route: RouteCase) {
+async function expectDemoShell(
+  page: Page,
+  route: RouteCase,
+  options: { assertLandmark?: boolean } = {},
+) {
   await expect(page.locator("#root")).toBeVisible();
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
-  await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 45_000 });
+  if (options.assertLandmark !== false) {
+    await expect(routeLandmark(page, route.path)).toBeVisible({ timeout: 45_000 });
+  }
   await expect(page.getByLabel("Loading page", { exact: true })).toHaveCount(0);
   await expect.poll(() => new URL(page.url()).hash).toContain(route.expectedPath);
 }
@@ -139,32 +145,48 @@ test.describe("Web Demo runtime", () => {
     }
   });
 
-  for (const scene of scenes.filter((value) => value !== "operational")) {
-    for (const route of nonOperationalSmokeRoutes) {
-      test(`resolves ${route.expectedPath} in ${scene} scene`, async ({ page }) => {
+  for (const scene of nonOperationalScenes) {
+    test(`resolves every production route in ${scene} scene`, { timeout: 120_000 }, async ({
+      page,
+    }) => {
+      for (const route of allRoutes) {
         const pageErrors: string[] = [];
-        page.on("pageerror", (error) => pageErrors.push(error.message));
-        await page.goto(routeWithScene(route.path, scene), {
-          waitUntil: "domcontentloaded",
-        });
-        await expectDemoShell(page, route);
-        expect(pageErrors).toEqual([]);
-      });
-    }
-  }
-
-  for (const route of networkFailureRoutes) {
-    test(`keeps ${route.expectedPath} error-safe in network-failure scene`, async ({ page }) => {
-      const pageErrors: string[] = [];
-      page.on("pageerror", (error) => pageErrors.push(error.message));
-      await page.goto(routeWithScene(route.path, "network-failure"), {
-        waitUntil: "domcontentloaded",
-      });
-      await expectDemoShell(page, route);
-      await expect(networkFailureState(page, route.path)).toBeVisible();
-      expect(pageErrors).toEqual([]);
+        const onPageError = (error: Error) => pageErrors.push(error.message);
+        page.on("pageerror", onPageError);
+        try {
+          await page.goto(routeWithScene(route.path, scene), {
+            waitUntil: "domcontentloaded",
+          });
+          await expectDemoShell(page, route);
+          expect(pageErrors).toEqual([]);
+        } finally {
+          page.off("pageerror", onPageError);
+        }
+      }
     });
   }
+
+  test("keeps every production route error-safe in network-failure scene", {
+    timeout: 120_000,
+  }, async ({ page }) => {
+    for (const route of allRoutes) {
+      const pageErrors: string[] = [];
+      const onPageError = (error: Error) => pageErrors.push(error.message);
+      page.on("pageerror", onPageError);
+      try {
+        await page.goto(routeWithScene(route.path, "network-failure"), {
+          waitUntil: "domcontentloaded",
+        });
+        await expectDemoShell(page, route, { assertLandmark: false });
+        if (networkFailurePaths.has(route.path)) {
+          await expect(networkFailureState(page, route.path)).toBeVisible();
+        }
+        expect(pageErrors).toEqual([]);
+      } finally {
+        page.off("pageerror", onPageError);
+      }
+    }
+  });
 
   test("round-trips query-driven scene and theme state in the shareable hash", async ({ page }) => {
     await page.goto("/#/dashboard?demoScene=attention&demoTheme=dark");
