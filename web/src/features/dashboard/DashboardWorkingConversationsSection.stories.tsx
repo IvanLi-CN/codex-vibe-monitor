@@ -4499,7 +4499,7 @@ export const AccountPlanBadges: Story = {
   },
 };
 
-export const TransportBadgeMixed: Story = {
+export const TransportHiddenInCompactRows: Story = {
   args: {
     activeRange: "today",
     cards: buildCards(transportBadgeResponse),
@@ -4510,16 +4510,14 @@ export const TransportBadgeMixed: Story = {
     docs: {
       description: {
         story:
-          "Mixed transport working-conversation cards. The historical WebSocket invocation shows `WebSocket（历史）` between the status badge and endpoint pill; the previous HTTP slot stays unbadged.",
+          "Mixed transport working-conversation cards. Compact invocation rows intentionally omit the historical WebSocket badge while preserving the underlying transport data for detailed surfaces.",
       },
     },
   },
   play: async ({ canvasElement }) => {
     const badges = canvasElement.querySelectorAll('[data-testid="invocation-transport-badge"]');
-    expect(badges.length).toBeGreaterThanOrEqual(1);
-    expect(
-      Array.from(badges).every((badge) => badge.textContent?.trim() === "WebSocket（历史）"),
-    ).toBe(true);
+    expect(badges).toHaveLength(0);
+    expect(canvasElement.textContent ?? "").not.toContain("WebSocket（历史）");
   },
 };
 

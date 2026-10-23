@@ -105,7 +105,6 @@ import {
   renderFastIndicator,
   renderInvocationModelChip,
 } from "../invocations/invocation-details-shared";
-import { renderInvocationTransportChip } from "../invocations/invocation-transport-chip";
 import { AdaptiveDisplayValue } from "../shared/AdaptiveMetricValue";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import {
@@ -2245,7 +2244,6 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
               detail={viewModel.collapsedErrorSummary}
             />
           )}
-          {renderInvocationTransportChip(invocation.record, "min-h-5 px-2 py-0.5 text-[9.5px]")}
           {renderEndpointSummary(
             viewModel.endpointDisplay,
             t,
@@ -2680,7 +2678,6 @@ const InvocationSlot = memo(function InvocationSlot({
                 detail={viewModel.collapsedErrorSummary}
               />
             )}
-            {renderInvocationTransportChip(invocation.record, "h-5 px-1.5 text-[9.5px]")}
             <div className="flex h-5 shrink items-center">
               <div className="flex items-center gap-0">
                 {renderEndpointSummary(

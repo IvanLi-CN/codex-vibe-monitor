@@ -52,6 +52,7 @@ This spec owns invocation observability and the read-only model identity present
 - Given `gpt-5.6` 或 `gpt-5.6-terra`，When 详细明细渲染，Then 分别显示 `5.6 [Sol 图标]` 或 `5.6 [Terra 图标]`，保持已有别名和 Terra 身份。
 - Given 推理强度为缺失、空白、`—`、显式 `none` 或自定义值，When 详细明细渲染，Then 前三者显示 `—`，`none` 保持明确文本，自定义值沿用既有格式化文本与 unknown 色调；不会生成模型默认推理强度。
 - Given Dashboard working conversation 当前/历史 invocation slot 或 upstream-account recent invocation row 命中 `gpt-5.6-sol`、`gpt-6-luna`、`gpt-6.1-luna`，When 紧凑上下文渲染，Then 可见顺序分别为 `5.6`、`6`、`6.1` 代次、裸家族 glyph、已有推理强度与 FAST，且两个消费者使用同一渲染边界。
+- Given Dashboard 紧凑 invocation slot 或 upstream-account recent invocation row 的底层 transport 为历史 WebSocket，When 紧凑行渲染，Then 不显示 `WebSocket（历史）` transport 胶囊；transport 数据仍保留给 Records/Invocation 表格和调用详情等既有诊断 surface。
 - Given 紧凑 invocation 上下文的 reasoning effort 缺失、空白或为 `—`，When 渲染，Then effort 段省略；Given effort 明确为 `none`，Then `none` 仍可见且不带前置 marker，FAST 位置与语义不变。
 - Given 紧凑 invocation 上下文同时存在规范化后不同的 request/response model，When 渲染，Then 按 `request → response` 显示两段独立身份；已识别侧显示完整代次与 glyph，未知侧显示原文本，title/aria 保留两侧完整模型 ID，等价模型保持单模型显示。
 - Given 紧凑 invocation 上下文的模型未知、非法或缺失，When 渲染，Then 未知值保留文本、缺失值显示 `—`，不推断代次或家族；两类 Dashboard surface 在桌面、393x852 窄屏及浅/深色主题下保持胶囊/行高稳定、代次与 glyph 完整可见且无横向溢出。
@@ -62,7 +63,7 @@ This spec owns invocation observability and the read-only model identity present
 
 ## Shared invocation card presentation
 
-Live and conversation-detail invocation windows use a compact three-segment card projection. The card keeps the invocation ID, status/phase, transport, endpoint, account/plan, proxy, model routing, reasoning/FAST state, cache and token/cost diagnostics, compression, and conditional error summary. Conversation identity is supplied by the surrounding drawer and is not repeated in each card. The Records search result remains a table.
+Live and conversation-detail invocation windows use a compact three-segment card projection. The card keeps the invocation ID, status/phase, transport, endpoint, account/plan, proxy, model routing, reasoning/FAST state, cache and token/cost diagnostics, compression, and conditional error summary. Dashboard compact invocation rows intentionally omit the historical WebSocket transport badge to preserve the model-context and latency hierarchy; the underlying transport field remains available to Records/Invocation tables and invocation details. Conversation identity is supplied by the surrounding drawer and is not repeated in each card. The Records search result remains a table.
 
 For in-flight records, missing TTFT and response duration values display elapsed time from `occurredAt` on a one-second presentation clock. Authoritative `firstTokenMs` and `tUpstreamStreamMs` values immediately replace the elapsed values; terminal missing values display `—`, and `tTotalMs` is never used to infer either metric. Card activation, keyboard toggling, deep-link focus, stable-key replacement, virtual measurement, and account navigation retain the existing contracts.
 
