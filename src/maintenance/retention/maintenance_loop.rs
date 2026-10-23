@@ -246,33 +246,45 @@ fn apply_retention_owner_post_commit_error(
     apply_retention_owner_error(summary, error);
 }
 
+fn apply_retention_owner_batch_metrics(
+    summary: &mut RetentionOwnerRunSummary,
+    metrics: &[batch_plan::RetentionBatchMetrics],
+) {
+    let (selected, committed, raw_files_removed) = metrics.iter().fold(
+        (0usize, 0usize, 0usize),
+        |(selected, committed, raw_files_removed), batch| {
+            (
+                selected.saturating_add(batch.batch_rows),
+                committed.saturating_add(batch.committed_rows),
+                raw_files_removed.saturating_add(batch.raw_files_removed),
+            )
+        },
+    );
+    summary.discovered = summary.discovered.max(selected);
+    summary.selected = summary.selected.max(selected);
+    summary.committed = summary.committed.max(committed);
+    summary.batches = summary.batches.max(metrics.len());
+    summary.raw_files_removed = summary.raw_files_removed.max(raw_files_removed);
+}
+
 fn record_retention_owner_batch_facts(summary: &mut RetentionOwnerRunSummary, dataset: &str) {
-    let (selected, committed, batches, raw_files_removed) = batch_plan::TASK_BATCH_METRICS
-        .try_with(|metrics| {
-            metrics
-                .borrow()
-                .iter()
-                .filter(|batch| batch.dataset == dataset)
-                .fold(
-                    (0usize, 0usize, 0usize, 0usize),
-                    |(selected, committed, batches, raw_files_removed), batch| {
-                        (
-                            selected.saturating_add(batch.batch_rows),
-                            committed.saturating_add(batch.committed_rows),
-                            batches + 1,
-                            raw_files_removed.saturating_add(batch.raw_files_removed),
-                        )
-                    },
-                )
-        })
-        .unwrap_or_default();
-    summary.discovered = batch_plan::discovered_rows(dataset)
-        .unwrap_or_default()
-        .max(selected);
-    summary.selected = selected;
-    summary.committed = committed;
-    summary.batches = batches;
-    summary.raw_files_removed = raw_files_removed;
+    let _ = batch_plan::TASK_BATCH_METRICS.try_with(|metrics| {
+        let metrics = metrics
+            .borrow()
+            .iter()
+            .filter(|batch| batch.dataset == dataset)
+            .cloned()
+            .collect::<Vec<_>>();
+        apply_retention_owner_batch_metrics(summary, &metrics);
+        summary.discovered = batch_plan::discovered_rows(dataset)
+            .unwrap_or_default()
+            .max(summary.discovered);
+    });
+}
+
+fn mark_retention_owner_backlog_unknown(summary: &mut RetentionOwnerRunSummary) {
+    summary.has_more = Some(true);
+    summary.wait_reason = Some("backlog_unknown".to_string());
 }
 
 fn retention_owner_success_facts(
@@ -526,6 +538,7 @@ async fn run_invocation_archive_owner_inner(
                             error = %error,
                             "invocation archive backlog observation failed after commit"
                         );
+                        mark_retention_owner_backlog_unknown(&mut summary);
                         Some(true)
                     }
                 }
@@ -543,7 +556,7 @@ async fn run_invocation_archive_owner_inner(
         }
         Err(error) => {
             record_retention_owner_batch_facts(&mut summary, "codex_invocations");
-            summary.has_more = Some(
+            let has_more =
                 match remaining_invocation_archive_rows(pool, &cutoff, source_max_id).await {
                     Ok(remaining) => remaining > 0,
                     Err(observation_error) => {
@@ -551,10 +564,11 @@ async fn run_invocation_archive_owner_inner(
                             error = %observation_error,
                             "invocation archive backlog observation failed after error"
                         );
+                        mark_retention_owner_backlog_unknown(&mut summary);
                         true
                     }
-                },
-            );
+                };
+            summary.has_more.get_or_insert(has_more);
             apply_retention_owner_error(&mut summary, &error);
         }
     }
@@ -1016,6 +1030,8 @@ pub(crate) async fn run_retention_owner_task(
         (Err(error), archive_batches, candidate_window_has_more) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
             summary.archive_batches = archive_batches;
+            let batch_facts = summary.archive_batches.clone();
+            apply_retention_owner_batch_metrics(&mut summary, &batch_facts);
             populate_retention_owner_batch_metrics(
                 &mut summary.archive_batches,
                 &arrival_rates,
@@ -2460,6 +2476,49 @@ mod owner_fact_tests {
         assert_eq!(summary.has_more, Some(true));
         assert_eq!(summary.completion, "failed");
         assert!(summary.fatal_error.is_some());
+    }
+
+    #[test]
+    fn unknown_backlog_observation_keeps_retry_reason() {
+        let mut summary =
+            RetentionOwnerRunSummary::new("invocation_archive", "codex_invocations", "rows");
+
+        mark_retention_owner_backlog_unknown(&mut summary);
+
+        assert_eq!(summary.has_more, Some(true));
+        assert_eq!(summary.wait_reason.as_deref(), Some("backlog_unknown"));
+    }
+
+    #[test]
+    fn failed_owner_summary_preserves_committed_batch_metrics() {
+        let mut summary =
+            RetentionOwnerRunSummary::new("invocation_archive", "codex_invocations", "rows");
+        let metrics = vec![batch_plan::RetentionBatchMetrics {
+            dataset: "codex_invocations".to_string(),
+            month_key: "2026-01".to_string(),
+            batch_rows: 8,
+            committed_rows: 5,
+            raw_files_removed: 2,
+            file_prepare_ms: None,
+            lock_wait_ms: 0,
+            elapsed_ms: 0,
+            timeout_count: 0,
+            committed_rows_per_second: None,
+            arrival_rows_per_second: None,
+            service_rate_multiple: None,
+            small_batch_reason: None,
+            source_identity_ms: None,
+            archive_writer_ms: None,
+            summary_proof_ms: None,
+        }];
+
+        apply_retention_owner_batch_metrics(&mut summary, &metrics);
+
+        assert_eq!(summary.discovered, 8);
+        assert_eq!(summary.selected, 8);
+        assert_eq!(summary.committed, 5);
+        assert_eq!(summary.batches, 1);
+        assert_eq!(summary.raw_files_removed, 2);
     }
 
     #[test]
