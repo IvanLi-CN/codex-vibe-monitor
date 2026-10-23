@@ -250,6 +250,31 @@ describe("useParallelWorkStats", () => {
     expect(text("current-count")).toBe("2");
   });
 
+  it("clears loaded HTTP data while a new account request is pending", async () => {
+    const firstRequest = deferred<ParallelWorkStatsResponse>();
+    const secondRequest = deferred<ParallelWorkStatsResponse>();
+    apiMocks.fetchParallelWorkStats
+      .mockImplementationOnce(() => firstRequest.promise)
+      .mockImplementationOnce(() => secondRequest.promise);
+
+    render(<Probe range="previous1d" upstreamAccountId={1} />);
+    await act(async () => {
+      firstRequest.resolve(createStats(1));
+      await firstRequest.promise;
+    });
+    expect(text("current-count")).toBe("1");
+
+    rerender(<Probe range="previous1d" upstreamAccountId={2} />);
+    expect(text("current-count")).toBe("0");
+    expect(text("loading")).toBe("true");
+
+    await act(async () => {
+      secondRequest.resolve(createStats(2));
+      await secondRequest.promise;
+    });
+    expect(text("current-count")).toBe("2");
+  });
+
   it("subscribes to the parallel-work topic and exposes topic state", () => {
     topicMocks.state.data = createStats();
     topicMocks.state.error = "topic warning";

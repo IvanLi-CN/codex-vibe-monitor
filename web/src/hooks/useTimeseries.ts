@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiInvocation,
   InvocationRecordsQuery,
@@ -1087,26 +1087,46 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     () => enabled && !supportsPureSse && initialCachedTimeseries == null,
   );
   const [httpError, setHttpError] = useState<string | null>(null);
+  const httpRequestSeqRef = useRef(0);
+  const httpQueryKey = JSON.stringify([range, normalizedOptions]);
+  const httpQueryKeyRef = useRef(httpQueryKey);
 
   const loadHttpTimeseries = useCallback(async () => {
-    if (!enabled) return;
+    const requestSeq = httpRequestSeqRef.current + 1;
+    httpRequestSeqRef.current = requestSeq;
+    if (!enabled) {
+      setHttpLoading(false);
+      return;
+    }
+    if (httpQueryKeyRef.current !== httpQueryKey) {
+      httpQueryKeyRef.current = httpQueryKey;
+      setHttpData(null);
+      setHttpError(null);
+    }
     setHttpLoading(true);
     try {
       const response = await fetchTimeseries(range, normalizedOptions);
+      if (requestSeq !== httpRequestSeqRef.current) return;
       setHttpData(response);
       writeTimeseriesRemountCache(range, normalizedOptions, response, Date.now());
       setHttpError(null);
     } catch (error) {
+      if (requestSeq !== httpRequestSeqRef.current) return;
       setHttpError(error instanceof Error ? error.message : String(error));
     } finally {
-      setHttpLoading(false);
+      if (requestSeq === httpRequestSeqRef.current) {
+        setHttpLoading(false);
+      }
     }
-  }, [enabled, normalizedOptions, range]);
+  }, [enabled, httpQueryKey, normalizedOptions, range]);
 
   useEffect(() => {
     if (enabled && !supportsPureSse) {
       void loadHttpTimeseries();
     }
+    return () => {
+      httpRequestSeqRef.current += 1;
+    };
   }, [enabled, loadHttpTimeseries, supportsPureSse]);
 
   useEffect(() => {

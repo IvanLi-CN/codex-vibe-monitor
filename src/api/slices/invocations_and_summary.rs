@@ -4004,7 +4004,14 @@ fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
         end + ChronoDuration::seconds(SUMMARY_SNAPSHOT_MAX_STALE.as_secs() as i64),
     ] {
         for timezone in TZ_VARIANTS {
-            for spec in ["today", "yesterday", "thisWeek", "thisMonth"] {
+            for spec in [
+                "today",
+                "yesterday",
+                "thisWeek",
+                "thisMonth",
+                "recent180d",
+                "recent365d",
+            ] {
                 if let Some((start, end)) = named_range_bounds(spec, boundary_now, timezone) {
                     add_bucket(start);
                     add_bucket(end);
@@ -34933,7 +34940,14 @@ mod request_compression_query_tests {
                     .parse::<Tz>()
                     .expect("valid Kiritimati timezone"),
             ] {
-                for spec in ["today", "yesterday", "thisWeek", "thisMonth"] {
+                for spec in [
+                    "today",
+                    "yesterday",
+                    "thisWeek",
+                    "thisMonth",
+                    "recent180d",
+                    "recent365d",
+                ] {
                     let (start, end) = named_range_bounds(spec, boundary_now, timezone)
                         .expect("supported closed summary window");
                     assert!(buckets.contains(&align_bucket_epoch(start.timestamp(), 3_600, 0)));

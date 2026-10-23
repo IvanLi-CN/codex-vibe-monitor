@@ -70,12 +70,19 @@ export function useParallelWorkStats({
   const [httpLoading, setHttpLoading] = useState(useHttp);
   const [httpError, setHttpError] = useState<string | null>(null);
   const httpRequestSeqRef = useRef(0);
+  const httpQueryKeyRef = useRef<string | null>(null);
   const loadHttp = useCallback(async () => {
     const requestSeq = httpRequestSeqRef.current + 1;
     httpRequestSeqRef.current = requestSeq;
     if (!useHttp) {
       setHttpLoading(false);
       return;
+    }
+    const queryKey = JSON.stringify([range, bucket ?? null, upstreamAccountId ?? null]);
+    if (httpQueryKeyRef.current !== queryKey) {
+      httpQueryKeyRef.current = queryKey;
+      setHttpData(null);
+      setHttpError(null);
     }
     setHttpLoading(true);
     try {
