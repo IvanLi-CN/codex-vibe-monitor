@@ -35,6 +35,27 @@ describe("demo MSW handlers", () => {
     await expect(response.json()).resolves.toEqual({ backend: "0.2.0", frontend: "0.2.0" });
   });
 
+  it("persists prompt-cache materialization control in the demo memory model", async () => {
+    const initial = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
+    expect(await initial.json()).toMatchObject({ enabled: true, queuePending: 7 });
+
+    const paused = await fetch("http://demo.invalid/api/system/prompt-cache/materialization", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(await paused.json()).toMatchObject({
+      enabled: false,
+      completedKeys: 418,
+      queuePending: 0,
+      progressPercent: 100,
+      lastStatus: "disabled",
+    });
+
+    const refreshed = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
+    expect(await refreshed.json()).toMatchObject({ enabled: false, lastStatus: "disabled" });
+  });
+
   it("exposes synthetic observability destinations without a performance database", async () => {
     const response = await fetch("http://demo.invalid/api/system/observability");
     const payload = await response.json();

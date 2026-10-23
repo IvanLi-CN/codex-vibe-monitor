@@ -128,7 +128,35 @@ function routeLandmark(page: Page, path: string, allowExpectedFailure = false): 
 }
 
 async function expectSceneTerminalState(page: Page, path: string, scene: DemoScene) {
+  await expect(page.locator('[aria-busy="true"]:visible')).toHaveCount(0);
+
   switch (path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route": {
+      const dashboard = page.getByTestId("dashboard-main-content");
+      await expect(page.getByTestId("dashboard-activity-range-today")).toBeVisible();
+      await expect(dashboard.getByTestId("dashboard-working-conversations")).toBeVisible();
+      if (scene === "empty") {
+        await expect(
+          dashboard.getByText("最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。", {
+            exact: true,
+          }),
+        ).toBeVisible();
+        await expect(dashboard.getByTestId("dashboard-working-conversations-grid")).toHaveCount(0);
+      } else {
+        await expect(dashboard.getByTestId("dashboard-working-conversations-grid")).toBeVisible();
+      }
+      return;
+    }
+    case "/#/dashboard/invocations/demo-invocation-9002": {
+      if (scene === "empty") {
+        await expect(page.getByTestId("dashboard-invocation-detail-empty")).toBeVisible();
+      } else {
+        await expect(page.locator(".invocation-detail-hero-surface")).toBeVisible();
+      }
+      return;
+    }
     case "/#/stats": {
       const summaryPanel = page
         .getByRole("heading", { name: "统计", exact: true })
@@ -174,6 +202,69 @@ async function expectSceneTerminalState(page: Page, path: string, scene: DemoSce
       }
       return;
     }
+    case "/#/account-pool":
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/transits":
+    case "/#/account-pool/pool": {
+      const rosterTerminal = page
+        .locator('[data-testid="upstream-accounts-grouped-roster"]:visible')
+        .or(page.locator('[data-testid="upstream-accounts-table-empty"]:visible'))
+        .or(page.locator('[data-testid="upstream-accounts-grouped-empty"]:visible'))
+        .or(page.locator('[title="alpha@demo.invalid"]:visible'))
+        .or(page.locator('[title="Aster"]:visible'))
+        .first();
+      await expect(rosterTerminal).toBeVisible();
+      if (scene === "empty") {
+        await expect(
+          page
+            .locator('[data-testid="upstream-accounts-table-empty"]:visible')
+            .or(page.locator('[data-testid="upstream-accounts-grouped-empty"]:visible'))
+            .first(),
+        ).toBeVisible();
+      }
+      return;
+    }
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+      await expect(page.locator("input:visible, textarea:visible").first()).toBeVisible();
+      return;
+    case "/#/account-pool/maintenance-records": {
+      const recordsTerminal = page
+        .locator('[data-testid="maintenance-records-empty"]:visible')
+        .or(page.locator('[data-maintenance-event-badge="true"]:visible'))
+        .first();
+      await expect(recordsTerminal).toBeVisible();
+      return;
+    }
+    case "/#/system":
+    case "/#/system/status":
+      await expect(page.getByTestId("system-status-layout")).toBeVisible();
+      return;
+    case "/#/system/performance":
+      await expect(page.getByRole("navigation", { name: "Grafana", exact: true })).toBeVisible();
+      return;
+    case "/#/system/tasks":
+      await expect(page.locator("[data-task-catalog-row]:visible").first()).toBeVisible();
+      return;
+    case "/#/system/tasks/retention_archive":
+      await expect(page.getByTestId("task-workload-panels")).toBeVisible();
+      return;
+    case "/#/system/prompt-cache":
+      await expect(page.getByTestId("system-prompt-cache").getByRole("switch")).toBeVisible();
+      return;
+    case "/#/system/models":
+      await expect(page.getByRole("region", { name: "模型目录", exact: true })).toContainText(
+        /\d+ 个模型/,
+      );
+      return;
+    case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
+    case "/#/system/proxy":
+      await expect(
+        page.locator("input:visible, textarea:visible, button:visible").first(),
+      ).toBeVisible();
+      return;
     default:
       return;
   }

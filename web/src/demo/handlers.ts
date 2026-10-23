@@ -2668,6 +2668,7 @@ type DemoManagedTaskRun = {
 const managedTaskOverrides = new Map<string, DemoManagedTaskOverride>();
 const managedTaskRuns = new Map<string, DemoManagedTaskRun[]>();
 let nextManagedTaskRunId = 100;
+let demoPromptCacheMaterializationEnabled = true;
 const DEMO_RETENTION_OWNER_V2_TASKS = {
   pool_upstream_attempt_archive: {
     unit: "pool attempt rows",
@@ -2772,6 +2773,7 @@ export function resetDemoManagedTaskState(): void {
   managedTaskOverrides.clear();
   managedTaskRuns.clear();
   nextManagedTaskRunId = 100;
+  demoPromptCacheMaterializationEnabled = true;
 }
 
 function demoRetentionOwnerV2Fixture(taskKey: string) {
@@ -4908,6 +4910,41 @@ function demoInvocationTimeline(url: URL) {
   };
 }
 
+function demoPromptCacheMaterializationStatus() {
+  const enabled = demoPromptCacheMaterializationEnabled;
+  return {
+    enabled,
+    phase: enabled ? "stats_rebuild" : "complete",
+    totalKeys: 418,
+    completedKeys: enabled ? 312 : 418,
+    queuePending: enabled ? 7 : 0,
+    progressPercent: enabled ? 74.6 : 100,
+    estimatedRemainingMs: enabled ? 126_000 : 0,
+    sourceMaxInvocationId: 9002,
+    updatedAt: demoNow(),
+    lastStartedAt: "2026-07-10T11:58:00.000Z",
+    lastFinishedAt: enabled ? "2026-07-10T11:57:42.000Z" : demoNow(),
+    lastStatus: enabled ? "running" : "disabled",
+    suspensionReason: enabled ? undefined : "manual_pause",
+    recentRuns: [
+      {
+        id: 901,
+        startedAt: "2026-07-10T11:58:00.000Z",
+        finishedAt: "2026-07-10T11:58:00.000Z",
+        phase: "stats_rebuild",
+        status: "running",
+        scanned: 106,
+        updated: 81,
+        batchCount: 4,
+        lastBatchSize: 25,
+        maxBatchSize: 32,
+        batchElapsedMs: 420,
+        durationMs: 3_600,
+      },
+    ],
+  };
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -5703,37 +5740,18 @@ export async function handleDemoRequest(request: Request) {
     return json(systemStatus());
   }
   if (pathname === "/api/system/storage") return json(systemStorage());
-  if (pathname === "/api/system/prompt-cache/materialization" && request.method === "GET")
-    return json({
-      enabled: true,
-      phase: "stats_rebuild",
-      totalKeys: 418,
-      completedKeys: 312,
-      queuePending: 7,
-      progressPercent: 74.6,
-      estimatedRemainingMs: 126_000,
-      sourceMaxInvocationId: 9002,
-      updatedAt: demoNow(),
-      lastStartedAt: "2026-07-10T11:58:00.000Z",
-      lastFinishedAt: "2026-07-10T11:57:42.000Z",
-      lastStatus: "running",
-      recentRuns: [
-        {
-          id: 901,
-          startedAt: "2026-07-10T11:58:00.000Z",
-          finishedAt: "2026-07-10T11:58:00.000Z",
-          phase: "stats_rebuild",
-          status: "running",
-          scanned: 106,
-          updated: 81,
-          batchCount: 4,
-          lastBatchSize: 25,
-          maxBatchSize: 32,
-          batchElapsedMs: 420,
-          durationMs: 3_600,
-        },
-      ],
-    });
+  if (pathname === "/api/system/prompt-cache/materialization") {
+    if (request.method === "PATCH") {
+      const body = (await request.json().catch(() => ({}))) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") {
+        return json({ error: "enabled must be a boolean" }, { status: 400 });
+      }
+      demoPromptCacheMaterializationEnabled = body.enabled;
+    }
+    if (request.method === "GET" || request.method === "PATCH") {
+      return json(demoPromptCacheMaterializationStatus());
+    }
+  }
   if (pathname === "/api/system/tasks") {
     let items = systemTasks();
     const taskKind = url.searchParams.get("taskKind");
