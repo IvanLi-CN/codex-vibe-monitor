@@ -787,6 +787,19 @@ fn parse_summary_window_accepts_explicit_range_window() {
 
 #[test]
 fn explicit_query_bounds_require_a_valid_bounded_pair() {
+    let explicit_bounds = json!({
+        "from": "2026-04-29T00:00:00Z",
+        "to": "2026-04-30T00:00:00Z"
+    });
+    let summary: SummaryQuery =
+        serde_json::from_value(explicit_bounds.clone()).expect("valid explicit summary range");
+    assert!(
+        summary
+            .window
+            .as_deref()
+            .is_some_and(|value| value.starts_with(crate::stats::EXPLICIT_RANGE_PREFIX))
+    );
+
     let valid: TimeseriesQuery = serde_json::from_value(json!({
         "from": "2026-04-29T00:00:00Z",
         "to": "2026-04-30T00:00:00Z",
@@ -794,6 +807,14 @@ fn explicit_query_bounds_require_a_valid_bounded_pair() {
     }))
     .expect("valid explicit timeseries range");
     assert!(valid.range.starts_with(crate::stats::EXPLICIT_RANGE_PREFIX));
+
+    let parallel: ParallelWorkStatsQuery =
+        serde_json::from_value(explicit_bounds).expect("valid explicit parallel-work range");
+    assert!(
+        parallel
+            .range
+            .starts_with(crate::stats::EXPLICIT_RANGE_PREFIX)
+    );
 
     for payload in [
         json!({"from": "2026-04-29T00:00:00Z"}),

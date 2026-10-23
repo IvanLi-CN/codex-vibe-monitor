@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiRequestError,
   fetchParallelWorkStats,
@@ -69,8 +69,14 @@ export function useParallelWorkStats({
   const [httpData, setHttpData] = useState<ParallelWorkStatsResponse | null>(null);
   const [httpLoading, setHttpLoading] = useState(useHttp);
   const [httpError, setHttpError] = useState<string | null>(null);
+  const httpRequestSeqRef = useRef(0);
   const loadHttp = useCallback(async () => {
-    if (!useHttp) return;
+    const requestSeq = httpRequestSeqRef.current + 1;
+    httpRequestSeqRef.current = requestSeq;
+    if (!useHttp) {
+      setHttpLoading(false);
+      return;
+    }
     setHttpLoading(true);
     try {
       const response = await fetchParallelWorkStats({
@@ -79,12 +85,16 @@ export function useParallelWorkStats({
         upstreamAccountId,
         timeZone: getBrowserTimeZone(),
       });
+      if (requestSeq !== httpRequestSeqRef.current) return;
       setHttpData(response);
       setHttpError(null);
     } catch (error) {
+      if (requestSeq !== httpRequestSeqRef.current) return;
       setHttpError(error instanceof Error ? error.message : String(error));
     } finally {
-      setHttpLoading(false);
+      if (requestSeq === httpRequestSeqRef.current) {
+        setHttpLoading(false);
+      }
     }
   }, [bucket, range, upstreamAccountId, useHttp]);
   useEffect(() => {
