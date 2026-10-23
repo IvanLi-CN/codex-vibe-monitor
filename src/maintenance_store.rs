@@ -218,23 +218,36 @@ impl Drop for TaskExecutionLease {
 
 pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecutionLease> {
     let canonical_task_key = canonical_task_execution_key(task_key);
-    #[cfg(test)]
-    {
-        Some(TaskExecutionLease {
-            task_key: canonical_task_key.to_string(),
-        })
+    let active = ACTIVE_TASK_EXECUTIONS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut active = active.lock().ok()?;
+    if !active.insert(canonical_task_key.to_string()) {
+        return None;
     }
-    #[cfg(not(test))]
-    {
-        let active = ACTIVE_TASK_EXECUTIONS.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut active = active.lock().ok()?;
-        if !active.insert(canonical_task_key.to_string()) {
-            return None;
-        }
-        Some(TaskExecutionLease {
-            task_key: canonical_task_key.to_string(),
-        })
-    }
+    Some(TaskExecutionLease {
+        task_key: canonical_task_key.to_string(),
+    })
+}
+
+pub(crate) fn active_task_execution_task_keys() -> Vec<String> {
+    let Some(active) = ACTIVE_TASK_EXECUTIONS.get() else {
+        return Vec::new();
+    };
+    let Ok(active) = active.lock() else {
+        return Vec::new();
+    };
+    let mut task_keys = MANAGED_TASKS
+        .iter()
+        .map(|(task_key, ..)| (*task_key).to_string())
+        .collect::<Vec<_>>();
+    task_keys.extend(
+        STARTUP_BACKFILL_TASKS
+            .iter()
+            .map(|suffix| format!("startup_backfill.{suffix}")),
+    );
+    task_keys
+        .into_iter()
+        .filter(|task_key| active.contains(canonical_task_execution_key(task_key)))
+        .collect()
 }
 
 fn canonical_task_execution_key(task_key: &str) -> &str {
@@ -3581,6 +3594,19 @@ impl MaintenanceStore {
         Ok(claim)
     }
 
+    pub(crate) async fn requeue_claimed_run(&self, run_id: i64) -> Result<bool> {
+        observe_store_write(StoreOperation::Run, async {
+            let result = sqlx::query(
+                "UPDATE managed_task_runs SET status='requested' WHERE id=? AND status='running'",
+            )
+            .bind(run_id)
+            .execute(&self.pool)
+            .await?;
+            Ok(result.rows_affected() == 1)
+        })
+        .await
+    }
+
     pub(crate) async fn probe_due_or_requested_runs(&self) -> Result<bool> {
         self.probe_due_or_requested_runs_excluding(&[]).await
     }
@@ -6054,10 +6080,11 @@ mod tests {
 
     use super::{
         MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
-        TaskWorkloadMetric, TaskWorkloadSample, calculate_task_workload_summary,
-        canonical_managed_task_key, canonical_task_execution_key, cron_day_matches, ensure_schema,
-        ensure_task_colors, floor_utc_hour, next_trigger_at, sanitize_task_detail, seed_tasks,
-        task_enabled_by_default, task_measurement_capabilities, validate_cron_expr,
+        TaskWorkloadMetric, TaskWorkloadSample, active_task_execution_task_keys,
+        calculate_task_workload_summary, canonical_managed_task_key, canonical_task_execution_key,
+        cron_day_matches, ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at,
+        sanitize_task_detail, seed_tasks, task_enabled_by_default, task_measurement_capabilities,
+        try_acquire_task_execution, validate_cron_expr,
     };
 
     #[test]
@@ -6076,6 +6103,20 @@ mod tests {
             canonical_task_execution_key("summary_snapshot"),
             "summary_snapshot"
         );
+    }
+
+    #[test]
+    fn task_execution_lease_uses_real_mutex_and_shared_aliases() {
+        let lease = try_acquire_task_execution("prompt_cache_materialization")
+            .expect("first shared execution lease");
+        assert!(try_acquire_task_execution("startup_backfill.proxy_usage").is_none());
+        assert!(
+            active_task_execution_task_keys()
+                .iter()
+                .any(|key| key == "prompt_cache_materialization")
+        );
+        drop(lease);
+        assert!(try_acquire_task_execution("startup_backfill.proxy_usage").is_some());
     }
 
     #[test]
@@ -8237,6 +8278,71 @@ mod tests {
         .expect("load retired requested run");
         assert_eq!(row.0, "failed");
         assert_eq!(row.1.as_deref(), Some("任务已停用，未执行"));
+    }
+
+    #[tokio::test]
+    async fn shared_lease_conflict_requeues_the_claimed_run_until_release() {
+        let store = super::ownership_test_store().await;
+        let lease = super::try_acquire_task_execution("startup_backfill.proxy_usage")
+            .expect("hold the shared startup-backfill lease");
+        let run_id = store
+            .request_run("prompt_cache_materialization")
+            .await
+            .expect("queue prompt-cache run");
+        let unrelated_run_id = store
+            .request_run("retention_archive")
+            .await
+            .expect("queue unrelated retention run");
+        let claim = store
+            .claim_requested_run()
+            .await
+            .expect("claim requested run")
+            .expect("requested run");
+        assert_eq!(claim.0, run_id);
+        assert!(super::try_acquire_task_execution("prompt_cache_materialization").is_none());
+        assert!(
+            store
+                .requeue_claimed_run(run_id)
+                .await
+                .expect("requeue lease-conflicted run")
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM managed_task_runs WHERE id=?",)
+                .bind(run_id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("read requeued status"),
+            "requested"
+        );
+
+        let blocked = super::active_task_execution_task_keys();
+        let unrelated_claim = store
+            .claim_requested_run_excluding(&blocked)
+            .await
+            .expect("claim unrelated run")
+            .expect("unrelated run after exclusion");
+        assert_eq!(unrelated_claim.0, unrelated_run_id);
+        assert_eq!(unrelated_claim.1, "retention_archive");
+        assert!(
+            store
+                .requeue_claimed_run(unrelated_run_id)
+                .await
+                .expect("restore unrelated test run")
+        );
+
+        drop(lease);
+        let reclaimed = store
+            .claim_requested_run()
+            .await
+            .expect("reclaim requested run")
+            .expect("run after lease release");
+        assert_eq!(reclaimed.0, run_id);
+        assert!(
+            store
+                .requeue_claimed_run(run_id)
+                .await
+                .expect("restore test run")
+        );
     }
 
     #[tokio::test]

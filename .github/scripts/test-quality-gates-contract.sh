@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
@@ -122,17 +123,17 @@ PY
 
 expect_identity_binding_rejected \
   retention-checkout-sha-binding \
-  $'          assert identity["githubSha"] == identity["checkoutSha"]\n' \
+  $'          assert identity["githubSha"] == github_sha == identity["checkoutSha"] == checkout_sha\n' \
   "evidence verification must contain"
 
 expect_identity_binding_rejected \
-  retention-carrier-parent-binding \
-  $'          test "$(git rev-parse "${documentation_carrier_sha}^")" = "$implementation_sha"\n' \
+  retention-candidate-binding-script \
+  $'          python3 scripts/bind-retention-maintenance-candidate.py \\\n' \
   "candidate extraction must bind"
 
 expect_identity_binding_rejected \
   retention-candidate-digest-binding \
-  $'          assert upgrade["candidateSha256"] == identity["candidateSha256"]\n' \
+  $'          assert identity["candidateSha256"] == binary_sha256\n' \
   "evidence verification must contain"
 
 expect_retention_upload_overwrite_rejected() {

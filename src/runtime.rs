@@ -1972,7 +1972,12 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     else {
                         continue;
                     };
-                    let blocked_task_keys = blocked_task_keys.into_iter().collect::<Vec<_>>();
+                    let mut blocked_task_keys = blocked_task_keys.into_iter().collect::<Vec<_>>();
+                    blocked_task_keys.extend(
+                        crate::maintenance_store::active_task_execution_task_keys(),
+                    );
+                    blocked_task_keys.sort();
+                    blocked_task_keys.dedup();
                     if blocked_task_keys.iter().any(|task_key| {
                         task_key == crate::terminal_journal::UNKNOWN_SYSTEM_TASK_RECOVERY_TASK_KEY
                     }) {
@@ -2016,12 +2021,14 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let Some(execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution(&task_key)
                     else {
-                        let finish = managed_task_lease_conflict_finish(
-                            run_id,
-                            task_key,
-                            &trigger_kind,
-                        );
-                        queue_managed_task_finish(&mut pending_finishes, finish);
+                        if let Err(error) = store.requeue_claimed_run(run_id).await {
+                            warn!(
+                                run_id,
+                                task = %task_key,
+                                error = %error,
+                                "managed task lease conflict could not return the requested run to the queue"
+                            );
+                        }
                         continue;
                     };
                     let initial_stages = (task_key == "retention_archive").then(|| {
@@ -2174,33 +2181,6 @@ fn managed_task_owner_v2_failure_details(
         details["scheduleRetryReason"] = json!(wait_reason);
     }
     Some(details)
-}
-
-fn managed_task_lease_conflict_finish(
-    run_id: i64,
-    task_key: String,
-    trigger_kind: &str,
-) -> ManagedTaskFinish {
-    let details = managed_task_owner_v2_failure_details(
-        &task_key,
-        trigger_kind,
-        "task_execution_active",
-        "同一任务已有执行实例",
-        Some(0),
-        Some(0),
-    );
-    ManagedTaskFinish {
-        run_id,
-        task_key,
-        status: SystemTaskStatus::Failed,
-        finished_at: format_utc_iso_millis(Utc::now()),
-        duration_ms: 0,
-        summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
-        detail: Some("同一任务已有执行实例".to_string()),
-        completion: Some("failed".to_string()),
-        core_completion: None,
-        details,
-    }
 }
 
 fn queue_managed_task_finish(
@@ -4475,19 +4455,6 @@ pub(crate) mod managed_task_dispatch_tests {
 #[cfg(test)]
 mod managed_task_lease_conflict_tests {
     use super::*;
-
-    #[test]
-    fn retention_owner_lease_conflict_is_a_failed_v2_run_with_retry_facts() {
-        let finish =
-            managed_task_lease_conflict_finish(7, "retention_archive".to_string(), "schedule");
-        assert_eq!(finish.status, SystemTaskStatus::Failed);
-        assert_eq!(finish.completion.as_deref(), Some("failed"));
-        let details = finish.details.expect("retention owner facts");
-        assert_eq!(details["ownershipVersion"], 2);
-        assert_eq!(details["result"], "failed");
-        assert_eq!(details["waitReason"], "task_execution_active");
-        assert_eq!(details["selectedScope"]["hasMore"], true);
-    }
 
     #[test]
     fn owner_failure_details_redact_errors_and_preserve_observed_work() {

@@ -50,8 +50,26 @@ def test_missing_maintenance_store_is_not_created_for_diagnostics():
         assert not (root / "maintenance.sqlite").exists()
 
 
+def test_dry_run_snapshot_covers_every_seeded_owner_business_table():
+    expected = {
+        "pool_upstream_request_attempts",
+        "forward_proxy_attempts",
+        "codex_quota_snapshots",
+        "pool_upstream_accounts",
+        "pool_upstream_account_model_routes",
+        "system_task_runs",
+    }
+    assert expected.issubset(UPGRADE.BUSINESS_FACT_TABLES)
+
+
+def test_relative_output_paths_are_canonicalized_before_validation():
+    assert UPGRADE.resolve_output_dir(Path("relative-results")).is_absolute()
+
+
 if __name__ == "__main__":
     test_archive_and_other_owner_results_use_public_result_field()
     test_real_owner_result_rejects_internal_or_legacy_fields()
     test_missing_maintenance_store_is_not_created_for_diagnostics()
+    test_dry_run_snapshot_covers_every_seeded_owner_business_table()
+    test_relative_output_paths_are_canonicalized_before_validation()
     print("test-retention-maintenance-validator-contract: all checks passed")

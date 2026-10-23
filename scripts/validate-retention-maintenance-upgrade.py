@@ -69,6 +69,23 @@ OWNER_RAW_REFERENCES = {
     "pool_upstream_attempt_archive": (("pool_upstream_request_attempts", "response_raw_path"),),
     "invocation_detail_prune": (("codex_invocations", "response_raw_path"),),
 }
+BUSINESS_FACT_TABLES = (
+    "codex_invocations",
+    "prompt_cache_conversations",
+    "hourly_invoke_prefixes",
+    "prompt_cache_conversation_orphan_cleanup_state",
+    "retention_recovery_cursors",
+    "retention_raw_reconciliation",
+    "retention_prepared_archives",
+    "proxy_raw_payload_blob_links",
+    "archive_batches",
+    "pool_upstream_request_attempts",
+    "forward_proxy_attempts",
+    "codex_quota_snapshots",
+    "pool_upstream_accounts",
+    "pool_upstream_account_model_routes",
+    "system_task_runs",
+)
 
 
 def seed_owner_candidates(root):
@@ -250,7 +267,7 @@ def execute(candidate, root, *arguments, expect_success=True):
 def business_facts(root):
     with sqlite3.connect(root / "business.sqlite") as connection:
         facts = {}
-        for table in ["codex_invocations", "prompt_cache_conversations", "hourly_invoke_prefixes", "prompt_cache_conversation_orphan_cleanup_state", "retention_recovery_cursors", "retention_raw_reconciliation", "retention_prepared_archives", "proxy_raw_payload_blob_links", "archive_batches"]:
+        for table in BUSINESS_FACT_TABLES:
             exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
             if exists:
                 # Structure initialization may add a scope; subsequent previews must be strictly read-only.
@@ -408,6 +425,10 @@ def run_scoped_command(candidate, root, task_key, dry_run):
     return parsed
 
 
+def resolve_output_dir(path):
+    return path.resolve()
+
+
 def validate_source(candidate, source, target):
     assert not target.exists(), f"Output target already exists: {target}"
     shutil.copytree(source, target)
@@ -520,6 +541,7 @@ def main():
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
+    args.output_dir = resolve_output_dir(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     candidate_digest = hashlib.sha256(args.candidate.read_bytes()).hexdigest()
     (args.output_dir / "candidate.json").write_text(json.dumps({"candidateSha256": candidate_digest, "sourceVersions": VERSIONS}, indent=2) + "\n")

@@ -190,6 +190,7 @@ def main():
     parser.add_argument("--http-port", type=int, required=True, help="A caller-leased port, checked free before this command")
     args = parser.parse_args()
     assert 1 <= args.http_port <= 65535
+    args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=False)
     candidate = args.candidate.resolve()
     validate_unavailable(candidate, args.source_fixture, args.output_dir / "unavailable")
