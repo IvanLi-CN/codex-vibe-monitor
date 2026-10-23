@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 22 current explicit file budgets (5 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 21 current explicit file budgets (4 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -432,6 +432,14 @@ Validation for this extraction is the focused route-selection/request-entry and 
 The usage-persistence source is now a facade over `attempt_persistence.rs`, `attempt_recovery.rs`, `invocation_records.rs`, `raw_payload_storage.rs`, `streaming_raw_payload.rs`, and `terminal_rollups.rs`. The existing `attempt_public_id_backfill.rs`, `invocation_identity.rs`, `runtime_recovery.rs`, and `terminal_metadata.rs` module boundaries remain unchanged, and `src/api/slices/invocations_and_summary.rs` remains frozen. After rustfmt, the parent is 25 lines and the new production children are 1,564, 1,031, 1,779, 1,283, 1,035, and 541 lines; the policy removes the parent entry and retains the two moved targeted suppressions under their child paths. Crate-visible call paths, persistence SQL, attempt and terminal lifecycle, raw-payload retention/compression, streaming capture, tests, and resource classification remain unchanged.
 
 Validation for this extraction is rustfmt, the explicit source-quality checker, locked all-target checking, all-features Clippy, focused raw-overflow-spool and streaming-payload tests, focused stateful SQLite runtime/persistence coverage, archive/file-I/O coverage, and `git diff --check`.
+
+## Statistics Module Extraction
+
+The statistics extraction starts from verified base `c215fc3ed7a4a0b3cf50bd3468ea8e0bd1388a2e` and replaces the 7,192-line `src/stats/mod.rs` monolith with a 175-line facade plus six named production children: `range_and_models.rs` (912 lines), `live_queries.rs` (210), `archive_loaders.rs` (1,804), `rollup_queries.rs` (2,106), `repair_backfill.rs` (1,658), and `rollup_ranges_and_totals.rs` (356) after rustfmt. Every production file is below the 2,500-line target, so the parent is removed from the explicit policy inventory, leaving 21 entries with 4 production and 17 test/helper candidates.
+
+The extraction preserves crate-visible APIs and re-exports, SQL, transaction boundaries, archive replay and repair behavior, concurrency, resource classification, and all existing assertions. The `perf_stage_rollup_validation_tests` and `ttft_archive_compatibility_tests` modules remain in their coherent child modules, while the archive-rebuild `#[expect]` suppression moves to `repair_backfill.rs`; the suppression inventory remains 124. The frozen `src/api/slices/invocations_and_summary.rs` and complete `src/schema.rs` are unchanged, and no `include!` composition is introduced.
+
+Validation for this extraction is the canonical source-quality runner and fixture harness, focused performance-stage and archive-compatibility tests, locked all-target all-features checking, all-features Clippy, and `git diff --check`.
 
 ## CI Contract
 
