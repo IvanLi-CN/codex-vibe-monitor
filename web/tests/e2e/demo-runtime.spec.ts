@@ -8,6 +8,10 @@ type RouteCase = {
 const allRoutes: RouteCase[] = [
   { path: "/#/", expectedPath: "/dashboard" },
   { path: "/#/dashboard", expectedPath: "/dashboard" },
+  {
+    path: "/#/dashboard/invocations/demo-invocation-9002",
+    expectedPath: "/dashboard/invocations/demo-invocation-9002",
+  },
   { path: "/#/stats", expectedPath: "/stats" },
   { path: "/#/live", expectedPath: "/live" },
   { path: "/#/records", expectedPath: "/records" },
@@ -32,7 +36,13 @@ const allRoutes: RouteCase[] = [
   { path: "/#/system/status", expectedPath: "/system/status" },
   { path: "/#/system/performance", expectedPath: "/system/performance" },
   { path: "/#/system/tasks", expectedPath: "/system/tasks" },
+  {
+    path: "/#/system/tasks/retention_archive",
+    expectedPath: "/system/tasks/retention_archive",
+  },
+  { path: "/#/system/prompt-cache", expectedPath: "/system/prompt-cache" },
   { path: "/#/system/settings", expectedPath: "/system/settings" },
+  { path: "/#/system/models", expectedPath: "/system/models" },
   { path: "/#/system/proxy", expectedPath: "/system/proxy" },
   { path: "/#/settings", expectedPath: "/system/settings" },
   { path: "/#/settings/legacy", expectedPath: "/system/settings" },
@@ -46,6 +56,7 @@ const nonOperationalScenes = scenes.filter(
 const networkFailurePaths = new Set([
   "/#/account-pool/maintenance-records",
   "/#/system/tasks",
+  "/#/system/tasks/retention_archive",
   "/#/system/settings",
 ]);
 
@@ -54,6 +65,7 @@ function routeLandmark(page: Page, path: string): Locator {
     case "/#/":
     case "/#/dashboard":
     case "/#/not-a-route":
+    case "/#/dashboard/invocations/demo-invocation-9002":
       return page.getByTestId("dashboard-main-content");
     case "/#/stats":
       return page.getByRole("heading", { name: "统计", exact: true });
@@ -88,10 +100,19 @@ function routeLandmark(page: Page, path: string): Locator {
       return page.getByTestId("system-observability-page");
     case "/#/system/tasks":
       return page.getByTestId("system-tasks-list");
+    case "/#/system/tasks/retention_archive":
+      return page
+        .getByRole("heading", { name: "数据保留与归档", exact: true })
+        .or(page.getByText(/^任务观测不可用：/))
+        .first();
+    case "/#/system/prompt-cache":
+      return page.getByTestId("system-prompt-cache");
     case "/#/system/settings":
     case "/#/settings":
     case "/#/settings/legacy":
       return page.getByRole("heading", { name: "系统设置", exact: true });
+    case "/#/system/models":
+      return page.getByRole("heading", { name: "模型", exact: true });
     case "/#/system/proxy":
       return page.getByRole("heading", { name: "代理", exact: true });
     default:
@@ -105,6 +126,8 @@ function networkFailureState(page: Page, path: string): Locator {
       return page.getByTestId("maintenance-records-error");
     case "/#/system/tasks":
       return page.getByText(/^任务目录不可用：/);
+    case "/#/system/tasks/retention_archive":
+      return page.getByText(/^任务观测不可用：/);
     case "/#/system/settings":
       return page.getByText(/^设置请求失败：/);
     default:
