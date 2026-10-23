@@ -245,6 +245,17 @@ pub(crate) fn record_managed_task_processed_work(task_keys: &[&str], count: i64)
     });
 }
 
+pub(crate) fn record_managed_task_raw_files_removed(task_keys: &[&str], count: i64) {
+    if count < 0 {
+        return;
+    }
+    let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
+        if task_keys.contains(&observation.inner.task_key.as_str()) {
+            observation.add_raw_files_removed(count);
+        }
+    });
+}
+
 pub(crate) fn record_managed_task_discovered_work(task_keys: &[&str], count: i64) {
     if count < 0 {
         return;
@@ -284,6 +295,8 @@ struct ObservationLease {
     trigger_kind: String,
     started_clock: Instant,
     work_started_clock: Mutex<Option<Instant>>,
+    raw_files_removed: AtomicU64,
+    raw_files_observed: AtomicBool,
     ended: AtomicBool,
 }
 
@@ -410,6 +423,8 @@ impl TaskExecutionObservation {
                 trigger_kind: trigger_kind.to_string(),
                 started_clock,
                 work_started_clock: Mutex::new((!waiting_resources).then_some(started_clock)),
+                raw_files_removed: AtomicU64::new(0),
+                raw_files_observed: AtomicBool::new(false),
                 ended: AtomicBool::new(false),
             }),
         };
@@ -619,6 +634,23 @@ impl TaskExecutionObservation {
                 ))
             })
             .and_then(|sample| sample.processed.as_ref().and_then(|metric| metric.value))
+    }
+
+    pub(crate) fn add_raw_files_removed(&self, count: i64) {
+        self.inner.raw_files_observed.store(true, Ordering::Relaxed);
+        self.inner
+            .raw_files_removed
+            .fetch_add(count.max(0) as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn raw_files_removed_value(&self) -> Option<i64> {
+        self.inner
+            .raw_files_observed
+            .load(Ordering::Relaxed)
+            .then(|| {
+                i64::try_from(self.inner.raw_files_removed.load(Ordering::Relaxed))
+                    .unwrap_or(i64::MAX)
+            })
     }
 
     pub(crate) fn set_processed_work_if_unset(&self) {
@@ -1358,6 +1390,26 @@ mod tests {
             Some("run-window")
         );
         assert_eq!(sample.status, "success");
+        observation.finish_with_status("success");
+    }
+
+    #[test]
+    fn managed_observation_retains_incremental_raw_file_facts() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let observation = TaskExecutionObservation::begin(
+            "pool_upstream_attempt_archive",
+            "Pool archive",
+            "schedule",
+            Some("maintenance_retention"),
+            "processing",
+        );
+
+        assert_eq!(observation.raw_files_removed_value(), None);
+        observation.add_raw_files_removed(2);
+        observation.add_raw_files_removed(3);
+        assert_eq!(observation.raw_files_removed_value(), Some(5));
+
         observation.finish_with_status("success");
     }
 

@@ -1102,6 +1102,7 @@ pub(crate) async fn prune_old_invocation_details(
                 );
                 rows_pruned += group.len();
                 committed_rows += group.len();
+                workload::record_owner_processed_count("invocation_detail_prune", group.len());
                 recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
@@ -1117,6 +1118,7 @@ pub(crate) async fn prune_old_invocation_details(
                 }
                 let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
                 raw_files_removed += removed;
+                workload::record_owner_raw_files_removed("invocation_detail_prune", removed);
                 batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
                 if breached {
@@ -1865,6 +1867,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 retention_recovery_record_progress();
                 let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
                 raw_files_removed += removed;
+                workload::record_owner_raw_files_removed("retention_archive", removed);
                 batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
                 if breached {
@@ -2489,6 +2492,14 @@ pub(crate) async fn archive_timestamped_dataset(
                     p1_waiter_count,
                     usize::from(candidate_remaining_hint),
                 );
+                workload::record_owner_processed_count(
+                    if spec.dataset == "pool_upstream_request_attempts" {
+                        "pool_upstream_attempt_archive"
+                    } else {
+                        "forward_proxy_attempt_archive"
+                    },
+                    group.len(),
+                );
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
                 let cleanup_error = transaction_resources.return_to_pool().await;
@@ -2507,6 +2518,10 @@ pub(crate) async fn archive_timestamped_dataset(
                     let removed =
                         delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?;
                     raw_files_removed += removed;
+                    workload::record_owner_raw_files_removed(
+                        "pool_upstream_attempt_archive",
+                        removed,
+                    );
                     batch_observation.raw_files_removed(removed);
                 } else {
                     rows_archived += group.len();

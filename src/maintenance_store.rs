@@ -2088,6 +2088,7 @@ fn cron_day_matches(dom_field: &str, dow_field: &str, candidate: chrono::DateTim
 pub(crate) fn sanitize_task_detail(value: &str) -> String {
     let mut sanitized = value.replace(['\r', '\n'], " ");
     for marker in [
+        "Bearer ",
         "Authorization:",
         "authorization=",
         "api_key=",
@@ -7529,7 +7530,9 @@ mod tests {
 
     #[test]
     fn sanitizes_and_bounds_task_error_details() {
-        let detail = sanitize_task_detail("Authorization: secret\napi_key=abc, remaining");
+        let detail =
+            sanitize_task_detail("Authorization: Bearer bearer-secret\napi_key=abc, remaining");
+        assert!(!detail.contains("bearer-secret"));
         assert!(!detail.contains("secret"));
         assert!(!detail.contains("abc"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);

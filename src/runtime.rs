@@ -2317,7 +2317,7 @@ async fn run_managed_task_worker_guarded(
                     "owner_failed",
                     "managed task worker panicked before publishing a terminal result",
                     fallback_observation.processed_work_value(),
-                    None,
+                    fallback_observation.raw_files_removed_value(),
                 ),
             }
         }
@@ -2386,7 +2386,7 @@ async fn run_managed_task_worker(
                     "owner_failed",
                     &error_message,
                     observation.processed_work_value(),
-                    None,
+                    observation.raw_files_removed_value(),
                 ),
             )
         }
