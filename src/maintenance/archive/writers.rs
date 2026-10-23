@@ -501,10 +501,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             // The startup caller already owns the coordinated P2 write permit. Acquiring the
             // retention admission again here would self-wait on that permit. Hash the prepared
             // artifact before entering the bounded publication transaction.
-            let sha256 = sha256_hex_file_with_deadline(
-                &temp_gzip_path,
-                super::super::retention::retention_archive_file_operation_deadline(),
-            )?;
+            let sha256 = sha256_hex_file_with_operation_budget(&temp_gzip_path).await?;
             let had_existing_file = archive_path.is_file();
             let backup_path = PathBuf::from(format!(
                 "{}.{}.restore",
@@ -1167,10 +1164,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
             .clone()
             .context("unchanged archive artifact is missing its predecessor digest")?
     } else {
-        sha256_hex_file_with_deadline(
-            &temp_gzip_path,
-            super::super::retention::retention_archive_file_operation_deadline(),
-        )?
+        sha256_hex_file_with_operation_budget(&temp_gzip_path).await?
     };
     let mut outcome = ArchiveBatchOutcome {
         dataset: spec.dataset,
@@ -1734,10 +1728,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await?;
     publish_prepared_archive_file(&temp_gzip_path, &final_path)?;
 
-    let sha256 = sha256_hex_file_with_deadline(
-        &final_path,
-        super::super::retention::retention_archive_file_operation_deadline(),
-    )?;
+    let sha256 = sha256_hex_file_with_operation_budget(&final_path).await?;
     Ok(ArchiveBatchOutcome {
         dataset: spec.dataset,
         month_key,

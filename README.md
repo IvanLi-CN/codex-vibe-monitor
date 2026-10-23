@@ -392,7 +392,7 @@ bun run build
 
 [MIT](LICENSE)
 
-保留维护由系统任务页的独立自动触发开关控制：数据保留与归档、调用身份清理、Raw 孤儿文件清理，以及现有 Prompt 缓存物化。新安装默认启用；升级保留已有控制与计划覆盖。暂停只停止新的自动触发，已准入的本轮工作正常结束，页面与 CLI 的手动请求仍可执行。旧 `RETENTION_ENABLED` 和 `XY_RETENTION_ENABLED` 遗留值均被忽略。
+保留维护由系统任务页的独立自动触发开关控制：invocation 归档、六项独立保留策略、调用身份清理、Raw 孤儿文件清理，以及现有 Prompt 缓存物化。新安装默认启用；升级保留已有控制与计划覆盖。暂停只停止新的自动触发，已准入的本轮工作正常结束，页面与 CLI 的手动请求仍可执行。旧 `RETENTION_ENABLED` 和 `XY_RETENTION_ENABLED` 遗留值均被忽略。
 
 ```sh
 # Archive policy only; no orphan identity or raw sweep work.
@@ -400,6 +400,12 @@ codex-vibe-monitor --retention-run-once
 codex-vibe-monitor --retention-dry-run
 codex-vibe-monitor maintenance invocation-identity-cleanup --dry-run
 codex-vibe-monitor maintenance raw-orphan-sweep --dry-run
+codex-vibe-monitor maintenance pool-upstream-attempt-archive --dry-run
+codex-vibe-monitor maintenance forward-proxy-attempt-archive --dry-run
+codex-vibe-monitor maintenance invocation-detail-prune --dry-run
+codex-vibe-monitor maintenance quota-snapshot-compaction --dry-run
+codex-vibe-monitor maintenance model-route-expiry --dry-run
+codex-vibe-monitor maintenance task-run-history-cleanup --dry-run
 ```
 
 CLI 在线时提交指定维护请求并等待服务执行；离线时独占业务库与维护库对应的运行态锁，仅执行指定任务。运行态无法确认或维护库不可用时返回不可用。同一数据目录的版本升级须先停止旧程序。

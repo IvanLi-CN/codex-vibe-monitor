@@ -94,7 +94,8 @@
         "Backend Tests (Stateful SQLite shard 1/2)",
         "Backend Tests (Stateful SQLite shard 2/2)",
         "PR E2E Test Producer",
-        "PR Smoke Artifact Producer"
+        "PR Smoke Artifact Producer",
+        "Retention Migration Validation"
       ]
     },
     {

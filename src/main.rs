@@ -62,7 +62,7 @@ use flate2::{
     Compression, Decompress, FlushDecompress,
     write::{GzDecoder as WriteGzipDecoder, GzEncoder},
 };
-use futures_util::{FutureExt, StreamExt, TryStreamExt, future::Shared, stream};
+use futures_util::{StreamExt, TryStreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use rand::Rng;
 use regex::Regex;

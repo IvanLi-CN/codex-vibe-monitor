@@ -269,6 +269,18 @@ pub(crate) enum MaintenanceCommand {
     InvocationIdentityCleanup(MaintenanceDryRunArgs),
     /// Inspect and safely release orphan raw payload files.
     RawOrphanSweep(MaintenanceDryRunArgs),
+    /// Archive expired connection-pool upstream request attempts.
+    PoolUpstreamAttemptArchive(MaintenanceDryRunArgs),
+    /// Archive expired forward-proxy attempts.
+    ForwardProxyAttemptArchive(MaintenanceDryRunArgs),
+    /// Prune retained invocation detail rows.
+    InvocationDetailPrune(MaintenanceDryRunArgs),
+    /// Compact retained quota snapshots.
+    QuotaSnapshotCompaction(MaintenanceDryRunArgs),
+    /// Expire stale model routing rows.
+    ModelRouteExpiry(MaintenanceDryRunArgs),
+    /// Prune system and managed task-run history.
+    TaskRunHistoryCleanup(MaintenanceDryRunArgs),
     /// Compress cold raw payload backlog without running the full retention pipeline.
     RawCompression(MaintenanceDryRunArgs),
     /// Rebuild codex_invocations archive upstream-activity manifests.

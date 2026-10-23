@@ -35,7 +35,7 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
             if attempts {
                 archive_timestamped_dataset(&pool, &config, archive_table_spec(dataset),
                     "SELECT id,occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at,id LIMIT ?2",
-                    "9999-01-01 00:00:00".to_string(), false).await.map(|result| result.0)
+                    "9999-01-01 00:00:00".to_string(), false, None).await.map(|result| result.0)
             } else {
                 archive_old_invocations(&pool, &config, None, false)
                     .await
@@ -169,7 +169,7 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
             if attempts {
                 archive_timestamped_dataset(&pool, &config, archive_table_spec(dataset),
                     "SELECT id,occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at,id LIMIT ?2",
-                    "9999-01-01 00:00:00".to_string(), false).await.map(|result| result.0)
+                    "9999-01-01 00:00:00".to_string(), false, None).await.map(|result| result.0)
             } else {
                 archive_old_invocations(&pool, &config, None, false)
                     .await

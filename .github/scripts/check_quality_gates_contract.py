@@ -899,6 +899,190 @@ def require_storybook_browser_install(workflow, workflow_path: str) -> None:
     )
 
 
+def require_retention_migration_validation_contract(
+    workflow: dict[str, Any], expected_jobs: set[str], auxiliary_jobs: set[str]
+) -> None:
+    where = "ci-pr.yml.jobs.retention-migration-validation"
+    job = named_job_config(
+        workflow,
+        "retention-migration-validation",
+        expected_jobs | auxiliary_jobs,
+        "ci-pr.yml",
+    )
+    require(
+        job.get("name") in auxiliary_jobs,
+        f"{where} must remain auxiliary and propagate through Build Artifacts",
+    )
+    require(
+        job.get("needs") == "build-pr-smoke-artifacts",
+        f"{where} must depend on build-pr-smoke-artifacts",
+    )
+    require_exact_if(
+        job,
+        "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+        where,
+    )
+    require(job.get("timeout-minutes") == 60, f"{where}.timeout-minutes must stay 60")
+    require_job_and_steps_fail_closed(job, where)
+
+    scope = step_config(job, "Detect retention migration scope", where)
+    require(scope.get("id") == "retention_scope", f"{where} scope detection must expose retention_scope")
+    scope_command = step_run(scope, f"{where}.steps['Detect retention migration scope']")
+    for fragment in (
+        "git diff --name-only",
+        "BASE_SHA",
+        "src/*",
+        "build.rs",
+        ".cargo/config.toml",
+        "Cargo.lock",
+        "Cargo.toml",
+        "Dockerfile",
+        "rust-toolchain.toml",
+        "vendor/hotpath/*",
+        "scripts/bind-retention-maintenance-candidate.py",
+        "scripts/generate-retention-maintenance-release-fixtures.py",
+        "scripts/validate-retention-maintenance-runtime.py",
+        "scripts/validate-retention-maintenance-upgrade.py",
+        "docs/adr/assets/retention-maintenance-task-ownership/*",
+        "docs/specs/retention-maintenance-task-ownership/*",
+        "required=",
+        "$GITHUB_OUTPUT",
+    ):
+        require(fragment in scope_command, f"{where} scope detection must contain {fragment!r}")
+
+    gated_if = "${{ steps.retention_scope.outputs.required == 'true' }}"
+    for step_name in (
+        "Verify smoke artifact producer",
+        "Download PR smoke artifacts",
+        "Extract candidate binary",
+        "Generate released-source fixtures",
+        "Run released-source migration validation",
+        "Run runtime ownership validation",
+        "Verify candidate-bound migration evidence",
+    ):
+        require_exact_if(step_config(job, step_name, where), gated_if, f"{where}.steps['{step_name}']")
+
+    producer = step_config(job, "Verify smoke artifact producer", where)
+    producer_env = require_mapping(producer.get("env"), f"{where}.steps['Verify smoke artifact producer'].env")
+    require(
+        producer_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}"
+        and producer.get("run") == 'test "$PRODUCER_RESULT" = success',
+        f"{where} must fail when the smoke artifact producer fails",
+    )
+    checkout = checkout_step(job, "Checkout", where)
+    require(checkout.get("fetch-depth") == 0, f"{where} Checkout must fetch the carrier parent")
+    download = uses_step_config(job, "Download PR smoke artifacts", "actions/download-artifact@v7", where)
+    require(
+        download.get("with", {}).get("name") == "pr-smoke-artifacts-${{ github.run_id }}"
+        and download.get("with", {}).get("path") == "${{ runner.temp }}/pr-smoke-artifacts",
+        f"{where} must download the current run's smoke artifact",
+    )
+
+    extract = step_run(step_config(job, "Extract candidate binary", where), f"{where}.steps['Extract candidate binary']")
+    for fragment in (
+        "set -euo pipefail",
+        "mkdir -p .ci-smoke",
+        "tar -C .ci-smoke -xf",
+        "test -x .ci-smoke/codex-vibe-monitor",
+        "binary_sha256",
+        "scripts/bind-retention-maintenance-candidate.py",
+        "--record",
+        "--github-sha",
+        "--binary-sha256",
+        "--output",
+        "candidate-identity.json",
+    ):
+        require(fragment in extract, f"{where} candidate extraction must bind {fragment!r}")
+
+    fixture_where = f"{where}.steps['Generate released-source fixtures']"
+    fixture_command = require_command(
+        step_config(job, "Generate released-source fixtures", where),
+        ["python3", "scripts/generate-retention-maintenance-release-fixtures.py"],
+        fixture_where,
+        f"{where} must execute released-source fixture generation",
+    )
+    require(
+        "$RUNNER_TEMP/retention-migration-fixtures" in fixture_command,
+        f"{where} must generate manifest-pinned released-source fixtures",
+    )
+    upgrade_where = f"{where}.steps['Run released-source migration validation']"
+    upgrade_command = require_command(
+        step_config(job, "Run released-source migration validation", where),
+        ["python3", "scripts/validate-retention-maintenance-upgrade.py"],
+        upgrade_where,
+        f"{where} must execute released-source migration validation",
+    )
+    require(
+        "--candidate" in upgrade_command
+        and any(".ci-smoke/codex-vibe-monitor" in token for token in upgrade_command)
+        and "$RUNNER_TEMP/retention-migration-results" in upgrade_command,
+        f"{where} must run released-source migration validation against the candidate binary",
+    )
+    runtime_where = f"{where}.steps['Run runtime ownership validation']"
+    runtime_command = require_command(
+        step_config(job, "Run runtime ownership validation", where),
+        ["python3", "scripts/validate-retention-maintenance-runtime.py"],
+        runtime_where,
+        f"{where} must execute online ownership validation",
+    )
+    require(
+        "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" in runtime_command
+        and "--candidate" in runtime_command
+        and "$PWD/.ci-smoke/codex-vibe-monitor" in runtime_command
+        and "--http-port" in runtime_command
+        and "60081" in runtime_command,
+        f"{where} must run online ownership validation against the candidate binary",
+    )
+    verify_step = step_run(step_config(job, "Verify candidate-bound migration evidence", where), f"{where}.steps['Verify candidate-bound migration evidence']")
+    for fragment in (
+        "candidate-identity.json",
+        "retention-migration-results/candidate.json",
+        "retention-runtime-results/results.json",
+        "import json",
+        "import sys",
+        "identity = json.loads",
+        "upgrade = json.loads",
+        "runtime = json.loads",
+        "binary_sha256 = sys.argv[6]",
+        'identity["githubSha"] == github_sha == identity["checkoutSha"] == checkout_sha',
+        'identity["candidateSha256"] == binary_sha256',
+        'upgrade["candidateSha256"] == binary_sha256',
+        'runtime["candidateSha256"] == binary_sha256',
+        "print(json.dumps(identity, sort_keys=True))",
+    ):
+        require(fragment in verify_step, f"{where} evidence verification must contain {fragment!r}")
+
+    upload = uses_step_config(job, "Upload retention migration evidence", "actions/upload-artifact@v7", where)
+    require_exact_if(
+        upload,
+        "${{ always() && steps.retention_scope.outputs.required == 'true' }}",
+        f"{where}.steps['Upload retention migration evidence']",
+    )
+    upload_with = require_mapping(upload.get("with"), f"{where}.steps['Upload retention migration evidence'].with")
+    expected_paths = {
+        "${{ runner.temp }}/candidate-identity.json",
+        "${{ runner.temp }}/retention-migration-results/candidate.json",
+        "${{ runner.temp }}/retention-migration-results/results.json",
+        "${{ runner.temp }}/retention-migration-results/*/source.json",
+        "${{ runner.temp }}/retention-migration-results/*/candidate.log",
+        "${{ runner.temp }}/retention-migration-results/*/candidate-diagnostics.jsonl",
+        "${{ runner.temp }}/retention-runtime-results/results.json",
+        "${{ runner.temp }}/retention-runtime-results/*/candidate.log",
+        "${{ runner.temp }}/retention-runtime-results/*/daemon.log",
+    }
+    actual_paths = {line.strip() for line in str(upload_with.get("path", "")).splitlines() if line.strip()}
+    require(
+        upload_with.get("name") == "retention-migration-validation-${{ github.run_id }}"
+        and actual_paths == expected_paths
+        and upload_with.get("if-no-files-found") == "error",
+        f"{where} must upload the strict candidate-bound evidence allowlist fail-closed",
+    )
+    require(
+        upload_with.get("overwrite") is True,
+        f"{where} must overwrite evidence artifacts on reruns",
+    )
+
+
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
     workflow_name = workflow.get("name")
@@ -908,6 +1092,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
     require_storybook_browser_install(workflow, "ci-pr.yml")
+    require_retention_migration_validation_contract(workflow, expected_jobs, auxiliary_jobs)
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -1060,8 +1245,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     performance_declared = "Observability Performance Budget" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ())
     require(
-        build_job.get("needs") == "build-pr-smoke-artifacts",
-        "ci-pr.yml.jobs.build must depend only on the PR smoke artifact producer",
+        build_job.get("needs") == ["build-pr-smoke-artifacts", "retention-migration-validation"],
+        "ci-pr.yml.jobs.build must depend on the PR smoke producer and retention validation",
     )
     if performance_declared:
         require_observability_performance_contract(workflow)
@@ -1069,7 +1254,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         require_observability_diagnostic_contract(workflow)
     require_exact_if(
         build_job,
-        "${{ always() && github.event_name == 'pull_request' }}",
+        "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
         "ci-pr.yml.jobs.build",
     )
     producer_result_step = step_config(build_job, "Verify smoke artifact producer", "ci-pr.yml.jobs.build")
@@ -1081,6 +1266,21 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}"
         and producer_result_step.get("run") == 'test "$PRODUCER_RESULT" = success',
         "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails",
+    )
+    migration_result_step = step_config(
+        build_job,
+        "Verify retention migration validation",
+        "ci-pr.yml.jobs.build",
+    )
+    migration_result_env = require_mapping(
+        migration_result_step.get("env"),
+        "ci-pr.yml.jobs.build.steps['Verify retention migration validation'].env",
+    )
+    require(
+        migration_result_env.get("RETENTION_MIGRATION_RESULT")
+        == "${{ needs.retention-migration-validation.result }}"
+        and migration_result_step.get("run") == 'test "$RETENTION_MIGRATION_RESULT" = success',
+        "ci-pr.yml.jobs.build must fail when retention migration validation fails, cancels, or skips",
     )
     step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
     step_config(build_job, "Extract PR smoke artifacts", "ci-pr.yml.jobs.build")
@@ -1167,7 +1367,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         require_exact_if(
             smoke_artifact_job,
-            "github.event_name == 'pull_request'",
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
             "ci-pr.yml.jobs.build-pr-smoke-artifacts",
         )
         require_job_and_steps_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")

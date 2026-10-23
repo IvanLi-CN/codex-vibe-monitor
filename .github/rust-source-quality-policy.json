@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 21,
-    "suppression_entries": 124
+    "suppression_entries": 125
   },
   "loc_targets": {
     "production": 2500,
@@ -283,6 +283,12 @@
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
       "reason": "Retain this targeted allow for the current maintenance task completion payload; remove it when the task observation boundary is split."
+    },
+    {
+      "path": "src/maintenance_store.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the retry-aware maintenance task completion payload; remove it when the task observation boundary is split."
     },
     {
       "path": "src/maintenance/retention/write_admission.rs",

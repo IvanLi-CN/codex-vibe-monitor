@@ -2,37 +2,42 @@
 
 ## Context and Scope
 
-本主题约束数据保留与归档、Prompt 缓存物化、孤儿调用身份清理和 raw 孤儿文件清理的执行归属、自动触发控制、运行入口与观测。目标是让每项维护的完成度、故障、资源消耗和操作范围对应实际执行者。
+本主题约束数据保留与归档、各项保留策略清理、Prompt 缓存物化、孤儿调用身份清理和 raw 孤儿文件清理的执行归属、自动触发控制、运行入口与观测。目标是让每项维护的完成度、故障、资源消耗和操作范围对应实际执行者。
 
-范围包括两个清理任务的独立纳管、四项任务的自动触发暂停语义、移除环境启停开关、默认控制初始化、清理接续、任务级 CLI、页面与历史口径。现有归档格式、保留天数、统计精确性、身份分配和文件所有权协议继续适用；原始载荷指标盘点以及其他系统任务不并入这四项维护。
+范围包括 invocation 归档 owner 与六项独立保留策略 owner 的纳管、既有物化/身份/raw owner 的控制语义、移除环境启停开关、默认控制初始化、有限 dispatcher、任务级 CLI、页面与历史口径。现有归档格式、保留天数、统计精确性、身份分配和文件所有权协议继续适用；原始载荷指标盘点以及其他系统任务不并入这些 owner。
 
-本主题定义四项任务的归属和自动触发暂停语义。既有 retention 规范继续定义归档安全、统计和资源约束；其中把会话派生维护计入归档总体完成度、把任务停用视作正在运行任务的批次暂停等规则，在这四项任务上由本主题的独立归属与触发控制要求接管。
+本主题定义七项 retention-policy owner 的归属和自动触发暂停语义。既有 retention 规范继续定义归档安全、统计和资源约束；其中把会话派生维护计入归档总体完成度、把任务停用视作正在运行任务的批次暂停等旧规则，在新 owner 上由本主题的独立归属与触发控制要求接管。
 
 ## Terms and Interfaces
 
-- 归档核心、孤儿提示缓存对话、孤儿调用身份清理、孤儿原始载荷文件清理、自动触发暂停、纳管任务与任务运行采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。
-- 下表定义四项维护的任务标识和工作范围；这些任务是维护子域中的四项职责，不代表整个系统只存在四个任务。
+- 归档核心、自动触发暂停、纳管任务与任务运行采用 [CONTEXT.md](../../../CONTEXT.md) 的定义；每个 owner 的 `discovered`、`selected`、`committed` 和 `result` 是本主题的运行事实。
+- 下表定义七项 retention-policy owner 的任务标识和工作范围；`raw_compression`、`prune_archive_batches`、`prompt_cache_materialization`、`invocation_identity_cleanup` 与 `raw_orphan_sweep` 仍由各自既有 owner 负责，不被重新并入归档核心。
 
-| 任务             | 标识                           | 工作范围                                                                   |
-| ---------------- | ------------------------------ | -------------------------------------------------------------------------- |
-| 数据保留与归档   | `retention_archive`            | 归档发布、源记录转换、明细裁剪、冷 raw 压缩、过期归档及现有保留策略清理。  |
-| Prompt 缓存物化  | `prompt_cache_materialization` | 复用既有身份与统计物化执行者，消费归档事务提交的刷新需求。                 |
-| 孤儿调用身份清理 | `invocation_identity_cleanup`  | 释放满足保护条件的无引用对话身份和已结束、无引用的小时调用前缀。           |
-| raw 孤儿文件清理 | `raw_orphan_sweep`             | 复用已有 worker，按所有权、隔离与恢复协议清理 raw 孤儿文件并同步物理库存。 |
+| 任务                | 标识                            | 工作范围                                                                        |
+| ------------------- | ------------------------------- | ------------------------------------------------------------------------------- |
+| invocation 归档     | `retention_archive`             | 固定 cutoff/source fence 下的 invocation 归档、证明、源转换与关联 raw 释放。    |
+| 上游尝试归档        | `pool_upstream_attempt_archive` | 独立归档过期的连接池上游请求尝试。                                              |
+| 正向代理尝试归档    | `forward_proxy_attempt_archive` | 独立归档过期的正向代理尝试。                                                    |
+| invocation 明细裁剪 | `invocation_detail_prune`       | 独立裁剪保留窗口内已完成 invocation 的详情数据。                                |
+| 配额快照压缩        | `quota_snapshot_compaction`     | 独立压缩历史配额快照并保留每日代表记录。                                        |
+| 模型路由过期        | `model_route_expiry`            | 独立清理已过期模型路由记录。                                                    |
+| 任务运行历史清理    | `task_run_history_cleanup`      | 独立清理主库 `system_task_runs` 审计历史和维护库 `managed_task_runs` 调度历史。 |
+
+冷 raw 压缩与过期归档批次清理继续复用 `raw_compression` 与 `prune_archive_batches` owner；identity/raw orphan 与 Prompt-cache owner 继续使用既有执行者和安全边界。
 
 - 管理接口沿用 `/api/system/managed-tasks` 及其按任务读取、控制和立即运行的既有入口。
-- `--retention-run-once` 与其 dry-run 仅对应归档职责；两个清理任务各自具有独立的一次性运行和 dry-run 入口。
+- `--retention-run-once` 与其 dry-run 仅对应 invocation 归档职责；六项保留策略 owner、身份清理和 raw 清理各自具有独立的一次性运行和 dry-run 入口。
 - `RETENTION_ENABLED` 和 `XY_RETENTION_ENABLED` 退出支持的运行配置，不作为任何初始化或运行输入。其他保留策略、归档位置和预算配置仍按对应职责的既有合同生效。
 
 ## Requirements
 
-### REQ-RMO-001 — 四项执行归属
+### REQ-RMO-001 — 七项执行归属
 
-系统 MUST 为四项维护提供独立任务身份、实际执行观测、运行历史、计量、完成度、等待原因与重试状态。物化 MUST 复用既有执行者；raw 清理 MUST 纳管既有 worker，不能新增第二个执行者。身份清理 MUST 从归档执行链迁出，包含对话身份和小时调用前缀；归档原子转换中的关联 raw 文件释放仍属于归档。
+系统 MUST 为七项 retention-policy owner 提供独立任务身份、实际执行观测、运行历史、计量、完成度、等待原因与重试状态。物化 MUST 复用既有执行者；raw 清理 MUST 纳管既有 worker，不能新增第二个执行者。身份清理 MUST 从归档执行链迁出，包含对话身份和小时调用前缀；归档原子转换中的关联 raw 文件释放仍属于 invocation 归档 owner。
 
 ### REQ-RMO-002 — 自动触发控制与默认值
 
-任务页持久控制 MUST 独立决定各任务是否允许自动触发。停用一个任务 MUST NOT 修改其他任务的控制。新安装的四项任务及首次引入的两个清理任务 MUST 默认允许自动触发；已有控制和管理员计划覆盖 MUST 保留，重复启动或升级不得恢复默认而覆盖操作员选择。
+任务页持久控制 MUST 独立决定各任务是否允许自动触发。停用一个任务 MUST NOT 修改其他任务的控制。新安装的七项 retention-policy owner 及首次引入的既有清理 owner MUST 默认允许自动触发；已有控制和管理员计划覆盖 MUST 保留，重复启动或升级不得恢复默认而覆盖操作员选择。
 
 ### REQ-RMO-003 — 移除环境启停输入
 
@@ -44,7 +49,7 @@
 
 ### REQ-RMO-005 — 独立且有界的清理调度
 
-两个清理任务 MUST 在尚有候选需要检查或已提交恢复工作需要收尾时有界接续，批次间让行；耗尽本轮扫描后 MUST 回到五分钟空闲巡检。受保护候选不能形成忙循环。压力、资源准入拒绝和实际错误 MUST 使用原因明确的退避；检查时间、接续或重试资格与实际开始时间 MUST 分开呈现。身份清理 MUST 使用自身运行预算和有界查询，不消耗归档轮次的剩余预算；raw 清理 MUST 保留现有有界扫描、共享工作预算与可恢复退避语义，不将排队或收尾时间冒充工作预算。
+两个清理任务 MUST 在尚有候选需要检查或已提交恢复工作需要收尾时有界接续，批次间让行；耗尽本轮扫描后 MUST 回到五分钟空闲巡检。受保护候选不能形成忙循环。压力、资源准入拒绝和实际错误 MUST 使用原因明确的退避；检查时间、接续或重试资格与实际开始时间 MUST 分开呈现。实际 owner 失败和同一任务执行租约冲突 MUST 保留明确的失败事实并安排有界下一次资格；缺少完成观测不得清空 catch-up。身份清理 MUST 使用自身运行预算和有界查询，不消耗归档轮次的剩余预算；raw 清理 MUST 保留现有有界扫描、共享工作预算与可恢复退避语义，不将排队或收尾时间冒充工作预算。
 
 ### REQ-RMO-006 — 单实例与真实执行边界
 
@@ -64,15 +69,17 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 ### REQ-RMO-010 — 一次性入口与预演范围
 
-`--retention-run-once` MUST 仅执行归档及其保留策略职责，不调用身份清理或 raw 孤儿扫描。两个清理任务 MUST 各自提供有界的一次性入口和同范围 dry-run；入口不得运行其他任务或恢复自动触发。暂停自动触发时真实手动运行仍允许。dry-run MUST 不删除业务记录、释放身份、删除文件、推进正式正确性游标或改变隔离／释放事实；允许的运维观测或结构初始化必须与真实清理区分。预演 MUST 明示检查范围与覆盖，不能把一页候选结果称为全库总量。
+`--retention-run-once` MUST 仅执行 invocation 归档 owner，不调用其他 retention-policy owner、身份清理或 raw 孤儿扫描。每个独立 owner MUST 提供有界的一次性入口和同范围 dry-run；入口不得运行其他任务或恢复自动触发。暂停自动触发时真实手动运行仍允许。dry-run MUST 不删除业务记录、释放身份、删除文件、推进正式正确性游标或改变隔离／释放事实；允许的运维观测或结构初始化必须与真实清理区分。预演 MUST 明示检查范围与覆盖，不能把一页候选结果称为全库总量。
 
 ### REQ-RMO-011 — 完成度与计量独立
 
 每项任务的完成度 MUST 只依据自身本轮捕获范围和已提交成果。其他任务的后续推进 MUST 不改写已结束运行结果；没有进展、部分完成、延期与失败必须按对应原因呈现。调用行、上游尝试行、对话身份、小时前缀、文件与字节 MUST 分别计量；缺测或未知总体 MUST 保持未知，不能补零或生成混合单位完成率。
 
+新 owner 运行 MUST 使用 `no-work`、`complete`、`partial`、`deferred`、`failed` 五种结果值。`discovered`、`selected`、`committed`、`globalBacklogTotal` 与 `selectedScope` MUST 分开持久化；`processedCount` 只能复述本 owner 的已提交事实，不能再把多个职责相加。旧 `retention_archive` 组合记录可继续使用 `completed` 等旧值，页面和接口必须按 ownership version 区分两种历史口径。
+
 ### REQ-RMO-012 — 页面与历史口径
 
-目录、当前执行区和详情 MUST 分别展示四项任务的真实状态、自动触发状态、计划来源、运行与等待原因。界面 MUST 明确停用表示暂停自动触发，停用时立即运行仍可使用；任务运行中仍须遵守单实例限制。归档页 MUST 通过关联入口连接物化和清理详情，新归档记录不得将它们作为自身执行阶段。raw 新执行与压力事件 MUST 归属于 raw 清理任务。
+目录、当前执行区和详情 MUST 分别展示七项 retention-policy owner 的真实状态、自动触发状态、计划来源、运行与等待原因。界面 MUST 明确停用表示暂停自动触发，停用时立即运行仍可使用；任务运行中仍须遵守单实例限制。归档页 MUST 通过关联入口连接物化、raw 与 identity 详情，新归档记录不得将它们或其他 retention-policy owner 作为自身执行阶段。raw 新执行与压力事件 MUST 归属于既有 raw owner。
 
 旧 `retention_archive` URL 与历史 MUST 保持可读。旧记录的组合完成度、核心完成度及明细不得重算；新记录 MUST 明确自己的职责范围，缺少范围证据的旧记录按旧口径或未知展示，不伪造独立清理运行、历史零指标或新的完成结果。
 
@@ -82,13 +89,17 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 公开配置移除与持久状态兼容 MUST 分开评估。交付前 MUST 声明并验证受支持的已发布来源状态和中断恢复路径，不以源码阅读或文档检查代替兼容验证，也不改写已经部署的迁移。
 
+### REQ-RMO-014 — Owner dispatcher 与固定事实
+
+七项 retention-policy owner MUST 通过有界 dispatcher 执行，每个任务同时最多一个运行实例；dispatcher 不得 inline-await 完整任务、不得无限启动 worker，并 MUST 使用有限 worker/finalizer、显式队列、结果写入失败的重试与下一次资格。等待重资源时必须释放数据库连接、写许可和文件 fence，准入后重新校验 owner identity 与 source fence；租约冲突不得以缺少 completion/details 的失败结束 owner 运行，必须写入 `failed` 与 `task_execution_active` 事实并安排有界重试；shutdown/cancel 只能在 native worker 已退出后释放执行 lease。
+
 ## Verification
 
 ### VER-RMO-001 — 执行归属与事务
 
 - Method: 任务目录、执行入口和成功／延期／失败场景的受控夹具，配合归档发布与刷新队列事务回归。
 - covers: `REQ-RMO-001`, `REQ-RMO-006`, `REQ-RMO-007`, `REQ-RMO-011`
-- Pass condition: 四项职责各只有一个执行者；并发请求不重复运行；归档提交与刷新入队原子，派生任务故障不改变归档成果；进度单位和真实执行计时准确。
+- Pass condition: 七项 retention-policy owner 各只有一个执行者；并发请求不重复运行；归档提交与刷新入队原子，派生任务故障不改变归档成果；进度单位和真实执行计时准确。
 
 ### VER-RMO-002 — 控制与默认值
 
@@ -124,7 +135,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 - Method: 新旧记录混合、缺少范围或指标字段、归档完成而相关任务待办、自动触发暂停和手动运行场景的界面与接口夹具。
 - covers: `REQ-RMO-001`, `REQ-RMO-004`, `REQ-RMO-011`, `REQ-RMO-012`
-- Pass condition: 四项详情和关联入口可用；暂停含义与手动按钮一致；旧 URL 与历史可读、旧结果不重算；新记录范围和事件归属准确，缺测不补零、不生成混合进度。
+- Pass condition: 七项 owner 详情和关联入口可用；暂停含义与手动按钮一致；旧 URL 与历史可读、旧结果不重算；新记录范围和事件归属准确，owner v2 的全局积压、本轮检查／选中／提交、单位与窗口覆盖可见，缺测不补零、不生成混合进度。
 
 ### VER-RMO-008 — 发布状态兼容
 
@@ -161,6 +172,62 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
   state: committed throughput on mobile
   evidence_note: Mobile component surface keeps the phase timing fields readable without horizontal overflow at the 393x852 CSS viewport, including the explicit unknown summary-proof value for timestamped upstream archives.
   image: ![Retention throughput mobile](./assets/retention-throughput-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  story_id_or_title: `System/RetentionOwnerRunFacts/Mobile`
+  state: owner v2 committed run facts on mobile
+  evidence_note: Mobile owner-facts surface shows the independent scope, unit, global backlog, discovered, selected, committed, batch, raw-file and has-more facts without overlap or horizontal overflow.
+  image: ![Retention owner run facts mobile](./assets/retention-owner-run-facts-mobile.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1280x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: seven retention owner detail pages with independent scheduling and scope facts
+  demo_route: `/#/system/tasks/<owner-key>?demoTheme=light`; `retention_archive` uses `&demoRetentionOwners=v2` for the new owner record fixture
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: Desktop gallery covers all seven retention-policy owner detail pages and shows each page title, task key, schedule context, independent data range and owner-specific progress facts.
+  image: ![Seven retention owner desktop pages](./assets/retention-owner-seven-desktop-top-gallery.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 393x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: seven retention owner detail pages with mobile owner facts
+  demo_route: `/#/system/tasks/<owner-key>?demoTheme=light`; `retention_archive` uses `&demoRetentionOwners=v2` for the new owner record fixture
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: Mobile gallery covers the same seven pages at 393x852 CSS px, showing independent scope, unit, backlog, discovered, selected, committed, batch and window-coverage facts without horizontal overflow.
+  image: ![Seven retention owner mobile facts](./assets/retention-owner-seven-mobile-facts-gallery.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1280x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: retention owner task catalog with seven owner entries
+  demo_route: `/#/system/tasks?demoTheme=light`
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: Full task catalog shows the seven retention-policy owner entries together, including their independent task keys and status rows, so page-level evidence is tied back to the split task directory.
+  image: ![Retention owner task catalog](./assets/retention-owner-task-catalog-desktop.png)
 
 ## Related ADRs
 

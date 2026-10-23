@@ -1,6 +1,7 @@
 use super::observability::{RetentionBatchObservation, RetentionPhaseGuard};
 use super::*;
 use crate::observability::contention::{Outcome, RetentionOperation, RetentionPhase};
+use std::collections::BTreeMap;
 
 const ARCHIVE_BATCH_TARGET_ROWS: usize = 1_000;
 const ARCHIVE_BATCH_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -32,6 +33,7 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) month_key: String,
     pub(crate) batch_rows: usize,
     pub(crate) committed_rows: usize,
+    pub(crate) raw_files_removed: usize,
     pub(crate) file_prepare_ms: Option<u64>,
     pub(crate) lock_wait_ms: u64,
     pub(crate) elapsed_ms: u64,
@@ -47,6 +49,38 @@ pub(crate) struct RetentionBatchMetrics {
 
 tokio::task_local! {
     pub(super) static TASK_BATCH_METRICS: RefCell<Vec<RetentionBatchMetrics>>;
+    pub(super) static TASK_DISCOVERED_ROWS: RefCell<BTreeMap<String, usize>>;
+    pub(super) static TASK_CANDIDATE_WINDOWS: RefCell<BTreeMap<String, bool>>;
+}
+
+pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
+    let _ = TASK_DISCOVERED_ROWS.try_with(|discovered| {
+        let mut discovered = discovered.borrow_mut();
+        let entry = discovered.entry(dataset.to_string()).or_default();
+        *entry = (*entry).saturating_add(rows);
+    });
+}
+
+pub(crate) fn discovered_rows(dataset: &str) -> Option<usize> {
+    TASK_DISCOVERED_ROWS
+        .try_with(|discovered| discovered.borrow().get(dataset).copied())
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn record_candidate_window_has_more(dataset: &str, has_more: bool) {
+    let _ = TASK_CANDIDATE_WINDOWS.try_with(|windows| {
+        let mut windows = windows.borrow_mut();
+        let entry = windows.entry(dataset.to_string()).or_default();
+        *entry |= has_more;
+    });
+}
+
+pub(crate) fn candidate_window_has_more(dataset: &str) -> Option<bool> {
+    TASK_CANDIDATE_WINDOWS
+        .try_with(|windows| windows.borrow().get(dataset).copied())
+        .ok()
+        .flatten()
 }
 
 pub(crate) struct BatchObservation {
@@ -69,6 +103,7 @@ impl BatchObservation {
                 month_key: month.to_string(),
                 batch_rows: rows,
                 committed_rows: 0,
+                raw_files_removed: 0,
                 file_prepare_ms: None,
                 lock_wait_ms: 0,
                 elapsed_ms: 0,
@@ -95,6 +130,9 @@ impl BatchObservation {
             .lock_wait_ms
             .saturating_add(lock_wait.as_millis() as u64);
     }
+    pub(crate) fn raw_files_removed(&mut self, count: usize) {
+        self.metrics.raw_files_removed = self.metrics.raw_files_removed.saturating_add(count);
+    }
     pub(crate) fn source_identity_finished(&mut self, elapsed: Duration) {
         self.metrics.source_identity_ms = Some(elapsed.as_millis() as u64);
     }
@@ -103,6 +141,9 @@ impl BatchObservation {
     }
     pub(crate) fn summary_proof_finished(&mut self, elapsed: Duration) {
         self.metrics.summary_proof_ms = Some(elapsed.as_millis() as u64);
+    }
+    pub(crate) fn mark_timeout(&mut self) {
+        self.metrics.timeout_count = self.metrics.timeout_count.max(1);
     }
 
     pub(crate) fn phase(&self, phase: RetentionPhase) -> RetentionPhaseGuard {
@@ -129,9 +170,9 @@ impl Drop for BatchObservation {
     fn drop(&mut self) {
         // Attribute the run deadline only to an unfinished selected batch. A batch
         // committed before settlement is not a timeout merely because Drop is late.
-        self.metrics.timeout_count = u64::from(
+        self.metrics.timeout_count = self.metrics.timeout_count.max(u64::from(
             self.metrics.committed_rows < self.metrics.batch_rows && retention_run_budget_expired(),
-        );
+        ));
         self.metrics.elapsed_ms = self.started.elapsed().as_millis() as u64;
         if !self.retention.has_outcome() {
             let outcome = if super::retention_run_shutdown_token()
