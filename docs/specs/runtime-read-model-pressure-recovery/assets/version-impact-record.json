@@ -53,7 +53,7 @@
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "Impact classification is verified from the additive schema and API shape: healthy Summary fields remain compatible, coded 503 and system-status fields are optional, and the recovery tables/usage columns are forward-only. Functional stateful, representative-scale, contention, migration and artifact evidence passed in current-head CI run 40082082769; local macOS targeted Rust execution remains blocked by the sqlx_macros dylib toolchain failure.",
+      "reasoning": "Impact classification is verified from the additive schema and API shape: healthy Summary fields remain compatible, coded 503 and system-status fields are optional, and the recovery tables/usage columns are forward-only. Functional stateful, representative-scale, contention, migration and artifact evidence passed in current-head CI run 40085551281; current-head Tier 4 review found no implementation blocker; local macOS targeted Rust execution remains blocked by the sqlx_macros dylib toolchain failure.",
       "verified_at": "2026-10-24T10:00:00Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
@@ -95,7 +95,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "255dcae0",
+      "658efa87",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "minor",
@@ -105,8 +105,8 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "255dcae0",
-    "candidate_validation_status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-and-visual-pending",
+    "candidate_head_sha": "658efa87",
+    "candidate_validation_status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-passed-visual-pending-base-sync-blocked",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "candidate_validation_record": "assets/current-candidate-validation.json",
