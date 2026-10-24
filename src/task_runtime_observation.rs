@@ -520,6 +520,15 @@ impl TaskExecutionObservation {
         crate::task_timeline::execution_work_started(self.inner.execution_uid.clone(), started_at);
     }
 
+    pub(crate) fn execution_duration_ms(&self) -> Option<i64> {
+        self.inner
+            .work_started_clock
+            .lock()
+            .ok()
+            .and_then(|clock| *clock)
+            .map(|clock| clock.elapsed().as_millis().min(i64::MAX as u128) as i64)
+    }
+
     pub(crate) fn resource_wait_ms(&self) -> u64 {
         self.inner
             .work_started_clock
@@ -772,13 +781,7 @@ impl TaskExecutionObservation {
         crate::task_timeline::execution_finished(
             self.inner.execution_uid.clone(),
             format_utc_iso_millis(Utc::now()),
-            self.inner
-                .work_started_clock
-                .lock()
-                .ok()
-                .and_then(|clock| *clock)
-                .map(|clock| clock.elapsed().as_millis().min(u64::MAX as u128) as u64)
-                .unwrap_or(0),
+            self.execution_duration_ms().unwrap_or_default().max(0) as u64,
             status,
         );
         update_workload_sample(
@@ -788,13 +791,7 @@ impl TaskExecutionObservation {
             |sample| {
                 let finished_at = format_utc_iso_millis(Utc::now());
                 sample.finished_at = Some(finished_at);
-                sample.duration_ms = self
-                    .inner
-                    .work_started_clock
-                    .lock()
-                    .ok()
-                    .and_then(|clock| *clock)
-                    .map(|clock| clock.elapsed().as_millis().min(i64::MAX as u128) as i64);
+                sample.duration_ms = self.execution_duration_ms();
                 sample.status = status.to_string();
                 let has_metric_observation =
                     [&sample.pending, &sample.discovered, &sample.processed]
@@ -1454,6 +1451,7 @@ mod tests {
         );
         let sample = super::workload_sample(task).unwrap();
         assert!(sample.actual_started_at.is_none());
+        assert!(waiting.execution_duration_ms().is_none());
         assert!(sample.discovered.unwrap().value.is_none());
         waiting.finish_with_status_and_reason("skipped", Some("background_busy"));
         let sample = super::workload_sample(task).unwrap();
@@ -1467,6 +1465,7 @@ mod tests {
             "waiting_resources",
         );
         admitted.mark_work_started();
+        assert!(admitted.execution_duration_ms().is_some());
         admitted.set_discovered_work(
             0,
             crate::format_utc_iso_millis(chrono::Utc::now()),

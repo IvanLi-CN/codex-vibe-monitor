@@ -362,6 +362,26 @@ fn set_retention_owner_raw_file_facts(
     }
 }
 
+fn retention_owner_success_completion(
+    selected: usize,
+    committed: usize,
+    has_wait_reason: bool,
+) -> &'static str {
+    if selected == 0 {
+        if has_wait_reason {
+            "deferred"
+        } else {
+            "no-work"
+        }
+    } else if committed < selected {
+        if committed > 0 { "partial" } else { "deferred" }
+    } else if has_wait_reason {
+        "partial"
+    } else {
+        "complete"
+    }
+}
+
 fn apply_retention_owner_success(
     summary: &mut RetentionOwnerRunSummary,
     discovered: usize,
@@ -381,17 +401,11 @@ fn apply_retention_owner_success(
     if let Some(reason) = retention_run_defer_reason() {
         summary.wait_reason = Some(reason);
     }
-    summary.completion = if summary.wait_reason.is_some() || summary.has_more == Some(true) {
-        if summary.committed > 0 {
-            "partial"
-        } else {
-            "deferred"
-        }
-    } else if selected == 0 {
-        "no-work"
-    } else {
-        "complete"
-    };
+    summary.completion = retention_owner_success_completion(
+        summary.selected,
+        summary.committed,
+        summary.wait_reason.is_some(),
+    );
 }
 
 async fn invocation_archive_fence(pool: &Pool<Sqlite>, cutoff: &str) -> Result<(Option<i64>, i64)> {
@@ -1017,9 +1031,11 @@ pub(crate) async fn run_retention_owner_task(
             ),
         )
         .await;
+    let elapsed_before_arrival = started_at.elapsed();
     let arrival_rates = batch_plan::arrival_rates(pool).await;
     match result {
         (Ok(mut summary), archive_batches, candidate_window_has_more) => {
+            let execution_elapsed = Duration::from_millis(summary.elapsed_ms);
             summary.archive_batches = archive_batches;
             summary.raw_files_removed = summary.raw_files_removed.max(
                 summary
@@ -1031,7 +1047,7 @@ pub(crate) async fn run_retention_owner_task(
             populate_retention_owner_batch_metrics(
                 &mut summary.archive_batches,
                 &arrival_rates,
-                started_at.elapsed(),
+                execution_elapsed,
             );
             if summary.has_more.is_none() {
                 summary.has_more = candidate_window_has_more;
@@ -1041,7 +1057,7 @@ pub(crate) async fn run_retention_owner_task(
                     summary.raw_files_planned.max(summary.raw_files_removed);
                 summary.raw_files_removed = 0;
             }
-            Ok(summary.finish(started_at))
+            Ok(summary)
         }
         (Err(error), archive_batches, candidate_window_has_more) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
@@ -1051,7 +1067,7 @@ pub(crate) async fn run_retention_owner_task(
             populate_retention_owner_batch_metrics(
                 &mut summary.archive_batches,
                 &arrival_rates,
-                started_at.elapsed(),
+                elapsed_before_arrival,
             );
             summary.raw_files_removed = summary
                 .archive_batches
@@ -1060,7 +1076,8 @@ pub(crate) async fn run_retention_owner_task(
                 .sum();
             summary.has_more = candidate_window_has_more;
             apply_retention_owner_error(&mut summary, &error);
-            Ok(summary.finish(started_at))
+            summary.elapsed_ms = elapsed_before_arrival.as_millis() as u64;
+            Ok(summary)
         }
     }
 }
@@ -2535,6 +2552,65 @@ mod owner_fact_tests {
         assert_eq!(summary.committed, 5);
         assert_eq!(summary.batches, 1);
         assert_eq!(summary.raw_files_removed, 2);
+    }
+
+    #[test]
+    fn selected_work_can_complete_while_global_backlog_remains() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "retention_archive",
+            "expired_invocations:retention_policy",
+            "invocation rows",
+        );
+
+        apply_retention_owner_success(&mut summary, 1_200, 866, 866, 2, 0, Some(true));
+
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.has_more, Some(true));
+    }
+
+    #[test]
+    fn owner_completion_tracks_selected_commit_boundary_and_dry_run() {
+        let mut partial = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(&mut partial, 866, 866, 12, 1, 0, Some(true));
+        assert_eq!(partial.completion, "partial");
+
+        let mut deferred = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(&mut deferred, 866, 866, 0, 1, 0, Some(false));
+        assert_eq!(deferred.completion, "deferred");
+    }
+
+    #[test]
+    fn owner_batch_rate_uses_execution_seconds_and_matching_arrival_units() {
+        let mut batches = vec![batch_plan::RetentionBatchMetrics {
+            dataset: "codex_invocations".to_string(),
+            month_key: "2026-10".to_string(),
+            batch_rows: 866,
+            committed_rows: 866,
+            raw_files_removed: 0,
+            file_prepare_ms: None,
+            lock_wait_ms: 0,
+            elapsed_ms: 0,
+            timeout_count: 0,
+            committed_rows_per_second: None,
+            arrival_rows_per_second: None,
+            service_rate_multiple: None,
+            small_batch_reason: None,
+            source_identity_ms: None,
+            archive_writer_ms: None,
+            summary_proof_ms: None,
+        }];
+        let mut arrival_rates = std::collections::HashMap::new();
+        arrival_rates.insert("codex_invocations".to_string(), 0.673);
+
+        populate_retention_owner_batch_metrics(
+            &mut batches,
+            &arrival_rates,
+            Duration::from_secs(500),
+        );
+
+        let batch = &batches[0];
+        assert!((batch.committed_rows_per_second.unwrap() - 1.732).abs() < 0.001);
+        assert!((batch.service_rate_multiple.unwrap() - 2.574).abs() < 0.002);
     }
 
     #[test]

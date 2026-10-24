@@ -2319,6 +2319,7 @@ async fn run_managed_task_worker(
         Some(gate) => Some(gate.acquire_owned().await.expect("managed file gate open")),
         None => None,
     };
+    observation.mark_work_started();
     let store = crate::maintenance_store::global()
         .cloned()
         .expect("maintenance store available while managed task worker runs");
@@ -2384,6 +2385,7 @@ async fn run_managed_task_worker(
         },
         workload_reason,
     );
+    let execution_duration_ms = observation.execution_duration_ms();
     let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
     let task_dimension = managed_task_metric_dimension(&task_key);
     let task_outcome = match completion.as_deref() {
@@ -2397,7 +2399,7 @@ async fn run_managed_task_worker(
     state.observability.task_completed(
         task_dimension,
         task_outcome,
-        Duration::from_millis(duration_ms.max(0) as u64),
+        Duration::from_millis(execution_duration_ms.unwrap_or_default().max(0) as u64),
     );
     let finish = ManagedTaskFinish {
         run_id,
