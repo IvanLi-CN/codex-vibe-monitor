@@ -1162,7 +1162,7 @@ async fn http_readiness_is_published_before_prompt_cache_materialization_complet
 #[tokio::test]
 async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure() {
     let _whole_test = test_timing_span("whole_test");
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-hot-read-readiness-pressure",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1245,7 +1245,7 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
 
 #[tokio::test]
 async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-summary-hydration-single-flight",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1307,7 +1307,7 @@ async fn startup_backfill_defers_legacy_mirror_work_until_cold_summary_is_publis
 
 #[tokio::test]
 async fn startup_summary_hydration_publishes_before_legacy_mirror_recovery() {
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-summary-legacy-mirror-recovery",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1494,7 +1494,7 @@ async fn runtime_drain_joins_pending_startup_hydration_after_http_readiness() {
 #[tokio::test]
 async fn summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure() {
     let _whole_test = test_timing_span("whole_test");
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-summary-hydration-deadline",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1539,7 +1539,7 @@ async fn summary_startup_hydration_publishes_bounded_fallback_under_sqlite_press
 #[tokio::test]
 async fn system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
     let _whole_test = test_timing_span("whole_test");
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-system-status-hydration-deadline",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1577,7 +1577,7 @@ async fn system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline()
 
 #[tokio::test]
 async fn startup_hot_read_hydration_cancels_while_sqlite_pool_is_saturated() {
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-hot-read-hydration-cancellation",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1868,7 +1868,7 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
 
 #[tokio::test]
 async fn background_startup_hourly_rollup_bootstrap_cancels_while_task_history_start_is_locked() {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
         "startup-hourly-rollup-bootstrap-task-history-lock",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -1980,7 +1980,7 @@ fn background_startup_hourly_rollup_bootstrap_backs_off_after_p2_preemption() {
 #[tokio::test]
 async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_during_shutdown_lock()
  {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
         "startup-hourly-rollup-bootstrap-task-history-finish-lock",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -2031,7 +2031,7 @@ async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_d
 
 #[tokio::test]
 async fn startup_hourly_rollup_task_history_finish_does_not_wait_for_write_lock() {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
         "startup-hourly-rollup-bootstrap-task-history-finish-cancel-race",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )
@@ -2781,7 +2781,7 @@ async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
 
 #[tokio::test]
 async fn startup_backfill_progress_lookup_busy_closes_gate_before_permit_release() {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
         "startup-backfill-progress-lookup-busy",
         Duration::from_millis(50),
     )
@@ -3767,7 +3767,7 @@ async fn startup_coverage_repair_and_retry_progress_persist_busy_record_one_pres
 
 #[tokio::test]
 async fn startup_coverage_repair_and_retry_progress_lookup_busy_record_one_pressure_event() {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
         "startup-coverage-repair-retry-progress-lookup-busy",
         Duration::from_millis(50),
     )
@@ -3852,7 +3852,7 @@ async fn startup_coverage_repair_and_retry_progress_lookup_busy_record_one_press
 
 #[tokio::test]
 async fn startup_coverage_repair_idle_progress_lookup_busy_closes_gate_before_permit_release() {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
         "startup-coverage-repair-idle-progress-lookup-busy",
         Duration::from_millis(50),
     )

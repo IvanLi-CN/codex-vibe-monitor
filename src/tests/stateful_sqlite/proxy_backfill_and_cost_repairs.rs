@@ -1972,9 +1972,11 @@ async fn wait_for_summary_quota_workers(state: &AppState) {
 
 #[tokio::test]
 async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
-    let (state, temp_dir, db_url) =
-        file_backed_test_state_with_busy_timeout("dashboard-read-lock", Duration::from_millis(100))
-            .await;
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
+        "dashboard-read-lock",
+        Duration::from_millis(100),
+    )
+    .await;
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     persist_proxy_capture_record(
         &state.pool,

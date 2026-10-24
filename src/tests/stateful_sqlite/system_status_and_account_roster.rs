@@ -40,7 +40,7 @@ pub(crate) fn write_backfill_response_payload_with_service_tier(
 async fn system_status_aggregates_counts_and_file_sizes() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-aggregation",
         StdDuration::from_millis(100),
     )
@@ -328,7 +328,7 @@ async fn system_storage_endpoint_reads_only_the_memory_snapshot_when_sqlite_is_c
 async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_cursor_advanced() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-late-raw-link",
         StdDuration::from_millis(100),
     )
@@ -379,7 +379,7 @@ async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration
     use std::time::Duration as StdDuration;
 
     let _whole_test = test_timing_span("whole_test");
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-raw-revalidation",
         StdDuration::from_millis(100),
     )
@@ -431,7 +431,7 @@ async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration
 async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-raw-metrics-deferred",
         StdDuration::from_millis(100),
     )
