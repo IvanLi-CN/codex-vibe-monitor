@@ -224,6 +224,76 @@ async fn select_invocation_archive_group(
     Ok((ids, group))
 }
 
+fn invocation_archive_snapshot_pages(
+    group: &[InvocationArchiveCandidate],
+) -> Result<Vec<TaskArchiveSnapshotPage>> {
+    let mut rows = group
+        .iter()
+        .map(invocation_archive_candidate_to_hourly_source_record)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let invoke_ids_by_row_id = group
+        .iter()
+        .map(|candidate| (candidate.id, candidate.invoke_id.clone()))
+        .collect::<HashMap<_, _>>();
+
+    rows.chunks(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS)
+        .map(|rows| {
+            let first = rows.first().context("Summary archive page is empty")?;
+            let last = rows.last().context("Summary archive page is empty")?;
+            Ok(TaskArchiveSnapshotPage {
+                coverage_start: first.occurred_at.clone(),
+                coverage_end: last.occurred_at.clone(),
+                row_count: u32::try_from(rows.len())
+                    .context("Summary archive page row count overflow")?,
+                payload: encode_summary_archive_snapshot_v2_payload(rows, &invoke_ids_by_row_id)?,
+            })
+        })
+        .collect()
+}
+
+async fn persist_invocation_segment_summary_pages(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    pages: &[TaskArchiveSnapshotPage],
+) -> Result<bool> {
+    let Some(batch_id) = stage_task_summary_archive_manifest(
+        pool,
+        outcome,
+        Some(&outcome.sha256),
+        Some(outcome.row_count),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    for (page_index, page) in pages.iter().cloned().enumerate() {
+        if store_task_summary_snapshot_page(
+            pool,
+            outcome,
+            batch_id,
+            u32::try_from(page_index).context("Summary archive page index overflow")?,
+            page,
+        )
+        .await?
+        .is_none()
+        {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if let Ok(counter) = crate::maintenance::RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES
+            .try_with(Arc::clone)
+        {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 pub(crate) async fn invocation_archive_candidate_selection_for_test(
     pool: &Pool<Sqlite>,
@@ -1283,7 +1353,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let group_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
+            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
             by_group.entry(group_key).or_default().push(candidate);
         }
 
@@ -1362,7 +1432,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             let prepare_started = Instant::now();
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
-            let reusable_archive = {
+            let archive_layout = archive_layout_for_dataset(config, spec.dataset);
+            let reusable_archive = if archive_layout == ArchiveBatchLayout::LegacyMonth {
                 let reuse_future = reuse_task_month_archive_if_proven(
                     pool,
                     config,
@@ -1382,6 +1453,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 } else {
                     reuse_future.await?
                 }
+            } else {
+                None
             };
             let (archive_outcome, proof, mut archive_identity_proof, prepare_elapsed) =
                 if let Some(reusable_archive) = reusable_archive {
@@ -1397,17 +1470,34 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         elapsed,
                     )
                 } else {
-                    let mut snapshot_pages = Vec::new();
+                    let mut snapshot_pages = if archive_layout == ArchiveBatchLayout::SegmentV1 {
+                        invocation_archive_snapshot_pages(&group)?
+                    } else {
+                        Vec::new()
+                    };
                     let archive_writer_started = Instant::now();
                     let archive_result = {
-                        let archive_future = archive_rows_into_task_month_batch(
-                            pool,
-                            config,
-                            spec,
-                            &group_key,
-                            &ids,
-                            &mut snapshot_pages,
-                        );
+                        let archive_future = async {
+                            match archive_layout {
+                                ArchiveBatchLayout::LegacyMonth => {
+                                    archive_rows_into_task_month_batch(
+                                        pool,
+                                        config,
+                                        spec,
+                                        &group_key,
+                                        &ids,
+                                        &mut snapshot_pages,
+                                    )
+                                    .await
+                                }
+                                ArchiveBatchLayout::SegmentV1 => {
+                                    archive_rows_into_segment_batch(
+                                        pool, config, spec, &group_key, &ids,
+                                    )
+                                    .await
+                                }
+                            }
+                        };
                         tokio::pin!(archive_future);
                         if let Some(remaining) = retention_run_remaining_budget() {
                             match tokio::time::timeout(remaining, &mut archive_future).await {
@@ -1477,6 +1567,17 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             config.invocation_archive_ttl_days,
                         )?);
                     archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
+                    if archive_layout == ArchiveBatchLayout::SegmentV1
+                        && !persist_invocation_segment_summary_pages(
+                            pool,
+                            &archive_outcome,
+                            &snapshot_pages,
+                        )
+                        .await?
+                    {
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    }
                     let prepare_elapsed = prepare_started.elapsed();
                     batch_observation.file_prepared(prepare_elapsed);
                     drop(prepare_phase);

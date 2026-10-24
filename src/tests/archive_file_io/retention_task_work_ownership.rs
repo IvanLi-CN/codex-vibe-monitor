@@ -32,8 +32,9 @@ fn retention_task_work_owner_child_fixture() {
 #[tokio::test]
 async fn retention_task_work_cleanup_survives_reused_pid_and_owner_process_death() {
     use std::os::fd::AsRawFd;
-    let (pool, config, temp_dir) =
+    let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-work-owner-process-death").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     seed_task_work_source(&pool, &config, 0).await;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
