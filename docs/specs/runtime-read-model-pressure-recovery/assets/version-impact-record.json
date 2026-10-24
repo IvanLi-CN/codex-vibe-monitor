@@ -95,7 +95,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "d4dfa88b",
+      "11d4d51b",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "minor",
@@ -105,7 +105,7 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "d4dfa88b",
+    "candidate_head_sha": "11d4d51b",
     "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",

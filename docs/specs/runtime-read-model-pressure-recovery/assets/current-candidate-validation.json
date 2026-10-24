@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
-  "candidate_head_sha": "d4dfa88b",
-  "implementation_commit": "d4dfa88b",
+  "candidate_head_sha": "11d4d51b",
+  "implementation_commit": "11d4d51b",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -58,7 +58,7 @@
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "implemented; local static validation passed with 250 ms reset/publication transactions, deadline-bounded SQLite reads, rollback/close cleanup, and publication; pressure execution pending CI"
+        "status": "implemented; local static validation passed with a 2 s recovery-turn budget, independent 250 ms reset/page/publication transactions, deadline-bounded SQLite reads, rollback/close cleanup, and publication; pressure execution pending CI"
       },
       {
         "id": "A5",
@@ -99,7 +99,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head d4dfa88b; CI, Tier 4 review, and visual confirmation pending"
+        "status": "PR #1181 implementation head 11d4d51b; CI, Tier 4 review, empirical acceptance, and visual confirmation pending"
       }
     ]
   },
@@ -126,6 +126,15 @@
     "migration_idempotent_and_reentry_safe": true,
     "old_version_allocator_writeback": false,
     "deployment_scope": "none"
+  },
+  "empirical_acceptance": {
+    "required": true,
+    "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
+    "status": "unavailable",
+    "candidate_sha": null,
+    "contract_digest": null,
+    "scenario_set_digest": null,
+    "evidence_locator": null
   },
   "deployment_surfaces": {
     "github_release_and_ghcr": "No release publication is authorized by this candidate; release workflow policy applies only after PR validation and merge.",
