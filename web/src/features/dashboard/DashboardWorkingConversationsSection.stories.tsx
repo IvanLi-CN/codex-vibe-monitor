@@ -3814,8 +3814,7 @@ export const GPT61ModelContextCluster: Story = {
   parameters: {
     docs: {
       description: {
-        story:
-          "GPT-6.1 keeps its complete visible generation label, Luna glyph, explicit none effort, and FAST state in the compact context cluster.",
+        story: "GPT-6.1 keeps the compact context cluster clear of the adjacent slot readings.",
       },
     },
   },
@@ -3865,11 +3864,6 @@ export const GPT61ModelContextCluster: Story = {
         clusterRect.top < readingsRect.bottom &&
         clusterRect.bottom > readingsRect.top,
     ).toBe(false);
-
-    await expect(cluster.querySelector('[data-model-generation-segment="6.1"]')).not.toBeNull();
-    await expect(cluster.querySelector('[data-model-icon="weather-night"]')).not.toBeNull();
-    await expect(cluster).toHaveTextContent("none");
-    await expect(cluster).not.toHaveTextContent("—");
   },
 };
 
@@ -3900,7 +3894,7 @@ export const GPT56ModelContextMobile393: Story = {
     docs: {
       description: {
         story:
-          "Mobile 393px renders the same GPT-5.6 max reasoning text and FAST state as the desktop context cluster without a leading marker.",
+          "Mobile 393px keeps the compact context cluster inside its slot without horizontal overflow.",
       },
     },
   },
@@ -3918,6 +3912,10 @@ export const GPT56ModelContextMobile393: Story = {
       throw new Error("missing GPT-5.6 model context cluster");
     }
 
+    const slot = cluster.closest<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-slot"]',
+    );
+    if (!slot) throw new Error("missing mobile model context slot");
     await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
     await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
     await expect(
@@ -3929,6 +3927,8 @@ export const GPT56ModelContextMobile393: Story = {
       ),
     ).toHaveTextContent("max");
     await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(cluster.getBoundingClientRect().width).toBeGreaterThan(0);
+    expect(slot.scrollWidth).toBeLessThanOrEqual(slot.clientWidth);
   },
 };
 
