@@ -154,6 +154,51 @@ class ExecutionContractTests(unittest.TestCase):
     def test_known_landmark_only_migration_is_not_a_coverage_certificate(self):
         self.assertFalse(MODULE.demo_coverage_audit(MODULE.ROOT)["verified"])
 
+    def test_matrix_phase_paths_are_rebased_to_the_hosted_job(self):
+        manifest = {"source_roots": {"A": "/old/A"}, "output_root": "/old/output"}
+        phase = MODULE.materialize_phase(
+            MODULE.Phase("unit", "cd /old/A/web\nbun --outputFile=/old/output/A/reports/unit.json"),
+            manifest,
+            "A",
+            Path("/new/A"),
+            Path("/new/output/results/A/unit"),
+        )
+        self.assertIn("/new/A/web", phase.command)
+        self.assertIn("/new/output/results/A/unit/reports/unit.json", phase.command)
+        self.assertNotIn("/old/", phase.command)
+
+    def test_aggregate_group_requires_every_phase_and_uses_max_wall_time(self):
+        data = manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for group_name in ("A", "B"):
+                for index, phase_name in enumerate(MODULE.WORKLOAD, start=1):
+                    record = {"name": phase_name, "group": group_name, "status": "passed", "wall_seconds": index,
+                              "cpu_seconds": 1, "children_peak_rss_kb_cumulative": 10,
+                              "started_unix": 100 + index, "finished_unix": 100 + index + index,
+                              "environment": {"bun": "1.3.14", "runner_image": "ubuntu-24.04",
+                                               "runner_image_version": "fixed", "kernel": "fixed",
+                                               "chromium_descriptor": []}}
+                    if phase_name == "unit":
+                        record["report"] = {"unit": {"success": True,
+                            "suites": {suite: {"seconds": 1, "cases": 1, "status": "passed"} for suite in MODULE.SLOW_SUITES},
+                            "cases": [{"file": "src/real.test.tsx", "name": "keeps behavior", "status": "passed"}]}}
+                    elif phase_name == "storybook-a11y":
+                        record["report"] = {"storybook": {"success": True, "cases": [{"file": "src/real.test.tsx", "name": "keeps behavior", "status": "passed"}]}}
+                    elif phase_name in ("e2e-pr", "e2e-main"):
+                        profile = phase_name.removeprefix("e2e-")
+                        specs = MODULE.E2E_SPECS if profile == "main" else set(MODULE.E2E_SPECS) - {"dashboard-timeline-capacity.spec.ts"}
+                        record["report"] = {"browser": {profile: {"success": True,
+                            "cases": [{"file": spec, "name": spec, "passed": True} for spec in specs]}}}
+                    MODULE.write_json(root / group_name / phase_name / "result.json", record)
+            result = MODULE.aggregate_group("A", data, root)
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["wall_seconds"], len(MODULE.WORKLOAD))
+            self.assertEqual(result["phase_wall_seconds_sum"], sum(range(1, len(MODULE.WORKLOAD) + 1)))
+            self.assertTrue(result["reports"]["success"])
+            (root / "A" / MODULE.WORKLOAD[0] / "result.json").unlink()
+            self.assertEqual(MODULE.aggregate_group("A", data, root)["status"], "failed")
+
 
 class ReporterTests(unittest.TestCase):
     def test_vitest_reports_keep_existing_skips_visible_and_reject_failures(self):
@@ -203,19 +248,29 @@ class WorkflowTests(unittest.TestCase):
         checker = sys.modules["web_ab_contract"]
         workflow = checker.load_yaml(MODULE.ROOT / ".github/workflows/web-test-ab.yml")
         self.assertEqual(set(checker.mapping_get(workflow, "on")), {"workflow_dispatch", "workflow_call"})
-        for job in workflow["jobs"].values():
+        for job_id in ("prepare", "measure-phase", "aggregate"):
+            job = workflow["jobs"][job_id]
             checkouts = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
-            self.assertEqual([step["with"]["path"] for step in checkouts], ["harness", "A", "B"])
+            self.assertEqual([step["with"]["path"] for step in checkouts],
+                             {"prepare": ["harness", "A", "B"],
+                              "measure-phase": ["harness", "${{ matrix.group }}"],
+                              "aggregate": ["harness"]}[job_id])
             self.assertTrue(all(step["with"]["persist-credentials"] is False for step in checkouts))
             self.assertNotIn("continue-on-error", job)
+        self.assertEqual(workflow["jobs"]["measure-phase"]["strategy"]["matrix"]["group"], ["A", "B"])
+        self.assertEqual(workflow["jobs"]["measure-phase"]["strategy"]["matrix"]["phase"], list(MODULE.WORKLOAD))
         prepare = workflow["jobs"]["prepare"]["steps"]
         pack = next(step["run"] for step in prepare if step["name"] == "Install identical dependency surface without building or testing")
         self.assertIn('tar -cf "$RUNNER_TEMP/web-test-ab-browsers.tar"', pack)
         upload = next(step["with"] for step in prepare if step["name"] == "Upload run-bound dependencies")
         self.assertIn("/web-test-ab-browsers.tar", upload["path"])
         self.assertNotIn("/web-test-ab/browsers", upload["path"])
-        restore = next(step["run"] for step in workflow["jobs"]["measure"]["steps"] if step["name"] == "Restore isolated dependency directories")
+        restore = next(step["run"] for step in workflow["jobs"]["measure-phase"]["steps"] if step["name"] == "Restore isolated dependency directories")
         self.assertIn('tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar"', restore)
+        aggregate = workflow["jobs"]["aggregate"]
+        self.assertEqual(aggregate["needs"], ["prepare", "measure-phase"])
+        self.assertEqual(aggregate["if"], "always()")
+        self.assertIn("benchmark-web-tests.py aggregate", next(step["run"] for step in aggregate["steps"] if step["name"] == "Aggregate complete A/B evidence"))
 
 
 class CleanupTests(unittest.TestCase):

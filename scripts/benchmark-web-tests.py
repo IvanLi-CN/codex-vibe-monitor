@@ -213,6 +213,8 @@ def prepare(baseline: Path, candidate: Path, baseline_sha: str, candidate_sha: s
     manifest = {
         "schema": 2, "budget_seconds": GROUP_SECONDS, "ab_total_budget_seconds": AB_TOTAL_SECONDS,
         "identities": identities,
+        "source_roots": {"A": str(baseline.resolve()), "B": str(candidate.resolve())},
+        "output_root": str(output.resolve()),
         "workload": [phase["name"] for phase in plans["A"]], "plans": plans,
         "slow_suites": list(SLOW_SUITES), "e2e_specs": list(E2E_SPECS),
         "test_files": {"A": test_files(baseline), "B": test_files(candidate)},
@@ -266,8 +268,10 @@ def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phas
 
 def execute_phase(phase: Phase, source: Path, directory: Path, deadline: float, env: dict) -> dict:
     remaining = deadline - time.monotonic()
+    started_unix = time.time()
     record = {"name": phase.name, "command": phase.command, "status": "timeout", "returncode": 124,
-              "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0}
+              "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
+              "started_unix": started_unix, "finished_unix": started_unix}
     if remaining <= 0:
         return record
     started = time.monotonic()
@@ -288,10 +292,141 @@ def execute_phase(phase: Phase, source: Path, directory: Path, deadline: float, 
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     record.update(wall_seconds=time.monotonic() - started,
                   cpu_seconds=after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime,
-                  children_peak_rss_kb_cumulative=after.ru_maxrss)
+                  children_peak_rss_kb_cumulative=after.ru_maxrss,
+                  finished_unix=time.time())
     if record["status"] == "passed" and time.monotonic() > deadline:
         record.update(status="timeout", returncode=124)
     return record
+
+
+def materialize_phase(phase: Phase, manifest: dict, group: str, source: Path, directory: Path) -> Phase:
+    command = phase.command
+    command = command.replace(manifest["source_roots"][group], str(source.resolve()))
+    old_reports = Path(manifest["output_root"]) / group / "reports"
+    command = command.replace(str(old_reports), str((directory / "reports").resolve()))
+    return Phase(phase.name, command, phase.cwd)
+
+
+def environment_for_source(source: Path) -> dict:
+    context = environment()
+    descriptor = source / "web/node_modules/playwright-core/browsers.json"
+    context["chromium_descriptor"] = json.loads(descriptor.read_text())["browsers"]
+    return context
+
+
+def phase_report(phase_name: str, directory: Path) -> dict:
+    if phase_name == "unit":
+        return {"unit": vitest_results(directory / "reports/unit.json")}
+    if phase_name == "storybook-a11y":
+        return {"storybook": vitest_results(directory / "reports/storybook.json")}
+    if phase_name in ("e2e-pr", "e2e-main"):
+        profile = phase_name.removeprefix("e2e-")
+        return {"browser": {profile: playwright_results(directory / "reports" / profile)}}
+    return {}
+
+
+def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manifest: dict, output: Path) -> dict:
+    actions_only()
+    if group not in ("A", "B") or phase_name not in manifest["workload"]:
+        raise ValueError(f"Unknown group or workload phase: {group}/{phase_name}")
+    directory = output / "results" / group / phase_name
+    directory.mkdir(parents=True, exist_ok=True)
+    actual_sha = command_output(["git", "rev-parse", "HEAD"], source)
+    if actual_sha != source_sha or actual_sha != manifest["identities"][group]["sha"]:
+        raise ValueError("Phase source SHA does not match the prepared manifest")
+    context = environment_for_source(source)
+    if context["bun"] != "1.3.14":
+        raise ValueError("Bun 1.3.14 is required")
+    planned = [Phase(**raw) for raw in manifest["plans"][group]]
+    phase = next((candidate for candidate in planned if candidate.name == phase_name), None)
+    if phase is None:
+        raise ValueError(f"Manifest is missing phase {group}/{phase_name}")
+    phase = materialize_phase(phase, manifest, group, source, directory)
+    env = {**os.environ, "CI": "1", "DOCS_BASE": f"/{os.environ['GITHUB_REPOSITORY'].split('/')[-1]}/",
+           "PYTHONDONTWRITEBYTECODE": "1", "PLAYWRIGHT_BROWSERS_PATH": str(output / "browsers"),
+           "STORYBOOK_DISABLE_TELEMETRY": "1", "XDG_CACHE_HOME": str(output / "cache" / group / phase_name)}
+    record = execute_phase(phase, source, directory, time.monotonic() + GROUP_SECONDS, env)
+    record.update(group=group, sha=source_sha, manifest_digest=manifest["digest"], environment=context)
+    if record["status"] == "passed":
+        try:
+            record["report"] = phase_report(phase_name, directory)
+        except (OSError, ValueError, KeyError) as error:
+            record.update(status="failed", returncode=1, reason=f"Missing or malformed phase report: {error}")
+    write_json(directory / "result.json", record)
+    return record
+
+
+def normalized_environment(records: list[dict]) -> dict:
+    if not records:
+        return {}
+    keys = ("bun", "runner_image", "runner_image_version", "kernel", "chromium_descriptor")
+    return {key: records[0].get(key) for key in keys}
+
+
+def aggregate_group(group: str, manifest: dict, results_root: Path) -> dict:
+    records = []
+    for name in manifest["workload"]:
+        path = results_root / group / name / "result.json"
+        if path.is_file():
+            records.append(json.loads(path.read_text()))
+        else:
+            records.append({"name": name, "group": group, "status": "environment_failed", "returncode": 1,
+                            "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
+                            "reason": "Missing phase evidence"})
+    statuses = {record.get("status") for record in records}
+    if "timeout" in statuses:
+        status = "timeout"
+    elif statuses == {"passed"}:
+        status = "passed"
+    else:
+        status = "failed"
+    unit = next((record.get("report", {}).get("unit") for record in records if record["name"] == "unit"), None)
+    unit = unit or {"success": False, "suites": {}, "cases": []}
+    storybook = next((record.get("report", {}).get("storybook") for record in records if record["name"] == "storybook-a11y"), None)
+    storybook = storybook or {"success": False, "cases": []}
+    browser = {}
+    for profile in ("pr", "main"):
+        record = next((record for record in records if record["name"] == f"e2e-{profile}"), {})
+        browser[profile] = record.get("report", {}).get("browser", {}).get(profile, {"success": False, "cases": []})
+        expected = set(E2E_SPECS) - ({"dashboard-timeline-capacity.spec.ts"} if profile == "pr" else set())
+        actual = {Path(case["file"]).name for case in browser[profile].get("cases", [])}
+        browser[profile]["success"] = browser[profile].get("success", False) and actual == expected
+    reports = {"success": bool(unit.get("success")) and bool(storybook.get("success"))
+               and all(report.get("success", False) for report in browser.values())
+               and all(name in unit.get("suites", {}) for name in SLOW_SUITES),
+               "unit": unit, "storybook": storybook, "browser": browser}
+    wall_seconds = max((float(record.get("wall_seconds", 0.0)) for record in records), default=0.0)
+    started = [record["started_unix"] for record in records if "started_unix" in record]
+    finished = [record["finished_unix"] for record in records if "finished_unix" in record]
+    result = {"group": group, "sha": manifest["identities"][group]["sha"], "manifest_digest": manifest["digest"],
+              "status": status, "score": int(status == "passed"), "environment": normalized_environment(records),
+              "phases": records, "reports": reports, "phase_wall_seconds_sum": sum(record.get("wall_seconds", 0.0) for record in records),
+              "execution_wall_seconds": wall_seconds, "wall_seconds": wall_seconds}
+    if started and finished:
+        result["phase_span_seconds"] = max(finished) - min(started)
+    return result
+
+
+def aggregate(manifest: dict, results_root: Path, output: Path) -> dict:
+    actions_only()
+    groups = {group: aggregate_group(group, manifest, results_root) for group in ("A", "B")}
+    for group in ("A", "B"):
+        raw = output / group / "raw.jsonl"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        with raw.open("w") as stream:
+            for record in groups[group]["phases"]:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    verdict = compare(groups["A"], groups["B"], manifest)
+    summary = {"run_id": os.environ["GITHUB_RUN_ID"], "manifest": manifest, "A": groups["A"], "B": groups["B"],
+               "verdict": verdict,
+               "implementation_ready": verdict["passed"] and manifest["demo_coverage_audit"]["verified"]
+               and not manifest["unimplemented_slow_suites"]}
+    write_json(output / "summary.json", summary)
+    (output / "summary.md").write_text(markdown(groups["A"], groups["B"], manifest, verdict))
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+            stream.write((output / "summary.md").read_text())
+    return summary
 
 
 def vitest_results(path: Path) -> dict:
@@ -492,15 +627,15 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
 def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
     lines = ["# Whole-PR frontend A/B", "", f"Verdict: **{'PASS' if verdict['passed'] else 'FAIL'}** — `{verdict['reason']}`.", "",
              f"A `{a.get('sha')}`; B `{b.get('sha')}`; workload `{manifest['digest']}`.", "",
-             f"Each group has one shared {GROUP_SECONDS}-second wall-clock budget; A+B measured wall clock must stay within {AB_TOTAL_SECONDS} seconds. Independent CI jobs run concurrently, with all builds and test reports included.", "",
+             f"Each phase has a {GROUP_SECONDS}-second process wall-clock budget; group wall is the maximum phase wall, and A+B group wall must stay within {AB_TOTAL_SECONDS} seconds. Independent CI jobs run concurrently, with all builds and test reports included.", "",
              "| Phase | A seconds | B seconds | A − B seconds |", "|---|---:|---:|---:|"]
     for name in manifest["workload"]:
         left = next((p for p in a.get("phases", []) if p["name"] == name), None)
         right = next((p for p in b.get("phases", []) if p["name"] == name), None)
         delta = f"{left['wall_seconds'] - right['wall_seconds']:.3f}" if left and right and left["status"] == right["status"] == "passed" else "—"
         lines.append(f"| {name} | {left['wall_seconds'] if left else 'not run'} | {right['wall_seconds'] if right else 'not run'} | {delta} |")
-    lines += ["", f"A: {a.get('status')}, score {a.get('score', 0)}, elapsed {a.get('wall_seconds')} s.",
-              f"B: {b.get('status')}, score {b.get('score', 0)}, elapsed {b.get('wall_seconds')} s.",
+    lines += ["", f"A: {a.get('status')}, score {a.get('score', 0)}, max phase {a.get('wall_seconds')} s, phase sum {a.get('phase_wall_seconds_sum')} s, span {a.get('phase_span_seconds')} s.",
+              f"B: {b.get('status')}, score {b.get('score', 0)}, max phase {b.get('wall_seconds')} s, phase sum {b.get('phase_wall_seconds_sum')} s, span {b.get('phase_span_seconds')} s.",
               f"A+B measured wall clock: {verdict.get('total_wall_seconds')} s / {AB_TOTAL_SECONDS} s.", "",
               f"Saving {'lower bound' if verdict['delta_is_lower_bound'] else 'measured'}: {verdict['delta_seconds']} s / {verdict['delta_percent']}%.", "",
               "## Four target Vitest suites", "", "| Suite | A seconds | B seconds | Implementation |", "|---|---:|---:|---|"]
@@ -540,6 +675,17 @@ def main() -> int:
         command.add_argument("--baseline-sha", required=True)
         command.add_argument("--candidate-sha", required=True)
         command.add_argument("--output", type=Path, required=True)
+    phase = commands.add_parser("phase")
+    phase.add_argument("--group", choices=("A", "B"), required=True)
+    phase.add_argument("--phase", dest="phase_name", choices=WORKLOAD, required=True)
+    phase.add_argument("--source-src", type=Path, required=True)
+    phase.add_argument("--source-sha", required=True)
+    phase.add_argument("--manifest", type=Path, required=True)
+    phase.add_argument("--output", type=Path, required=True)
+    aggregate_command = commands.add_parser("aggregate")
+    aggregate_command.add_argument("--manifest", type=Path, required=True)
+    aggregate_command.add_argument("--results-root", type=Path, required=True)
+    aggregate_command.add_argument("--output", type=Path, required=True)
     clean = commands.add_parser("cleanup")
     clean.add_argument("--run-id", required=True)
     clean.add_argument("--archive", type=Path, required=True)
@@ -549,6 +695,23 @@ def main() -> int:
         cleanup(args.run_id, args.archive, args.repo)
         return 0
     actions_only()
+    if args.mode == "phase":
+        manifest = json.loads(args.manifest.read_text())
+        try:
+            result = run_phase(args.group, args.source_src.resolve(), args.source_sha, args.phase_name, manifest, args.output.resolve())
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            directory = args.output.resolve() / "results" / args.group / args.phase_name
+            directory.mkdir(parents=True, exist_ok=True)
+            result = {"name": args.phase_name, "group": args.group, "sha": args.source_sha,
+                      "manifest_digest": manifest.get("digest"), "status": "environment_failed", "returncode": 1,
+                      "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
+                      "reason": str(error)}
+            write_json(directory / "result.json", result)
+        return 0 if result["status"] == "passed" else 1
+    if args.mode == "aggregate":
+        manifest = json.loads(args.manifest.read_text())
+        summary = aggregate(manifest, args.results_root.resolve(), args.output.resolve())
+        return 0 if summary["verdict"]["passed"] else 1
     sources = (args.baseline_src.resolve(), args.candidate_src.resolve())
     output = args.output.resolve()
     manifest = prepare(*sources, args.baseline_sha, args.candidate_sha, output)

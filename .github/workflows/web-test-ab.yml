@@ -112,12 +112,28 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  measure:
-    name: Whole PR A/B (180 seconds per group, 600 seconds total)
+      - name: Upload run-bound manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-manifest-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/web-test-ab/manifest.json
+            ${{ runner.temp }}/web-test-ab/preparation.json
+          retention-days: 1
+          if-no-files-found: error
+
+  measure-phase:
+    name: Frontend A/B ${{ matrix.group }} / ${{ matrix.phase }}
     needs: prepare
     runs-on: ubuntu-24.04
-    # Two separate 180-second process-tree deadlines; the rest is checkout/artifact handling.
-    # This new orchestration watchdog does not change any existing CI timeout.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [A, B]
+        phase: [unit, pwa, storybook-a11y, docs-demo-pages, e2e-pr, e2e-main, tooling-contracts]
+    # Each phase is a real independent hosted job. The script's 180-second
+    # process deadline remains the acceptance budget; this job timeout is the
+    # existing measurement-job ceiling for checkout and artifact handling.
     timeout-minutes: 25
     steps:
       - name: Checkout measurement harness
@@ -130,16 +146,8 @@ jobs:
       - name: Checkout A
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.baseline_sha }}
-          path: A
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Checkout B
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.candidate_sha }}
-          path: B
+          ref: ${{ matrix.group == 'A' && inputs.baseline_sha || inputs.candidate_sha }}
+          path: ${{ matrix.group }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -158,20 +166,80 @@ jobs:
         run: |
           set -euo pipefail
           tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-deps.tar" -C "$PWD"
-          mv "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab" "$RUNNER_TEMP/web-test-ab"
+          mkdir -p "$RUNNER_TEMP/web-test-ab"
+          if [ -f "$RUNNER_TEMP/web-test-ab-inputs/manifest.json" ]; then
+            cp "$RUNNER_TEMP/web-test-ab-inputs/manifest.json" "$RUNNER_TEMP/web-test-ab/manifest.json"
+          else
+            cp "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab/manifest.json" "$RUNNER_TEMP/web-test-ab/manifest.json"
+          fi
           tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab"
 
-      - name: Run full A and B with independent hard deadlines
+      - name: Run one independent workload with a hard deadline
         env:
+          GROUP: ${{ matrix.group }}
+          PHASE: ${{ matrix.phase }}
           BASELINE: ${{ inputs.baseline_sha }}
           CANDIDATE: ${{ inputs.candidate_sha }}
         run: |
-          python3 harness/scripts/benchmark-web-tests.py run \
-            --baseline-src "$PWD/A" --candidate-src "$PWD/B" \
-            --baseline-sha "$BASELINE" --candidate-sha "$CANDIDATE" \
+          if [ "$GROUP" = "A" ]; then SOURCE_SHA="$BASELINE"; else SOURCE_SHA="$CANDIDATE"; fi
+          python3 harness/scripts/benchmark-web-tests.py phase \
+            --group "$GROUP" --phase "$PHASE" \
+            --source-src "$PWD/$GROUP" --source-sha "$SOURCE_SHA" \
+            --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
             --output "$RUNNER_TEMP/web-test-ab"
 
-      - name: Upload complete A/B evidence including failures
+      - name: Upload phase evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-phase-${{ matrix.group }}-${{ matrix.phase }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab/results
+          retention-days: 1
+          if-no-files-found: error
+
+  aggregate:
+    name: Whole PR A/B (180 seconds per group, 600 seconds total)
+    needs: [prepare, measure-phase]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout measurement harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Download run-bound manifest
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: web-test-ab-manifest-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab
+
+      - name: Download phase evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: web-test-ab-phase-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab/results
+          merge-multiple: true
+
+      - name: Aggregate complete A/B evidence
+        if: always()
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          test -f "$RUNNER_TEMP/web-test-ab/manifest.json"
+          python3 harness/scripts/benchmark-web-tests.py aggregate \
+            --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
+            --results-root "$RUNNER_TEMP/web-test-ab/results" \
+            --output "$RUNNER_TEMP/web-test-ab"
+
+      - name: Upload complete A/B evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -181,15 +249,8 @@ jobs:
             ${{ runner.temp }}/web-test-ab/preparation.json
             ${{ runner.temp }}/web-test-ab/summary.json
             ${{ runner.temp }}/web-test-ab/summary.md
-            ${{ runner.temp }}/web-test-ab/A/result.json
             ${{ runner.temp }}/web-test-ab/A/raw.jsonl
-            ${{ runner.temp }}/web-test-ab/A/*.log
-            ${{ runner.temp }}/web-test-ab/A/reports
-            ${{ runner.temp }}/web-test-ab/A/diagnostics
-            ${{ runner.temp }}/web-test-ab/B/result.json
             ${{ runner.temp }}/web-test-ab/B/raw.jsonl
-            ${{ runner.temp }}/web-test-ab/B/*.log
-            ${{ runner.temp }}/web-test-ab/B/reports
-            ${{ runner.temp }}/web-test-ab/B/diagnostics
+            ${{ runner.temp }}/web-test-ab/results
           retention-days: 1
-          if-no-files-found: error
+          if-no-files-found: warn
