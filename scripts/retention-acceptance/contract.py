@@ -40,7 +40,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DRIVER_IMAGE_REF = "python:3.12-alpine@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d"
 DRIVER_IMAGE_DIGEST = "sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d"
 TRIAL_EXECUTION_ORDER = [
@@ -327,9 +327,12 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             driver_cleanup = trial.get("foreground_driver_cleanup")
             _require(
                 isinstance(driver_cleanup, dict)
-                and re.fullmatch(r"retention-[0-9a-f]{12}-driver", str(driver_cleanup.get("container_name", "")))
+                and re.fullmatch(
+                    rf"retention-[0-9a-f]{{12}}-{version}-{index}-driver",
+                    str(driver_cleanup.get("container_name", "")),
+                )
                 and driver_cleanup.get("status") in {"already_absent", "removed"},
-                "named foreground driver cleanup is incomplete",
+                "named foreground driver cleanup is incomplete or belongs to another trial",
             )
 
             window = trial.get("window")

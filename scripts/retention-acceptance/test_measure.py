@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from contract import CLEANUP_RESERVE_SECONDS
+from contract import CLEANUP_RESERVE_SECONDS, TRIAL_EXECUTION_ORDER
 from measure import (
     OwnedContainerLedger,
     cleanup_budget,
@@ -18,10 +18,113 @@ from measure import (
     cleanup_path_if_safe,
     remaining_budget,
     run_command,
+    run_foreground,
 )
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_foreground_driver_lifecycle_uses_unique_trial_names_on_one_ledger(self) -> None:
+        run_id = "123456abcdef"
+        owned = OwnedContainerLedger()
+        started = time.monotonic()
+        run_names: list[str] = []
+        inspect_names: list[str] = []
+
+        def fake_docker(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+            if command[0:2] == ["docker", "run"]:
+                name = command[command.index("--name") + 1]
+                run_names.append(name)
+                return CompletedProcess(command, 0, "{}", "")
+            if command[0:2] == ["docker", "inspect"]:
+                name = command[-1]
+                inspect_names.append(name)
+                return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
+            self.fail(f"unexpected fake Docker command: {command[1]}")
+
+        expected_names = [
+            f"retention-{run_id}-{step['version']}-{step['trial_index']}-driver"
+            for step in TRIAL_EXECUTION_ORDER
+        ]
+        with patch("measure.RUN_ID", run_id), patch("measure.run_command", side_effect=fake_docker):
+            for step in TRIAL_EXECUTION_ORDER:
+                version = step["version"]
+                index = step["trial_index"]
+                trial_dir = Path(tempfile.gettempdir()) / f"retention-test-{version}-{index}"
+                cleanup: dict[str, object] = {}
+                run_foreground(
+                    "retention-application",
+                    "sha256:" + "1" * 64,
+                    started,
+                    version,
+                    index,
+                    cleanup,
+                    owned=owned,
+                    root=trial_dir.parent,
+                    recovery_path=trial_dir,
+                )
+                self.assertEqual(cleanup["container_name"], expected_names[len(run_names) - 1])
+                self.assertEqual(cleanup["status"], "already_absent")
+
+        self.assertEqual(run_names, expected_names)
+        self.assertEqual(inspect_names, expected_names)
+        records = owned.records()
+        self.assertEqual(
+            [record["container_name"] for record in records],
+            sorted(expected_names),
+        )
+        self.assertEqual([record["status"] for record in records], ["already_absent"] * 6)
+
+    def test_unconfirmed_foreground_cleanup_refuses_to_remove_trial_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial_dir = root / "trial-baseline-1"
+            trial_dir.mkdir(parents=True)
+            sentinel = trial_dir / "database.sqlite"
+            sentinel.write_bytes(b"preserve until driver absence is confirmed")
+            owned = OwnedContainerLedger()
+            cleanup: dict[str, object] = {}
+            run_id = "123456abcdef"
+            started = time.monotonic()
+
+            def daemon_failure(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                if command[0:2] == ["docker", "run"]:
+                    return CompletedProcess(command, 0, "{}", "")
+                if command[0:2] == ["docker", "inspect"]:
+                    return CompletedProcess(command, 1, "", "Cannot connect to the Docker daemon")
+                self.fail(f"unexpected fake Docker command: {command[1]}")
+
+            with patch("measure.RUN_ID", run_id), patch(
+                "measure.run_command", side_effect=daemon_failure
+            ), patch("measure.bounded_rmtree") as remove:
+                with self.assertRaisesRegex(RuntimeError, "could not inspect named container"):
+                    run_foreground(
+                        "retention-application",
+                        "sha256:" + "1" * 64,
+                        started,
+                        "baseline",
+                        1,
+                        cleanup,
+                        owned=owned,
+                        root=root,
+                        recovery_path=trial_dir,
+                    )
+                result, errors = cleanup_path_if_safe(
+                    root,
+                    root,
+                    owned,
+                    started,
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertEqual(cleanup["status"], "failed")
+            self.assertFalse(result["removed"])
+            self.assertTrue(errors)
+            self.assertEqual(len(result["recovery"]["unresolved_containers"]), 1)
+            self.assertEqual(result["recovery"]["unresolved_containers"][0]["container_name"],
+                             f"retention-{run_id}-baseline-1-driver")
+            self.assertTrue(sentinel.exists())
+            remove.assert_not_called()
+
     def test_work_budget_reserves_time_for_cleanup(self) -> None:
         with patch("measure.time.monotonic", return_value=1_000.0):
             self.assertEqual(remaining_budget(200.0), 900.0 - 800.0 - CLEANUP_RESERVE_SECONDS)

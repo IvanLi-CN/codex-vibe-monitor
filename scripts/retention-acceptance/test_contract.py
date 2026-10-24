@@ -160,7 +160,7 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
             "status": "removed",
         },
         "foreground_driver_cleanup": {
-            "container_name": "retention-123456abcdef-driver",
+            "container_name": f"retention-123456abcdef-{version}-{index}-driver",
             "status": "already_absent",
         },
         "latency_samples_ms": {"read": reads, "write": writes},
@@ -290,6 +290,14 @@ class ContractTests(unittest.TestCase):
         evidence = valid_evidence()
         evidence["versions"]["candidate"]["trials"][0]["foreground_driver_cleanup"]["status"] = "running"
         with self.assertRaisesRegex(AcceptanceError, "driver cleanup is incomplete"):
+            validate_evidence(evidence)
+
+    def test_foreground_driver_cleanup_must_belong_to_its_trial(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["trials"][0]["foreground_driver_cleanup"]["container_name"] = (
+            "retention-123456abcdef-candidate-2-driver"
+        )
+        with self.assertRaisesRegex(AcceptanceError, "belongs to another trial"):
             validate_evidence(evidence)
 
     def test_application_container_cleanup_must_be_terminal_and_identity_bound(self) -> None:

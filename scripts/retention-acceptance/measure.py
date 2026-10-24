@@ -31,6 +31,7 @@ from contract import (
     SCHEMA_VERSION,
     SEED,
     TRIAL_EXECUTION_ORDER,
+    TRIALS_PER_VERSION,
     AcceptanceError,
     parse_time,
     sha256_bytes,
@@ -617,16 +618,20 @@ def run_foreground(
     container: str,
     driver_image_id: str,
     started: float,
+    trial_version: str,
+    trial_index: int,
     cleanup_evidence: dict[str, Any],
     owned: OwnedContainerLedger | None = None,
     root: Path | None = None,
     recovery_path: Path | None = None,
 ) -> dict[str, Any]:
+    if trial_version not in {"baseline", "candidate"} or not 1 <= trial_index <= TRIALS_PER_VERSION:
+        raise AcceptanceError("foreground driver identity must bind to a known trial")
     invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
     attempt_count = math.ceil(DATASETS["pool_upstream_attempts"]["arrival_rate"] * RUN_SECONDS)
     retries = attempt_count - invocation_count
     worker = Path(__file__).with_name("foreground.py").resolve()
-    name = f"retention-{RUN_ID}-driver"
+    name = f"retention-{RUN_ID}-{trial_version}-{trial_index}-driver"
     if owned is not None:
         owned.register(name, "foreground", root or worker.parent, recovery_path or worker.parent, worker)
     try:
@@ -970,6 +975,8 @@ def run_trial(
             container,
             driver_image_id,
             phase_started,
+            version,
+            index,
             driver_cleanup,
             owned=containers,
             root=root,
