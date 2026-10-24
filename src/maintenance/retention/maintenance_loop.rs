@@ -1038,6 +1038,21 @@ pub(crate) fn finalize_retention_owner_details(
     }
 }
 
+pub(crate) fn freeze_and_finalize_retention_owner_observation(
+    task_key: &str,
+    observation: &crate::TaskExecutionObservation,
+    details: Option<&mut serde_json::Value>,
+) -> Option<i64> {
+    let execution_duration_ms = observation.freeze_execution_duration_ms();
+    if crate::maintenance_store::is_retention_owner_v2_task(task_key)
+        && let Some(duration_ms) = execution_duration_ms
+        && let Some(details) = details
+    {
+        finalize_retention_owner_details(details, duration_ms);
+    }
+    execution_duration_ms
+}
+
 pub(crate) async fn run_retention_owner_task(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
