@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import hashlib
+import math
+import unittest
+
+from contract import BASELINE_SHA, DATASETS, AcceptanceError, validate_evidence
+
+
+def timestamp(value: datetime) -> str:
+    return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def histogram_evidence() -> tuple[list[dict], dict[str, int]]:
+    before = {
+        operation: {"0.1": 0, "0.25": 0, "0.5": 0, "+Inf": 0}
+        for operation in ("invocation_archive", "timestamped_archive")
+    }
+    after = {
+        operation: {"0.1": 10, "0.25": 20, "0.5": 20, "+Inf": 20}
+        for operation in ("invocation_archive", "timestamped_archive")
+    }
+    delta = {"0.1": 20, "0.25": 40, "0.5": 40, "+Inf": 40}
+    return [{"scope": "pre-input", "bucket_counts": before}, {"scope": "after-drain", "bucket_counts": after}], delta
+
+
+def oracle_result(name: str, additions: int) -> dict:
+    definition = DATASETS[name]
+    converted = additions * 10
+    identities = [f"retention-input-{name}-{index:06d}" for index in range(1, additions + 1)]
+    return {
+        "dataset": definition["manifest_dataset"],
+        "seed_rows": definition["seed_rows"],
+        "actual_added_rows": additions,
+        "converted_rows": converted,
+        "distinct_archived_rows": converted,
+        "live_rows": definition["seed_rows"] + additions - converted,
+        "lost_rows": 0,
+        "duplicate_rows": 0,
+        "added_ids_sha256": hashlib.sha256("\n".join(identities).encode()).hexdigest(),
+    }
+
+
+def task_runs(start: datetime) -> list[dict]:
+    times = {
+        "retention_archive": (start + timedelta(seconds=3), start + timedelta(seconds=8)),
+        "pool_upstream_attempt_archive": (start + timedelta(seconds=4), start + timedelta(seconds=9)),
+        "raw_orphan_sweep": (start + timedelta(seconds=5), start + timedelta(seconds=10)),
+    }
+    rows = []
+    for key, (first_start, first_end) in times.items():
+        rows.append({
+            "task_key": key,
+            "trigger_kind": "schedule",
+            "actual_started_at": timestamp(first_start),
+            "actual_finished_at": timestamp(first_end),
+            "status": "success",
+            "committed_work": 1 if key == "raw_orphan_sweep" else 100,
+        })
+        if key != "raw_orphan_sweep":
+            rows.append({
+                "task_key": key,
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(first_end + timedelta(seconds=1)),
+                "actual_finished_at": timestamp(first_end + timedelta(seconds=2)),
+                "status": "success",
+                "committed_work": 100,
+            })
+    return rows
+
+
+def sample_rows(start: datetime, finish: datetime, count: int, elapsed: float) -> list[dict]:
+    span = max(1, int((finish - start).total_seconds()))
+    return [
+        {"observed_at": timestamp(start + timedelta(seconds=(index % span))), "elapsed_ms": elapsed}
+        for index in range(count)
+    ]
+
+
+def trial_evidence(version: str, index: int, start: datetime, previous_end: datetime | None) -> tuple[dict, datetime]:
+    input_start = start + timedelta(seconds=1)
+    input_end = input_start + timedelta(seconds=120)
+    cleanup = input_end + timedelta(seconds=2)
+    write_scrapes, write_buckets = histogram_evidence()
+    write_scrapes[0]["observed_at"] = timestamp(start + timedelta(milliseconds=500))
+    write_scrapes[1]["observed_at"] = timestamp(cleanup - timedelta(milliseconds=500))
+    identities = {
+        name: [f"retention-input-{name}-{sequence:06d}" for sequence in range(1, math.ceil(definition["arrival_rate"] * 120) + 1)]
+        for name, definition in DATASETS.items()
+    }
+    input_counts = {name: len(values) for name, values in identities.items()}
+    reads = sample_rows(input_start, input_end, 24, 10.0)
+    writes = sample_rows(input_start, input_end, input_counts["invocations"] + input_counts["pool_upstream_attempts"], 5.0)
+    return {
+        "trial_index": index,
+        "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
+        "image_id": f"sha256:{('1' if version == 'baseline' else '2') * 64}",
+        "input_fingerprint": "b" * 64,
+        "cutoff": "2026-10-23 00:00:00",
+        "window": {
+            "setup_started_at": timestamp(start),
+            "input_started_at": timestamp(input_start),
+            "input_finished_at": timestamp(input_end),
+            "cleanup_finished_at": timestamp(cleanup),
+            "input_duration_seconds": 120.0,
+            "full_duration_seconds": 123.0,
+            "gap_before_seconds": 0.0 if previous_end is None else (start - previous_end).total_seconds(),
+        },
+        "input_counts": input_counts,
+        "added_ids": identities,
+        "latency_samples_ms": {"read": reads, "write": writes},
+        "task_runs": task_runs(start),
+        "write_hold_samples": write_scrapes,
+        "write_hold_buckets": write_buckets,
+        "oracle": {
+            "verified": True,
+            "datasets": {name: oracle_result(name, input_counts[name]) for name in DATASETS},
+        },
+    }, cleanup
+
+
+def valid_evidence() -> dict:
+    phase_start = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    phase_finish = phase_start + timedelta(seconds=800)
+    evidence = {
+        "schema_version": 1,
+        "status": "completed",
+        "test_phase": {
+            "started_at": timestamp(phase_start),
+            "finished_at": timestamp(phase_finish),
+            "elapsed_seconds": 800.0,
+        },
+        "comparison_window": {
+            "started_at": timestamp(phase_start),
+            "finished_at": timestamp(phase_finish),
+            "elapsed_seconds": 800.0,
+        },
+        "contract": {
+            "baseline_sha": BASELINE_SHA,
+            "candidate_sha": "a" * 40,
+            "seed": 20261024,
+            "retention_days": 1,
+            "cutoff": "2026-10-23 00:00:00",
+            "seed_rows": {name: definition["seed_rows"] for name, definition in DATASETS.items()},
+            "input_fingerprint": "b" * 64,
+            "input_rates_rows_per_second": {name: definition["arrival_rate"] for name, definition in DATASETS.items()},
+        },
+        "versions": {},
+    }
+    previous_end = None
+    cursor = phase_start
+    for version in ("baseline", "candidate"):
+        trials = []
+        group_start = cursor
+        for index in range(1, 4):
+            if previous_end is not None:
+                cursor = previous_end + timedelta(seconds=5)
+            trial, previous_end = trial_evidence(version, index, cursor, previous_end)
+            trials.append(trial)
+        evidence["versions"][version] = {
+            "image": {
+                "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
+                "image_id": f"sha256:{('1' if version == 'baseline' else '2') * 64}",
+            },
+            "host": {"runner_image": "ubuntu-24.04", "cpu_model": "test host"},
+            "resource_limits": {"cpus": 2, "memory_bytes": 4_294_967_296},
+            "comparison_window": {
+                "started_at": timestamp(group_start),
+                "finished_at": timestamp(previous_end),
+                "elapsed_seconds": (previous_end - group_start).total_seconds(),
+            },
+            "trials": trials,
+        }
+    return evidence
+
+
+class ContractTests(unittest.TestCase):
+    def test_valid_evidence_passes(self) -> None:
+        result = validate_evidence(valid_evidence())
+        self.assertEqual(result["status"], "passed")
+
+    def test_failed_measurement_status_is_rejected(self) -> None:
+        evidence = valid_evidence()
+        evidence["status"] = "failed"
+        with self.assertRaisesRegex(AcceptanceError, "not complete"):
+            validate_evidence(evidence)
+
+    def test_baseline_and_candidate_image_identity_are_bound(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["trials"][0]["source_sha"] = "c" * 40
+        with self.assertRaisesRegex(AcceptanceError, "trial SHA drift"):
+            validate_evidence(evidence)
+
+    def test_runner_and_resource_drift_are_rejected(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["resource_limits"]["cpus"] = 4
+        with self.assertRaisesRegex(AcceptanceError, "resource limits drifted"):
+            validate_evidence(evidence)
+
+    def test_inter_version_gap_cannot_be_omitted(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["trials"][0]["window"]["gap_before_seconds"] = 0.0
+        with self.assertRaisesRegex(AcceptanceError, "inter-run gap was omitted"):
+            validate_evidence(evidence)
+
+    def test_live_write_count_cannot_be_replaced_with_a_reported_count(self) -> None:
+        evidence = valid_evidence()
+        result = evidence["versions"]["candidate"]["trials"][0]["oracle"]["datasets"]["invocations"]
+        result["actual_added_rows"] += 1
+        result["live_rows"] += 1
+        with self.assertRaisesRegex(AcceptanceError, "addition count is not bound"):
+            validate_evidence(evidence)
+
+    def test_missing_catchup_or_competitor_work_is_rejected(self) -> None:
+        evidence = valid_evidence()
+        rows = evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+        evidence["versions"]["baseline"]["trials"][0]["task_runs"] = [row for row in rows if row["task_key"] != "raw_orphan_sweep"]
+        with self.assertRaisesRegex(AcceptanceError, "competitor evidence is missing"):
+            validate_evidence(evidence)
+
+    def test_catchup_runs_cannot_replace_a_scheduled_owner_run(self) -> None:
+        evidence = valid_evidence()
+        rows = evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+        for row in rows:
+            if row["task_key"] == "retention_archive":
+                row["trigger_kind"] = "catchup"
+        with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
+            validate_evidence(evidence)
+
+    def test_missing_oracle_and_lost_rows_are_rejected(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["trials"][2]["oracle"]["verified"] = False
+        with self.assertRaisesRegex(AcceptanceError, "source/artifact oracle evidence"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["trials"][0]["oracle"]["datasets"]["invocations"]["lost_rows"] = 1
+        with self.assertRaisesRegex(AcceptanceError, "found lost"):
+            validate_evidence(evidence)
+
+    def test_write_hold_is_recomputed_from_raw_histogram_scrapes(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["write_hold_buckets"]["0.25"] += 1
+        with self.assertRaisesRegex(AcceptanceError, "not derived from raw scrape deltas"):
+            validate_evidence(evidence)
+
+    def test_candidate_write_hold_above_threshold_is_rejected(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        for operation in trial["write_hold_samples"][-1]["bucket_counts"]:
+            trial["write_hold_samples"][-1]["bucket_counts"][operation] = {"0.1": 0, "0.25": 0, "0.5": 20, "+Inf": 20}
+        trial["write_hold_buckets"] = {"0.1": 0, "0.25": 0, "0.5": 40, "+Inf": 40}
+        with self.assertRaisesRegex(AcceptanceError, "write-hold p95 exceeded"):
+            validate_evidence(evidence)
+
+    def test_test_phase_cannot_exceed_900_seconds(self) -> None:
+        evidence = valid_evidence()
+        end = datetime.fromisoformat(evidence["test_phase"]["started_at"].replace("Z", "+00:00")) + timedelta(seconds=901)
+        evidence["test_phase"]["finished_at"] = timestamp(end)
+        evidence["test_phase"]["elapsed_seconds"] = 901.0
+        evidence["comparison_window"]["finished_at"] = timestamp(end)
+        evidence["comparison_window"]["elapsed_seconds"] = 901.0
+        with self.assertRaisesRegex(AcceptanceError, "exceeded 900 seconds"):
+            validate_evidence(evidence)
+
+
+if __name__ == "__main__":
+    unittest.main()

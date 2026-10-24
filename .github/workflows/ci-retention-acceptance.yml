@@ -1,0 +1,187 @@
+name: Retention Acceptance
+
+on:
+  pull_request:
+    types:
+      - labeled
+      - reopened
+      - synchronize
+
+concurrency:
+  group: retention-acceptance-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Retention Acceptance Contract
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run:retention-acceptance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout acceptance candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run fail-closed evidence contract tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -v
+
+  images:
+    name: Build ${{ matrix.version }} production image
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run:retention-acceptance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: baseline
+            source_sha: 76beb053ac529bde47961dddb1e14b4d176700f8
+          - version: candidate
+            source_sha: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.source_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Bind source revision
+        id: identity
+        working-directory: source
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "${{ matrix.source_sha }}"
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build exact production runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: retention-acceptance:${{ steps.identity.outputs.sha }}
+          build-args: |
+            APP_GIT_REVISION=${{ steps.identity.outputs.sha }}
+            APP_EFFECTIVE_VERSION=retention-acceptance
+          cache-from: type=gha,scope=retention-acceptance-${{ matrix.version }}-amd64
+
+      - name: Export and bind immutable image artifact
+        env:
+          VERSION: ${{ matrix.version }}
+          SOURCE_SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="retention-acceptance:$SOURCE_SHA"
+          output="$RUNNER_TEMP/retention-image"
+          mkdir -p "$output"
+          docker save "$image" | gzip -1 > "$output/$VERSION.tar.gz"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          version = os.environ["VERSION"]
+          source = os.environ["SOURCE_SHA"]
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "retention-image"
+          archive = root / f"{version}.tar.gz"
+          image = json.loads(subprocess.check_output(["docker", "image", "inspect", f"retention-acceptance:{source}"], text=True))[0]
+          assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
+          metadata = {
+              "version": version,
+              "sourceSha": source,
+              "imageId": image["Id"],
+              "tag": f"retention-acceptance:{source}",
+              "archiveSha256": hashlib.file_digest(archive.open("rb"), "sha256").hexdigest(),
+          }
+          (root / f"{version}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Upload immutable ${{ matrix.version }} image
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-image-${{ github.run_id }}-${{ matrix.version }}
+          path: ${{ runner.temp }}/retention-image/
+          if-no-files-found: error
+          retention-days: 1
+
+  measurement:
+    name: Serial baseline/candidate measurement
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run:retention-acceptance')
+    needs: [contract, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Start complete test-phase clock
+        run: echo "RETENTION_ACCEPTANCE_PHASE_START_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >> "$GITHUB_ENV"
+
+      - name: Checkout exact candidate harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Download baseline image artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: retention-image-${{ github.run_id }}-baseline
+          path: ${{ runner.temp }}/retention-images/baseline
+
+      - name: Download candidate image artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: retention-image-${{ github.run_id }}-candidate
+          path: ${{ runner.temp }}/retention-images/candidate
+
+      - name: Verify and load exact image artifacts
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "retention-images"
+          expected = {
+              "baseline": "76beb053ac529bde47961dddb1e14b4d176700f8",
+              "candidate": os.environ["CANDIDATE_SHA"],
+          }
+          for version, source in expected.items():
+              directory = root / version
+              metadata = json.loads((directory / f"{version}.json").read_text())
+              archive = directory / f"{version}.tar.gz"
+              assert metadata["version"] == version
+              assert metadata["sourceSha"] == source
+              assert metadata["tag"] == f"retention-acceptance:{source}"
+              assert hashlib.file_digest(archive.open("rb"), "sha256").hexdigest() == metadata["archiveSha256"]
+              subprocess.run(["docker", "load", "--input", str(archive)], check=True)
+              image = json.loads(subprocess.check_output(["docker", "image", "inspect", metadata["tag"]], text=True))[0]
+              assert image["Id"] == metadata["imageId"]
+              assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
+          PY
+
+      - name: Run complete 900-second-bounded comparison
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          PYTHONDONTWRITEBYTECODE: "1"
+          RETENTION_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/retention-acceptance-evidence
+        run: python3 candidate/scripts/retention-acceptance/measure.py
+
+      - name: Upload acceptance evidence, including failed runs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-acceptance-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retention-acceptance-evidence/
+          if-no-files-found: warn
+          retention-days: 14

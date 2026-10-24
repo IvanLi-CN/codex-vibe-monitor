@@ -1,0 +1,405 @@
+"""Shared, fail-closed contract for the isolated retention acceptance run."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import hashlib
+import json
+import math
+from statistics import median
+from typing import Any
+
+
+BASELINE_SHA = "76beb053ac529bde47961dddb1e14b4d176700f8"
+DATASETS = {
+    "invocations": {
+        "table": "codex_invocations",
+        "manifest_dataset": "codex_invocations",
+        "seed_rows": 100_000,
+        "arrival_rate": 0.673,
+        "task_key": "retention_archive",
+    },
+    "pool_upstream_attempts": {
+        "table": "pool_upstream_request_attempts",
+        "manifest_dataset": "pool_upstream_request_attempts",
+        "seed_rows": 120_000,
+        "arrival_rate": 0.673 * 1.2,
+        "task_key": "pool_upstream_attempt_archive",
+    },
+}
+COMPETITOR_TASK = "raw_orphan_sweep"
+RUN_SECONDS = 120
+TRIALS_PER_VERSION = 3
+MAX_TEST_PHASE_SECONDS = 900
+MIN_CONVERGENCE_FACTOR = 10.0
+MAX_WRITE_HOLD_P95_MS = 250.0
+SEED = 20261024
+RETENTION_DAYS = 1
+SCHEMA_VERSION = 1
+
+
+class AcceptanceError(ValueError):
+    """The evidence is incomplete, inconsistent, or failed an acceptance gate."""
+
+
+def canonical_json(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def sha256_json(value: Any) -> str:
+    return sha256_bytes(canonical_json(value))
+
+
+def parse_time(value: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise AcceptanceError("missing timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AcceptanceError("invalid timestamp") from error
+    if parsed.tzinfo is None:
+        raise AcceptanceError("timestamp must include a UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def _number(value: Any, message: str) -> float:
+    _require(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value),
+        message,
+    )
+    return float(value)
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    if not values or not 0 < fraction <= 1:
+        raise AcceptanceError("latency sample set is empty or percentile is invalid")
+    ordered = sorted(values)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return ordered[rank - 1]
+
+
+def latency_summary(samples: list[float]) -> dict[str, float]:
+    return {
+        "p95_ms": percentile(samples, 0.95),
+        "p99_ms": percentile(samples, 0.99),
+    }
+
+
+def histogram_quantile_ms(buckets: dict[str, int], fraction: float) -> float:
+    if not buckets or not 0 < fraction <= 1:
+        raise AcceptanceError("write-hold histogram is missing")
+    parsed: list[tuple[float, int]] = []
+    for upper, count in buckets.items():
+        try:
+            bound = math.inf if upper == "+Inf" else float(upper)
+        except (TypeError, ValueError) as error:
+            raise AcceptanceError("write-hold histogram has an invalid bucket") from error
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise AcceptanceError("write-hold histogram has an invalid count")
+        parsed.append((bound, count))
+    parsed.sort(key=lambda item: item[0])
+    if not parsed or parsed[-1][0] != math.inf:
+        raise AcceptanceError("write-hold histogram has no +Inf bucket")
+    previous = 0
+    for _, count in parsed:
+        if count < previous:
+            raise AcceptanceError("write-hold histogram buckets are not cumulative")
+        previous = count
+    total = parsed[-1][1]
+    if total == 0:
+        raise AcceptanceError("write-hold histogram contains no observations")
+    rank = math.ceil(fraction * total)
+    for upper, count in parsed:
+        if count >= rank:
+            return upper * 1000 if math.isfinite(upper) else math.inf
+    raise AcceptanceError("write-hold histogram percentile is unavailable")
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AcceptanceError(message)
+
+
+def _validate_samples(trial: dict[str, Any], input_start: datetime, input_end: datetime) -> None:
+    samples = trial.get("latency_samples_ms")
+    _require(isinstance(samples, dict), "raw foreground latency evidence is missing")
+    for kind in ("read", "write"):
+        values = samples.get(kind)
+        _require(isinstance(values, list) and len(values) >= 20, f"insufficient raw {kind} latency samples")
+        for sample in values:
+            _require(isinstance(sample, dict), f"malformed raw {kind} latency sample")
+            observed = sample.get("observed_at")
+            latency = sample.get("elapsed_ms")
+            observed_at = parse_time(observed)
+            _require(input_start <= observed_at <= input_end, f"{kind} latency sample fell outside its window")
+            _require(
+                isinstance(latency, (int, float))
+                and not isinstance(latency, bool)
+                and math.isfinite(latency)
+                and latency >= 0,
+                f"invalid raw {kind} latency",
+            )
+
+
+def _validate_task_runs(trial: dict[str, Any]) -> None:
+    rows = trial.get("task_runs")
+    _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        _require(isinstance(row, dict), "malformed production task-run evidence")
+        key = row.get("task_key")
+        _require(isinstance(key, str) and key, "task run has no owner key")
+        started = parse_time(row.get("actual_started_at"))
+        finished = parse_time(row.get("actual_finished_at"))
+        _require(finished >= started, "task run has an inverted execution interval")
+        _require(row.get("status") == "success", f"background task {key} did not finish successfully")
+        by_key.setdefault(key, []).append(row)
+
+    targets = [DATASETS[name]["task_key"] for name in DATASETS]
+    for key in targets:
+        runs = by_key.get(key, [])
+        scheduled = [row for row in runs if row.get("trigger_kind") == "schedule"]
+        catchups = [row for row in runs if row.get("trigger_kind") == "catchup"]
+        _require(scheduled and catchups, f"production dispatcher did not complete both schedule and catch-up runs for {key}")
+        _require(
+            any(parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"]) for schedule in scheduled for catchup in catchups),
+            f"production catch-up did not follow a scheduled run for {key}",
+        )
+
+    competitor = by_key.get(COMPETITOR_TASK, [])
+    _require(competitor, "real background competitor evidence is missing")
+    target_rows = [row for key in targets for row in by_key.get(key, [])]
+    overlap = any(
+        max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
+        < min(parse_time(left["actual_finished_at"]), parse_time(right["actual_finished_at"]))
+        for left in target_rows
+        for right in competitor
+    )
+    _require(overlap, "raw orphan-sweep did not overlap a retention owner run")
+    _require(any(row.get("committed_work", 0) > 0 for row in competitor), "background competitor had no committed work")
+
+
+def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Validate identity, complete windows, source-oracle results, and performance gates."""
+    _require(evidence.get("schema_version") == SCHEMA_VERSION, "unsupported evidence schema")
+    _require(evidence.get("status") == "completed", "measurement evidence is not complete")
+    phase = evidence.get("test_phase")
+    _require(isinstance(phase, dict), "test-phase clock evidence is missing")
+    phase_start = parse_time(phase.get("started_at"))
+    phase_end = parse_time(phase.get("finished_at"))
+    phase_elapsed = (phase_end - phase_start).total_seconds()
+    _require(phase_end >= phase_start, "test-phase clock is inverted")
+    _require(phase_elapsed <= MAX_TEST_PHASE_SECONDS, "test phase exceeded 900 seconds")
+    _require(abs(_number(phase.get("elapsed_seconds"), "test-phase elapsed time is invalid") - phase_elapsed) <= 1.0, "test-phase elapsed time is not bound to its timestamps")
+
+    contract = evidence.get("contract")
+    _require(isinstance(contract, dict), "acceptance contract identity is missing")
+    _require(contract.get("baseline_sha") == BASELINE_SHA, "baseline SHA drift")
+    candidate_sha = contract.get("candidate_sha")
+    _require(isinstance(candidate_sha, str) and len(candidate_sha) == 40 and all(c in "0123456789abcdef" for c in candidate_sha), "candidate SHA is invalid")
+    _require(contract.get("seed") == SEED, "synthetic seed drift")
+    _require(contract.get("retention_days") == RETENTION_DAYS, "retention cutoff policy drift")
+    _require(
+        contract.get("input_rates_rows_per_second") == {key: value["arrival_rate"] for key, value in DATASETS.items()},
+        "foreground arrival-rate contract drift",
+    )
+    input_fingerprint = contract.get("input_fingerprint")
+    _require(
+        isinstance(input_fingerprint, str)
+        and len(input_fingerprint) == 64
+        and all(c in "0123456789abcdef" for c in input_fingerprint),
+        "input fingerprint is missing or malformed",
+    )
+    _require(isinstance(contract.get("cutoff"), str) and contract["cutoff"], "fixed retention cutoff is missing")
+    _require(contract.get("seed_rows") == {key: value["seed_rows"] for key, value in DATASETS.items()}, "synthetic snapshot size drift")
+
+    versions = evidence.get("versions")
+    _require(isinstance(versions, dict) and set(versions) == {"baseline", "candidate"}, "baseline/candidate evidence is incomplete")
+    comparison = evidence.get("comparison_window")
+    _require(isinstance(comparison, dict), "full baseline/candidate comparison window is missing")
+    comparison_start = parse_time(comparison.get("started_at"))
+    comparison_end = parse_time(comparison.get("finished_at"))
+    _require(comparison_start <= phase_start and comparison_end >= phase_end, "comparison window omitted test-phase preparation or cleanup")
+    _require(
+        abs(_number(comparison.get("elapsed_seconds"), "comparison duration is invalid") - (comparison_end - comparison_start).total_seconds()) <= 1.0,
+        "full comparison duration is inconsistent",
+    )
+    host_identity = None
+    resource_limits = None
+    previous_end: datetime | None = None
+    for version, expected_sha in (("baseline", BASELINE_SHA), ("candidate", candidate_sha)):
+        group = versions[version]
+        _require(isinstance(group, dict), f"{version} evidence is malformed")
+        image = group.get("image")
+        _require(isinstance(image, dict), f"{version} image identity is missing")
+        _require(image.get("source_sha") == expected_sha, f"{version} image source SHA drift")
+        image_id = image.get("image_id")
+        _require(
+            isinstance(image_id, str)
+            and len(image_id) == 71
+            and image_id.startswith("sha256:")
+            and all(character in "0123456789abcdef" for character in image_id[7:]),
+            f"{version} immutable image ID is missing or malformed",
+        )
+        host = group.get("host")
+        _require(isinstance(host, dict) and host.get("runner_image"), f"{version} host identity is missing")
+        limits = group.get("resource_limits")
+        _require(
+            isinstance(limits, dict)
+            and limits.get("cpus") == 2
+            and limits.get("memory_bytes") == 4_294_967_296,
+            f"{version} resource limits drifted",
+        )
+        if host_identity is None:
+            host_identity = host
+            resource_limits = limits
+        else:
+            _require(host == host_identity, "baseline and candidate used different runner identities")
+            _require(limits == resource_limits, "baseline and candidate resource limits differ")
+        trials = group.get("trials")
+        _require(isinstance(trials, list) and len(trials) == TRIALS_PER_VERSION, f"{version} must contain exactly three trials")
+        trial_read_metrics: list[dict[str, float]] = []
+        trial_write_metrics: list[dict[str, float]] = []
+        for index, trial in enumerate(trials, start=1):
+            _require(isinstance(trial, dict), f"{version} trial is malformed")
+            _require(trial.get("trial_index") == index, f"{version} trial order is invalid")
+            _require(trial.get("source_sha") == expected_sha, f"{version} trial SHA drift")
+            _require(trial.get("image_id") == image["image_id"], f"{version} trial image drift")
+            _require(trial.get("input_fingerprint") == input_fingerprint, f"{version} input fingerprint drift")
+            _require(trial.get("cutoff") == contract["cutoff"], f"{version} cutoff drift")
+
+            window = trial.get("window")
+            _require(isinstance(window, dict), "trial window evidence is missing")
+            setup_start = parse_time(window.get("setup_started_at"))
+            input_start = parse_time(window.get("input_started_at"))
+            input_end = parse_time(window.get("input_finished_at"))
+            cleanup_end = parse_time(window.get("cleanup_finished_at"))
+            _require(setup_start <= input_start <= input_end <= cleanup_end, "trial window boundaries are inconsistent")
+            input_elapsed = (input_end - input_start).total_seconds()
+            _require(abs(input_elapsed - RUN_SECONDS) <= 1.0, "foreground input window is not 120 seconds")
+            _require(abs(_number(window.get("input_duration_seconds"), "input duration is invalid") - input_elapsed) <= 1.0, "recorded input duration is inconsistent")
+            full_elapsed = (cleanup_end - setup_start).total_seconds()
+            _require(abs(_number(window.get("full_duration_seconds"), "trial duration is invalid") - full_elapsed) <= 1.0, "trial full window omitted setup or cleanup")
+            gap_before = 0.0 if previous_end is None else (setup_start - previous_end).total_seconds()
+            _require(gap_before >= 0, "trial windows overlap or run order changed")
+            _require(abs(_number(window.get("gap_before_seconds"), "inter-run gap is invalid") - gap_before) <= 1.0, "inter-run gap was omitted or altered")
+            previous_end = cleanup_end
+
+            _validate_samples(trial, input_start, input_end)
+            input_counts = trial.get("input_counts")
+            added_ids = trial.get("added_ids")
+            _require(isinstance(input_counts, dict) and isinstance(added_ids, dict), "foreground input count or identity evidence is missing")
+            for name, definition in DATASETS.items():
+                expected_count = math.ceil(definition["arrival_rate"] * RUN_SECONDS)
+                identities = added_ids.get(name)
+                _require(input_counts.get(name) == expected_count, f"{name} foreground arrival rate drifted")
+                _require(
+                    isinstance(identities, list)
+                    and len(identities) == expected_count
+                    and all(isinstance(identity, str) and identity for identity in identities)
+                    and len(set(identities)) == expected_count,
+                    f"{name} foreground source identities are incomplete",
+                )
+            _validate_task_runs(trial)
+            scrape_rows = trial.get("write_hold_samples")
+            _require(isinstance(scrape_rows, list) and len(scrape_rows) >= 2, "raw production write-hold histogram evidence is missing")
+            for row in scrape_rows:
+                _require(setup_start <= parse_time(row.get("observed_at")) <= cleanup_end, "write-hold sample fell outside the full trial window")
+                _require(isinstance(row.get("bucket_counts"), dict), "raw write-hold scrape omitted bucket counts")
+            _require(scrape_rows[0].get("scope") == "pre-input" and scrape_rows[-1].get("scope") == "after-drain", "write-hold scrape boundaries are incomplete")
+            before = scrape_rows[0]["bucket_counts"]
+            after = scrape_rows[-1]["bucket_counts"]
+            derived_buckets: dict[str, int] = {}
+            for operation in ("invocation_archive", "timestamped_archive"):
+                old_buckets = before.get(operation)
+                new_buckets = after.get(operation)
+                _require(isinstance(old_buckets, dict) and isinstance(new_buckets, dict) and new_buckets, f"raw {operation} histogram scrape is missing")
+                _require("+Inf" in new_buckets and set(old_buckets).issubset(new_buckets), "write-hold histogram bucket schema changed during a trial")
+                for upper, count in new_buckets.items():
+                    previous = old_buckets.get(upper, 0)
+                    _require(
+                        isinstance(count, int)
+                        and not isinstance(count, bool)
+                        and isinstance(previous, int)
+                        and not isinstance(previous, bool)
+                        and count >= previous,
+                        "write-hold histogram counter reset or decreased",
+                    )
+                    derived_buckets[upper] = derived_buckets.get(upper, 0) + count - previous
+            hold_buckets = trial.get("write_hold_buckets")
+            _require(isinstance(hold_buckets, dict), "production write-hold histogram is missing")
+            _require(hold_buckets == derived_buckets, "reported write-hold histogram is not derived from raw scrape deltas")
+            hold_p95 = histogram_quantile_ms(hold_buckets, 0.95)
+            trial["write_hold_p95_ms"] = hold_p95
+            if version == "candidate":
+                _require(hold_p95 <= MAX_WRITE_HOLD_P95_MS, "steady write-hold p95 exceeded 250ms")
+
+            oracle = trial.get("oracle")
+            _require(isinstance(oracle, dict) and oracle.get("verified") is True, "source/artifact oracle evidence is missing")
+            datasets = oracle.get("datasets")
+            _require(isinstance(datasets, dict) and set(datasets) == set(DATASETS), "oracle dataset evidence is incomplete")
+            for name in DATASETS:
+                result = datasets[name]
+                _require(isinstance(result, dict), f"oracle result for {name} is malformed")
+                _require(result.get("dataset") == DATASETS[name]["manifest_dataset"], f"oracle dataset mismatch for {name}")
+                _require(result.get("seed_rows") == DATASETS[name]["seed_rows"], f"oracle seed population mismatch for {name}")
+                _require(result.get("actual_added_rows") == trial["input_counts"][name], f"oracle {name} addition count is not bound to measured writes")
+                for field in ("actual_added_rows", "converted_rows", "distinct_archived_rows", "live_rows", "lost_rows", "duplicate_rows"):
+                    value = result.get(field)
+                    _require(isinstance(value, int) and not isinstance(value, bool) and value >= 0, f"oracle {field} is invalid")
+                _require(result["lost_rows"] == 0, f"oracle found lost {name} source rows")
+                _require(result["duplicate_rows"] == 0, f"oracle found duplicate {name} conversions")
+                _require(result["converted_rows"] == result["distinct_archived_rows"], f"reported {name} conversion count is not proof-backed")
+                identities = trial["added_ids"][name]
+                _require(
+                    result.get("added_ids_sha256") == sha256_bytes("\n".join(identities).encode()),
+                    f"oracle {name} input identity digest does not match observed writes",
+                )
+                _require(result["seed_rows"] + result["actual_added_rows"] == result["live_rows"] + result["converted_rows"], f"{name} source conservation does not balance")
+                if version == "candidate":
+                    additions = result["actual_added_rows"]
+                    _require(additions > 0, f"candidate added no {name} rows")
+                    factor = result["converted_rows"] / additions
+                    _require(factor >= MIN_CONVERGENCE_FACTOR, f"candidate {name} convergence factor is below 10x")
+                    result["convergence_factor"] = factor
+
+            raw_samples = trial["latency_samples_ms"]
+            trial_read_metrics.append(latency_summary([float(item["elapsed_ms"]) for item in raw_samples["read"]]))
+            trial_write_metrics.append(latency_summary([float(item["elapsed_ms"]) for item in raw_samples["write"]]))
+
+        group_window = group.get("comparison_window")
+        _require(isinstance(group_window, dict), "complete comparison window is missing")
+        group_start = parse_time(group_window.get("started_at"))
+        group_end = parse_time(group_window.get("finished_at"))
+        _require(group_start <= parse_time(trials[0]["window"]["setup_started_at"]), "comparison window omitted initial preparation")
+        _require(group_end >= parse_time(trials[-1]["window"]["cleanup_finished_at"]), "comparison window omitted final cleanup")
+        _require(abs(_number(group_window.get("elapsed_seconds"), "comparison duration is invalid") - (group_end - group_start).total_seconds()) <= 1.0, "comparison window duration is inconsistent")
+        group["latency_summary"] = {
+            "read": {metric: median(row[metric] for row in trial_read_metrics) for metric in ("p95_ms", "p99_ms")},
+            "write": {metric: median(row[metric] for row in trial_write_metrics) for metric in ("p95_ms", "p99_ms")},
+        }
+
+    baseline = versions["baseline"]["latency_summary"]
+    candidate = versions["candidate"]["latency_summary"]
+    for operation in ("read", "write"):
+        for metric in ("p95_ms", "p99_ms"):
+            _require(
+                candidate[operation][metric] <= baseline[operation][metric],
+                f"candidate foreground {operation} {metric} median regressed against baseline",
+            )
+    return {
+        "status": "passed",
+        "baseline_sha": BASELINE_SHA,
+        "candidate_sha": candidate_sha,
+        "test_phase_seconds": phase_elapsed,
+        "latency_summary": {
+            "baseline": baseline,
+            "candidate": candidate,
+        },
+    }
