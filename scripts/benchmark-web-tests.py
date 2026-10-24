@@ -16,6 +16,7 @@ import os
 import re
 import resource
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -300,22 +301,26 @@ def run_sample(
     started = time.monotonic()
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     timed_out = False
+    process = subprocess.Popen(
+        timed_command,
+        cwd=source_web_dir(source),
+        env=run_env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=os.name == "posix",
+    )
     try:
-        completed = subprocess.run(
-            timed_command,
-            cwd=source_web_dir(source),
-            env=run_env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=MAX_SAMPLE_SECONDS,
-        )
-        output = completed.stdout
-        returncode = completed.returncode
+        output, _ = process.communicate(timeout=MAX_SAMPLE_SECONDS)
+        returncode = process.returncode
     except subprocess.TimeoutExpired as error:
         timed_out = True
-        output = error.stdout or ""
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        output, _ = process.communicate()
+        output = output or error.output or ""
         if isinstance(output, bytes):
             output = output.decode(errors="replace")
         output += f"\n__CVM_TIMEOUT_SECONDS={MAX_SAMPLE_SECONDS}\n"
