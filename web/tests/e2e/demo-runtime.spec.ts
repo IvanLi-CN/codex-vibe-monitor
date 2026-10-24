@@ -230,7 +230,7 @@ async function expectSceneTerminalState(page: Page, path: string, scene: DemoSce
         .filter({ has: page.getByRole("heading", { name: "新增账号", exact: true }) })
         .first();
       await expect(createPage.locator(".animate-spin:visible")).toHaveCount(0);
-      await expect(createPage.getByRole("alert")).toHaveCount(0);
+      await expect(createPage.getByRole("status")).toHaveCount(0);
       const fieldName = path.endsWith("mode=apiKey") ? "apiKeyDisplayName" : "oauthDisplayName";
       await expect(createPage.locator(`input[name="${fieldName}"]:visible`)).toBeVisible();
       return;
