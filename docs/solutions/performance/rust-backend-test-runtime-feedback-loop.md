@@ -50,7 +50,7 @@ related_specs:
 - 给 Archive template 分类时，识别 "再次调用 `ensure_schema` 模拟旧版数据库" 的用例。它们必须显式选择 fresh schema；仅删除 migration marker 而保留 current trigger 会把 fixture 缺陷误报为 schema migration 失败。
 - fresh file fixture 若要在现有数据库上再次执行多语句 `ensure_schema`，应固定单个 SQLite connection；Pool 在 DDL 序列中切换连接会使 trigger 已存在等错误看似随机。普通 template copy 仍需保留多连接可见性回归，不能因此降为单连接。
 - runner 先由一次真实 `ensure_schema` 生成私有 file template；每个唯一 shared-memory SQLite 再通过 SQLite backup API 获得副本。必须验证 schema/default-data parity、pooled connection visibility、双向写入与跨测试隔离；shared-memory serialize/deserialize、逐条 SQL dump 和为 shared-memory state 直接复制文件都不是最终路径。
-- current-schema-only 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试应优先复用 template pool；不得把 legacy migration、文件路径、gzip 或 write-lock 测试迁入该路径。
+- current-schema-only 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试应优先复用 template pool；不得把 legacy migration、文件路径或 gzip 测试迁入该路径。write-lock 测试默认保留 fresh schema，但明确 allowlist 的 file-backed current-schema 测试可以复用 template，前提是仍使用真实 file DB、真实 lock connection 和原有锁断言。
 - 检查共享 test-state helper，而不只查单个测试里的 `ensure_schema`。若一个 helper 被 Stateful 复用且只需要 current schema，可在 schema-template 环境变量存在时委托给 template pool；无变量时仍按原 helper 建库。这样同一 helper 在 Archive/File I/O 和本地直跑中保留真实 schema/file 语义，Stateful 则避免每个 `AppState` 重复 DDL。
 - 如果测试只需要“已 materialized archive metadata”或“缺失 replay marker”状态，直接构造窄表状态，不要为了 setup 跑完整 retention/archive pipeline。
 - 对确实验证 archive 文件内容或文件主库行为的测试，保留文件 SQLite，并把它们作为剩余 top offenders 明确列出。

@@ -1184,7 +1184,7 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     let builder = reqwest::Client::builder().no_proxy(); // Setup outside readiness timing.
     let client = builder.build().expect("local readiness client");
     let hydration_handle = {
-        let _operation = test_timing_span("production_operation");
+        let _spawn = test_timing_span("production_spawn");
         publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
             state.clone(),
             Instant::now(),
