@@ -578,7 +578,9 @@ test("single-client dense timeline stays below the long-task budget on desktop a
   ] as const) {
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
-    await page.clock.install();
+    await page.clock.install({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
     try {
       await startCapacityDashboard(page, viewport, true);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
