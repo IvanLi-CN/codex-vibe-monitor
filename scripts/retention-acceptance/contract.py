@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import re
 from statistics import median
 from typing import Any
 
@@ -14,6 +15,7 @@ BASELINE_SHA = "76beb053ac529bde47961dddb1e14b4d176700f8"
 DATASETS = {
     "invocations": {
         "table": "codex_invocations",
+        "identity_column": "invoke_id",
         "manifest_dataset": "codex_invocations",
         "seed_rows": 100_000,
         "arrival_rate": 0.673,
@@ -21,6 +23,7 @@ DATASETS = {
     },
     "pool_upstream_attempts": {
         "table": "pool_upstream_request_attempts",
+        "identity_column": "attempt_public_id",
         "manifest_dataset": "pool_upstream_request_attempts",
         "seed_rows": 120_000,
         "arrival_rate": 0.673 * 1.2,
@@ -28,6 +31,7 @@ DATASETS = {
     },
 }
 COMPETITOR_TASK = "raw_orphan_sweep"
+COMPETITOR_FILE_COUNT = 512
 RUN_SECONDS = 120
 TRIALS_PER_VERSION = 3
 MAX_TEST_PHASE_SECONDS = 900
@@ -35,7 +39,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class AcceptanceError(ValueError):
@@ -145,9 +149,16 @@ def _validate_samples(trial: dict[str, Any], input_start: datetime, input_end: d
                 and latency >= 0,
                 f"invalid raw {kind} latency",
             )
+            expected_path = "/api/pool/upstream-accounts" if kind == "read" else "/v1/responses"
+            _require(sample.get("transport") == "http" and sample.get("path") == expected_path, f"{kind} latency was not measured at the production HTTP boundary")
 
 
-def _validate_task_runs(trial: dict[str, Any]) -> None:
+def _validate_task_runs(
+    trial: dict[str, Any],
+    setup_start: datetime,
+    cleanup_end: datetime,
+    require_competitor_overlap: bool,
+) -> int:
     rows = trial.get("task_runs")
     _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
     by_key: dict[str, list[dict[str, Any]]] = {}
@@ -158,7 +169,10 @@ def _validate_task_runs(trial: dict[str, Any]) -> None:
         started = parse_time(row.get("actual_started_at"))
         finished = parse_time(row.get("actual_finished_at"))
         _require(finished >= started, "task run has an inverted execution interval")
+        _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
         _require(row.get("status") == "success", f"background task {key} did not finish successfully")
+        work = row.get("committed_work")
+        _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
 
     targets = [DATASETS[name]["task_key"] for name in DATASETS]
@@ -174,6 +188,8 @@ def _validate_task_runs(trial: dict[str, Any]) -> None:
 
     competitor = by_key.get(COMPETITOR_TASK, [])
     _require(competitor, "real background competitor evidence is missing")
+    competitor_work = sum(row["committed_work"] for row in competitor)
+    _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
     target_rows = [row for key in targets for row in by_key.get(key, [])]
     overlap = any(
         max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
@@ -181,8 +197,9 @@ def _validate_task_runs(trial: dict[str, Any]) -> None:
         for left in target_rows
         for right in competitor
     )
-    _require(overlap, "raw orphan-sweep did not overlap a retention owner run")
-    _require(any(row.get("committed_work", 0) > 0 for row in competitor), "background competitor had no committed work")
+    if require_competitor_overlap:
+        _require(overlap, "candidate raw orphan-sweep did not overlap a retention owner run")
+    return competitor_work
 
 
 def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
@@ -205,6 +222,11 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     _require(isinstance(candidate_sha, str) and len(candidate_sha) == 40 and all(c in "0123456789abcdef" for c in candidate_sha), "candidate SHA is invalid")
     _require(contract.get("seed") == SEED, "synthetic seed drift")
     _require(contract.get("retention_days") == RETENTION_DAYS, "retention cutoff policy drift")
+    _require(
+        isinstance(contract.get("driver_image_id"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", contract["driver_image_id"]),
+        "foreground driver image identity is invalid",
+    )
     _require(
         contract.get("input_rates_rows_per_second") == {key: value["arrival_rate"] for key, value in DATASETS.items()},
         "foreground arrival-rate contract drift",
@@ -233,6 +255,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     host_identity = None
     resource_limits = None
     previous_end: datetime | None = None
+    competitor_workloads: dict[str, list[int]] = {"baseline": [], "candidate": []}
     for version, expected_sha in (("baseline", BASELINE_SHA), ("candidate", candidate_sha)):
         group = versions[version]
         _require(isinstance(group, dict), f"{version} evidence is malformed")
@@ -306,7 +329,29 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     and len(set(identities)) == expected_count,
                     f"{name} foreground source identities are incomplete",
                 )
-            _validate_task_runs(trial)
+            invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
+            attempt_count = math.ceil(DATASETS["pool_upstream_attempts"]["arrival_rate"] * RUN_SECONDS)
+            expected_retries = attempt_count - invocation_count
+            workload = trial.get("foreground_workload")
+            _require(isinstance(workload, dict), "foreground HTTP workload evidence is missing")
+            upstream = workload.get("mock_upstream")
+            _require(isinstance(upstream, dict), "mock upstream request evidence is missing")
+            _require(workload.get("invocation_requests") == invocation_count, "foreground proxy request count drifted")
+            _require(workload.get("pool_read_requests", 0) >= 20, "foreground pool read workload is incomplete")
+            _require(upstream.get("request_count") == attempt_count, "mock upstream attempt count does not match the measured source rows")
+            _require(upstream.get("retryable_failures") == expected_retries, "mock upstream retry workload drifted")
+            _require(upstream.get("successful_responses") == invocation_count, "mock upstream success count does not match proxy requests")
+            raw_samples = trial["latency_samples_ms"]
+            _require(len(raw_samples["write"]) == invocation_count, "foreground response latency sample count does not match HTTP writes")
+            _require(len(raw_samples["read"]) == workload["pool_read_requests"], "foreground read latency sample count is inconsistent")
+            competitor_workloads[version].append(
+                _validate_task_runs(
+                    trial,
+                    setup_start,
+                    cleanup_end,
+                    require_competitor_overlap=version == "candidate",
+                )
+            )
             scrape_rows = trial.get("write_hold_samples")
             _require(isinstance(scrape_rows, list) and len(scrape_rows) >= 2, "raw production write-hold histogram evidence is missing")
             for row in scrape_rows:
@@ -369,7 +414,6 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     _require(factor >= MIN_CONVERGENCE_FACTOR, f"candidate {name} convergence factor is below 10x")
                     result["convergence_factor"] = factor
 
-            raw_samples = trial["latency_samples_ms"]
             trial_read_metrics.append(latency_summary([float(item["elapsed_ms"]) for item in raw_samples["read"]]))
             trial_write_metrics.append(latency_summary([float(item["elapsed_ms"]) for item in raw_samples["write"]]))
 
@@ -384,6 +428,12 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             "read": {metric: median(row[metric] for row in trial_read_metrics) for metric in ("p95_ms", "p99_ms")},
             "write": {metric: median(row[metric] for row in trial_write_metrics) for metric in ("p95_ms", "p99_ms")},
         }
+
+    _require(
+        competitor_workloads["baseline"] == competitor_workloads["candidate"]
+        == [COMPETITOR_FILE_COUNT] * TRIALS_PER_VERSION,
+        "baseline and candidate did not receive the same fixed competitor workload",
+    )
 
     baseline = versions["baseline"]["latency_summary"]
     candidate = versions["candidate"]["latency_summary"]

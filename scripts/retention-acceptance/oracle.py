@@ -126,6 +126,7 @@ def verify_dataset(
 ) -> dict[str, Any]:
     dataset = DATASETS[dataset_name]["manifest_dataset"]
     table = DATASETS[dataset_name]["table"]
+    identity_column = DATASETS[dataset_name]["identity_column"]
     if seed_count < 0 or added_count < 0 or len(expected_ids) != seed_count + added_count:
         raise AcceptanceError(f"{dataset} expected identity set disagrees with its reported input counts")
     scratch.mkdir(parents=True, exist_ok=True)
@@ -159,9 +160,9 @@ def verify_dataset(
             archive = sqlite3.connect(f"file:{decompressed}?mode=ro", uri=True)
             try:
                 archived_columns = _columns(archive, dataset)
-                if not {"invoke_id", "occurred_at"}.issubset(archived_columns):
+                if not {identity_column, "occurred_at"}.issubset(archived_columns):
                     raise AcceptanceError(f"{dataset} archive lacks source identity columns")
-                rows = archive.execute(f"SELECT invoke_id,occurred_at FROM {dataset}")
+                rows = archive.execute(f"SELECT {identity_column},occurred_at FROM {dataset}")
                 actual_count = 0
                 for identity, occurred_at in rows:
                     if not isinstance(identity, str) or not isinstance(occurred_at, str):
@@ -177,7 +178,7 @@ def verify_dataset(
             decompressed.unlink()
 
         live_counts: Counter[str] = Counter()
-        for (identity,) in connection.execute(f"SELECT invoke_id FROM {table}"):
+        for (identity,) in connection.execute(f"SELECT {identity_column} FROM {table}"):
             if identity in expected_ids:
                 live_counts[identity] += 1
             else:

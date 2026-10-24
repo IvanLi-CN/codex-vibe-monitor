@@ -5,7 +5,7 @@ import hashlib
 import math
 import unittest
 
-from contract import BASELINE_SHA, DATASETS, AcceptanceError, validate_evidence
+from contract import BASELINE_SHA, COMPETITOR_FILE_COUNT, DATASETS, AcceptanceError, validate_evidence
 
 
 def timestamp(value: datetime) -> str:
@@ -56,7 +56,7 @@ def task_runs(start: datetime) -> list[dict]:
             "actual_started_at": timestamp(first_start),
             "actual_finished_at": timestamp(first_end),
             "status": "success",
-            "committed_work": 1 if key == "raw_orphan_sweep" else 100,
+            "committed_work": COMPETITOR_FILE_COUNT if key == "raw_orphan_sweep" else 100,
         })
         if key != "raw_orphan_sweep":
             rows.append({
@@ -70,10 +70,15 @@ def task_runs(start: datetime) -> list[dict]:
     return rows
 
 
-def sample_rows(start: datetime, finish: datetime, count: int, elapsed: float) -> list[dict]:
+def sample_rows(start: datetime, finish: datetime, count: int, elapsed: float, path: str) -> list[dict]:
     span = max(1, int((finish - start).total_seconds()))
     return [
-        {"observed_at": timestamp(start + timedelta(seconds=(index % span))), "elapsed_ms": elapsed}
+        {
+            "observed_at": timestamp(start + timedelta(seconds=(index % span))),
+            "elapsed_ms": elapsed,
+            "transport": "http",
+            "path": path,
+        }
         for index in range(count)
     ]
 
@@ -90,8 +95,9 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         for name, definition in DATASETS.items()
     }
     input_counts = {name: len(values) for name, values in identities.items()}
-    reads = sample_rows(input_start, input_end, 24, 10.0)
-    writes = sample_rows(input_start, input_end, input_counts["invocations"] + input_counts["pool_upstream_attempts"], 5.0)
+    reads = sample_rows(input_start, input_end, 24, 10.0, "/api/pool/upstream-accounts")
+    writes = sample_rows(input_start, input_end, input_counts["invocations"], 5.0, "/v1/responses")
+    retry_count = input_counts["pool_upstream_attempts"] - input_counts["invocations"]
     return {
         "trial_index": index,
         "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
@@ -110,6 +116,15 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         "input_counts": input_counts,
         "added_ids": identities,
         "latency_samples_ms": {"read": reads, "write": writes},
+        "foreground_workload": {
+            "invocation_requests": input_counts["invocations"],
+            "pool_read_requests": len(reads),
+            "mock_upstream": {
+                "request_count": input_counts["pool_upstream_attempts"],
+                "retryable_failures": retry_count,
+                "successful_responses": input_counts["invocations"],
+            },
+        },
         "task_runs": task_runs(start),
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
@@ -124,7 +139,7 @@ def valid_evidence() -> dict:
     phase_start = datetime(2026, 10, 24, tzinfo=timezone.utc)
     phase_finish = phase_start + timedelta(seconds=800)
     evidence = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "completed",
         "test_phase": {
             "started_at": timestamp(phase_start),
@@ -139,6 +154,7 @@ def valid_evidence() -> dict:
         "contract": {
             "baseline_sha": BASELINE_SHA,
             "candidate_sha": "a" * 40,
+            "driver_image_id": "sha256:" + "3" * 64,
             "seed": 20261024,
             "retention_days": 1,
             "cutoff": "2026-10-23 00:00:00",
@@ -226,6 +242,50 @@ class ContractTests(unittest.TestCase):
             if row["task_key"] == "retention_archive":
                 row["trigger_kind"] = "catchup"
         with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
+            validate_evidence(evidence)
+
+    def test_baseline_can_serialize_the_competitor_while_candidate_must_overlap(self) -> None:
+        evidence = valid_evidence()
+        for trial in evidence["versions"]["baseline"]["trials"]:
+            competitor = next(row for row in trial["task_runs"] if row["task_key"] == "raw_orphan_sweep")
+            started = datetime.fromisoformat(trial["window"]["setup_started_at"].replace("Z", "+00:00"))
+            competitor["actual_started_at"] = timestamp(started + timedelta(seconds=20))
+            competitor["actual_finished_at"] = timestamp(started + timedelta(seconds=25))
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_candidate_must_overlap_the_competitor(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        competitor = next(row for row in trial["task_runs"] if row["task_key"] == "raw_orphan_sweep")
+        started = datetime.fromisoformat(trial["window"]["setup_started_at"].replace("Z", "+00:00"))
+        competitor["actual_started_at"] = timestamp(started + timedelta(seconds=20))
+        competitor["actual_finished_at"] = timestamp(started + timedelta(seconds=25))
+        with self.assertRaisesRegex(AcceptanceError, "candidate raw orphan-sweep did not overlap"):
+            validate_evidence(evidence)
+
+    def test_latency_samples_must_measure_production_http_requests(self) -> None:
+        evidence = valid_evidence()
+        sample = evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0]
+        sample["transport"] = "sqlite"
+        with self.assertRaisesRegex(AcceptanceError, "production HTTP boundary"):
+            validate_evidence(evidence)
+
+    def test_mock_retry_workload_is_bound_to_the_expected_attempt_count(self) -> None:
+        evidence = valid_evidence()
+        upstream = evidence["versions"]["candidate"]["trials"][0]["foreground_workload"]["mock_upstream"]
+        upstream["retryable_failures"] -= 1
+        with self.assertRaisesRegex(AcceptanceError, "retry workload drifted"):
+            validate_evidence(evidence)
+
+    def test_baseline_and_candidate_must_complete_the_same_competitor_work(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["candidate"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row["committed_work"] -= 1
+        with self.assertRaisesRegex(AcceptanceError, "fixed 512-file workload"):
             validate_evidence(evidence)
 
     def test_missing_oracle_and_lost_rows_are_rejected(self) -> None:

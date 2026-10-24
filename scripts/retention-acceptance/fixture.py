@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterable
 
-from contract import DATASETS, RETENTION_DAYS, SEED, canonical_json, sha256_bytes
+from contract import COMPETITOR_FILE_COUNT, DATASETS, RETENTION_DAYS, SEED, canonical_json
 
 
 def shanghai_cutoff(now: datetime | None = None) -> str:
@@ -108,7 +108,7 @@ def _filter_record(connection: sqlite3.Connection, table: str, record: dict[str,
     required = {
         "codex_invocations": {"invoke_id", "occurred_at", "raw_response"},
         "pool_upstream_request_attempts": {
-            "invoke_id", "occurred_at", "endpoint", "route_mode", "attempt_index",
+            "attempt_public_id", "invoke_id", "occurred_at", "endpoint", "route_mode", "attempt_index",
             "distinct_account_index", "same_account_retry_index", "status",
         },
     }[table]
@@ -146,28 +146,7 @@ def populate_template(database: Path, cutoff: str) -> str:
     return hasher.hexdigest()
 
 
-def add_foreground_record(database: Path, dataset: str, sequence: int) -> str:
-    name = "invocations" if dataset == "invocations" else "pool_upstream_attempts"
-    table = DATASETS[name]["table"]
-    identity = f"retention-input-{name}-{sequence:06d}"
-    occurred_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    payload = _payload(name, SEED + sequence)
-    record = _invocation_record(identity, occurred_at, payload) if name == "invocations" else _attempt_record(identity, occurred_at, payload, sequence)
-    connection = sqlite3.connect(database, timeout=1.0)
-    connection.execute("PRAGMA busy_timeout=1000")
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        _insert_many(connection, table, [_filter_record(connection, table, record)])
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-    return identity
-
-
-def prepare_competitor(main_database: Path, maintenance_database: Path, raw_directory: Path, container_raw_directory: str, count: int = 512) -> None:
+def prepare_competitor(main_database: Path, maintenance_database: Path, raw_directory: Path, container_raw_directory: str, count: int = COMPETITOR_FILE_COUNT) -> None:
     raw_directory.mkdir(parents=True, exist_ok=True)
     main = sqlite3.connect(main_database, timeout=30)
     maintenance = sqlite3.connect(maintenance_database, timeout=30)

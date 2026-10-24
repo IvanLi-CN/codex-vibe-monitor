@@ -14,7 +14,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import traceback
 import uuid
@@ -22,6 +21,7 @@ from typing import Any
 
 from contract import (
     BASELINE_SHA,
+    COMPETITOR_FILE_COUNT,
     DATASETS,
     MAX_TEST_PHASE_SECONDS,
     RUN_SECONDS,
@@ -32,7 +32,7 @@ from contract import (
     sha256_bytes,
     validate_evidence,
 )
-from fixture import add_foreground_record, populate_template, prepare_competitor, shanghai_cutoff
+from fixture import populate_template, prepare_competitor, shanghai_cutoff
 from oracle import verify_trial
 
 
@@ -44,6 +44,7 @@ METRICS_NAME = "cvm_retention_phase_duration_seconds_bucket"
 WRITE_HOLD_OPERATIONS = ("invocation_archive", "timestamped_archive")
 WRITE_HOLD_PHASE = "write_hold"
 RUN_ID = uuid.uuid4().hex[:12]
+WORKER_IMAGE = "python:3.12-alpine"
 
 
 def utc_now() -> str:
@@ -121,6 +122,7 @@ def app_environment() -> dict[str, str]:
         "POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS": "1",
         "HTTP_BIND": "0.0.0.0:8080",
         "METRICS_BIND": "127.0.0.1:9091",
+        "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET": "retention-acceptance-synthetic-encryption-key",
         "RUST_LOG": "warn",
     }
 
@@ -241,59 +243,89 @@ def histogram_delta(before: dict[str, dict[str, int]], after: dict[str, dict[str
     return combined
 
 
-def foreground_workload(database: Path) -> tuple[Any, ...]:
-    stop = threading.Event()
-    failures: list[BaseException] = []
-    lock = threading.Lock()
-    samples: dict[str, list[dict[str, Any]]] = {"read": [], "write": []}
-    added: dict[str, list[str]] = {name: [] for name in DATASETS}
+def worker_image_identity(started: float) -> str:
+    run_command(["docker", "pull", WORKER_IMAGE], min(120, remaining_budget(started)))
+    image_id = run_command(["docker", "image", "inspect", "--format", "{{.Id}}", WORKER_IMAGE], 20).stdout.strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        raise AcceptanceError("foreground HTTP driver image has no immutable image ID")
+    return image_id
 
-    def reader() -> None:
-        connection = sqlite3.connect(database, timeout=1.0)
-        connection.execute("PRAGMA busy_timeout=1000")
-        tables = [DATASETS[name]["table"] for name in DATASETS]
-        index = 0
+
+def run_foreground(container: str, driver_image_id: str, started: float) -> dict[str, Any]:
+    invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
+    attempt_count = math.ceil(DATASETS["pool_upstream_attempts"]["arrival_rate"] * RUN_SECONDS)
+    retries = attempt_count - invocation_count
+    worker = Path(__file__).with_name("foreground.py").resolve()
+    name = f"retention-{RUN_ID}-driver"
+    result = run_command(
+        [
+            "docker", "run", "--rm", "--name", name,
+            "--network", f"container:{container}",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "--read-only",
+            "--pull=never",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+            "--mount", f"type=bind,source={worker},target=/foreground.py,readonly",
+            "--env", "PYTHONDONTWRITEBYTECODE=1",
+            driver_image_id,
+            "python3", "/foreground.py",
+            "--run-seconds", str(RUN_SECONDS),
+            "--retry-count", str(retries),
+        ],
+        timeout=min(RUN_SECONDS + 90, remaining_budget(started)),
+    )
+    try:
+        evidence = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise AcceptanceError("foreground HTTP driver did not emit valid JSON evidence") from error
+    if not isinstance(evidence, dict):
+        raise AcceptanceError("foreground HTTP driver evidence is malformed")
+    return evidence
+
+
+def observed_attempt_ids(
+    database: Path,
+    invocations: list[dict[str, Any]],
+    retry_count: int,
+    started: float,
+) -> list[str]:
+    invoke_ids = [row["invoke_id"] for row in invocations]
+    retry_sequences = {
+        math.floor(index * len(invocations) / retry_count)
+        for index in range(retry_count)
+    } if retry_count else set()
+    expected_counts = {
+        row["invoke_id"]: (2 if row["sequence"] in retry_sequences else 1)
+        for row in invocations
+    }
+    placeholders = ",".join("?" for _ in invoke_ids)
+    deadline = time.monotonic() + min(30, remaining_budget(started))
+    latest_ids: list[str] = []
+    latest_counts: dict[str, int] = {}
+    while time.monotonic() < deadline:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=0.5)
         try:
-            while not stop.is_set():
-                table = tables[index % len(tables)]
-                index += 1
-                started = time.perf_counter()
-                list(connection.execute(f"SELECT id,invoke_id,occurred_at FROM {table} ORDER BY occurred_at DESC LIMIT 64"))
-                sample = {"observed_at": utc_now(), "elapsed_ms": (time.perf_counter() - started) * 1000, "dataset": table}
-                with lock:
-                    samples["read"].append(sample)
-                stop.wait(0.25)
-        except BaseException as error:
-            failures.append(error)
+            connection.execute("PRAGMA busy_timeout=500")
+            rows = connection.execute(
+                f"SELECT attempt_public_id,invoke_id FROM pool_upstream_request_attempts WHERE invoke_id IN ({placeholders}) ORDER BY id",
+                invoke_ids,
+            ).fetchall()
         finally:
             connection.close()
-
-    def writer(dataset_name: str) -> None:
-        rate = DATASETS[dataset_name]["arrival_rate"]
-        end_at = input_deadline[0]
-        sequence = 0
-        try:
-            while True:
-                scheduled = input_start_mono[0] + sequence / rate
-                if scheduled >= end_at:
-                    break
-                if stop.wait(max(0, scheduled - time.monotonic())):
-                    break
-                started = time.perf_counter()
-                identity = add_foreground_record(database, dataset_name, sequence + 1)
-                sample = {"observed_at": utc_now(), "elapsed_ms": (time.perf_counter() - started) * 1000, "dataset": DATASETS[dataset_name]["table"]}
-                with lock:
-                    samples["write"].append(sample)
-                    added[dataset_name].append(identity)
-                sequence += 1
-        except BaseException as error:
-            failures.append(error)
-
-    input_start_mono = [0.0]
-    input_deadline = [0.0]
-    threads = [threading.Thread(target=reader, name="retention-reader", daemon=True)]
-    threads.extend(threading.Thread(target=writer, args=(name,), name=f"retention-writer-{name}", daemon=True) for name in DATASETS)
-    return samples, added, stop, threads, input_start_mono, input_deadline, failures
+        latest_ids = [row[0] for row in rows if isinstance(row[0], str) and row[0]]
+        latest_counts = {}
+        for _, invoke_id in rows:
+            latest_counts[invoke_id] = latest_counts.get(invoke_id, 0) + 1
+        if len(latest_ids) == len(rows) and len(set(latest_ids)) == len(latest_ids) and latest_counts == expected_counts:
+            return latest_ids
+        if len(rows) > sum(expected_counts.values()):
+            raise AcceptanceError("production HTTP workload produced unexpected upstream attempt rows")
+        time.sleep(0.25)
+    raise AcceptanceError(
+        "production HTTP attempt IDs did not settle to the expected per-invocation counts "
+        f"(rows={len(latest_ids)}, expected={sum(expected_counts.values())}, invocations={len(latest_counts)})"
+    )
 
 
 def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
@@ -377,8 +409,9 @@ def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, in
                     }
                     if not targets.issubset(replayed):
                         return False
+            identity_column = definition["identity_column"]
             converted = definition["seed_rows"] - connection.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE invoke_id LIKE 'retention-seed-%' AND occurred_at < ?",
+                f"SELECT COUNT(*) FROM {table} WHERE {identity_column} LIKE 'retention-seed-%' AND occurred_at < ?",
                 (cutoff,),
             ).fetchone()[0]
             if converted < math.ceil(10 * added_counts[name]):
@@ -433,16 +466,11 @@ def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
         ):
             raise AcceptanceError(f"production catch-up did not follow a scheduled run for {key}")
     competitors = by_key.get("raw_orphan_sweep", [])
-    if not any(row.get("committed_work", 0) > 0 for row in competitors):
-        raise AcceptanceError("production raw-orphan competitor has not released an old orphan file")
-    target_runs = [row for key in (DATASETS[name]["task_key"] for name in DATASETS) for row in by_key.get(key, [])]
-    if not any(
-        max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
-        < min(parse_time(left["actual_finished_at"]), parse_time(right["actual_finished_at"]))
-        for left in target_runs
-        for right in competitors
-    ):
-        raise AcceptanceError("production orphan sweep did not overlap a real retention owner run")
+    released = sum(row.get("committed_work", 0) for row in competitors)
+    if released < COMPETITOR_FILE_COUNT:
+        raise AcceptanceError("production raw-orphan competitor has not completed the fixed workload")
+    if released > COMPETITOR_FILE_COUNT:
+        raise AcceptanceError("production raw-orphan competitor exceeded the fixed workload")
 
 
 def run_trial(
@@ -450,6 +478,7 @@ def run_trial(
     index: int,
     tag: str,
     image: dict[str, str],
+    driver_image_id: str,
     template: Path,
     fingerprint: str,
     root: Path,
@@ -474,6 +503,7 @@ def run_trial(
     trial_error: BaseException | None = None
     input_samples: dict[str, list[dict[str, Any]]] = {"read": [], "write": []}
     added: dict[str, list[str]] = {name: [] for name in DATASETS}
+    foreground_evidence: dict[str, Any] = {}
     task_evidence: list[dict[str, Any]] = []
     write_scrapes: list[dict[str, Any]] = []
     write_buckets: dict[str, int] | None = None
@@ -486,30 +516,39 @@ def run_trial(
         wait_healthy(container, phase_started)
         pre_buckets, pre_text, pre_time = scrape_metrics(container)
         write_scrapes.append({"observed_at": pre_time, "scope": "pre-input", "bucket_counts": pre_buckets})
-        input_samples, added, stop_event, threads, input_start_mono, input_deadline, failures = foreground_workload(main_db)
-        input_start = utc_now()
-        input_start_mono[0] = time.monotonic()
-        input_deadline[0] = input_start_mono[0] + RUN_SECONDS
-        for thread in threads:
-            thread.start()
-        while time.monotonic() < input_deadline[0]:
-            remaining_budget(phase_started)
-            time.sleep(min(0.25, max(0, input_deadline[0] - time.monotonic())))
-        stop_event.set()
-        for thread in threads:
-            thread.join(timeout=5)
-        if any(thread.is_alive() for thread in threads):
-            raise TimeoutError("foreground workload did not stop at the end of its 120-second window")
-        if failures:
-            raise RuntimeError(f"foreground workload failed: {failures[0]}")
+        foreground = run_foreground(container, driver_image_id, phase_started)
+        input_start = foreground.get("input_started_at")
+        input_end = foreground.get("input_finished_at")
+        input_samples = foreground.get("latency_samples_ms", input_samples)
+        invocation_records = foreground.get("invocations")
+        foreground_evidence = foreground.get("foreground_workload", {})
+        if not isinstance(invocation_records, list):
+            raise AcceptanceError("foreground HTTP driver omitted invocation identities")
+        invocation_sequences = [record.get("sequence") for record in invocation_records if isinstance(record, dict)]
+        invocation_ids = [record.get("invoke_id") for record in invocation_records if isinstance(record, dict)]
+        invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
+        if invocation_sequences != list(range(invocation_count)):
+            raise AcceptanceError("foreground HTTP driver invocation sequence is incomplete or reordered")
+        if any(not isinstance(identity, str) or not identity for identity in invocation_ids):
+            raise AcceptanceError("foreground HTTP driver returned an invalid invocation ID")
+        if len(set(invocation_ids)) != invocation_count:
+            raise AcceptanceError("foreground HTTP driver returned duplicate invocation IDs")
+        added["invocations"] = [row.get("invoke_id") for row in invocation_records if isinstance(row, dict)]
         expected_counts = {
             name: math.ceil(definition["arrival_rate"] * RUN_SECONDS)
             for name, definition in DATASETS.items()
         }
-        for name in DATASETS:
-            if len(added[name]) != expected_counts[name]:
-                raise AcceptanceError(f"{name} arrival rate produced {len(added[name])}, expected {expected_counts[name]} rows")
-        input_end = utc_now()
+        if len(added["invocations"]) != expected_counts["invocations"]:
+            raise AcceptanceError("production proxy request count did not match the configured invocation rate")
+        retry_count = expected_counts["pool_upstream_attempts"] - expected_counts["invocations"]
+        added["pool_upstream_attempts"] = observed_attempt_ids(
+            main_db,
+            invocation_records,
+            retry_count,
+            phase_started,
+        )
+        if len(added["pool_upstream_attempts"]) != expected_counts["pool_upstream_attempts"]:
+            raise AcceptanceError("production upstream attempt count did not match the configured rate")
         task_evidence = wait_for_task_evidence(
             main_db,
             maintenance_db,
@@ -535,6 +574,7 @@ def run_trial(
             "input_counts": {name: len(added[name]) for name in DATASETS},
             "added_ids": added,
             "latency_samples_ms": input_samples,
+            "foreground_workload": foreground_evidence,
             "task_runs": task_evidence,
             "write_hold_samples": write_scrapes,
             "write_hold_buckets": write_buckets,
@@ -578,6 +618,7 @@ def run_trial(
         "input_counts": {name: len(added[name]) for name in DATASETS},
         "added_ids": added,
         "latency_samples_ms": input_samples,
+        "foreground_workload": foreground_evidence,
         "task_runs": task_evidence,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
@@ -611,10 +652,12 @@ def main() -> int:
             "baseline": docker_image_identity(tags["baseline"], BASELINE_SHA),
             "candidate": docker_image_identity(tags["candidate"], candidate_sha),
         }
+        driver_image_id = worker_image_identity(phase_started)
         host = host_identity()
         evidence["contract"] = {
             "baseline_sha": BASELINE_SHA,
             "candidate_sha": candidate_sha,
+            "driver_image_id": driver_image_id,
             "seed": SEED,
             "retention_days": 1,
             "cutoff": cutoff,
@@ -650,6 +693,7 @@ def main() -> int:
                     index,
                     tags[version],
                     images[version],
+                    driver_image_id,
                     templates[version],
                     fingerprint,
                     root,

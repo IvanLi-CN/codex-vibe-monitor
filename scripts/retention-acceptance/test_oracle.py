@@ -40,14 +40,15 @@ class OracleTests(unittest.TestCase):
                 summary_source_kind TEXT NOT NULL
             );
             CREATE TABLE pool_upstream_request_attempts (
+                attempt_public_id TEXT NOT NULL,
                 invoke_id TEXT NOT NULL,
                 occurred_at TEXT NOT NULL
             );
             """
         )
         connection.execute(
-            "INSERT INTO pool_upstream_request_attempts VALUES(?,?)",
-            ("seed-live", "2026-09-01T00:00:00Z"),
+            "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?)",
+            ("seed-live", "seed-invocation", "2026-09-01T00:00:00Z"),
         )
         connection.commit()
         connection.close()
@@ -66,8 +67,11 @@ class OracleTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         sqlite_path = self.root / "archive.sqlite"
         archive = sqlite3.connect(sqlite_path)
-        archive.execute("CREATE TABLE pool_upstream_request_attempts(invoke_id TEXT, occurred_at TEXT)")
-        archive.executemany("INSERT INTO pool_upstream_request_attempts VALUES(?,?)", rows)
+        archive.execute("CREATE TABLE pool_upstream_request_attempts(attempt_public_id TEXT, invoke_id TEXT, occurred_at TEXT)")
+        archive.executemany(
+            "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?)",
+            [(identity, f"invoke-{identity}", occurred_at) for identity, occurred_at in rows],
+        )
         archive.commit()
         archive.close()
         with sqlite_path.open("rb") as source, gzip.open(path, "wb") as target:
