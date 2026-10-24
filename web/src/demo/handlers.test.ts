@@ -64,6 +64,24 @@ describe("demo MSW handlers", () => {
       managedPausedPayload.find((task) => task.taskKey === "prompt_cache_materialization"),
     ).toMatchObject({ enabled: false });
 
+    const invalidManagedPatch = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: null }),
+      },
+    );
+    expect(invalidManagedPatch.status).toBe(400);
+    await expect(invalidManagedPatch.json()).resolves.toEqual({
+      error: "enabled must be a boolean",
+    });
+
+    const unchangedAfterInvalidPatch = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+    );
+    expect((await unchangedAfterInvalidPatch.json()).task).toMatchObject({ enabled: false });
+
     const managedResumed = await fetch(
       "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
       {

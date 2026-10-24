@@ -5811,10 +5811,13 @@ export async function handleDemoRequest(request: Request) {
     const detail = managedTaskDetail(taskKey);
     if (!detail) return json({ error: "not found" }, { status: 404 });
     const body = (await request.json().catch(() => ({}))) as {
-      enabled?: boolean;
+      enabled?: unknown;
       intervalSecs?: number | null;
       cronExpr?: string | null;
     };
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+      return json({ error: "enabled must be a boolean" }, { status: 400 });
+    }
     if (detail.task.isManual && (body.intervalSecs !== undefined || body.cronExpr !== undefined)) {
       return json({ error: "manual tasks do not have a schedule" }, { status: 400 });
     }
