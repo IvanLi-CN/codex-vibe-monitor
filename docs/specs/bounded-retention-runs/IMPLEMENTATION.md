@@ -20,9 +20,11 @@ ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文�
 
 该短时受控门槛不替代既有 50 倍容量、百万级固定存量 24 小时清空或真实生产持续收敛目标，这些目标继续保持未签收。生产复核在主人合并并更新服务后只读开展，保留调度影响并独立报告。
 
-验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，测量 job 校验后在同一主机串行运行；原始报告与失败诊断作为独立 Actions artifact 保存。`scripts/retention-acceptance/fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`oracle.py` 读取实际文件及源行核对不同记录的转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。
+验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，测量 job 校验后在同一主机串行运行；原始报告与失败诊断作为独立 Actions artifact 保存。`scripts/retention-acceptance/fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`foreground.py` 在共享应用隔离网络命名空间的 sidecar 中执行真实 HTTP 请求，`oracle.py` 读取实际文件及源行核对不同记录的转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。证据 schema v2 保存 driver 的不可变镜像 ID。
 
-`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 19 项合同/oracle 回归通过；该结果只证明已覆盖反例的工具判定，不证明候选吞吐、前台优先级或生产持续收敛。基线与候选的生产调度运行、完整证据链、900 秒上限、前台负载代表性及最终 10 倍门槛仍须当前候选的 Actions 和正式审查验证；本地不运行性能实验。
+前台读延迟采自 `GET /api/pool/upstream-accounts`，写延迟采自 `POST /v1/responses`，不使用直接 SQLite 写入替代实际服务写入路径。每个 120 秒窗口发送 81 次 Responses 请求，合成上游分散返回 16 次可重试 503；测量驱动以真实响应的 invocation ID 对照 97 条持久 upstream attempt 的 `attempt_public_id`，归档 oracle 按各数据集的真实身份计数。每次基线与候选须完成同样的 512 文件竞争工作；基线可串行，只有候选要求执行区间重叠，避免把旧基线尚未具备的新互斥能力当成对照试验前置条件。
+
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 24 项合同/oracle 回归通过；该结果只证明已覆盖反例的工具判定，不证明候选吞吐、前台优先级或生产持续收敛。基线与候选的生产调度运行、完整证据链、900 秒上限、前台负载代表性及最终 10 倍门槛仍须当前候选的 Actions 和正式审查验证；本地不运行性能实验。
 
 ### Historical implementation context
 

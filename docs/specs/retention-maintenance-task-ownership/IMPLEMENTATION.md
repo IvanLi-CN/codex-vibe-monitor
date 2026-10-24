@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- 独立持续负载验收入口为 `.github/workflows/ci-retention-acceptance.yml`，夹具、测量驱动和归档计数 oracle 位于 `scripts/retention-acceptance/`。夹具为两个归档 owner 准备同源快照与 raw orphan-sweep 竞争工作；oracle 对照实际归档文件、manifest、必要证明和剩余源行，拒绝重复、丢失、错误月份及仅发布文件但未完成源转换的假成果。纯 Python 合同回归已通过 19 项；生产 dispatcher 的竞争观测、当前候选 Actions 与正式审查尚未签收，不据此认定文件阶段互斥或持续收敛已经通过。
+- 独立持续负载验收入口为 `.github/workflows/ci-retention-acceptance.yml`，夹具、测量驱动和归档计数 oracle 位于 `scripts/retention-acceptance/`。夹具为两个归档 owner 准备同源快照，每次基线和候选均须完成相同的 512 文件 raw orphan-sweep 工作量；基线允许整轮许可导致串行执行，候选必须观测到竞争任务与归档 owner 的执行区间重叠。前台负载通过真实 HTTP 读取上游账户并写入 Responses 请求，按响应 invocation ID 核对实际 `attempt_public_id`，不把重试 attempt 当成不同 invocation。oracle 对照实际归档文件、manifest、必要证明和剩余源行，拒绝重复、丢失、错误月份及仅发布文件但未完成源转换的假成果。纯 Python 合同回归已通过 24 项；生产 dispatcher 的竞争观测、当前候选 Actions 与正式审查尚未签收，不据此认定文件阶段互斥或持续收敛已经通过。
 
 - Pending contract corrections: a fully committed selected work unit is still classified as partial when `hasMore` is true, and the detail view mixes scheduler waiting with execution-only rate metrics. The approved behavior marks a selected work unit complete only after all selected work and required stages finish, while retaining independent backlog and catch-up facts. Browser-local trigger times, execution identity, consistent execution timing, and removal of the formula hint remain to be implemented and verified. The file-permit boundary is accepted in ADR 0048; application changes and scheduling validation remain outstanding.
 
