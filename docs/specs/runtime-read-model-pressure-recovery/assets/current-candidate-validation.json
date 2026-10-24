@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
-  "candidate_head_sha": "ff25a9ac",
-  "implementation_commit": "ff25a9ac",
+  "candidate_head_sha": "fa244b28",
+  "implementation_commit": "fa244b28",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -99,7 +99,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head ff25a9ac; CI, Tier 4 review, empirical acceptance, and visual confirmation pending"
+        "status": "PR #1181 implementation head fa244b28; CI, Tier 4 review, empirical acceptance, and visual confirmation pending"
       }
     ]
   },
