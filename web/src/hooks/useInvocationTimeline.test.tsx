@@ -78,11 +78,13 @@ async function advanceTime(milliseconds: number) {
 function Probe({
   response,
   closedNaturalDay = false,
+  upstreamAccountId,
   liveRevision,
   liveRefreshAllowed = true,
 }: {
   response: TimeseriesResponse | null;
   closedNaturalDay?: boolean;
+  upstreamAccountId?: number;
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
 }) {
@@ -90,6 +92,7 @@ function Probe({
     useInvocationTimeline({
       response,
       closedNaturalDay,
+      upstreamAccountId,
       liveRevision,
       liveRefreshAllowed,
     });
@@ -155,13 +158,13 @@ describe("useInvocationTimeline", () => {
     const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
     const secondResponse = createTimeseries("2026-07-17T10:00:00.000Z", "2026-07-17T10:30:00.000Z");
 
-    render(<Probe response={firstResponse} />);
+    render(<Probe response={firstResponse} upstreamAccountId={41} />);
     const initialRequestCount = pending.length;
     expect(initialRequestCount).toBeGreaterThan(0);
     const firstSignal = pending[0]?.signal;
 
     act(() => {
-      root?.render(<Probe response={secondResponse} />);
+      root?.render(<Probe response={secondResponse} upstreamAccountId={42} />);
     });
     await act(async () => {
       await Promise.resolve();
@@ -249,6 +252,62 @@ describe("useInvocationTimeline", () => {
     expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
       "2026-07-17T23:40:00.000Z|2026-07-18T00:10:00.000Z",
     );
+  });
+
+  it("keeps the committed live snapshot while its bounds cross local midnight", async () => {
+    vi.useFakeTimers();
+    const localMidnight = new Date(2026, 6, 18, 0, 0, 0);
+    const beforeMidnightEnd = new Date(localMidnight.getTime() - 60_000);
+    const afterMidnightEnd = new Date(localMidnight.getTime() + 60_000);
+    const beforeMidnightStart = new Date(beforeMidnightEnd.getTime() - 29 * 60_000);
+    const afterMidnightStart = new Date(afterMidnightEnd.getTime() - 29 * 60_000);
+    vi.setSystemTime(new Date(beforeMidnightEnd.getTime() + 30_000));
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const beforeMidnight = createTimeseries(
+      beforeMidnightStart.toISOString(),
+      beforeMidnightEnd.toISOString(),
+    );
+    const afterMidnight = createTimeseries(
+      afterMidnightStart.toISOString(),
+      afterMidnightEnd.toISOString(),
+    );
+
+    render(<Probe response={beforeMidnight} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+    pending.shift()?.(
+      createTimeline("before-midnight", beforeMidnight.rangeStart, beforeMidnight.rangeEnd),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("before-midnight");
+
+    act(() => {
+      root?.render(<Probe response={afterMidnight} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("before-midnight");
+    expect(host?.querySelector("[data-testid=loading]")?.textContent).toBe("false");
+
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(1);
+
+    pending.shift()?.(
+      createTimeline("after-midnight", afterMidnight.rangeStart, afterMidnight.rangeEnd),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("after-midnight");
   });
 
   it("aborts and invalidates a request when timeseries bounds disappear", async () => {
@@ -665,6 +724,134 @@ describe("useInvocationTimeline", () => {
       "2026-07-16T10:01:00.000Z|2026-07-16T10:31:00.000Z",
     );
     expect(host?.querySelector("[data-testid=refreshing]")?.textContent).toBe("false");
+  });
+
+  it("commits an in-flight initial window before following a moving live window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T10:30:00.000Z"));
+    const pending: Array<{
+      resolve: (value: InvocationTimelineResponse) => void;
+      options: { from?: string; to?: string; signal?: AbortSignal };
+    }> = [];
+    timelineMocks.fetch.mockImplementation(
+      (options: { from?: string; to?: string; signal?: AbortSignal }) =>
+        new Promise<InvocationTimelineResponse>((resolve) => pending.push({ resolve, options })),
+    );
+    const initialResponse = createTimeseries(
+      "2026-07-16T10:00:00.000Z",
+      "2026-07-16T10:30:00.000Z",
+    );
+    const advancedResponse = createTimeseries(
+      "2026-07-16T10:00:00.000Z",
+      "2026-07-16T10:31:00.000Z",
+    );
+
+    render(<Probe response={initialResponse} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+
+    act(() => {
+      root?.render(<Probe response={advancedResponse} liveRevision={2} />);
+    });
+    expect(pending[0]?.options.signal?.aborted).toBe(false);
+
+    pending[0]?.resolve(
+      createTimeline("initial-window", "2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("initial-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:00:00.000Z|2026-07-16T10:30:00.000Z",
+    );
+
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(2);
+    expect(pending[1]?.options).toMatchObject({
+      from: "2026-07-16T10:01:00.000Z",
+      to: "2026-07-16T10:31:00.000Z",
+    });
+    pending[1]?.resolve(
+      createTimeline("advanced-window", "2026-07-16T10:01:00.000Z", "2026-07-16T10:31:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("advanced-window");
+  });
+
+  it("commits a completed old-window refresh and follows the latest live window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T10:30:00.000Z"));
+    const pending: Array<{
+      resolve: (value: InvocationTimelineResponse) => void;
+      options: { from?: string; to?: string };
+    }> = [];
+    timelineMocks.fetch.mockImplementation(
+      (options: { from?: string; to?: string }) =>
+        new Promise<InvocationTimelineResponse>((resolve) => pending.push({ resolve, options })),
+    );
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const secondResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+    const thirdResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:32:00.000Z");
+
+    render(<Probe response={firstResponse} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+    pending[0]?.resolve(createTimeline("committed-window"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      root?.render(<Probe response={secondResponse} liveRevision={2} />);
+    });
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(2);
+    expect(pending[1]?.options).toMatchObject({
+      from: "2026-07-16T10:01:00.000Z",
+      to: "2026-07-16T10:31:00.000Z",
+    });
+
+    act(() => {
+      root?.render(<Probe response={thirdResponse} liveRevision={3} />);
+    });
+    pending[1]?.resolve(
+      createTimeline(
+        "completed-old-window",
+        "2026-07-16T10:01:00.000Z",
+        "2026-07-16T10:31:00.000Z",
+      ),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe(
+      "completed-old-window",
+    );
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:01:00.000Z|2026-07-16T10:31:00.000Z",
+    );
+
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(3);
+    expect(pending[2]?.options).toMatchObject({
+      from: "2026-07-16T10:02:00.000Z",
+      to: "2026-07-16T10:32:00.000Z",
+    });
+    pending[2]?.resolve(
+      createTimeline("latest-window", "2026-07-16T10:02:00.000Z", "2026-07-16T10:32:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("latest-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:02:00.000Z|2026-07-16T10:32:00.000Z",
+    );
   });
 
   it("keeps the committed live window visible and stale when its replacement fails", async () => {
