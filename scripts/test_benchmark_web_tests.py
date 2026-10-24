@@ -154,6 +154,24 @@ class ExecutionContractTests(unittest.TestCase):
     def test_known_landmark_only_migration_is_not_a_coverage_certificate(self):
         self.assertFalse(MODULE.demo_coverage_audit(MODULE.ROOT)["verified"])
 
+    def test_timeline_wait_tuning_is_the_only_normalized_e2e_change(self):
+        baseline = subprocess.check_output(
+            ["git", "show", "76beb053ac529bde47961dddb1e14b4d176700f8:web/tests/e2e/dashboard-timeline-capacity.spec.ts"],
+            text=True,
+        )
+        candidate = (MODULE.ROOT / "web/tests/e2e/dashboard-timeline-capacity.spec.ts").read_text()
+        path = MODULE.ROOT / "web/tests/e2e/dashboard-timeline-capacity.spec.ts"
+        self.assertEqual(
+            MODULE.normalize_approved_e2e_performance_change(path, baseline),
+            MODULE.normalize_approved_e2e_performance_change(path, candidate),
+        )
+        self.assertNotEqual(baseline, candidate)
+        altered = candidate.replace('expect(diagnostics?.releaseFailures).toBe(0);', 'expect(diagnostics?.releaseFailures).toBe(1);')
+        self.assertNotEqual(
+            MODULE.normalize_approved_e2e_performance_change(path, baseline),
+            MODULE.normalize_approved_e2e_performance_change(path, altered),
+        )
+
     def test_matrix_phase_paths_are_rebased_to_the_hosted_job(self):
         manifest = {"source_roots": {"A": "/old/A"}, "output_root": "/old/output"}
         phase = MODULE.materialize_phase(

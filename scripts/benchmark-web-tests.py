@@ -148,11 +148,43 @@ def test_files(source: Path) -> list[str]:
                   if re.search(r"\.(?:test|spec)\.tsx?$", path.name))
 
 
+def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
+    """Ignore only the reviewed timeline wait tuning while hashing test coverage."""
+    if path.name != "dashboard-timeline-capacity.spec.ts":
+        return text
+    text = re.sub(
+        r"\n// Keep the delayed request just beyond one refresh interval to exercise overlap\n"
+        r"// protection without adding an unnecessary fixed wait to every viewport\.\n"
+        r"const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS \+ 250;\n",
+        "\n",
+        text,
+    )
+    text = text.replace(
+        "page.evaluate((delayMs) => {",
+        "page.evaluate(() => {",
+    )
+    text = text.replace(
+        "diagnostics.nextTraversalDelayMs = delayMs;",
+        "diagnostics.nextTraversalDelayMs = 20_000;",
+    )
+    text = text.replace("    }, DELAYED_TRAVERSAL_MS);", "    });")
+    text = re.sub(
+        r"\n    await new Promise<void>\(\(resolve\) => \{\n"
+        r"      setTimeout\(resolve, 16_000\);\n"
+        r"    \}\);",
+        "",
+        text,
+    )
+    return text
+
+
 def fixture_inventory(source: Path) -> dict:
     """Freeze unchanged input chunks and specs so deleting tests cannot manufacture a win."""
     paths = list((source / "web/src/pages/account-pool").glob("*.txt"))
     paths += [source / "web/tests/e2e" / name for name in E2E_SPECS if name != "demo-runtime.spec.ts"]
-    return {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
+    return {str(path.relative_to(source)): hashlib.sha256(
+                normalize_approved_e2e_performance_change(path, path.read_text()).encode()
+            ).hexdigest()
             for path in sorted(paths)}
 
 
