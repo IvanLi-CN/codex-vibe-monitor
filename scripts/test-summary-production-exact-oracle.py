@@ -31,5 +31,31 @@ class ExactOracleTimeTests(unittest.TestCase):
         self.assertEqual(ORACLE.expected(rows, "yesterday", now)["totalCount"], 1)
 
 
+class ExactOracleUsageTests(unittest.TestCase):
+    def test_usage_groups_preserve_model_and_reasoning_case(self) -> None:
+        result = ORACLE.usage_breakdown(
+            [
+                {
+                    "payload": '{"responseModel":"GPT-X","reasoningEffort":"High"}',
+                    "input_tokens": 10,
+                    "cache_input_tokens": 2,
+                    "output_tokens": 3,
+                }
+            ]
+        )
+        self.assertEqual(
+            result["models"],
+            [
+                {
+                    "model": "GPT-X",
+                    "reasoningEffort": "High",
+                    "cacheWriteTokens": 8,
+                    "cacheReadTokens": 2,
+                    "outputTokens": 3,
+                }
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

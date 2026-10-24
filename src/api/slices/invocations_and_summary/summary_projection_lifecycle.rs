@@ -2320,7 +2320,7 @@ async fn stage_compacted_source_recovery_page(
     }
     let remaining_budget = transaction_budget.saturating_sub(transaction_started.elapsed());
     if remaining_budget.is_zero() {
-        close_compacted_source_recovery_connection(connection).await?;
+        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
         return Ok(CompactedSourceRecoveryPageOutcome::Progress {
             completed: false,
             deferred: true,
@@ -2336,7 +2336,8 @@ async fn stage_compacted_source_recovery_page(
         Ok(Err(error)) => {
             let budget_expired = interrupted.load(Ordering::Acquire) || Instant::now() >= deadline;
             let contention = is_sqlite_contention(&anyhow!(error.to_string()));
-            close_compacted_source_recovery_connection(connection).await?;
+            let _ =
+                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
             if budget_expired || contention {
                 return Ok(CompactedSourceRecoveryPageOutcome::Progress {
                     completed: false,
@@ -2346,7 +2347,8 @@ async fn stage_compacted_source_recovery_page(
             return Err(anyhow!(error).context("begin compacted source recovery page transaction"));
         }
         Err(_) => {
-            close_compacted_source_recovery_connection(connection).await?;
+            let _ =
+                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
             return Ok(CompactedSourceRecoveryPageOutcome::Progress {
                 completed: false,
                 deferred: true,
@@ -2355,8 +2357,9 @@ async fn stage_compacted_source_recovery_page(
     }
     let remaining_budget = transaction_budget.saturating_sub(transaction_started.elapsed());
     if remaining_budget.is_zero() {
-        sqlx::query("ROLLBACK").execute(&mut connection).await.ok();
-        close_compacted_source_recovery_connection(connection).await?;
+        let _ =
+            rollback_and_close_compacted_source_recovery_connection_bounded(connection, deadline)
+                .await?;
         return Ok(CompactedSourceRecoveryPageOutcome::Progress {
             completed: false,
             deferred: true,
@@ -2377,20 +2380,26 @@ async fn stage_compacted_source_recovery_page(
     .await;
     match result {
         Ok(Ok(CompactedSourceRecoveryPageOutcome::Reset)) => {
-            sqlx::query("ROLLBACK").execute(&mut connection).await.ok();
-            close_compacted_source_recovery_connection(connection).await?;
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
             Ok(CompactedSourceRecoveryPageOutcome::Reset)
         }
         Ok(Ok(CompactedSourceRecoveryPageOutcome::Stale)) => {
-            sqlx::query("ROLLBACK").execute(&mut connection).await.ok();
-            close_compacted_source_recovery_connection(connection).await?;
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
             Ok(CompactedSourceRecoveryPageOutcome::Stale)
         }
         Ok(Ok(outcome)) => {
             let remaining_budget = transaction_budget.saturating_sub(transaction_started.elapsed());
             if remaining_budget.is_zero() {
-                sqlx::query("ROLLBACK").execute(&mut connection).await.ok();
-                close_compacted_source_recovery_connection(connection).await?;
+                let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                    connection, deadline,
+                )
+                .await?;
                 return Ok(CompactedSourceRecoveryPageOutcome::Progress {
                     completed: false,
                     deferred: true,
@@ -2406,15 +2415,26 @@ async fn stage_compacted_source_recovery_page(
             {
                 Ok(result) => match result {
                     Ok(_) => {
-                        close_compacted_source_recovery_connection(connection).await?;
-                        Ok(outcome)
+                        if close_compacted_source_recovery_connection_bounded(connection, deadline)
+                            .await?
+                        {
+                            Ok(outcome)
+                        } else {
+                            Ok(CompactedSourceRecoveryPageOutcome::Progress {
+                                completed: false,
+                                deferred: true,
+                            })
+                        }
                     }
                     Err(error) => {
                         let budget_expired =
                             interrupted.load(Ordering::Acquire) || Instant::now() >= deadline;
                         let contention = is_sqlite_contention(&anyhow!(error.to_string()));
-                        close_compacted_source_recovery_connection(connection).await?;
-                        if budget_expired || contention {
+                        let closed = close_compacted_source_recovery_connection_bounded(
+                            connection, deadline,
+                        )
+                        .await?;
+                        if budget_expired || contention || !closed {
                             Ok(CompactedSourceRecoveryPageOutcome::Progress {
                                 completed: false,
                                 deferred: true,
@@ -2425,7 +2445,9 @@ async fn stage_compacted_source_recovery_page(
                     }
                 },
                 Err(_) => {
-                    close_compacted_source_recovery_connection(connection).await?;
+                    let _ =
+                        close_compacted_source_recovery_connection_bounded(connection, deadline)
+                            .await?;
                     Ok(CompactedSourceRecoveryPageOutcome::Progress {
                         completed: false,
                         deferred: true,
@@ -2435,20 +2457,24 @@ async fn stage_compacted_source_recovery_page(
         }
         Ok(Err(error)) => {
             let budget_expired = interrupted.load(Ordering::Acquire) || Instant::now() >= deadline;
-            let rollback = sqlx::query("ROLLBACK").execute(&mut connection).await;
-            close_compacted_source_recovery_connection(connection).await?;
-            if budget_expired {
+            let cleaned = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
+            if budget_expired || !cleaned {
                 Ok(CompactedSourceRecoveryPageOutcome::Progress {
                     completed: false,
                     deferred: true,
                 })
             } else {
-                rollback.context("rollback compacted source recovery page")?;
                 Err(error)
             }
         }
         Err(_) => {
-            close_compacted_source_recovery_connection(connection).await?;
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
             Ok(CompactedSourceRecoveryPageOutcome::Progress {
                 completed: false,
                 deferred: true,
@@ -2490,6 +2516,25 @@ async fn close_compacted_source_recovery_connection_bounded(
         }
         Err(_) => Ok(false),
     }
+}
+
+async fn rollback_and_close_compacted_source_recovery_connection_bounded(
+    mut connection: SqliteConnection,
+    deadline: Instant,
+) -> Result<bool> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        drop(connection);
+        return Ok(false);
+    }
+    if tokio::time::timeout(remaining, sqlx::query("ROLLBACK").execute(&mut connection))
+        .await
+        .is_err()
+    {
+        drop(connection);
+        return Ok(false);
+    }
+    close_compacted_source_recovery_connection_bounded(connection, deadline).await
 }
 
 async fn stage_compacted_source_recovery_page_in_transaction(

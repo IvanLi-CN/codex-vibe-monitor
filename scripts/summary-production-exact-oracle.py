@@ -300,6 +300,10 @@ def canonical_rows_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def payload_text(row: dict[str, Any], key: str) -> str:
+    return payload_value_text(row, key).lower()
+
+
+def payload_value_text(row: dict[str, Any], key: str) -> str:
     payload = row.get("payload")
     if not payload:
         return ""
@@ -308,7 +312,7 @@ def payload_text(row: dict[str, Any], key: str) -> str:
     except (TypeError, json.JSONDecodeError):
         return ""
     candidate = value.get(key) if isinstance(value, dict) else None
-    return str(candidate or "").strip().lower()
+    return str(candidate or "").strip()
 
 
 def upstream_account_id(row: dict[str, Any]) -> int | None:
@@ -445,8 +449,8 @@ def usage_breakdown(rows: list[dict[str, Any]]) -> dict[str, Any]:
         totals["cacheWriteTokens"] += cache_write
         totals["cacheReadTokens"] += cache_read
         totals["outputTokens"] += output
-        model = payload_text(row, "responseModel") or str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
-        reasoning = payload_text(row, "reasoningEffort") or (str(row["reasoning_effort"]).strip().lower() if row.get("reasoning_effort") else None)
+        model = payload_value_text(row, "responseModel") or str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
+        reasoning = payload_value_text(row, "reasoningEffort") or (str(row["reasoning_effort"]).strip() if row.get("reasoning_effort") else None)
         group = model_groups.setdefault(
             (model, reasoning),
             {"model": model, "reasoningEffort": reasoning, "cacheWriteTokens": 0, "cacheReadTokens": 0, "outputTokens": 0, "costs": None},
