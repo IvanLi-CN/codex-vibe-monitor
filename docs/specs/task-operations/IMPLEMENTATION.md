@@ -4,6 +4,8 @@
 
 ## Current Status
 
+- Sustained-load observation support is provided by `.github/workflows/ci-retention-acceptance.yml` and `scripts/retention-acceptance/`. The opt-in `run:retention-acceptance` label selects an isolated comparison whose evidence binds actual task runs, source conversions, foreground samples, image identities, and complete observation windows. The harness does not replace the task-detail API or prove the pending timing/UI corrections; current-candidate Actions evidence and formal review remain required.
+
 - Pending contract corrections: the detail view still mixes the trigger-to-finish duration with execution-only throughput, renders historical trigger times as raw ISO values, and omits the execution identity. The approved correction separates scheduler waiting from task execution, includes internal lock and retry time only in execution, uses browser-local timestamps, exposes the durable identity, and removes the formula hint. These requirements are recorded in `REQ-TASK-OPS-009` and `REQ-TASK-OPS-010`; application changes and validation remain outstanding.
 
 - Implementation: the delivered functionality covers requirements `REQ-TASK-OPS-001..020`, including durable run workload samples, bounded detail refresh, recent-run charts, Retention backlog Tabs, conditional estimates, catalog execution summaries, task-scoped 24-hour workload backgrounds, bounded lazy loading, and reliable task-specific collectors. The delivered correction restores the shared segmented Tabs, labels the existing views “次数 / 时间”, and removes the unrequested run-hour filtering mode. The owner confirmed the mock-only catalog evidence on 2026-10-06, so the desktop, row, and mobile assets are now canonical.

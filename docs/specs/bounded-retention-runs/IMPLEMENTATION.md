@@ -20,6 +20,10 @@ ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文�
 
 该短时受控门槛不替代既有 50 倍容量、百万级固定存量 24 小时清空或真实生产持续收敛目标，这些目标继续保持未签收。生产复核在主人合并并更新服务后只读开展，保留调度影响并独立报告。
 
+验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，测量 job 校验后在同一主机串行运行；原始报告与失败诊断作为独立 Actions artifact 保存。`scripts/retention-acceptance/fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`oracle.py` 读取实际文件及源行核对不同记录的转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。
+
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 19 项合同/oracle 回归通过；该结果只证明已覆盖反例的工具判定，不证明候选吞吐、前台优先级或生产持续收敛。基线与候选的生产调度运行、完整证据链、900 秒上限、前台负载代表性及最终 10 倍门槛仍须当前候选的 Actions 和正式审查验证；本地不运行性能实验。
+
 ### Historical implementation context
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
