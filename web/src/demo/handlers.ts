@@ -359,6 +359,9 @@ function publicModelRoutingRecord(record: ModelRoutingTimelineRecord) {
 }
 
 function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
+  if (demoModel.snapshot.scene === "empty") {
+    return { generatedAt: demoNow(), groups: [], records: [] };
+  }
   const model = query.model?.trim() || null;
   const state = query.state?.trim() || null;
   const windowMinutes =
@@ -486,7 +489,14 @@ const DEMO_USAGE_BREAKDOWN = {
       cacheWriteTokens: 60_000_000,
       cacheReadTokens: 152_000_000,
       outputTokens: 34_240_000,
-      costs: { input: 10, cacheWrite: 20, cacheRead: 5, output: 40, reasoning: 8.24, unknown: 0 },
+      costs: {
+        input: 10,
+        cacheWrite: 20,
+        cacheRead: 5,
+        output: 40,
+        reasoning: 8.24,
+        unknown: 0,
+      },
     },
   ],
 };
@@ -678,7 +688,14 @@ function demoUsageBreakdownForModels(modelIndexes: number[]) {
       reasoning: totals.reasoning + model.costs.reasoning,
       unknown: totals.unknown + model.costs.unknown,
     }),
-    { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+    {
+      input: 0,
+      cacheWrite: 0,
+      cacheRead: 0,
+      output: 0,
+      reasoning: 0,
+      unknown: 0,
+    },
   );
   return {
     cacheWriteTokens: models.reduce((total, model) => total + model.cacheWriteTokens, 0),
@@ -808,7 +825,14 @@ function demoUsageBreakdownFromInvocations(records: ReturnType<typeof invocation
       cacheWriteTokens: 0,
       cacheReadTokens: 0,
       outputTokens: 0,
-      costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+      costs: {
+        input: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        reasoning: 0,
+        unknown: 0,
+      },
     };
     entry.cacheWriteTokens += record.cacheWriteTokens ?? 0;
     entry.cacheReadTokens += record.cacheInputTokens ?? 0;
@@ -841,7 +865,14 @@ function demoUsageBreakdownFromInvocations(records: ReturnType<typeof invocation
         reasoning: Number((total.reasoning + model.costs.reasoning).toFixed(4)),
         unknown: 0,
       }),
-      { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+      {
+        input: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        reasoning: 0,
+        unknown: 0,
+      },
     ),
     models,
   };
@@ -2649,8 +2680,89 @@ type DemoManagedTaskRun = {
 const managedTaskOverrides = new Map<string, DemoManagedTaskOverride>();
 const managedTaskRuns = new Map<string, DemoManagedTaskRun[]>();
 let nextManagedTaskRunId = 100;
+const DEMO_RETENTION_OWNER_V2_TASKS = {
+  pool_upstream_attempt_archive: {
+    unit: "pool attempt rows",
+    scope: "pool_upstream_request_attempts:retention_policy",
+    globalBacklogTotal: 12_480,
+    discovered: 420,
+    selected: 420,
+    committed: 420,
+    batches: 2,
+    rawFilesRemoved: 0,
+    hasMore: false,
+  },
+  forward_proxy_attempt_archive: {
+    unit: "forward proxy attempt rows",
+    scope: "forward_proxy_attempts:retention_policy",
+    globalBacklogTotal: 1_180,
+    discovered: 612,
+    selected: 512,
+    committed: 512,
+    batches: 3,
+    rawFilesRemoved: 0,
+    hasMore: true,
+  },
+  invocation_detail_prune: {
+    unit: "invocation rows",
+    scope: "codex_invocation_details:retention_policy",
+    globalBacklogTotal: 3_240,
+    discovered: 1_024,
+    selected: 1_024,
+    committed: 1_024,
+    batches: 4,
+    rawFilesRemoved: 0,
+    hasMore: true,
+  },
+  quota_snapshot_compaction: {
+    unit: "quota snapshot rows",
+    scope: "codex_quota_snapshots:retention_policy",
+    globalBacklogTotal: 860,
+    discovered: 120,
+    selected: 120,
+    committed: 120,
+    batches: 1,
+    rawFilesRemoved: 0,
+    hasMore: false,
+  },
+  model_route_expiry: {
+    unit: "model route rows",
+    scope: "model_routes:expiry",
+    globalBacklogTotal: 74,
+    discovered: 18,
+    selected: 18,
+    committed: 18,
+    batches: 1,
+    rawFilesRemoved: 0,
+    hasMore: false,
+  },
+  task_run_history_cleanup: {
+    unit: "task-run rows",
+    scope: "task_runs:history_retention",
+    globalBacklogTotal: 2_400,
+    discovered: 256,
+    selected: 256,
+    committed: 256,
+    batches: 2,
+    rawFilesRemoved: 0,
+    hasMore: true,
+  },
+} as const;
+const DEMO_RETENTION_ARCHIVE_OWNER_V2 = {
+  unit: "invocation rows",
+  scope: "expired_invocations:retention_policy",
+  globalBacklogTotal: 4_920,
+  discovered: 1_020,
+  selected: 1_020,
+  committed: 1_020,
+  batches: 3,
+  rawFilesRemoved: 0,
+  hasMore: true,
+} as const;
+const DEMO_RETENTION_OWNER_V2_TASK_KEYS = new Set(Object.keys(DEMO_RETENTION_OWNER_V2_TASKS));
 const DEMO_DEFAULT_ENABLED_TASKS = new Set([
   "retention_archive",
+  ...DEMO_RETENTION_OWNER_V2_TASK_KEYS,
   "invocation_identity_cleanup",
   "raw_orphan_sweep",
   "upstream_account_maintenance",
@@ -2672,6 +2784,68 @@ export function resetDemoManagedTaskState(): void {
   managedTaskOverrides.clear();
   managedTaskRuns.clear();
   nextManagedTaskRunId = 100;
+  demoModel.setPromptCacheMaterializationEnabled(true);
+}
+
+function demoRetentionOwnerV2Fixture(taskKey: string) {
+  if (
+    taskKey === "retention_archive" &&
+    demoSearchParamsFromLocation().get("demoRetentionOwners") === "v2"
+  ) {
+    return DEMO_RETENTION_ARCHIVE_OWNER_V2;
+  }
+  return DEMO_RETENTION_OWNER_V2_TASKS[taskKey as keyof typeof DEMO_RETENTION_OWNER_V2_TASKS];
+}
+
+function demoRetentionOwnerV2Details(
+  taskKey: string,
+  dryRun = false,
+): Record<string, unknown> | null {
+  const fixture = demoRetentionOwnerV2Fixture(taskKey);
+  if (!fixture) return null;
+  return {
+    ownershipVersion: 2,
+    ownerScope: taskKey,
+    dryRun,
+    result: "complete",
+    globalBacklogTotal: fixture.globalBacklogTotal,
+    discovered: fixture.discovered,
+    selected: fixture.selected,
+    committed: dryRun ? 0 : fixture.committed,
+    selectedScope: {
+      scope: fixture.scope,
+      unit: fixture.unit,
+      selected: fixture.selected,
+      committed: dryRun ? 0 : fixture.committed,
+      batches: dryRun ? 0 : fixture.batches,
+      rawFilesRemoved: dryRun ? 0 : fixture.rawFilesRemoved,
+      rawFilesPlanned: dryRun ? 1 : 0,
+      hasMore: fixture.hasMore,
+    },
+    ...(taskKey === "pool_upstream_attempt_archive" || taskKey === "retention_archive"
+      ? {
+          archiveBatches: [
+            {
+              dataset:
+                taskKey === "retention_archive"
+                  ? "codex_invocations"
+                  : "pool_upstream_request_attempts",
+              monthKey: "2026-09",
+              batchRows: fixture.committed,
+              committedRows: dryRun ? 0 : fixture.committed,
+              committedRowsPerSecond: dryRun ? 0 : taskKey === "retention_archive" ? 26.2 : 18.4,
+              arrivalRowsPerSecond: taskKey === "retention_archive" ? 0.35 : 0.42,
+              serviceRateMultiple: dryRun ? 0 : taskKey === "retention_archive" ? 74.9 : 43.8,
+              filePrepareMs: taskKey === "retention_archive" ? 1_480 : 1_240,
+              sourceIdentityMs: taskKey === "retention_archive" ? 380 : 210,
+              archiveWriterMs: taskKey === "retention_archive" ? 1_120 : 980,
+              summaryProofMs: 120,
+              lockWaitMs: taskKey === "retention_archive" ? 42 : 32,
+            },
+          ],
+        }
+      : {}),
+  };
 }
 
 function demoNextTriggerAt(
@@ -2694,7 +2868,10 @@ function demoDefaultTaskPolicy(
   isManual: boolean,
 ): { policySource: string; effectivePolicy: string } {
   if (isManual) {
-    return { policySource: "系统规则", effectivePolicy: "手动触发；不适用周期计划" };
+    return {
+      policySource: "系统规则",
+      effectivePolicy: "手动触发；不适用周期计划",
+    };
   }
   switch (taskKey) {
     case "system_status_snapshot":
@@ -2709,7 +2886,10 @@ function demoDefaultTaskPolicy(
       };
     case "pool_orphan_recovery":
     case "invocation_timeline_snapshot":
-      return { policySource: "系统默认", effectivePolicy: "固定检查间隔：60 秒" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "固定检查间隔：60 秒",
+      };
     case "dashboard_runtime_projection_reconcile":
       return {
         policySource: "系统默认",
@@ -2720,8 +2900,21 @@ function demoDefaultTaskPolicy(
         policySource: "运行配置",
         effectivePolicy: "启动检查与保留策略周期；按配置判断是否有工作",
       };
+    case "pool_upstream_attempt_archive":
+    case "forward_proxy_attempt_archive":
+    case "invocation_detail_prune":
+    case "quota_snapshot_compaction":
+    case "model_route_expiry":
+    case "task_run_history_cleanup":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "300 秒独立巡检；候选、已提交数量按本 owner 单独统计",
+      };
     case "forward_proxy_subscription_refresh":
-      return { policySource: "系统默认", effectivePolicy: "启动刷新与固定检查间隔：60 秒" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "启动刷新与固定检查间隔：60 秒",
+      };
     case "long_term_projection":
       return {
         policySource: "系统默认",
@@ -2733,7 +2926,10 @@ function demoDefaultTaskPolicy(
         effectivePolicy: "启动、固定检查与压力准入唤醒",
       };
     case "summary_snapshot":
-      return { policySource: "系统默认", effectivePolicy: "事件唤醒；最小刷新间隔 10 秒" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "事件唤醒；最小刷新间隔 10 秒",
+      };
     case "summary_coverage_recovery":
       return {
         policySource: "系统默认",
@@ -2746,14 +2942,20 @@ function demoDefaultTaskPolicy(
         effectivePolicy: "300 秒巡检；有待办时让行后接续，安全重试独立计时",
       };
     case "prompt_cache_materialization":
-      return { policySource: "系统默认", effectivePolicy: "事件对账与 60 秒检查" };
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "事件对账与 60 秒检查",
+      };
     case "startup_backfill":
       return {
         policySource: "系统默认",
         effectivePolicy: "启动监督器；按事件、检查点和压力准入唤醒",
       };
     case "startup_hourly_rollup_bootstrap":
-      return { policySource: "启动规则", effectivePolicy: "仅在服务启动阶段检查" };
+      return {
+        policySource: "启动规则",
+        effectivePolicy: "仅在服务启动阶段检查",
+      };
     default:
       return {
         policySource: "系统默认",
@@ -2767,6 +2969,12 @@ function demoTaskExecutionClass(taskKey: string): string | null {
     case "retention_archive":
     case "invocation_identity_cleanup":
     case "raw_orphan_sweep":
+    case "pool_upstream_attempt_archive":
+    case "forward_proxy_attempt_archive":
+    case "invocation_detail_prune":
+    case "quota_snapshot_compaction":
+    case "model_route_expiry":
+    case "task_run_history_cleanup":
     case "upstream_account_maintenance":
     case "pool_orphan_recovery":
     case "invocation_timeline_snapshot":
@@ -2828,6 +3036,42 @@ export function managedTasks() {
       false,
     ],
     ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
+    [
+      "pool_upstream_attempt_archive",
+      "连接池上游尝试归档",
+      "独立归档过期的连接池上游请求尝试",
+      "interval",
+      false,
+    ],
+    [
+      "forward_proxy_attempt_archive",
+      "正向代理尝试归档",
+      "独立归档过期的正向代理尝试",
+      "interval",
+      false,
+    ],
+    [
+      "invocation_detail_prune",
+      "调用详情裁剪",
+      "独立裁剪保留窗口内已完成调用的详情数据",
+      "interval",
+      false,
+    ],
+    [
+      "quota_snapshot_compaction",
+      "配额快照压缩",
+      "独立压缩历史配额快照，仅保留每日代表记录",
+      "interval",
+      false,
+    ],
+    ["model_route_expiry", "模型路由过期", "独立清理已过期的模型路由记录", "interval", false],
+    [
+      "task_run_history_cleanup",
+      "任务运行历史清理",
+      "独立清理超出保留策略的任务运行历史",
+      "interval",
+      false,
+    ],
     [
       "upstream_account_maintenance",
       "上游账号维护",
@@ -2956,9 +3200,13 @@ export function managedTasks() {
     ([taskKey, title, description, triggerMode, isManual]) => ({
       ...(() => {
         const override = managedTaskOverrides.get(taskKey);
-        const enabled = override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey);
+        const enabled =
+          taskKey === "prompt_cache_materialization"
+            ? demoModel.promptCacheMaterializationEnabled
+            : (override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey));
         const scheduleEditable = [
           "retention_archive",
+          ...DEMO_RETENTION_OWNER_V2_TASK_KEYS,
           "invocation_identity_cleanup",
           "raw_orphan_sweep",
           "upstream_account_maintenance",
@@ -2967,21 +3215,24 @@ export function managedTasks() {
           "invocation_timeline_snapshot",
           "dashboard_runtime_projection_reconcile",
         ].includes(taskKey);
+        const defaultIntervalSecs =
+          taskKey === "retention_archive"
+            ? 3600
+            : DEMO_RETENTION_OWNER_V2_TASK_KEYS.has(taskKey) ||
+                ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+              ? 300
+              : null;
         const intervalSecs =
           override?.intervalSecs !== undefined
             ? override.intervalSecs
             : isManual
               ? null
-              : taskKey === "retention_archive"
-                ? 3600
-                : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
-                  ? 300
-                  : null;
+              : defaultIntervalSecs;
         const cronExpr = override?.cronExpr !== undefined ? override.cronExpr : null;
         const effectiveIntervalSecs =
           intervalSecs ?? (taskKey === "retention_archive" ? 3600 : null);
         const triggerKinds =
-          taskKey === "retention_archive"
+          taskKey === "retention_archive" || DEMO_RETENTION_OWNER_V2_TASK_KEYS.has(taskKey)
             ? ["startup", "interval", "catchup", "manual"]
             : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
               ? ["interval", "catchup", "manual"]
@@ -3018,15 +3269,21 @@ export function managedTasks() {
           intervalSecs,
           cronExpr,
           nextTriggerAt:
-            override?.nextTriggerAt !== undefined
-              ? override.nextTriggerAt
-              : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
+            taskKey === "prompt_cache_materialization"
+              ? demoNextTriggerAt(enabled, intervalSecs, cronExpr)
+              : override?.nextTriggerAt !== undefined
+                ? override.nextTriggerAt
+                : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
           nextCatchupAt:
-            taskKey === "retention_archive" && enabled
+            (taskKey === "retention_archive" || DEMO_RETENTION_OWNER_V2_TASK_KEYS.has(taskKey)) &&
+            enabled
               ? new Date(Date.parse(demoNow()) + 60_000).toISOString()
               : null,
           catchupReason:
-            taskKey === "retention_archive" && enabled ? "retention_work_budget" : null,
+            (taskKey === "retention_archive" || DEMO_RETENTION_OWNER_V2_TASK_KEYS.has(taskKey)) &&
+            enabled
+              ? "retention_work_budget"
+              : null,
           effectiveSchedule:
             !isManual &&
             (intervalSecs != null || cronExpr != null || taskKey === "retention_archive")
@@ -3089,6 +3346,7 @@ export function managedTasks() {
   return combinedTasks.map((task, index) => {
     const hue = stableHueByTask.get(task.taskKey) ?? 0;
     const latestRun = managedTaskRuns.get(task.taskKey)?.[0];
+    const ownerV2Fixture = demoRetentionOwnerV2Fixture(task.taskKey);
     const fallbackStartedAt = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
     const fallbackDurationMs = ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(
       task.taskKey,
@@ -3146,7 +3404,23 @@ export function managedTasks() {
               },
             },
           }
-        : {}),
+        : ownerV2Fixture
+          ? {
+              measurementCapabilities: {
+                pending: { supported: false, unit: null, scope: null },
+                discovered: {
+                  supported: true,
+                  unit: ownerV2Fixture.unit,
+                  scope: ownerV2Fixture.scope,
+                },
+                processed: {
+                  supported: true,
+                  unit: ownerV2Fixture.unit,
+                  scope: ownerV2Fixture.scope,
+                },
+              },
+            }
+          : {}),
     };
   });
 }
@@ -3538,14 +3812,24 @@ function demoTaskOperationsTimelinePage(url: URL) {
         to?: string;
       };
       if (decoded.scene !== scene || decoded.snapshotId !== snapshotId) {
-        return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+        return {
+          ...snapshot,
+          segments: [],
+          nextCursor: null,
+          resetRequired: true,
+        };
       }
       offset = Number(decoded.offset) || 0;
       afterRevision = decoded.afterRevision;
       from = decoded.from ?? from;
       to = decoded.to ?? to;
     } catch {
-      return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+      return {
+        ...snapshot,
+        segments: [],
+        nextCursor: null,
+        resetRequired: true,
+      };
     }
   } else {
     const revision = url.searchParams.get("afterRevision");
@@ -3572,7 +3856,14 @@ function demoTaskOperationsTimelinePage(url: URL) {
     nextCursor:
       nextOffset < matching.length
         ? encodeURIComponent(
-            JSON.stringify({ scene, snapshotId, offset: nextOffset, afterRevision, from, to }),
+            JSON.stringify({
+              scene,
+              snapshotId,
+              offset: nextOffset,
+              afterRevision,
+              from,
+              to,
+            }),
           )
         : null,
     resetRequired: false,
@@ -3583,7 +3874,9 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
   const task = managedTasks().find((item) => item.taskKey === taskKey);
   if (!task) return null;
   const at = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
-  const isRetention = taskKey === "retention_archive";
+  const ownerV2Fixture = demoRetentionOwnerV2Fixture(taskKey);
+  const isRetention = taskKey === "retention_archive" && !ownerV2Fixture;
+  const ownerV2Details = demoRetentionOwnerV2Details(taskKey);
   const isRowBackfill =
     taskKey.startsWith("startup_backfill.") &&
     [
@@ -3614,7 +3907,14 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     scope: string,
     range: string,
     observedAt: string,
-  ): TaskWorkloadMetric => ({ value, unit: "invocation rows", scope, range, observedAt, coverage });
+  ): TaskWorkloadMetric => ({
+    value,
+    unit: "invocation rows",
+    scope,
+    range,
+    observedAt,
+    coverage,
+  });
   const backfillNowMs = Date.parse(demoNow()) - 26_000;
   const backfillSamples: TaskWorkloadSample[] = Array.from({ length: 100 }, (_, index) => {
     const attemptedAt = new Date(backfillNowMs - (99 - index) * 4 * 60_000).toISOString();
@@ -3705,56 +4005,51 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     processedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1842),
     updatedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1780),
     errorDetail: null,
-    completion: taskKey === "retention_archive" ? "partial" : "completed",
-    coreCompletion: task.isManual
-      ? null
-      : taskKey === "retention_archive"
-        ? "partial"
-        : "completed",
-    details:
-      taskKey === "retention_archive"
-        ? {
-            budgetMs: null,
-            elapsedMs: latestRunDurationMs || 31_000,
-            settlementMs: 2,
-            timeoutCount: null,
-            archiveBatches: [
-              {
-                dataset: "codex_invocations",
-                monthKey: "2026-09",
-                batchRows: retentionCommittedRows,
-                committedRows: retentionCommittedRows,
-                committedRowsPerSecond: retentionCommittedRows / retentionElapsedSeconds,
-                arrivalRowsPerSecond: 0.3472,
-                serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
-                filePrepareMs: 3600,
-                sourceIdentityMs: 420,
-                archiveWriterMs: 2500,
-                summaryProofMs: 180,
-                lockWaitMs: 125,
-              },
-              {
-                dataset: "pool_upstream_request_attempts",
-                monthKey: "2026-09",
-                batchRows: 1000,
-                committedRows: 1000,
-                committedRowsPerSecond: 1000 / retentionElapsedSeconds,
-                arrivalRowsPerSecond: 0.4167,
-                serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
-                filePrepareMs: 1800,
-                sourceIdentityMs: 380,
-                archiveWriterMs: 1900,
-                summaryProofMs: null,
-                lockWaitMs: 80,
-              },
-            ],
-            promptCacheStats: {
-              state: "unavailable",
-              pending: 3,
-              reason: "materialization_pending_or_disabled",
+    completion: isRetention ? "partial" : "completed",
+    coreCompletion: task.isManual ? null : isRetention ? "partial" : "completed",
+    details: isRetention
+      ? {
+          budgetMs: null,
+          elapsedMs: latestRunDurationMs || 31_000,
+          settlementMs: 2,
+          timeoutCount: null,
+          archiveBatches: [
+            {
+              dataset: "codex_invocations",
+              monthKey: "2026-09",
+              batchRows: retentionCommittedRows,
+              committedRows: retentionCommittedRows,
+              committedRowsPerSecond: retentionCommittedRows / retentionElapsedSeconds,
+              arrivalRowsPerSecond: 0.3472,
+              serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
+              filePrepareMs: 3600,
+              sourceIdentityMs: 420,
+              archiveWriterMs: 2500,
+              summaryProofMs: 180,
+              lockWaitMs: 125,
             },
-          }
-        : null,
+            {
+              dataset: "pool_upstream_request_attempts",
+              monthKey: "2026-09",
+              batchRows: 1000,
+              committedRows: 1000,
+              committedRowsPerSecond: 1000 / retentionElapsedSeconds,
+              arrivalRowsPerSecond: 0.4167,
+              serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
+              filePrepareMs: 1800,
+              sourceIdentityMs: 380,
+              archiveWriterMs: 1900,
+              summaryProofMs: null,
+              lockWaitMs: 80,
+            },
+          ],
+          promptCacheStats: {
+            state: "unavailable",
+            pending: 3,
+            reason: "materialization_pending_or_disabled",
+          },
+        }
+      : ownerV2Details,
   };
   if (["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)) {
     defaultRun.details = demoOwnedMaintenanceDetails(taskKey, false);
@@ -3762,6 +4057,12 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     defaultRun.coreCompletion = null;
     defaultRun.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
     defaultRun.updatedCount = defaultRun.processedCount;
+  }
+  if (ownerV2Fixture && ownerV2Details) {
+    defaultRun.completion = "complete";
+    defaultRun.coreCompletion = null;
+    defaultRun.processedCount = ownerV2Fixture.committed;
+    defaultRun.updatedCount = ownerV2Fixture.committed;
   }
   const latestPending = latestSample?.pending ?? null;
   const latestProcessed = latestSample?.processed ?? null;
@@ -3814,38 +4115,53 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
         },
         discovered: {
           supported:
-            isRetention || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
-          unit: isRetention
-            ? "invocation rows"
-            : taskKey === "invocation_identity_cleanup"
-              ? "conversation identities"
-              : taskKey === "raw_orphan_sweep"
-                ? "raw payload files"
-                : null,
-          scope: isRetention
-            ? "expired_invocations:retention_policy"
-            : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
-              ? taskKey
-              : null,
-        },
-        processed: {
-          supported:
             isRetention ||
-            isRowBackfill ||
+            ownerV2Fixture != null ||
             ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
           unit:
-            isRetention || isRowBackfill
-              ? "invocation rows"
+            isRetention || ownerV2Fixture != null
+              ? isRetention
+                ? "invocation rows"
+                : ownerV2Fixture.unit
               : taskKey === "invocation_identity_cleanup"
                 ? "conversation identities"
                 : taskKey === "raw_orphan_sweep"
                   ? "raw payload files"
                   : null,
-          scope: isRetention
-            ? "expired_invocations:retention_policy"
-            : isRowBackfill || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
-              ? taskKey
-              : null,
+          scope:
+            isRetention || ownerV2Fixture != null
+              ? isRetention
+                ? "expired_invocations:retention_policy"
+                : ownerV2Fixture.scope
+              : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+                ? taskKey
+                : null,
+        },
+        processed: {
+          supported:
+            isRetention ||
+            ownerV2Fixture != null ||
+            isRowBackfill ||
+            ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
+          unit:
+            isRetention || ownerV2Fixture != null || isRowBackfill
+              ? isRetention || isRowBackfill
+                ? "invocation rows"
+                : ownerV2Fixture.unit
+              : taskKey === "invocation_identity_cleanup"
+                ? "conversation identities"
+                : taskKey === "raw_orphan_sweep"
+                  ? "raw payload files"
+                  : null,
+          scope:
+            isRetention || ownerV2Fixture != null
+              ? isRetention
+                ? "expired_invocations:retention_policy"
+                : ownerV2Fixture.scope
+              : isRowBackfill ||
+                  ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+                ? taskKey
+                : null,
         },
       },
     },
@@ -3866,43 +4182,66 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
           catchupState: task.enabled ? "idle" : "disabled",
           stages: [],
         }
-      : task.isManual
+      : ownerV2Fixture
         ? {
-            total: null,
-            completed: null,
-            phase: "manual",
-            checkpoint: null,
-            etaSeconds: null,
-            updatedAt: latestObservedAt,
+            total: ownerV2Fixture.globalBacklogTotal,
+            completed: ownerV2Fixture.committed,
+            phase: "processing",
+            checkpoint: `selected:${ownerV2Fixture.selected}`,
+            etaSeconds: 90,
+            updatedAt: at,
             freshness: "fresh",
-            unit: "invocations",
-            sourceScope: "expired_invocations",
+            unit: ownerV2Fixture.unit,
+            sourceScope: ownerV2Fixture.scope,
+            lastProgressAt: at,
             waitReason: null,
             nextInspectionAt: task.nextTriggerAt,
             nextCatchupAt: task.nextCatchupAt ?? null,
             catchupState: task.enabled ? "scheduled" : "disabled",
             stages: [],
           }
-        : {
-            total: 2547,
-            completed: 1842,
-            phase: "processing",
-            checkpoint: "cursor:1842",
-            etaSeconds: 420,
-            updatedAt: latestObservedAt,
-            freshness: "fresh",
-            unit: "invocations",
-            sourceScope: "expired_invocations",
-            lastProgressAt: latestObservedAt,
-            waitReason: null,
-            nextInspectionAt: task.nextTriggerAt,
-            nextCatchupAt: task.nextCatchupAt ?? null,
-            catchupState: task.enabled ? "scheduled" : "disabled",
-            stages: [
-              { name: "archive", status: "running", completed: 1842, total: 2547 },
-              { name: "statistics", status: "pending" },
-            ],
-          },
+        : task.isManual
+          ? {
+              total: null,
+              completed: null,
+              phase: "manual",
+              checkpoint: null,
+              etaSeconds: null,
+              updatedAt: latestObservedAt,
+              freshness: "fresh",
+              unit: "invocations",
+              sourceScope: "expired_invocations",
+              waitReason: null,
+              nextInspectionAt: task.nextTriggerAt,
+              nextCatchupAt: task.nextCatchupAt ?? null,
+              catchupState: task.enabled ? "scheduled" : "disabled",
+              stages: [],
+            }
+          : {
+              total: 2547,
+              completed: 1842,
+              phase: "processing",
+              checkpoint: "cursor:1842",
+              etaSeconds: 420,
+              updatedAt: latestObservedAt,
+              freshness: "fresh",
+              unit: "invocations",
+              sourceScope: "expired_invocations",
+              lastProgressAt: latestObservedAt,
+              waitReason: null,
+              nextInspectionAt: task.nextTriggerAt,
+              nextCatchupAt: task.nextCatchupAt ?? null,
+              catchupState: task.enabled ? "scheduled" : "disabled",
+              stages: [
+                {
+                  name: "archive",
+                  status: "running",
+                  completed: 1842,
+                  total: 2547,
+                },
+                { name: "statistics", status: "pending" },
+              ],
+            },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
     retentionBacklogTrend,
     workloadTrend: retentionFixture?.trend ?? backfillTrend,
@@ -4536,7 +4875,10 @@ function demoInvocationTimeline(url: URL) {
   const rawCursor = url.searchParams.get("cursor");
   if (rawCursor) {
     try {
-      const cursor = JSON.parse(atob(rawCursor)) as { asOf?: string; offset?: number };
+      const cursor = JSON.parse(atob(rawCursor)) as {
+        asOf?: string;
+        offset?: number;
+      };
       const cursorOffset = cursor.offset;
       if (
         cursor.asOf !== asOf ||
@@ -4581,6 +4923,41 @@ function demoInvocationTimeline(url: URL) {
         failureClass: record.failureClass,
       };
     }),
+  };
+}
+
+function demoPromptCacheMaterializationStatus() {
+  const enabled = demoModel.promptCacheMaterializationEnabled;
+  return {
+    enabled,
+    phase: "stats_rebuild",
+    totalKeys: 418,
+    completedKeys: 312,
+    queuePending: 7,
+    progressPercent: 74.6,
+    estimatedRemainingMs: 126_000,
+    sourceMaxInvocationId: 9002,
+    updatedAt: demoNow(),
+    lastStartedAt: "2026-07-10T11:58:00.000Z",
+    lastFinishedAt: "2026-07-10T11:57:42.000Z",
+    lastStatus: enabled ? "running" : "disabled",
+    suspensionReason: enabled ? undefined : "manual_pause",
+    recentRuns: [
+      {
+        id: 901,
+        startedAt: "2026-07-10T11:58:00.000Z",
+        finishedAt: "2026-07-10T11:58:00.000Z",
+        phase: "stats_rebuild",
+        status: "running",
+        scanned: 106,
+        updated: 81,
+        batchCount: 4,
+        lastBatchSize: 25,
+        maxBatchSize: 32,
+        batchElapsedMs: 420,
+        durationMs: 3_600,
+      },
+    ],
   };
 }
 
@@ -4686,22 +5063,40 @@ export async function handleDemoRequest(request: Request) {
           reason: "No healthy account remained after upstream cooldown and retry checks",
           count: 2,
         },
-        { reason: "The upstream response ended while the server was reading its body", count: 2 },
+        {
+          reason: "The upstream response ended while the server was reading its body",
+          count: 2,
+        },
         {
           reason: "The provider rejected the request because its rate limit was reached",
           count: 1,
         },
-        { reason: "A configured route could not resolve to an available upstream model", count: 1 },
+        {
+          reason: "A configured route could not resolve to an available upstream model",
+          count: 1,
+        },
         {
           reason: "The upstream returned an unexpected response during stream finalization",
           count: 2,
         },
       ],
       client: [
-        { reason: "The request body did not include a model supported by this endpoint", count: 3 },
-        { reason: "The supplied authentication token could not be validated", count: 2 },
-        { reason: "The request exceeded the maximum supported context length", count: 1 },
-        { reason: "The request format is invalid for the selected response mode", count: 1 },
+        {
+          reason: "The request body did not include a model supported by this endpoint",
+          count: 3,
+        },
+        {
+          reason: "The supplied authentication token could not be validated",
+          count: 2,
+        },
+        {
+          reason: "The request exceeded the maximum supported context length",
+          count: 1,
+        },
+        {
+          reason: "The request format is invalid for the selected response mode",
+          count: 1,
+        },
       ],
       abort: [
         {
@@ -4734,8 +5129,14 @@ export async function handleDemoRequest(request: Request) {
           reason: "No healthy account remained after upstream cooldown and retry checks",
           count: 2,
         },
-        { reason: "The upstream response ended while the server was reading its body", count: 2 },
-        { reason: "The request body did not include a model supported by this endpoint", count: 3 },
+        {
+          reason: "The upstream response ended while the server was reading its body",
+          count: 2,
+        },
+        {
+          reason: "The request body did not include a model supported by this endpoint",
+          count: 3,
+        },
         {
           reason: "The client cancelled the request before an upstream response arrived",
           count: 1,
@@ -4799,8 +5200,14 @@ export async function handleDemoRequest(request: Request) {
         changedFields: [],
         bindingBefore: null,
         bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        stickyBefore: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "demo-primary@monitor.test",
+        },
+        stickyAfter: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "demo-primary@monitor.test",
+        },
         invokeId: "demo-concurrent-late",
         routingContext: {
           reasonCode: "staleConcurrentCompletion",
@@ -4838,7 +5245,10 @@ export async function handleDemoRequest(request: Request) {
         bindingBefore: null,
         bindingAfter: null,
         stickyBefore: null,
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        stickyAfter: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "demo-primary@monitor.test",
+        },
         invokeId: "demo-fresh-success",
         routingContext: {
           reasonCode: "freshAssignmentAfterFailure",
@@ -4875,14 +5285,22 @@ export async function handleDemoRequest(request: Request) {
         changedFields: ["stickyTarget"],
         bindingBefore: null,
         bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
+        stickyBefore: {
+          upstreamAccountId: 21,
+          upstreamAccountName: "demo-fallback@monitor.test",
+        },
         stickyAfter: null,
         invokeId: null,
       },
     ];
     const infoType = url.searchParams.get("infoType");
     const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
-    return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
+    return json({
+      items: filtered,
+      total: filtered.length,
+      page: 1,
+      pageSize: 20,
+    });
   }
   if (pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) {
     const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
@@ -5309,7 +5727,10 @@ export async function handleDemoRequest(request: Request) {
     return json(
       action === "disable"
         ? { key: { ...key, status: "disabled", updatedAt: demoNow() } }
-        : { key: { ...key, updatedAt: demoNow() }, secret: "cvm-synthetic-rotated-key-not-valid" },
+        : {
+            key: { ...key, updatedAt: demoNow() },
+            secret: "cvm-synthetic-rotated-key-not-valid",
+          },
     );
   }
   if (pathname === "/api/system/observability")
@@ -5335,6 +5756,18 @@ export async function handleDemoRequest(request: Request) {
     return json(systemStatus());
   }
   if (pathname === "/api/system/storage") return json(systemStorage());
+  if (pathname === "/api/system/prompt-cache/materialization") {
+    if (request.method === "PATCH") {
+      const body = (await request.json().catch(() => ({}))) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") {
+        return json({ error: "enabled must be a boolean" }, { status: 400 });
+      }
+      demoModel.setPromptCacheMaterializationEnabled(body.enabled);
+    }
+    if (request.method === "GET" || request.method === "PATCH") {
+      return json(demoPromptCacheMaterializationStatus());
+    }
+  }
   if (pathname === "/api/system/tasks") {
     let items = systemTasks();
     const taskKind = url.searchParams.get("taskKind");
@@ -5390,10 +5823,13 @@ export async function handleDemoRequest(request: Request) {
     const detail = managedTaskDetail(taskKey);
     if (!detail) return json({ error: "not found" }, { status: 404 });
     const body = (await request.json().catch(() => ({}))) as {
-      enabled?: boolean;
+      enabled?: unknown;
       intervalSecs?: number | null;
       cronExpr?: string | null;
     };
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+      return json({ error: "enabled must be a boolean" }, { status: 400 });
+    }
     if (detail.task.isManual && (body.intervalSecs !== undefined || body.cronExpr !== undefined)) {
       return json({ error: "manual tasks do not have a schedule" }, { status: 400 });
     }
@@ -5434,6 +5870,9 @@ export async function handleDemoRequest(request: Request) {
         next.cronExpr = body.cronExpr;
         delete next.intervalSecs;
       }
+    }
+    if (taskKey === "prompt_cache_materialization" && body.enabled !== undefined) {
+      demoModel.setPromptCacheMaterializationEnabled(body.enabled);
     }
     const enabled = next.enabled ?? detail.task.enabled;
     const intervalSecs =
@@ -5512,13 +5951,15 @@ export async function handleDemoRequest(request: Request) {
               reason: "materialization_pending_or_disabled",
             },
           };
+      const ownerV2Fixture = demoRetentionOwnerV2Fixture(taskKey);
       if (
         [
           "retention_archive",
           "invocation_identity_cleanup",
           "raw_orphan_sweep",
           "prompt_cache_materialization",
-        ].includes(taskKey)
+        ].includes(taskKey) &&
+        !ownerV2Fixture
       ) {
         run.completion = "completed";
         run.coreCompletion = taskKey === "retention_archive" ? "completed" : null;
@@ -5527,6 +5968,12 @@ export async function handleDemoRequest(request: Request) {
           run.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
           run.updatedCount = run.processedCount;
         }
+      } else if (ownerV2Fixture) {
+        run.completion = "complete";
+        run.coreCompletion = null;
+        run.processedCount = ownerV2Fixture.committed;
+        run.updatedCount = run.processedCount;
+        run.details = demoRetentionOwnerV2Details(taskKey);
       }
     }, 600);
     return json(managedTaskDetail(taskKey));
@@ -5626,7 +6073,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 3,
           groupCount: 1,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: true, allowCutOut: true, priorityTier: "primary" },
+          routingRule: {
+            allowCutIn: true,
+            allowCutOut: true,
+            priorityTier: "primary",
+          },
         },
         {
           id: 2,
@@ -5634,7 +6085,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 2,
           groupCount: 1,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: false, allowCutOut: true, priorityTier: "fallback" },
+          routingRule: {
+            allowCutIn: false,
+            allowCutOut: true,
+            priorityTier: "fallback",
+          },
         },
         {
           id: 3,
@@ -5642,7 +6097,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 2,
           groupCount: 2,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: true, allowCutOut: true, priorityTier: "normal" },
+          routingRule: {
+            allowCutIn: true,
+            allowCutOut: true,
+            priorityTier: "normal",
+          },
         },
         {
           id: 4,
@@ -5650,7 +6109,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 2,
           groupCount: 1,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: true, allowCutOut: true, priorityTier: "normal" },
+          routingRule: {
+            allowCutIn: true,
+            allowCutOut: true,
+            priorityTier: "normal",
+          },
         },
         {
           id: 5,
@@ -5658,7 +6121,11 @@ export async function handleDemoRequest(request: Request) {
           accountCount: 1,
           groupCount: 0,
           updatedAt: demoNow(),
-          routingRule: { allowCutIn: false, allowCutOut: false, priorityTier: "no_new" },
+          routingRule: {
+            allowCutIn: false,
+            allowCutOut: false,
+            priorityTier: "no_new",
+          },
         },
       ],
     });
@@ -5805,7 +6272,12 @@ export const apiHandlers = [
 ];
 
 function demoOwnedMaintenanceDetails(taskKey: string, manual = true): Record<string, unknown> {
-  const base = { ownershipVersion: 1, ownerScope: taskKey, dryRun: false, manual };
+  const base = {
+    ownershipVersion: 1,
+    ownerScope: taskKey,
+    dryRun: false,
+    manual,
+  };
   if (taskKey === "invocation_identity_cleanup")
     return {
       ...base,

@@ -294,7 +294,9 @@ async fn retention_batch_wait_stops_on_real_pressure_and_expired_deadline() {
             RETENTION_TEST_WRITE_CONNECTION_POOL_READY.scope(
                 ready.clone(),
                 retention_test_with_work_budget(
-                    Duration::from_secs(86_400),
+                    // Persistent pressure must remain bounded by the task deadline while
+                    // transient pressure receives the internal retry window.
+                    Duration::from_secs(1),
                     acquire_retention_batch_write_connection(&pool, "pressure_batch_wait"),
                 ),
             ),

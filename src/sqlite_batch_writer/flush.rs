@@ -119,10 +119,11 @@ pub(super) async fn flush_pending_batch_accounted(
         && let Some(journal) = guard.as_mut()
         && let Err(err) = journal.acknowledge_system_task_finishes(&completed_system_task_ids)
     {
+        journal.defer_system_task_acknowledgements(&completed_system_task_ids);
         warn!(
             error = %err,
             completed_system_task_count = completed_system_task_ids.len(),
-            "failed to acknowledge recovered system-task finishes"
+            "failed to acknowledge recovered system-task finishes; scheduled retry"
         );
     }
     let discard_non_retryable_p2 = result.as_ref().is_some_and(|retained| {
@@ -232,12 +233,27 @@ fn quarantine_system_task_batch(
         .ok_or_else(|| anyhow::anyhow!("terminal journal unavailable for quarantine"))?;
     let error = format!("{error:#}");
     let finishes = batch.system_task_finishes.values().collect::<Vec<_>>();
-    journal.quarantine_system_task_finishes(&finishes, &error)?;
     let run_ids = finishes
         .iter()
         .map(|finish| finish.run_id)
         .collect::<Vec<_>>();
+    let replayed_run_ids = run_ids
+        .iter()
+        .copied()
+        .filter(|run_id| journal.system_task_recovery_replayed(*run_id))
+        .collect::<Vec<_>>();
+    journal.quarantine_system_task_finishes(&finishes, &error)?;
     journal.remove_deferred_system_task_finishes(&run_ids);
+    journal.requeue_system_task_finishes_for_retry(&finishes, &replayed_run_ids);
+    // The quarantine is durable and will be retried after restart; there is no in-process retry
+    // path for a fresh deterministic failure, so do not leave unrelated tasks behind a global
+    // gate. A replayed finish retains its owner-specific recovery fence until it is acknowledged.
+    let fresh_run_ids = run_ids
+        .iter()
+        .copied()
+        .filter(|run_id| !replayed_run_ids.contains(run_id))
+        .collect::<Vec<_>>();
+    journal.forget_system_task_recovery_for_runs(&fresh_run_ids);
     Ok(batch.system_task_finishes.len())
 }
 
@@ -1452,17 +1468,46 @@ pub(crate) async fn flush_pending_batch_inner(
 
     if let Some(store) = maintenance_store {
         for finish in batch.system_task_finishes.values() {
-            if let Err(error) = store
-                .finish_run(
-                    finish.run_id,
-                    finish.status.as_str(),
-                    &finish.finished_at,
-                    finish.duration_ms,
-                    finish.summary.as_deref(),
-                    finish.detail.as_deref(),
-                )
-                .await
-            {
+            let result = if let Some(details) = finish.details.as_ref()
+                && let (Some(seconds), Some(reason)) = (
+                    details
+                        .get("scheduleRetryAfterSecs")
+                        .and_then(serde_json::Value::as_i64),
+                    details
+                        .get("scheduleRetryReason")
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                store
+                    .finish_run_with_observation_and_retry(
+                        finish.run_id,
+                        finish.status.as_str(),
+                        &finish.finished_at,
+                        finish.duration_ms,
+                        finish.summary.as_deref(),
+                        finish.detail.as_deref(),
+                        finish.completion.as_deref(),
+                        finish.core_completion.as_deref(),
+                        finish.details.as_ref(),
+                        seconds,
+                        reason,
+                    )
+                    .await
+            } else {
+                store
+                    .finish_run_with_observation(
+                        finish.run_id,
+                        finish.status.as_str(),
+                        &finish.finished_at,
+                        finish.duration_ms,
+                        finish.summary.as_deref(),
+                        finish.detail.as_deref(),
+                        finish.completion.as_deref(),
+                        finish.core_completion.as_deref(),
+                        finish.details.as_ref(),
+                    )
+                    .await
+            };
+            if let Err(error) = result {
                 warn!(
                     run_id = finish.run_id,
                     error = %error,

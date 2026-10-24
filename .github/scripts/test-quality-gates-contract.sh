@@ -4,24 +4,19 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-validator-contract.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test-retention-maintenance-candidate-binding.py"
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 copy_repo_snapshot() {
   local source_root="$1"
   local dest_root="$2"
+  # The contract checker only reads .github; keep generated build, dependency and documentation
+  # artifacts out of repeated mutation repositories so this regression stays bounded.
   mkdir -p "$dest_root"
-  tar \
-    --exclude='.git' \
-    --exclude='target' \
-    --exclude='node_modules' \
-    --exclude='web/node_modules' \
-    --exclude='web/dist' \
-    --exclude='coverage' \
-    --exclude='playwright-report' \
-    -C "$source_root" \
-    -cf - \
-    . | tar -C "$dest_root" -xf -
+  tar -C "$source_root" -cf - .github | tar -C "$dest_root" -xf -
 }
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
@@ -49,7 +44,252 @@ for workflow in ci-pr.yml ci-main.yml release.yml release-snapshot-pr.yml label-
 done
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
+
+ci_pr_trigger_repo="$tmp_dir/ci-pr-trigger-repo"
+copy_repo_snapshot "$baseline_repo" "$ci_pr_trigger_repo"
+python3 - <<'PY' "$ci_pr_trigger_repo/.github/workflows/ci-pr.yml"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "      - edited\n"
+if text.count(needle) != 1:
+    raise SystemExit("failed to locate CI PR edited trigger")
+path.write_text(text.replace(needle, needle + "      - labeled\n", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_pr_trigger_repo" --profile final >/dev/null 2>"$tmp_dir/ci-pr-trigger.log"; then
+  echo "expected CI PR labeled trigger fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.on.pull_request.types drifted" "$tmp_dir/ci-pr-trigger.log"
+
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
+
+retention_command_repo="$baseline_repo"
+
+expect_retention_command_rejected() {
+  local name="$1"
+  local needle="$2"
+  local replacement="$3"
+  local expected_error="$4"
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" "$needle" "$replacement" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle, replacement = sys.argv[2:4]
+if text.count(needle) != 1:
+    raise SystemExit(f"expected one retention command fixture for {needle!r}")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/$name.log"; then
+    echo "expected $name retention command fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "$expected_error" "$tmp_dir/$name.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_retention_command_rejected \
+  retention-fixture-comment \
+  '        run: python3 scripts/generate-retention-maintenance-release-fixtures.py --output-dir "$RUNNER_TEMP/retention-migration-fixtures"' \
+  $'        run: |\n          # python3 scripts/generate-retention-maintenance-release-fixtures.py --output-dir "$RUNNER_TEMP/retention-migration-fixtures"' \
+  "must contain at least one shell command"
+
+expect_retention_command_rejected \
+  retention-upgrade-comment \
+  '        run: python3 scripts/validate-retention-maintenance-upgrade.py --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-migration-results"' \
+  $'        run: |\n          # python3 scripts/validate-retention-maintenance-upgrade.py --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-migration-results"' \
+  "must contain at least one shell command"
+
+expect_retention_command_rejected \
+  retention-runtime-true \
+  '        run: python3 scripts/validate-retention-maintenance-runtime.py --source-fixture "$RUNNER_TEMP/retention-migration-fixtures/v4.2.2" --candidate $PWD/.ci-smoke/codex-vibe-monitor --output-dir "$RUNNER_TEMP/retention-runtime-results" --http-port 60081' \
+  '        run: true' \
+  "must be a non-empty string"
+
+expect_identity_binding_rejected() {
+  local name="$1"
+  local needle="$2"
+  local expected_error="$3"
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" "$needle" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = sys.argv[2]
+if text.count(needle) != 1:
+    raise SystemExit(f"expected one identity binding fixture for {needle!r}")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/$name.log"; then
+    echo "expected $name identity binding fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "$expected_error" "$tmp_dir/$name.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_identity_binding_rejected \
+  retention-checkout-sha-binding \
+  $'          assert identity["githubSha"] == github_sha == identity["checkoutSha"] == checkout_sha\n' \
+  "evidence verification must contain"
+
+expect_identity_binding_rejected \
+  retention-candidate-binding-script \
+  $'          python3 scripts/bind-retention-maintenance-candidate.py \\\n' \
+  "candidate extraction must bind"
+
+expect_identity_binding_rejected \
+  retention-candidate-digest-binding \
+  $'          assert identity["candidateSha256"] == binary_sha256\n' \
+  "evidence verification must contain"
+
+expect_retention_upload_overwrite_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = """      - name: Upload retention migration evidence
+        if: ${{ always() && steps.retention_scope.outputs.required == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: retention-migration-validation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/candidate-identity.json
+            ${{ runner.temp }}/retention-migration-results/candidate.json
+            ${{ runner.temp }}/retention-migration-results/results.json
+            ${{ runner.temp }}/retention-migration-results/*/source.json
+            ${{ runner.temp }}/retention-migration-results/*/candidate.log
+            ${{ runner.temp }}/retention-migration-results/*/candidate-diagnostics.jsonl
+            ${{ runner.temp }}/retention-runtime-results/results.json
+            ${{ runner.temp }}/retention-runtime-results/*/candidate.log
+            ${{ runner.temp }}/retention-runtime-results/*/daemon.log
+          if-no-files-found: error
+          overwrite: true
+"""
+replacement = needle.replace("overwrite: true", "overwrite: false", 1)
+if text.count(needle) != 1:
+    raise SystemExit("expected one retention migration evidence upload fixture")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/retention-upload-overwrite.log"; then
+    echo "expected retention upload overwrite fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "must overwrite evidence artifacts on reruns" "$tmp_dir/retention-upload-overwrite.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_retention_upload_overwrite_rejected
+
+expect_retention_upload_always_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "        if: ${{ always() && steps.retention_scope.outputs.required == 'true' }}"
+replacement = "        if: ${{ steps.retention_scope.outputs.required == 'true' }}"
+if text.count(needle) != 1:
+    raise SystemExit("expected one retention migration always-if fixture")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/retention-upload-always.log"; then
+    echo "expected retention upload always-if fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "Upload retention migration evidence" "$tmp_dir/retention-upload-always.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_retention_upload_always_rejected
+
+expect_build_retention_dependency_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "      - retention-migration-validation\n"
+if text.count(needle) != 1:
+    raise SystemExit("expected one Build Artifacts retention dependency fixture")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/build-retention-dependency.log"; then
+    echo "expected Build Artifacts retention dependency fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "must depend on the PR smoke producer and retention validation" "$tmp_dir/build-retention-dependency.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_build_retention_dependency_rejected
+
+expect_build_merge_group_condition_rejected() {
+  local path="$retention_command_repo/.github/workflows/ci-pr.yml"
+
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = """  build:
+    name: Build Artifacts
+    needs:
+      - build-pr-smoke-artifacts
+      - retention-migration-validation
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"""
+replacement = needle.replace(
+    "    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+    "    if: ${{ always() && github.event_name == 'pull_request' }}",
+    1,
+)
+if text.count(needle) != 1:
+    raise SystemExit("expected one Build Artifacts merge-group condition fixture")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$retention_command_repo" --profile final >/dev/null 2>"$tmp_dir/build-merge-group.log"; then
+    echo "expected Build Artifacts merge-group condition fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "ci-pr.yml.jobs.build.if must stay" "$tmp_dir/build-merge-group.log"
+  cp "$fixtures_root/ci-pr.yml" "$path"
+}
+
+expect_build_merge_group_condition_rejected
 
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
 mkdir -p "$observability_artifact_repo"
@@ -134,7 +374,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   echo "expected missing joint maintenance acceptance to fail" >&2
   exit 1
 fi
-grep -q "selectors must replay Summary, proxy and maintenance contention acceptance" "$tmp_dir/missing-joint-acceptance.log"
+grep -q "must replay the exact representative-scale profiles from the extracted archive" "$tmp_dir/missing-joint-acceptance.log"
 cp "$repo_root/.github/workflows/ci-pr.yml" "$continue_error_repo/.github/workflows/ci-pr.yml"
 
 expect_continue_on_error_rejected() {
@@ -654,7 +894,7 @@ needle = '''  backend-tests-lightweight:
     if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -718,8 +958,8 @@ import sys
 
 path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file \"$RUNNER_TEMP/backend-tests.tar.zst\""
-replacement = "run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file \"$RUNNER_TEMP/backend-tests.tar.zst\""
+needle = "run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-dir \"$RUNNER_TEMP/backend-test-extract\""
+replacement = "run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-dir \"$RUNNER_TEMP/backend-test-extract\""
 if needle not in text:
     raise SystemExit("failed to locate PR lightweight backend replay command")
 path.write_text(text.replace(needle, replacement, 1))
@@ -820,6 +1060,7 @@ needle = '''      - name: Upload backend test archive
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-tests.tar.zst
           if-no-files-found: error
+          retention-days: 1
           overwrite: true
 '''
 replacement = needle.replace(
@@ -837,7 +1078,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "artifact must be run-scoped and replace the prior attempt" "$tmp_dir/archive-name.log"
+grep -q "ci-pr.yml backend archive artifact must be run-scoped, uncompressed by upload, and replace the prior attempt" "$tmp_dir/archive-name.log"
 
 smoke_guard_repo="$tmp_dir/smoke-guard-repo"
 copy_repo_snapshot "$baseline_repo" "$smoke_guard_repo"
@@ -900,8 +1141,13 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "    needs: build-pr-smoke-artifacts\n"
-replacement = "    needs: backend-test-archive\n"
+needle = """  build:
+    name: Build Artifacts
+    needs:
+      - build-pr-smoke-artifacts
+      - retention-migration-validation
+"""
+replacement = needle.replace("      - build-pr-smoke-artifacts", "      - backend-test-archive", 1)
 if needle not in text:
     raise SystemExit("failed to rewrite PR smoke artifact dependency")
 path.write_text(text.replace(needle, replacement, 1))
@@ -912,7 +1158,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "ci-pr.yml.jobs.build must depend only on the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
+grep -q "ci-pr.yml.jobs.build must depend on the PR smoke producer and retention validation" "$tmp_dir/smoke-producer.log"
 
 e2e_producer_repo="$tmp_dir/e2e-producer-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_producer_repo"
@@ -947,10 +1193,19 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows" / sys.argv[2]
 text = path.read_text()
-needle = "            ~/.cargo/git\n"
+needle = "      - name: Restore Cargo registry\n"
 if needle not in text:
-    raise SystemExit("failed to locate lint cache paths")
-path.write_text(text.replace(needle, f"{needle}            target\n", 1))
+    raise SystemExit("failed to locate lint registry cache")
+legacy = """      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+"""
+path.write_text(text.replace(needle, legacy + needle, 1))
 PY
 
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$lint_target_repo" --profile final >/dev/null 2>"$tmp_dir/lint-target-${workflow_file%.yml}.log"; then
@@ -958,7 +1213,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "legacy cache must not restore Cargo target artifacts" "$tmp_dir/lint-target-${workflow_file%.yml}.log"
+grep -q "step 'Restore legacy Cargo workspace cache' must be removed" "$tmp_dir/lint-target-${workflow_file%.yml}.log"
 done
 
 e2e_spec_repo="$tmp_dir/e2e-spec-repo"

@@ -943,18 +943,95 @@ pub(crate) fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) 
     aliases.into_iter().collect()
 }
 
+pub(crate) struct ProxyRawFileIdentity {
+    pub(crate) path: PathBuf,
+    pub(crate) identity: String,
+    pub(crate) byte_size: u64,
+}
+
+pub(crate) struct ProxyRawDeletionPlan {
+    pub(crate) paths: Vec<Option<String>>,
+    pub(crate) fences: Vec<RetentionArchiveFileLock>,
+    pub(crate) identities: Vec<ProxyRawFileIdentity>,
+}
+
+impl ProxyRawDeletionPlan {
+    pub(crate) fn empty() -> Self {
+        Self {
+            paths: Vec::new(),
+            fences: Vec::new(),
+            identities: Vec::new(),
+        }
+    }
+}
+
 pub(crate) async fn filter_unreferenced_proxy_raw_paths(
     connection: &mut sqlx::SqliteConnection,
     raw_paths: &[Option<String>],
     fallback_root: Option<&Path>,
-) -> Result<Vec<Option<String>>> {
+) -> Result<ProxyRawDeletionPlan> {
     let candidates = raw_paths
         .iter()
         .flatten()
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    let mut unreferenced = Vec::with_capacity(candidates.len());
+    let mut plan = ProxyRawDeletionPlan {
+        paths: Vec::with_capacity(candidates.len()),
+        fences: Vec::new(),
+        identities: Vec::new(),
+    };
+    let mut locked_parents = std::collections::BTreeSet::new();
     for path in candidates {
+        let existing_paths = resolved_raw_path_read_candidates(&path, fallback_root)
+            .into_iter()
+            .filter(|candidate| {
+                std::fs::metadata(candidate)
+                    .map(|metadata| metadata.file_type().is_file())
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        let mut fence_available = true;
+        for candidate in &existing_paths {
+            let parent = candidate
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            if locked_parents.contains(&parent) {
+                continue;
+            }
+            match retention_archive_file_try_lock(candidate) {
+                Ok(fence) => {
+                    locked_parents.insert(parent);
+                    plan.fences.push(fence);
+                }
+                Err(error) => {
+                    warn!(
+                        path = %candidate.display(),
+                        error = %error,
+                        "deferring raw deletion while the raw directory fence is busy"
+                    );
+                    fence_available = false;
+                    break;
+                }
+            }
+        }
+        if !fence_available {
+            // The transaction may still release the owning row. Keep the path in the
+            // inventory-reset signal so the reconciler can retry it after the writer drains.
+            plan.paths.push(Some(path));
+            continue;
+        }
+        for candidate in &existing_paths {
+            if let Ok(metadata) = std::fs::metadata(candidate)
+                && metadata.file_type().is_file()
+            {
+                plan.identities.push(ProxyRawFileIdentity {
+                    path: candidate.clone(),
+                    identity: retention_raw_file_identity(&metadata),
+                    byte_size: metadata.len(),
+                });
+            }
+        }
         let mut referenced = 0;
         for ledger_path in raw_path_ledger_aliases(&path, fallback_root) {
             referenced = sqlx::query_scalar::<_, i64>(
@@ -973,8 +1050,8 @@ pub(crate) async fn filter_unreferenced_proxy_raw_paths(
             }
         }
         if referenced == 0 {
-            unreferenced.push(Some(path));
+            plan.paths.push(Some(path));
         }
     }
-    Ok(unreferenced)
+    Ok(plan)
 }

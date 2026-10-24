@@ -35,6 +35,90 @@ describe("demo MSW handlers", () => {
     await expect(response.json()).resolves.toEqual({ backend: "0.2.0", frontend: "0.2.0" });
   });
 
+  it("persists prompt-cache materialization control in the demo memory model", async () => {
+    const initial = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
+    expect(await initial.json()).toMatchObject({ enabled: true, queuePending: 7 });
+
+    const paused = await fetch("http://demo.invalid/api/system/prompt-cache/materialization", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(await paused.json()).toMatchObject({
+      enabled: false,
+      phase: "stats_rebuild",
+      completedKeys: 312,
+      queuePending: 7,
+      progressPercent: 74.6,
+      estimatedRemainingMs: 126_000,
+      lastStatus: "disabled",
+      suspensionReason: "manual_pause",
+    });
+
+    const managedPaused = await fetch("http://demo.invalid/api/system/managed-tasks");
+    const managedPausedPayload = (await managedPaused.json()) as Array<{
+      taskKey: string;
+      enabled: boolean;
+    }>;
+    expect(
+      managedPausedPayload.find((task) => task.taskKey === "prompt_cache_materialization"),
+    ).toMatchObject({ enabled: false });
+
+    const invalidManagedPatch = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: null }),
+      },
+    );
+    expect(invalidManagedPatch.status).toBe(400);
+    await expect(invalidManagedPatch.json()).resolves.toEqual({
+      error: "enabled must be a boolean",
+    });
+
+    const unchangedAfterInvalidPatch = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+    );
+    expect((await unchangedAfterInvalidPatch.json()).task).toMatchObject({ enabled: false });
+
+    const managedResumed = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      },
+    );
+    expect((await managedResumed.json()).task).toMatchObject({ enabled: true });
+
+    const refreshed = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
+    expect(await refreshed.json()).toMatchObject({ enabled: true, lastStatus: "running" });
+
+    const managedPausedAgain = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: false }),
+      },
+    );
+    expect((await managedPausedAgain.json()).task).toMatchObject({ enabled: false });
+
+    demoModel.reset();
+    const reset = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
+    expect(await reset.json()).toMatchObject({ enabled: true, lastStatus: "running" });
+
+    const managedReset = await fetch("http://demo.invalid/api/system/managed-tasks");
+    const managedResetPayload = (await managedReset.json()) as Array<{
+      taskKey: string;
+      enabled: boolean;
+    }>;
+    expect(
+      managedResetPayload.find((task) => task.taskKey === "prompt_cache_materialization"),
+    ).toMatchObject({ enabled: true });
+  });
+
   it("exposes synthetic observability destinations without a performance database", async () => {
     const response = await fetch("http://demo.invalid/api/system/observability");
     const payload = await response.json();
@@ -608,14 +692,23 @@ describe("demo MSW handlers", () => {
       effectivePolicy?: string;
       policySource?: string;
       executionClass?: string | null;
+      measurementCapabilities?: {
+        discovered?: { unit?: string | null };
+      };
     }>;
 
-    expect(tasks).toHaveLength(39);
+    expect(tasks).toHaveLength(45);
     expect(tasks.filter((task) => task.taskKey.startsWith("startup_backfill.")).length).toBe(16);
     expect(tasks.filter((task) => task.isManual).length).toBe(6);
     expect(tasks.map((task) => task.taskKey)).toEqual(
       expect.arrayContaining([
         "retention_archive",
+        "pool_upstream_attempt_archive",
+        "forward_proxy_attempt_archive",
+        "invocation_detail_prune",
+        "quota_snapshot_compaction",
+        "model_route_expiry",
+        "task_run_history_cleanup",
         "prompt_cache_materialization",
         "startup_backfill",
         "startup_backfill.proxy_usage",
@@ -630,6 +723,15 @@ describe("demo MSW handlers", () => {
           policySource: "运行配置",
           effectivePolicy: "启动检查与保留策略周期；按配置判断是否有工作",
           executionClass: "maintenance_retention",
+        }),
+        expect.objectContaining({
+          taskKey: "pool_upstream_attempt_archive",
+          policySource: "系统默认",
+          effectivePolicy: "300 秒独立巡检；候选、已提交数量按本 owner 单独统计",
+          executionClass: "maintenance_retention",
+          measurementCapabilities: expect.objectContaining({
+            discovered: expect.objectContaining({ unit: "pool attempt rows" }),
+          }),
         }),
         expect.objectContaining({
           taskKey: "summary_snapshot",

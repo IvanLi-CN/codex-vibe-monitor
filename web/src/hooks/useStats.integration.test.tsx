@@ -3,7 +3,7 @@ import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StatsResponse } from "../lib/api";
+import { ApiRequestError, type StatsResponse } from "../lib/api";
 import { clearSummaryRemountCache, useSummary } from "./useStats";
 
 const apiMocks = vi.hoisted(() => ({
@@ -94,11 +94,13 @@ function text(testId: string) {
 }
 
 function Probe({ window }: { window: string }) {
-  const { summary, isLoading } = useSummary(window);
+  const { summary, isLoading, error, errorCode } = useSummary(window);
   return (
     <div>
       <div data-testid="total">{String(summary?.totalCount ?? 0)}</div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
+      <div data-testid="error">{error ?? ""}</div>
+      <div data-testid="error-code">{errorCode ?? ""}</div>
     </div>
   );
 }
@@ -141,6 +143,86 @@ describe("useSummary", () => {
     expect(topicMocks.lastEnabled).toBe(false);
     expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
     expect(text("total")).toBe("7");
+  });
+
+  it("exposes coded HTTP recovery failures to the dashboard", async () => {
+    apiMocks.fetchSummary.mockRejectedValue(
+      new ApiRequestError(503, "Request failed: 503", {
+        code: "summary_recovery_pending",
+      }),
+    );
+
+    render(<Probe window="yesterday" />);
+    await flushAsync();
+
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toContain("503");
+    expect(text("error-code")).toBe("summary_recovery_pending");
+    expect(text("total")).toBe("0");
+  });
+
+  it("retries a pending HTTP recovery summary until it becomes exact", async () => {
+    vi.useFakeTimers();
+    apiMocks.fetchSummary
+      .mockRejectedValueOnce(
+        new ApiRequestError(503, "Request failed: 503", {
+          code: "summary_recovery_pending",
+        }),
+      )
+      .mockResolvedValueOnce({
+        totalCount: 9,
+        successCount: 8,
+        failureCount: 1,
+        totalCost: 0.9,
+        totalTokens: 900,
+      } as StatsResponse);
+
+    try {
+      render(<Probe window="yesterday" />);
+      await flushAsync();
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
+      expect(text("error-code")).toBe("summary_recovery_pending");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(2);
+      expect(text("total")).toBe("9");
+      expect(text("error-code")).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps polling pending recovery at the capped delay", async () => {
+    vi.useFakeTimers();
+    const pending = () =>
+      new ApiRequestError(503, "Request failed: 503", {
+        code: "summary_recovery_pending",
+      });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      apiMocks.fetchSummary.mockRejectedValueOnce(pending());
+    }
+    apiMocks.fetchSummary.mockResolvedValueOnce({
+      totalCount: 10,
+      successCount: 9,
+      failureCount: 1,
+    } as StatsResponse);
+
+    try {
+      render(<Probe window="yesterday" />);
+      await flushAsync();
+      for (const delayMs of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000]) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delayMs);
+        });
+      }
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(7);
+      expect(text("total")).toBe("10");
+      expect(text("error-code")).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses HTTP for previous7d summaries", async () => {

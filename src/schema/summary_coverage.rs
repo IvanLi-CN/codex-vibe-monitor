@@ -738,6 +738,145 @@ pub(super) async fn ensure_summary_coverage_schema(pool: &Pool<Sqlite>) -> Resul
     .await
     .context("failed to ensure summary_all_time_projection_usage_checkpoint table existence")?;
 
+    // Dashboard day-boundary recovery is an independent, additive read model.  The checkpoint
+    // and staging tables contain only aggregate values, a keyset cursor, generation-fence
+    // inputs, and bounded record identities; canonical invocation payloads remain in place.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_compacted_source_recovery_checkpoint (
+            scope TEXT PRIMARY KEY,
+            format_version INTEGER NOT NULL DEFAULT 1,
+            time_zone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+            range_start TEXT NOT NULL,
+            range_end TEXT NOT NULL,
+            window_ranges_json TEXT NOT NULL DEFAULT '[]',
+            cursor_occurred_at TEXT,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            target_live_high_watermark_id INTEGER NOT NULL DEFAULT 0,
+            target_rollup_live_cursor INTEGER NOT NULL DEFAULT 0,
+            target_account_rollup_live_cursor INTEGER,
+            target_manifest_high_watermark_id INTEGER,
+            target_coverage_revision INTEGER NOT NULL DEFAULT 0,
+            target_account_coverage_revision INTEGER NOT NULL DEFAULT 0,
+            target_terminal_sequence INTEGER NOT NULL DEFAULT 0,
+            list_limit_max INTEGER NOT NULL DEFAULT 0,
+            processed_rows INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'pending',
+            last_error_code TEXT,
+            last_error_message TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_compacted_source_recovery_checkpoint table existence")?;
+    for (column, definition) in [("window_ranges_json", "TEXT NOT NULL DEFAULT '[]'")] {
+        ensure_column_with_definition(
+            pool,
+            "summary_compacted_source_recovery_checkpoint",
+            column,
+            definition,
+        )
+        .await
+        .with_context(|| {
+            format!("failed to ensure compacted source recovery checkpoint column {column}")
+        })?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_compacted_source_recovery_aggregate (
+            scope TEXT NOT NULL,
+            window_name TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL DEFAULT 0,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost REAL NOT NULL DEFAULT 0,
+            non_success_cost REAL NOT NULL DEFAULT 0,
+            non_success_tokens INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (scope, window_name, upstream_account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_compacted_source_recovery_aggregate table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_compacted_source_recovery_usage (
+            scope TEXT NOT NULL,
+            window_name TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL DEFAULT 0,
+            normalized_model TEXT NOT NULL,
+            normalized_reasoning_effort TEXT NOT NULL DEFAULT '',
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_input REAL NOT NULL DEFAULT 0,
+            cost_cache_write REAL NOT NULL DEFAULT 0,
+            cost_cache_read REAL NOT NULL DEFAULT 0,
+            cost_output REAL NOT NULL DEFAULT 0,
+            cost_reasoning REAL NOT NULL DEFAULT 0,
+            cost_unknown REAL NOT NULL DEFAULT 0,
+            has_cost INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (
+                scope,
+                window_name,
+                upstream_account_id,
+                normalized_model,
+                normalized_reasoning_effort
+            )
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_compacted_source_recovery_usage table existence")?;
+    for (column, definition) in [
+        ("cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("cost_input", "REAL NOT NULL DEFAULT 0"),
+        ("cost_cache_write", "REAL NOT NULL DEFAULT 0"),
+        ("cost_cache_read", "REAL NOT NULL DEFAULT 0"),
+        ("cost_output", "REAL NOT NULL DEFAULT 0"),
+        ("cost_reasoning", "REAL NOT NULL DEFAULT 0"),
+        ("cost_unknown", "REAL NOT NULL DEFAULT 0"),
+        ("has_cost", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column_with_definition(
+            pool,
+            "summary_compacted_source_recovery_usage",
+            column,
+            definition,
+        )
+        .await
+        .with_context(|| {
+            format!("failed to ensure compacted source recovery usage column {column}")
+        })?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_compacted_source_recovery_record (
+            scope TEXT NOT NULL,
+            window_name TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL DEFAULT 0,
+            row_id INTEGER NOT NULL,
+            invoke_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            PRIMARY KEY (scope, window_name, upstream_account_id, row_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_compacted_source_recovery_record table existence")?;
+
     Ok(())
 }
 

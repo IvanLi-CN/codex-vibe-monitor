@@ -182,6 +182,7 @@ async fn retention_task_local_rejects_source_change_after_archive_artifact_proof
 async fn retention_task_local_reuses_proven_month_archive_after_source_budget_stop() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reuse-proven-month").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -276,6 +277,7 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
 async fn retention_task_local_rejects_persisted_proof_after_source_change() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reject-persisted-proof").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -336,6 +338,7 @@ async fn retention_task_local_rejects_persisted_proof_after_source_change() {
 async fn retention_task_local_rejects_persisted_proof_when_archive_id_set_is_not_exact() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reject-archive-id-set").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -413,6 +416,7 @@ async fn retention_task_local_rejects_persisted_proof_when_archive_id_set_is_not
 async fn retention_task_local_rejects_persisted_proof_after_archive_metadata_change() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reject-archive-metadata").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -490,6 +494,7 @@ async fn retention_task_local_rejects_persisted_proof_after_archive_metadata_cha
 async fn retention_task_local_budget_stop_during_proof_reuse_defers_without_deletion() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reuse-proof-budget").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -555,6 +560,7 @@ async fn retention_task_local_budget_stop_during_proof_reuse_defers_without_dele
 async fn retention_task_local_rejects_persisted_proof_when_final_marker_is_missing() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reject-missing-final-proof").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -615,6 +621,7 @@ async fn retention_task_local_rejects_persisted_proof_when_final_marker_is_missi
 async fn retention_task_local_rejects_persisted_proof_when_proof_coverage_changes() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reject-coverage-change").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -1702,6 +1709,7 @@ async fn retention_task_local_older_same_month_append_preserves_archive_expiry()
                 select_sql,
                 "2020-02-01 00:00:00".to_string(),
                 false,
+                None,
             ),
         )
         .await
@@ -1742,6 +1750,7 @@ async fn retention_task_local_older_same_month_append_preserves_archive_expiry()
 async fn retention_task_local_month_batch_reselects_live_rows_without_main_schema_changes() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-month-batches").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -1910,6 +1919,7 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
 async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-page-resume").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -2022,6 +2032,7 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
 async fn retention_task_local_first_manifest_insert_preserves_predecessor_identity() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-predecessor-identity").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -2149,6 +2160,7 @@ async fn retention_task_local_first_manifest_insert_preserves_predecessor_identi
 async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-page-proof-replay").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -2253,6 +2265,7 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
 async fn retention_task_local_month_snapshot_rebuilds_semantically_stale_page() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-page-semantic-rebuild").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -2345,6 +2358,7 @@ async fn retention_task_local_month_snapshot_rebuilds_semantically_stale_page() 
 async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-page-prefix-rebuild").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
@@ -2435,8 +2449,9 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
 
 #[tokio::test]
 async fn retention_task_local_rebuilds_published_live_copy_and_cleans_failed_work() {
-    let (pool, config, temp_dir) =
+    let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-failed-reselection").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     seed_task_batch(&pool, &occurred_at, 0, 3).await;
     let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM codex_invocations ORDER BY id")
@@ -2487,7 +2502,9 @@ async fn retention_task_local_rebuilds_published_live_copy_and_cleans_failed_wor
 
 #[tokio::test]
 async fn retention_task_local_bad_month_file_keeps_source_and_removes_temporary_files() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("task-local-corrupt-file").await;
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-corrupt-file").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     seed_task_batch(&pool, &occurred_at, 0, 3).await;
     let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
@@ -2572,6 +2589,7 @@ async fn retention_task_local_attempt_failure_reports_prior_committed_invocation
 async fn retention_task_local_isolates_old_prepared_rows_without_resuming_their_ids() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-old-prepared").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
@@ -2747,6 +2765,7 @@ async fn retention_task_local_month_writer_reads_the_shared_memory_source() {
 #[ignore = "shared-testbox 32 MiB filesystem acceptance"]
 async fn retention_task_local_low_disk_space_keeps_live_sources() {
     let (pool, mut config, temp_dir) = retention_test_pool_and_config("task-local-low-disk").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     config.archive_dir = PathBuf::from(
         std::env::var_os("CVM_RETENTION_LIMITED_ARCHIVE_DIR")
             .expect("explicit limited test filesystem"),

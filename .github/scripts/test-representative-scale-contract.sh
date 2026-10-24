@@ -16,12 +16,12 @@ grep -Fq 'install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest'
 grep -Fq 'ENTRYPOINT ["bash", ".github/scripts/run-backend-tests.sh"]' "$dockerfile"
 grep -Fq 'FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v2"' "$test_file"
 grep -Fq 'summary_representative_scale_acceptance' "$test_file"
-grep -Fq 'nextest_args=(nextest run)' "$runner"
+grep -Fq 'run_nextest "${nextest_args[@]}"' "$runner"
 grep -Fq 'backend-tests-representative-scale:' "$workflow_file"
 grep -Fq '    needs: backend-test-archive' "$workflow_file"
 grep -Fq 'name: backend-test-archive-${{ github.run_id }}' "$workflow_file"
 grep -Fq 'overwrite: true' "$workflow_file"
-grep -Fq -- '--archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter' "$workflow_file"
+grep -Fq -- '--archive-dir "$RUNNER_TEMP/backend-test-extract" --test-filter' "$workflow_file"
 if grep -Fq 'docker run --rm' "$workflow_file"; then
   echo "representative-scale acceptance must replay the backend archive on its matching Ubuntu runner" >&2
   exit 1

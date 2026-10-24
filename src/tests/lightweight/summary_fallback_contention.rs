@@ -23,7 +23,7 @@ async fn summary_projection_bootstrap_fallback_reopens_only_for_coverage_changes
 }
 
 #[tokio::test]
-async fn summary_projection_bootstrap_fallback_recovers_compacted_live_tail() {
+async fn summary_projection_compaction_stays_pending_until_staged_recovery_publishes() {
     assert_bootstrap_fallback_reopens_only_for_coverage_changes(TailRecoveryFixture::Compacted)
         .await;
 }
@@ -198,24 +198,57 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
         0,
         "a live terminal must use bounded reconciliation while historical proof is unchanged"
     );
-    let Json(recent) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("1d".to_string()),
-            limit: None,
-            time_zone: Some("UTC".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("new live terminal remains exact beside a historical fallback gap");
-    let expected_count = if matches!(fixture, TailRecoveryFixture::ConcurrentTerminal) {
-        2
+    if matches!(fixture, TailRecoveryFixture::Compacted) {
+        let pending = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("today".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(pending, Err(ApiError::Unavailable(_))),
+            "compacted dashboard source must remain unavailable until staged recovery publishes"
+        );
+        run_compacted_source_recovery_until_complete_for_test(state.as_ref())
+            .await
+            .expect("complete staged compacted source recovery");
+        let Json(recent) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("today".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("published staged recovery remains exact");
+        assert_eq!(recent.total_count, 1);
+        assert_eq!(recent.total_tokens, 19);
     } else {
-        1
-    };
-    assert_eq!(recent.total_count, expected_count);
-    assert_eq!(recent.total_tokens, expected_count * 19);
+        let Json(recent) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("new live terminal remains exact beside a historical fallback gap");
+        let expected_count = if matches!(fixture, TailRecoveryFixture::ConcurrentTerminal) {
+            2
+        } else {
+            1
+        };
+        assert_eq!(recent.total_count, expected_count);
+        assert_eq!(recent.total_tokens, expected_count * 19);
+    }
     let historical = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {

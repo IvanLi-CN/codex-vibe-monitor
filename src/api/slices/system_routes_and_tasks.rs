@@ -156,8 +156,19 @@ pub(crate) struct SystemStatusResponse {
     pub(crate) projection_health: SystemProjectionHealth,
     pub(crate) raw_metrics_health: SystemRawMetricsHealth,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) summary_recovery: Option<SystemSummaryRecoveryStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) runtime_pressure_health: Option<SystemRuntimePressureHealth>,
     pub(crate) refreshed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemSummaryRecoveryStatus {
+    pub(crate) state: String,
+    pub(crate) processed_rows: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error_code: Option<String>,
 }
 
 const RAW_METRICS_PHYSICAL_COVERAGE_PARTIAL: &str = "partial";
@@ -511,7 +522,9 @@ impl From<SystemTaskRunRow> for SystemTaskRunResponse {
             trigger_kind: value.trigger_kind,
             status: value.status,
             summary: value.summary,
-            detail: value.detail,
+            detail: value
+                .detail
+                .map(|detail| crate::maintenance_store::sanitize_task_detail(&detail)),
             started_at: value.started_at,
             finished_at: value.finished_at,
             duration_ms: value.duration_ms,
@@ -1096,6 +1109,25 @@ async fn load_system_status_snapshot_uncached(
     })
     .await?;
 
+    let summary_recovery = await_system_status_refresh_operation(cancellation, async {
+        Ok(sqlx::query_as::<_, (String, i64, Option<String>)>(
+            "SELECT state, processed_rows, last_error_code \
+               FROM summary_compacted_source_recovery_checkpoint \
+              WHERE scope = ?1",
+        )
+        .bind(crate::api::SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+        .fetch_optional(&state.pool)
+        .await?
+        .map(
+            |(state, processed_rows, last_error_code)| SystemSummaryRecoveryStatus {
+                state,
+                processed_rows: processed_rows.max(0) as u64,
+                last_error_code,
+            },
+        ))
+    })
+    .await?;
+
     let archived = await_system_status_refresh_operation(cancellation, async {
         Ok(sqlx::query_as::<_, SystemArchiveAggRow>(
             r#"
@@ -1250,6 +1282,7 @@ async fn load_system_status_snapshot_uncached(
                     &raw_metrics.inventory_state,
                 ),
             },
+            summary_recovery,
             runtime_pressure_health: Some(runtime_pressure_health),
             refreshed_at: format_utc_iso(Utc::now()),
         },
@@ -1767,6 +1800,7 @@ pub(crate) async fn finish_system_task_run_reliably(
             .min(i64::MAX as u128) as i64;
         let recovery_finish = BatchedSystemTaskFinish {
             run_id: handle.id,
+            task_key: handle.task_kind.as_str().to_string(),
             task_kind: handle.task_kind,
             trigger_kind: handle.trigger_kind.clone(),
             status,
@@ -1774,6 +1808,9 @@ pub(crate) async fn finish_system_task_run_reliably(
             detail: detail.clone(),
             finished_at: finished_at.clone(),
             duration_ms,
+            completion: None,
+            core_completion: None,
+            details: None,
         };
         let status_text = status.as_str();
         let mut last_error = None;
@@ -1896,6 +1933,7 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .enqueue(SqliteBatchWrite::SystemTaskFinish(
             BatchedSystemTaskFinish {
                 run_id: handle.id,
+                task_key: handle.task_kind.as_str().to_string(),
                 task_kind: handle.task_kind,
                 trigger_kind: handle.trigger_kind.clone(),
                 status,
@@ -1903,6 +1941,9 @@ pub(crate) fn try_enqueue_system_task_run_finish(
                 detail,
                 finished_at,
                 duration_ms,
+                completion: None,
+                core_completion: None,
+                details: None,
             },
         ))
 }
@@ -3008,6 +3049,7 @@ mod runtime_pressure_health_tests {
                 other_files_bytes: 0,
                 projection_health: SystemProjectionHealth::default(),
                 raw_metrics_health: SystemRawMetricsHealth::default(),
+                summary_recovery: None,
                 runtime_pressure_health: None,
                 refreshed_at: String::new(),
             },

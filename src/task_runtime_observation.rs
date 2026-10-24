@@ -97,6 +97,12 @@ pub(crate) fn workload_sample(
                     .then_with(|| left.execution_uid.cmp(&right.execution_uid))
             })
             .cloned()
+            .map(|mut sample| {
+                sample.reason = sample
+                    .reason
+                    .map(|reason| crate::maintenance_store::sanitize_task_detail(&reason));
+                sample
+            })
     })
 }
 
@@ -215,7 +221,15 @@ pub(crate) fn mark_managed_maintenance_work_started() {
     let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
         if matches!(
             observation.inner.task_key.as_str(),
-            "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+            "retention_archive"
+                | "pool_upstream_attempt_archive"
+                | "forward_proxy_attempt_archive"
+                | "invocation_detail_prune"
+                | "quota_snapshot_compaction"
+                | "model_route_expiry"
+                | "task_run_history_cleanup"
+                | "invocation_identity_cleanup"
+                | "raw_orphan_sweep"
         ) {
             observation.mark_work_started();
         }
@@ -233,6 +247,17 @@ pub(crate) fn record_managed_task_processed_work(task_keys: &[&str], count: i64)
             } else {
                 observation.add_processed_work(count);
             }
+        }
+    });
+}
+
+pub(crate) fn record_managed_task_raw_files_removed(task_keys: &[&str], count: i64) {
+    if count < 0 {
+        return;
+    }
+    let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
+        if task_keys.contains(&observation.inner.task_key.as_str()) {
+            observation.add_raw_files_removed(count);
         }
     });
 }
@@ -276,6 +301,8 @@ struct ObservationLease {
     trigger_kind: String,
     started_clock: Instant,
     work_started_clock: Mutex<Option<Instant>>,
+    raw_files_removed: AtomicU64,
+    raw_files_observed: AtomicBool,
     ended: AtomicBool,
 }
 
@@ -402,6 +429,8 @@ impl TaskExecutionObservation {
                 trigger_kind: trigger_kind.to_string(),
                 started_clock,
                 work_started_clock: Mutex::new((!waiting_resources).then_some(started_clock)),
+                raw_files_removed: AtomicU64::new(0),
+                raw_files_observed: AtomicBool::new(false),
                 ended: AtomicBool::new(false),
             }),
         };
@@ -600,6 +629,34 @@ impl TaskExecutionObservation {
         );
     }
 
+    pub(crate) fn processed_work_value(&self) -> Option<i64> {
+        workload_observations().lock().ok().and_then(|samples| {
+            samples
+                .get(&format!(
+                    "{}:{}",
+                    self.inner.execution_uid, self.inner.task_key
+                ))
+                .and_then(|sample| sample.processed.as_ref().and_then(|metric| metric.value))
+        })
+    }
+
+    pub(crate) fn add_raw_files_removed(&self, count: i64) {
+        self.inner.raw_files_observed.store(true, Ordering::Relaxed);
+        self.inner
+            .raw_files_removed
+            .fetch_add(count.max(0) as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn raw_files_removed_value(&self) -> Option<i64> {
+        self.inner
+            .raw_files_observed
+            .load(Ordering::Relaxed)
+            .then(|| {
+                i64::try_from(self.inner.raw_files_removed.load(Ordering::Relaxed))
+                    .unwrap_or(i64::MAX)
+            })
+    }
+
     pub(crate) fn set_processed_work_if_unset(&self) {
         update_workload_sample(
             &self.inner.execution_uid,
@@ -750,7 +807,7 @@ impl TaskExecutionObservation {
                     sample.duration_ms = None;
                 }
                 if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
-                    sample.reason = Some(reason.to_string());
+                    sample.reason = Some(crate::maintenance_store::sanitize_task_detail(reason));
                 } else if status == "unknown" {
                     sample.reason = Some("execution end is unknown".to_string());
                 } else if status == "skipped" {
@@ -836,7 +893,7 @@ impl TaskWorkloadObservation {
                 sample.duration_ms = None;
             }
             if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
-                sample.reason = Some(reason.to_string());
+                sample.reason = Some(crate::maintenance_store::sanitize_task_detail(reason));
             } else if status == "skipped" {
                 sample.reason = Some("confirmed skip before measured work".to_string());
             } else if processed_count.is_none() {
@@ -1150,7 +1207,8 @@ mod tests {
             "processing",
             Some(43),
         );
-        let result: Result<(), &str> = Err("subscription refresh failed");
+        let result: Result<(), &str> =
+            Err("upstream rejected https://alice:pass;word,more@example.com/v1/data");
 
         observation.finish_from_result(&result);
 
@@ -1159,7 +1217,7 @@ mod tests {
         assert_eq!(sample.status, "failed");
         assert_eq!(
             sample.reason.as_deref(),
-            Some("subscription refresh failed")
+            Some("upstream rejected https://[REDACTED]@example.com/v1/data")
         );
     }
 
@@ -1337,6 +1395,26 @@ mod tests {
             Some("run-window")
         );
         assert_eq!(sample.status, "success");
+        observation.finish_with_status("success");
+    }
+
+    #[test]
+    fn managed_observation_retains_incremental_raw_file_facts() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let observation = TaskExecutionObservation::begin(
+            "pool_upstream_attempt_archive",
+            "Pool archive",
+            "schedule",
+            Some("maintenance_retention"),
+            "processing",
+        );
+
+        assert_eq!(observation.raw_files_removed_value(), None);
+        observation.add_raw_files_removed(2);
+        observation.add_raw_files_removed(3);
+        assert_eq!(observation.raw_files_removed_value(), Some(5));
+
         observation.finish_with_status("success");
     }
 

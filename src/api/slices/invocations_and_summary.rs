@@ -46,6 +46,7 @@ mod summary_observability;
 #[path = "../../tests/lightweight/summary_fallback_contention.rs"]
 mod summary_projection_fallback_contention;
 mod summary_projection_lifecycle;
+mod summary_recovery;
 
 #[cfg(test)]
 pub(crate) use summary_live_tail_transaction::{
@@ -127,6 +128,17 @@ pub(crate) use summary_projection_lifecycle::{
     spawn_summary_coverage_recovery_maintenance,
 };
 
+pub(crate) use summary_recovery::{
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_ERROR_MESSAGE_BYTES,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES, SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE, SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET, SUMMARY_RECOVERY_FAILED_CODE,
+    SummaryCompactedSourceRecoveryState, SummaryDashboardRecoveryEntry,
+    SummaryDashboardRecoverySnapshot, dashboard_recovery_response_if_ready,
+    summary_source_gap_unavailable_error,
+};
+
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
     hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
@@ -139,6 +151,8 @@ pub(crate) use summary_projection_lifecycle::{
     note_summary_projection_historical_identity_hydration,
     renew_summary_projection_freshness_if_generation_matches,
     renew_summary_projection_freshness_if_live_tail_matches,
+    run_compacted_source_recovery_one_page_for_test,
+    run_compacted_source_recovery_until_complete_for_test,
     store_summary_live_tail_reconciliation_checkpoint,
     summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
     summary_coverage_recovery_requires_second_v2_turn,
@@ -18083,7 +18097,7 @@ impl UsageBreakdownAccumulator {
         }
     }
 
-    fn into_response(self) -> UsageBreakdownResponse {
+    pub(crate) fn into_response(self) -> UsageBreakdownResponse {
         let mut models = self
             .models
             .into_iter()
@@ -30378,18 +30392,24 @@ async fn fetch_summary_inner(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-        let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
-            projection.as_ref(),
-            &gaps,
-            &deltas,
-            &window,
-            reporting_tz,
-            params.upstream_account_id,
-        );
+        let (source_gap_pending, source_gap_unavailable, source_gap_recovery_applicable) =
+            summary_source_gap_status(
+                projection.as_ref(),
+                &gaps,
+                &deltas,
+                &window,
+                reporting_tz,
+                params.upstream_account_id,
+            );
         if source_gap_unavailable {
-            return Err(ApiError::unavailable(anyhow!(
-                "summary source journal has an unproven change for the requested selection"
-            )));
+            return Err(summary_source_gap_unavailable_error(
+                state.as_ref(),
+                &window,
+                reporting_tz,
+                source_gap_recovery_applicable,
+                "summary source journal has an unproven change for the requested selection",
+            )
+            .await);
         }
         let delta_gap_pending = summary_delta_gap_affects_selection(
             projection.as_ref(),
@@ -30439,19 +30459,15 @@ async fn fetch_summary_inner(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
-        projection.as_ref(),
-        &gaps,
-        &deltas,
-        &window,
-        reporting_tz,
-        account_id,
-    );
-    if source_gap_unavailable {
-        return Err(ApiError::unavailable(anyhow!(
-            "summary source journal has an unproven change for the requested selection"
-        )));
-    }
+    let (source_gap_pending, source_gap_unavailable, source_gap_recovery_applicable) =
+        summary_source_gap_status(
+            projection.as_ref(),
+            &gaps,
+            &deltas,
+            &window,
+            reporting_tz,
+            account_id,
+        );
     let delta_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
@@ -30463,6 +30479,31 @@ async fn fetch_summary_inner(
     );
     if matches!(window, SummaryWindow::Current(_)) && delta_gap_pending {
         return Err(ApiError::unavailable(anyhow!("current rank unproven")));
+    }
+    if (!source_gap_pending || source_gap_recovery_applicable)
+        && !delta_gap_pending
+        && let Some(response) = dashboard_recovery_response_if_ready(
+            state.as_ref(),
+            projection.as_ref(),
+            &window,
+            reporting_tz,
+            account_id,
+            &deltas,
+            source_gap_pending && source_gap_recovery_applicable,
+        )
+        .await?
+    {
+        return Ok(Json(response));
+    }
+    if source_gap_unavailable {
+        return Err(summary_source_gap_unavailable_error(
+            state.as_ref(),
+            &window,
+            reporting_tz,
+            source_gap_recovery_applicable,
+            "summary source journal has an unproven change for the requested selection",
+        )
+        .await);
     }
     let delta_overlay_affects_selection = summary_delta_affects_selection(
         projection.as_ref(),
@@ -33952,13 +33993,14 @@ mod request_compression_query_tests {
             .summary_projection()
             .await
             .expect("published projection");
+        let historical_gap_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
         let gap = DeltaGapProof {
             cursor: SummaryDeltaCursor(4),
             terminal_sequence: Some(4),
             source_gap: false,
             compaction_gap: false,
             upstream_account_id: Some(42),
-            occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
+            occurred_at: historical_gap_at,
             row_id: Some(i64::MAX),
             invoke_id: Some("summary-delta-gap-tail".to_string()),
         };
@@ -34050,6 +34092,21 @@ mod request_compression_query_tests {
             ),
             "a source proof must not be downgraded to a terminal-only gap"
         );
+        let mut compaction_gap = gap.clone();
+        compaction_gap.source_gap = true;
+        compaction_gap.compaction_gap = true;
+        let mut strict_scoped_gap = compaction_gap.clone();
+        strict_scoped_gap.compaction_gap = false;
+        strict_scoped_gap.upstream_account_id = Some(42);
+        let (pending, unavailable, recovery_applicable) = summary_source_gap_status(
+            projection.as_ref(),
+            &[compaction_gap, strict_scoped_gap],
+            &[],
+            &SummaryWindow::PreviousFullDays(7),
+            Shanghai,
+            None,
+        );
+        assert!(pending && unavailable && !recovery_applicable);
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),

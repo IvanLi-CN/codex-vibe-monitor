@@ -5,14 +5,13 @@ use crate::{AppConfig, OnceCell, Result, Utc, anyhow, format_utc_iso_millis};
 use chrono::{Datelike, Duration as ChronoDuration, Timelike};
 use serde::Serialize;
 use sqlx::{
-    FromRow, Pool, Sqlite,
+    Executor, FromRow, Pool, QueryBuilder, Sqlite,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
     collections::HashSet,
     path::PathBuf,
     str::FromStr,
-    sync::atomic::{AtomicI64, Ordering},
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -22,14 +21,16 @@ const MIN_INTERVAL_SECS: i64 = 60;
 const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
 const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
-const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+const TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS: i64 = 64;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
 const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
 const MANAGED_TASK_ENQUEUE_BATCH_SIZE: i64 = 32;
 const MANAGED_TASK_CLAIM_BATCH_SIZE: i64 = 32;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
+const RETENTION_OWNER_SCHEDULE_MARKER: &str = "retention_owner_schedule_v2";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
+const DEFAULT_RETENTION_OWNER_INTERVAL_SECS: i64 = 300;
 const OWNERSHIP_INITIALIZATION_MARKER: &str = "retention_maintenance_ownership_v1";
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
@@ -62,6 +63,12 @@ type LegacyBackfillProgressRow = (
 );
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
     "invocation_identity_cleanup",
     "raw_orphan_sweep",
     "upstream_account_maintenance",
@@ -78,8 +85,23 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "raw_payload_metrics_inventory",
     "prompt_cache_materialization",
 ];
-static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn push_task_key_exclusion<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    column: &str,
+    excluded_task_keys: &'a [String],
+) {
+    if excluded_task_keys.is_empty() {
+        return;
+    }
+    query.push(" AND ").push(column).push(" NOT IN (");
+    let mut separated = query.separated(", ");
+    for task_key in excluded_task_keys {
+        separated.push_bind(task_key);
+    }
+    query.push(")");
+}
 
 pub(crate) async fn observe_store_write<T>(
     operation: StoreOperation,
@@ -154,11 +176,31 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     matches!(
         key,
         "retention_archive"
+            | "pool_upstream_attempt_archive"
+            | "forward_proxy_attempt_archive"
+            | "invocation_detail_prune"
+            | "quota_snapshot_compaction"
+            | "model_route_expiry"
+            | "task_run_history_cleanup"
             | "invocation_identity_cleanup"
             | "raw_orphan_sweep"
             | "prompt_cache_materialization"
     )
 }
+
+fn is_retention_owner_v2_task(key: &str) -> bool {
+    RETENTION_OWNER_V2_TASKS.contains(&key)
+}
+
+const RETENTION_OWNER_V2_TASKS: &[&str] = &[
+    "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
+];
 
 pub(crate) struct TaskExecutionLease {
     task_key: String,
@@ -176,23 +218,36 @@ impl Drop for TaskExecutionLease {
 
 pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecutionLease> {
     let canonical_task_key = canonical_task_execution_key(task_key);
-    #[cfg(test)]
-    {
-        Some(TaskExecutionLease {
-            task_key: canonical_task_key.to_string(),
-        })
+    let active = ACTIVE_TASK_EXECUTIONS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut active = active.lock().ok()?;
+    if !active.insert(canonical_task_key.to_string()) {
+        return None;
     }
-    #[cfg(not(test))]
-    {
-        let active = ACTIVE_TASK_EXECUTIONS.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut active = active.lock().ok()?;
-        if !active.insert(canonical_task_key.to_string()) {
-            return None;
-        }
-        Some(TaskExecutionLease {
-            task_key: canonical_task_key.to_string(),
-        })
-    }
+    Some(TaskExecutionLease {
+        task_key: canonical_task_key.to_string(),
+    })
+}
+
+pub(crate) fn active_task_execution_task_keys() -> Vec<String> {
+    let Some(active) = ACTIVE_TASK_EXECUTIONS.get() else {
+        return Vec::new();
+    };
+    let Ok(active) = active.lock() else {
+        return Vec::new();
+    };
+    let mut task_keys = MANAGED_TASKS
+        .iter()
+        .map(|(task_key, ..)| (*task_key).to_string())
+        .collect::<Vec<_>>();
+    task_keys.extend(
+        STARTUP_BACKFILL_TASKS
+            .iter()
+            .map(|suffix| format!("startup_backfill.{suffix}")),
+    );
+    task_keys
+        .into_iter()
+        .filter(|task_key| active.contains(canonical_task_execution_key(task_key)))
+        .collect()
 }
 
 fn canonical_task_execution_key(task_key: &str) -> &str {
@@ -207,6 +262,25 @@ fn canonical_task_execution_key(task_key: &str) -> &str {
 pub(crate) struct MaintenanceStore {
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) prompt_cache_materialization_control: Arc<PromptCacheMaterializationControl>,
+    #[cfg(test)]
+    settlement_interleaving_hooks: Arc<Mutex<Option<Arc<SettlementInterleavingTestHooks>>>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct SettlementInterleavingTestHooks {
+    pub(crate) finish_after_select: tokio::sync::Notify,
+    pub(crate) continue_finish: tokio::sync::Notify,
+    pub(crate) timeline_before_admission: tokio::sync::Notify,
+    pub(crate) timeline_transaction_started: tokio::sync::Notify,
+    pub(crate) continue_timeline: tokio::sync::Notify,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ManagedTaskHistoryCleanupResult {
+    pub(crate) selected: usize,
+    pub(crate) committed: usize,
+    pub(crate) has_more: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -735,6 +809,7 @@ fn restore_stored_task_workload_sample(
     sample.attempted_at = row.attempted_at;
     sample.sequence = sample.sequence.max(row.sequence.max(0) as u64);
     sample.status = row.status;
+    sample.reason = sample.reason.map(|reason| sanitize_task_detail(&reason));
     sample
 }
 
@@ -1153,7 +1228,49 @@ pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
     (
         "retention_archive",
         "数据保留与归档",
-        "按保留策略归档并清理历史数据",
+        "按固定源快照完成过期调用归档",
+        "interval",
+        false,
+    ),
+    (
+        "pool_upstream_attempt_archive",
+        "连接池上游尝试归档",
+        "独立归档过期的连接池上游请求尝试",
+        "interval",
+        false,
+    ),
+    (
+        "forward_proxy_attempt_archive",
+        "正向代理尝试归档",
+        "独立归档过期的正向代理尝试",
+        "interval",
+        false,
+    ),
+    (
+        "invocation_detail_prune",
+        "调用详情裁剪",
+        "独立裁剪保留窗口内已完成调用的详情数据",
+        "interval",
+        false,
+    ),
+    (
+        "quota_snapshot_compaction",
+        "配额快照压缩",
+        "独立压缩历史配额快照，仅保留每日代表记录",
+        "interval",
+        false,
+    ),
+    (
+        "model_route_expiry",
+        "模型路由过期",
+        "独立清理已过期的模型路由记录",
+        "interval",
+        false,
+    ),
+    (
+        "task_run_history_cleanup",
+        "任务运行历史清理",
+        "独立清理超出保留策略的任务运行历史",
         "interval",
         false,
     ),
@@ -1359,6 +1476,12 @@ pub(crate) fn task_title_for_observation(task_key: &str) -> String {
 pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
     match task_key {
         "retention_archive"
+        | "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup"
         | "invocation_identity_cleanup"
         | "raw_orphan_sweep"
         | "upstream_account_maintenance"
@@ -1387,6 +1510,12 @@ pub(crate) fn canonical_managed_task_key(task_key: &str) -> &str {
 
 const EDITABLE_SCHEDULE_TASKS: &[&str] = &[
     "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
     "invocation_identity_cleanup",
     "raw_orphan_sweep",
     "upstream_account_maintenance",
@@ -1401,7 +1530,13 @@ fn task_trigger_kinds(task_key: &str, trigger_mode: &str, is_manual: bool) -> Ve
         return vec!["manual".to_string()];
     }
     let kinds: &[&str] = match task_key {
-        "retention_archive" => &["startup", "interval", "catchup", "manual"],
+        "retention_archive"
+        | "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup" => &["startup", "interval", "catchup", "manual"],
         "upstream_account_maintenance" => &["startup", "interval"],
         "invocation_identity_cleanup" | "raw_orphan_sweep" => &["interval", "catchup", "manual"],
         "forward_proxy_subscription_refresh" => &["startup", "interval"],
@@ -1453,7 +1588,16 @@ fn task_policy_text(
         ),
         "retention_archive" => (
             "运行配置",
-            "启动检查与保留策略周期；按配置判断是否有工作".to_string(),
+            "启动检查与调用归档周期；按固定源快照判断是否有工作".to_string(),
+        ),
+        "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "model_route_expiry"
+        | "task_run_history_cleanup" => (
+            "系统默认",
+            "300 秒独立巡检；候选、已提交数量按本 owner 单独统计".to_string(),
         ),
         "forward_proxy_subscription_refresh" => {
             ("系统默认", "启动刷新与固定检查间隔：60 秒".to_string())
@@ -1534,6 +1678,35 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
             pending: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
             discovered: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
             processed: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
+        };
+    }
+
+    let owner_scope = match task_key {
+        "pool_upstream_attempt_archive" => Some((
+            "pool attempt rows",
+            "pool_upstream_request_attempts:retention_policy",
+        )),
+        "forward_proxy_attempt_archive" => Some((
+            "forward proxy attempt rows",
+            "forward_proxy_attempts:retention_policy",
+        )),
+        "invocation_detail_prune" => Some((
+            "invocation rows",
+            "codex_invocation_details:retention_policy",
+        )),
+        "quota_snapshot_compaction" => Some((
+            "quota snapshot rows",
+            "codex_quota_snapshots:retention_policy",
+        )),
+        "model_route_expiry" => Some(("model route rows", "model_routes:expiry")),
+        "task_run_history_cleanup" => Some(("task-run rows", "task_runs:history_retention")),
+        _ => None,
+    };
+    if let Some((unit, scope)) = owner_scope {
+        return TaskMeasurementCapabilities {
+            pending: metric_capability(false, None, None),
+            discovered: metric_capability(true, Some(unit), Some(scope)),
+            processed: metric_capability(true, Some(unit), Some(scope)),
         };
     }
 
@@ -1942,8 +2115,14 @@ fn cron_day_matches(dom_field: &str, dow_field: &str, candidate: chrono::DateTim
 pub(crate) fn sanitize_task_detail(value: &str) -> String {
     let mut sanitized = value.replace(['\r', '\n'], " ");
     for marker in [
+        "Bearer ",
         "Authorization:",
         "authorization=",
+        "X-API-Key:",
+        "x-api-key=",
+        "api-key:",
+        "api-key=",
+        "api_key:",
         "api_key=",
         "access_token=",
         "token=",
@@ -1955,13 +2134,53 @@ pub(crate) fn sanitize_task_detail(value: &str) -> String {
             let value_start = start + marker.len();
             let value_slice = &sanitized[value_start..];
             let secret_start = value_start + value_slice.len() - value_slice.trim_start().len();
-            let value_end = sanitized[secret_start..]
-                .find(|character: char| {
-                    character.is_whitespace() || character == ',' || character == ';'
-                })
-                .map_or(sanitized.len(), |offset| secret_start + offset);
+            let value_end = if marker.eq_ignore_ascii_case("Authorization:")
+                || marker.eq_ignore_ascii_case("authorization=")
+            {
+                sanitized.len()
+            } else {
+                sanitized[secret_start..]
+                    .find(|character: char| {
+                        character.is_whitespace() || character == ',' || character == ';'
+                    })
+                    .map_or(sanitized.len(), |offset| secret_start + offset)
+            };
             sanitized.replace_range(start..value_end, "[REDACTED]");
         }
+    }
+    let mut search_from = 0;
+    while let Some(relative_separator) = sanitized[search_from..].find("://") {
+        let separator = search_from + relative_separator;
+        let authority_start = separator + 3;
+        let authority_limit = sanitized[authority_start..]
+            .char_indices()
+            .find_map(|(offset, character)| {
+                let starts_adjacent_url = character == ',' && {
+                    let next = &sanitized[authority_start + offset + 1..];
+                    next.starts_with("http://") || next.starts_with("https://")
+                };
+                (character.is_whitespace()
+                    || character == '/'
+                    || character == '?'
+                    || character == '#'
+                    || starts_adjacent_url)
+                    .then_some(authority_start + offset)
+            })
+            .unwrap_or(sanitized.len());
+        let authority_end = sanitized[authority_start..authority_limit]
+            .find("://")
+            .map_or(authority_limit, |offset| authority_start + offset);
+        let Some(user_info_end) = sanitized[authority_start..authority_end].rfind('@') else {
+            search_from = authority_end;
+            continue;
+        };
+        if user_info_end == 0 {
+            search_from = authority_start + 1;
+            continue;
+        }
+        let user_info_end = authority_start + user_info_end + 1;
+        sanitized.replace_range(authority_start..user_info_end, "[REDACTED]@");
+        search_from = authority_start + "[REDACTED]@".len();
     }
     sanitized
         .chars()
@@ -2081,7 +2300,7 @@ fn task_run_from_row(row: TaskRunRow) -> TaskRun {
         summary: row.summary,
         processed_count: row.processed_count,
         updated_count: row.updated_count,
-        error_detail: row.error_detail,
+        error_detail: row.error_detail.map(|value| sanitize_task_detail(&value)),
         completion: row.completion,
         core_completion: row.core_completion,
         details: row
@@ -2437,28 +2656,6 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
-    let now = Utc::now();
-    let error_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_ERROR_RETENTION_DAYS));
-    let run_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_RUN_RETENTION_DAYS));
-    sqlx::query("UPDATE managed_task_runs SET error_detail=NULL WHERE started_at < ?")
-        .bind(error_cutoff)
-        .execute(pool)
-        .await?;
-    sqlx::query("DELETE FROM managed_task_runs WHERE started_at < ?")
-        .bind(run_cutoff)
-        .execute(pool)
-        .await?;
-    sqlx::query(
-        "DELETE FROM managed_task_work_runs
-         WHERE rowid IN (
-           SELECT rowid FROM (
-             SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
-             FROM managed_task_work_runs WHERE status <> 'running'
-           ) WHERE sample_rank > 200
-         )",
-    )
-    .execute(pool)
-    .await?;
     Ok(())
 }
 
@@ -2618,6 +2815,8 @@ struct FinishRunObservationContext<'a> {
     completion: Option<&'a str>,
     core_completion: Option<&'a str>,
     details: Option<&'a serde_json::Value>,
+    retry_after_secs: Option<i64>,
+    retry_reason: Option<&'a str>,
 }
 
 impl MaintenanceStore {
@@ -2627,7 +2826,29 @@ impl MaintenanceStore {
             prompt_cache_materialization_control: Arc::new(
                 PromptCacheMaterializationControl::default(),
             ),
+            #[cfg(test)]
+            settlement_interleaving_hooks: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_settlement_interleaving_hooks(
+        &self,
+    ) -> Arc<SettlementInterleavingTestHooks> {
+        let hooks = Arc::new(SettlementInterleavingTestHooks::default());
+        *self
+            .settlement_interleaving_hooks
+            .lock()
+            .expect("settlement interleaving hooks lock") = Some(Arc::clone(&hooks));
+        hooks
+    }
+
+    #[cfg(test)]
+    fn settlement_interleaving_hooks(&self) -> Option<Arc<SettlementInterleavingTestHooks>> {
+        self.settlement_interleaving_hooks
+            .lock()
+            .expect("settlement interleaving hooks lock")
+            .clone()
     }
 
     #[cfg(test)]
@@ -3010,6 +3231,10 @@ impl MaintenanceStore {
         observed_at: &str,
         heartbeat: bool,
     ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(hooks) = self.settlement_interleaving_hooks() {
+            hooks.timeline_before_admission.notify_one();
+        }
         let mut transaction = self.pool.begin().await?;
         sqlx::query("INSERT OR IGNORE INTO maintenance_metadata(key,value,updated_at) VALUES('task_timeline_revision','0',?)")
             .bind(observed_at)
@@ -3031,6 +3256,11 @@ impl MaintenanceStore {
                 .bind(observed_at)
                 .execute(&mut *transaction)
                 .await?;
+        }
+        #[cfg(test)]
+        if let Some(hooks) = self.settlement_interleaving_hooks() {
+            hooks.timeline_transaction_started.notify_one();
+            hooks.continue_timeline.notified().await;
         }
         let revision = sqlx::query_scalar::<_, i64>(
             "SELECT CAST(value AS INTEGER) FROM maintenance_metadata WHERE key='task_timeline_revision'",
@@ -3069,7 +3299,7 @@ impl MaintenanceStore {
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64)
                         .bind(status).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
-                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
+                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
                         .execute(&mut *transaction).await?;
                 }
@@ -3326,18 +3556,29 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
-        let has_requested_run: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM managed_task_runs WHERE status='requested')",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        if !has_requested_run {
+        self.claim_requested_run_excluding(&[]).await
+    }
+
+    pub(crate) async fn claim_requested_run_excluding(
+        &self,
+        excluded_task_keys: &[String],
+    ) -> Result<Option<(i64, String, String, String)>> {
+        let mut requested_query = QueryBuilder::<Sqlite>::new(
+            "SELECT EXISTS(SELECT 1 FROM managed_task_runs WHERE status='requested'",
+        );
+        push_task_key_exclusion(&mut requested_query, "task_key", excluded_task_keys);
+        requested_query.push(")");
+        let has_requested_run: i64 = requested_query
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
+        if has_requested_run == 0 {
             record_store_write_event(StoreOperation::Run, WakeOutcome::Noop);
             return Ok(None);
         }
         let (claim, retired_requested_runs) = observe_store_write_with_outcome(
             StoreOperation::Run,
-            self.claim_requested_run_inner(),
+            self.claim_requested_run_inner(excluded_task_keys),
             |(claim, _)| {
                 if claim.is_some() {
                     WakeOutcome::Committed
@@ -3353,25 +3594,63 @@ impl MaintenanceStore {
         Ok(claim)
     }
 
+    pub(crate) async fn requeue_claimed_run(&self, run_id: i64) -> Result<bool> {
+        observe_store_write(StoreOperation::Run, async {
+            let result = sqlx::query(
+                "UPDATE managed_task_runs SET status='requested' WHERE id=? AND status='running'",
+            )
+            .bind(run_id)
+            .execute(&self.pool)
+            .await?;
+            Ok(result.rows_affected() == 1)
+        })
+        .await
+    }
+
     pub(crate) async fn probe_due_or_requested_runs(&self) -> Result<bool> {
+        self.probe_due_or_requested_runs_excluding(&[]).await
+    }
+
+    pub(crate) async fn probe_due_or_requested_runs_excluding(
+        &self,
+        excluded_task_keys: &[String],
+    ) -> Result<bool> {
         let now_text = format_utc_iso_millis(Utc::now());
-        let has_work = sqlx::query_scalar::<_, i64>(
+        let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT EXISTS(
                  SELECT 1
                  FROM managed_task_runs
-                 WHERE status='requested'
-                 UNION ALL
+                 WHERE status='requested'",
+        );
+        push_task_key_exclusion(&mut query, "task_key", excluded_task_keys);
+        query.push(
+            " UNION ALL
                  SELECT 1
                  FROM managed_tasks
-                 WHERE enabled=1 AND is_manual=0
+                 WHERE enabled=1 AND is_manual=0",
+        );
+        push_task_key_exclusion(&mut query, "managed_tasks.task_key", excluded_task_keys);
+        query.push(
+            "
                    AND NOT EXISTS(
                        SELECT 1
                        FROM maintenance_owner_retry_state retry
                        WHERE retry.task_key=managed_tasks.task_key
-                         AND retry.next_eligible_at>?
-                   )
-                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=?)
-                     OR (next_catchup_at IS NOT NULL AND next_catchup_at<=?))
+                         AND retry.next_eligible_at>",
+        );
+        query.push_bind(&now_text);
+        query.push(
+            ")
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=",
+        );
+        query.push_bind(&now_text);
+        query.push(
+            ")
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at<=",
+        );
+        query.push_bind(&now_text);
+        query.push(
+            "))
                    AND NOT EXISTS(
                        SELECT 1
                        FROM managed_task_runs active
@@ -3379,23 +3658,27 @@ impl MaintenanceStore {
                          AND active.status IN ('running','requested')
                    )
              )",
-        )
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(&now_text)
-        .fetch_one(&self.pool)
-        .await?;
+        );
+        let has_work = query
+            .build_query_scalar::<i64>()
+            .fetch_one(&self.pool)
+            .await?;
         Ok(has_work != 0)
     }
 
     async fn claim_requested_run_inner(
         &self,
+        excluded_task_keys: &[String],
     ) -> Result<(Option<(i64, String, String, String)>, bool)> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
-        let retired_requested_runs = sqlx::query(
+        let mut retire_query = QueryBuilder::<Sqlite>::new(
             "UPDATE managed_task_runs
-             SET status='failed', finished_at=?, duration_ms=0,
+             SET status='failed', finished_at=",
+        );
+        retire_query.push_bind(&finished_at);
+        retire_query.push(
+            ", duration_ms=0,
                  summary='任务已停用，未执行', error_detail=NULL
              WHERE id IN (
                  SELECT candidate.id
@@ -3403,25 +3686,32 @@ impl MaintenanceStore {
                  WHERE candidate.status='requested'
                    AND candidate.task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
-                   ) AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
-                   )
-                 ORDER BY candidate.id
-                 LIMIT ?
-             )",
-        )
-        .bind(&finished_at)
-        .bind(MANAGED_TASK_CLAIM_BATCH_SIZE)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected()
+                   )",
+        );
+        retire_query
+            .push(" AND NOT (candidate.trigger_kind='manual' AND candidate.task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization'))");
+        push_task_key_exclusion(&mut retire_query, "candidate.task_key", excluded_task_keys);
+        retire_query
+            .push(" ORDER BY candidate.id LIMIT ")
+            .push_bind(MANAGED_TASK_CLAIM_BATCH_SIZE)
+            .push(")");
+        let retired_requested_runs = retire_query
+            .build()
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected()
             > 0;
-        let claimed = sqlx::query_as::<_, (i64, String, String, String)>(
+        let mut claim_query = QueryBuilder::<Sqlite>::new(
             "UPDATE managed_task_runs
              SET status='running'
              WHERE id = (
                  SELECT id FROM managed_task_runs
-                 WHERE status='requested'
-                   AND ((trigger_kind='manual' AND task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')) OR task_key IN (
+                 WHERE status='requested'",
+        );
+        push_task_key_exclusion(&mut claim_query, "task_key", excluded_task_keys);
+        claim_query.push(
+            "
+                   AND ((trigger_kind='manual' AND task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')) OR task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled!=0 OR is_manual!=0
                    ))
                  ORDER BY id
@@ -3429,9 +3719,11 @@ impl MaintenanceStore {
              )
              AND status='requested'
              RETURNING id,task_key,started_at,trigger_kind",
-        )
-        .fetch_optional(&mut *transaction)
-        .await?;
+        );
+        let claimed = claim_query
+            .build_query_as::<(i64, String, String, String)>()
+            .fetch_optional(&mut *transaction)
+            .await?;
         let Some((id, task_key, started_at, trigger_kind)) = claimed else {
             transaction.commit().await?;
             return Ok((None, retired_requested_runs));
@@ -3449,19 +3741,85 @@ impl MaintenanceStore {
 
     async fn recover_incomplete_runs_inner(&self) -> Result<u64> {
         let finished_at = format_utc_iso_millis(Utc::now());
-        let result = sqlx::query(
-            "UPDATE managed_task_runs
-             SET status='failed', finished_at=?, duration_ms=0,
-                 summary=COALESCE(summary, ?),
-                 error_detail=COALESCE(error_detail, ?)
-             WHERE status='running'",
+        let runs: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id,task_key,trigger_kind,details
+             FROM managed_task_runs
+             WHERE status='running'
+             ORDER BY id",
         )
-        .bind(&finished_at)
-        .bind("服务重启前运行未完成，已标记为失败")
-        .bind("服务重启时回收未完成运行")
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        for (run_id, task_key, trigger_kind, existing_details) in &runs {
+            let owner_v2 = is_retention_owner_v2_task(task_key);
+            let details = owner_v2.then(|| {
+                let recovered_dry_run = existing_details
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .and_then(|value| value.get("dryRun").and_then(serde_json::Value::as_bool));
+                let mut details = serde_json::json!({
+                    "ownershipVersion": 2,
+                    "ownerScope": task_key,
+                    "manual": trigger_kind == "manual",
+                    "dryRun": recovered_dry_run,
+                    "result": "failed",
+                    "globalBacklogTotal": null,
+                    "total": null,
+                    "backlogRemaining": null,
+                    "discovered": null,
+                    "selected": null,
+                    "committed": null,
+                    "processedCount": null,
+                    "completed": null,
+                    "selectedScope": {
+                        "scope": task_key,
+                        "unit": "unknown",
+                        "selected": null,
+                        "committed": null,
+                        "batches": null,
+                        "rawFilesRemoved": null,
+                        "hasMore": true,
+                    },
+                    "waitReason": "owner_failed",
+                    "fatalError": "服务重启时回收未完成运行",
+                    "elapsedMs": 0,
+                });
+                if trigger_kind != "manual" {
+                    details["scheduleRetryAfterSecs"] = serde_json::json!(300);
+                    details["scheduleRetryReason"] = serde_json::json!("owner_failed");
+                }
+                details
+            });
+            if owner_v2 && trigger_kind != "manual" {
+                self.finish_run_with_observation_and_retry(
+                    *run_id,
+                    "failed",
+                    &finished_at,
+                    0,
+                    Some("服务重启前运行未完成，已标记为失败"),
+                    Some("服务重启时回收未完成运行"),
+                    Some("failed"),
+                    None,
+                    details.as_ref(),
+                    300,
+                    "owner_failed",
+                )
+                .await?;
+            } else {
+                self.finish_run_with_observation(
+                    *run_id,
+                    "failed",
+                    &finished_at,
+                    0,
+                    Some("服务重启前运行未完成，已标记为失败"),
+                    Some("服务重启时回收未完成运行"),
+                    owner_v2.then_some("failed"),
+                    None,
+                    details.as_ref(),
+                )
+                .await?;
+            }
+        }
+        Ok(runs.len() as u64)
     }
 
     pub(crate) async fn validate_schedule(
@@ -3700,6 +4058,78 @@ impl MaintenanceStore {
         Ok(())
     }
 
+    async fn schedule_owned_work_for_run_in_transaction(
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        key: &str,
+        run_id: i64,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
+        let Some(enabled) = sqlx::query_scalar::<_, i64>(
+            "SELECT enabled
+             FROM managed_tasks
+             WHERE task_key=?
+               AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+        )
+        .bind(key)
+        .bind(key)
+        .bind(run_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        else {
+            return Ok(());
+        };
+        if enabled != 0 {
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET next_catchup_at=?,catchup_reason=?
+                 WHERE task_key=? AND enabled!=0
+                   AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+            )
+            .bind(&at)
+            .bind(reason)
+            .bind(key)
+            .bind(key)
+            .bind(run_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+        if matches!(
+            reason,
+            "owner_failed"
+                | "task_execution_active"
+                | "sqlite_pressure"
+                | "retention_write_admission"
+                | "retry_backoff"
+        ) {
+            sqlx::query(
+                "INSERT INTO maintenance_owner_retry_state(task_key,failure_count,next_eligible_at,reason)
+                 VALUES(?,1,?,?)
+                 ON CONFLICT(task_key) DO UPDATE SET
+                     next_eligible_at=excluded.next_eligible_at,
+                     reason=excluded.reason",
+            )
+            .bind(key)
+            .bind(&at)
+            .bind(reason)
+            .execute(&mut **transaction)
+            .await?;
+        } else {
+            sqlx::query(
+                "DELETE FROM maintenance_owner_retry_state
+                 WHERE task_key=?
+                   AND (next_eligible_at IS NULL OR next_eligible_at<=?
+                        OR reason NOT IN ('raw_safety_retry','sqlite_pressure','retry_backoff'))",
+            )
+            .bind(key)
+            .bind(format_utc_iso_millis(Utc::now()))
+            .execute(&mut **transaction)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn record_owned_retry_delay(
         &self,
         key: &str,
@@ -3834,6 +4264,46 @@ impl MaintenanceStore {
                 .await?;
             changed = true;
         }
+        let owner_schedule_applied: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(RETENTION_OWNER_SCHEDULE_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if owner_schedule_applied.is_none() {
+            for key in [
+                "pool_upstream_attempt_archive",
+                "forward_proxy_attempt_archive",
+                "invocation_detail_prune",
+                "quota_snapshot_compaction",
+                "model_route_expiry",
+                "task_run_history_cleanup",
+            ] {
+                sqlx::query(
+                    "UPDATE managed_tasks
+                     SET interval_secs=?,
+                         next_trigger_at=CASE WHEN enabled!=0 THEN COALESCE(next_trigger_at, ?) ELSE NULL END,
+                         schedule_source='default',
+                         updated_at=?
+                     WHERE task_key=?
+                       AND is_manual=0
+                       AND interval_secs IS NULL
+                       AND (cron_expr IS NULL OR trim(cron_expr)='')",
+                )
+                .bind(DEFAULT_RETENTION_OWNER_INTERVAL_SECS)
+                .bind(&now)
+                .bind(&now)
+                .bind(key)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)")
+                .bind(RETENTION_OWNER_SCHEDULE_MARKER)
+                .bind("applied")
+                .bind(&now)
+                .execute(&mut *transaction)
+                .await?;
+            changed = true;
+        }
         let defaults_applied: Option<String> =
             sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
                 .bind(INITIAL_TASK_DEFAULTS_MARKER)
@@ -3945,9 +4415,16 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
+        self.enqueue_due_runs_excluding(&[]).await
+    }
+
+    pub(crate) async fn enqueue_due_runs_excluding(
+        &self,
+        excluded_task_keys: &[String],
+    ) -> Result<u64> {
         observe_store_write_with_outcome(
             StoreOperation::Wake,
-            self.enqueue_due_runs_inner(),
+            self.enqueue_due_runs_inner(excluded_task_keys),
             |enqueued| {
                 if *enqueued > 0 {
                     WakeOutcome::Committed
@@ -3959,26 +4436,38 @@ impl MaintenanceStore {
         .await
     }
 
-    async fn enqueue_due_runs_inner(&self) -> Result<u64> {
+    async fn enqueue_due_runs_inner(&self, excluded_task_keys: &[String]) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
-        let due_tasks = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<i64>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
+        let mut due_tasks_query = QueryBuilder::<Sqlite>::new(
             "SELECT task_key,interval_secs,cron_expr
                     ,next_trigger_at,next_catchup_at
              FROM managed_tasks
              WHERE enabled=1 AND is_manual=0
-               AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>?)
-               AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
-                 OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
+            ",
+        );
+        push_task_key_exclusion(
+            &mut due_tasks_query,
+            "managed_tasks.task_key",
+            excluded_task_keys,
+        );
+        due_tasks_query.push(
+            "
+               AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>",
+        );
+        due_tasks_query.push_bind(&now_text);
+        due_tasks_query.push(
+            ")
+               AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ",
+        );
+        due_tasks_query.push_bind(&now_text);
+        due_tasks_query.push(
+            ")
+                 OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ",
+        );
+        due_tasks_query.push_bind(&now_text);
+        due_tasks_query.push(
+            "))
                AND NOT EXISTS(
                    SELECT 1
                    FROM managed_task_runs active
@@ -3986,14 +4475,19 @@ impl MaintenanceStore {
                      AND active.status IN ('running','requested')
                )
              ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key
-             LIMIT ?",
-        )
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(MANAGED_TASK_ENQUEUE_BATCH_SIZE)
-        .fetch_all(&self.pool)
-        .await?;
+             LIMIT ",
+        );
+        due_tasks_query.push_bind(MANAGED_TASK_ENQUEUE_BATCH_SIZE);
+        let due_tasks = due_tasks_query
+            .build_query_as::<(
+                String,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>()
+            .fetch_all(&self.pool)
+            .await?;
         if due_tasks.is_empty() {
             return Ok(0);
         }
@@ -4002,26 +4496,48 @@ impl MaintenanceStore {
         for (task_key, _, _, _, _) in due_tasks {
             // The read-only preflight is only an admission hint. Re-read the task inside the
             // write transaction so disable/reschedule changes cannot turn into stale runs.
-            let Some((interval_secs, cron_expr, current_trigger_at, current_catchup_at)) =
-                sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>)>(
-                    "SELECT interval_secs,cron_expr,next_trigger_at,next_catchup_at
+            let mut current_task_query = QueryBuilder::<Sqlite>::new(
+                "SELECT interval_secs,cron_expr,next_trigger_at,next_catchup_at
                  FROM managed_tasks
-                 WHERE task_key=? AND enabled=1 AND is_manual=0
+                 WHERE task_key=",
+            );
+            current_task_query.push_bind(&task_key);
+            current_task_query.push(" AND enabled=1 AND is_manual=0");
+            push_task_key_exclusion(
+                &mut current_task_query,
+                "managed_tasks.task_key",
+                excluded_task_keys,
+            );
+            current_task_query.push(
+                "
                    AND NOT EXISTS(
                        SELECT 1
                        FROM maintenance_owner_retry_state retry
                        WHERE retry.task_key=managed_tasks.task_key
-                         AND retry.next_eligible_at>?
-                   )
-                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
-                     OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))",
-                )
-                .bind(&task_key)
-                .bind(&now_text)
-                .bind(&now_text)
-                .bind(&now_text)
-                .fetch_optional(&mut *transaction)
-                .await?
+                         AND retry.next_eligible_at>",
+            );
+            current_task_query.push_bind(&now_text);
+            current_task_query.push(
+                ")
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ",
+            );
+            current_task_query.push_bind(&now_text);
+            current_task_query.push(
+                ")
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ",
+            );
+            current_task_query.push_bind(&now_text);
+            current_task_query.push("))");
+            let Some((interval_secs, cron_expr, current_trigger_at, current_catchup_at)) =
+                current_task_query
+                    .build_query_as::<(
+                        Option<i64>,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                    )>()
+                    .fetch_optional(&mut *transaction)
+                    .await?
             else {
                 continue;
             };
@@ -4091,53 +4607,128 @@ impl MaintenanceStore {
             transaction.rollback().await?;
         }
         if enqueued > 0 {
-            self.sync_retention_progress_schedule().await?;
+            for task_key in RETENTION_OWNER_V2_TASKS {
+                self.sync_retention_owner_progress_schedule(task_key)
+                    .await?;
+            }
         }
         Ok(enqueued)
     }
 
-    pub(crate) async fn cleanup_expired_history_if_due(&self) -> Result<()> {
-        let now_ms = Utc::now().timestamp_millis();
-        let last_ms = LAST_TASK_HISTORY_CLEANUP_MS.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last_ms) < TASK_HISTORY_CLEANUP_INTERVAL_MS
-            || LAST_TASK_HISTORY_CLEANUP_MS
-                .compare_exchange(last_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-        {
-            return Ok(());
-        }
+    pub(crate) async fn cleanup_expired_history_bounded(
+        &self,
+        dry_run: bool,
+    ) -> Result<ManagedTaskHistoryCleanupResult> {
         observe_store_write(
             StoreOperation::Cleanup,
-            self.cleanup_expired_history_if_due_inner(),
+            self.cleanup_expired_history_bounded_inner(dry_run),
         )
         .await
     }
 
-    async fn cleanup_expired_history_if_due_inner(&self) -> Result<()> {
+    async fn cleanup_expired_history_bounded_inner(
+        &self,
+        dry_run: bool,
+    ) -> Result<ManagedTaskHistoryCleanupResult> {
         let now = Utc::now();
         let error_cutoff =
             format_utc_iso_millis(now - ChronoDuration::days(TASK_ERROR_RETENTION_DAYS));
         let run_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_RUN_RETENTION_DAYS));
-        sqlx::query("UPDATE managed_task_runs SET error_detail=NULL WHERE started_at < ?")
-            .bind(error_cutoff)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM managed_task_runs WHERE started_at < ?")
-            .bind(run_cutoff)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query(
+        let error_detail_count_sql = "SELECT COUNT(*) FROM (SELECT id FROM managed_task_runs WHERE started_at < ?1 AND started_at >= ?2 AND error_detail IS NOT NULL LIMIT ?3)";
+        let run_count_sql = "SELECT COUNT(*) FROM (SELECT id FROM managed_task_runs WHERE started_at < ?1 AND status NOT IN ('running','requested','queued') ORDER BY started_at ASC, id ASC LIMIT ?2)";
+        let work_count_sql = "SELECT COUNT(*) FROM (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank FROM managed_task_work_runs WHERE status <> 'running') WHERE sample_rank > 200 LIMIT ?1)";
+
+        if dry_run {
+            let error_detail_count = sqlx::query_scalar::<_, i64>(error_detail_count_sql)
+                .bind(&error_cutoff)
+                .bind(&run_cutoff)
+                .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+                .fetch_one(&self.pool)
+                .await?;
+            let run_count = sqlx::query_scalar::<_, i64>(run_count_sql)
+                .bind(&run_cutoff)
+                .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+                .fetch_one(&self.pool)
+                .await?;
+            let work_count = sqlx::query_scalar::<_, i64>(work_count_sql)
+                .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+                .fetch_one(&self.pool)
+                .await?;
+            let selected = error_detail_count
+                .saturating_add(run_count)
+                .saturating_add(work_count)
+                .max(0) as usize;
+            return Ok(ManagedTaskHistoryCleanupResult {
+                selected,
+                committed: 0,
+                has_more: error_detail_count >= TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
+                    || run_count >= TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS
+                    || work_count >= TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS,
+            });
+        }
+
+        let mut transaction = self.pool.begin().await?;
+        let error_detail_cleared = sqlx::query(
+            "UPDATE managed_task_runs
+             SET error_detail=NULL
+             WHERE id IN (
+               SELECT id FROM managed_task_runs
+               WHERE started_at < ?1 AND started_at >= ?2 AND error_detail IS NOT NULL
+               ORDER BY started_at ASC, id ASC
+               LIMIT ?3
+             )",
+        )
+        .bind(&error_cutoff)
+        .bind(&run_cutoff)
+        .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected() as usize;
+        let runs_deleted = sqlx::query(
+            "DELETE FROM managed_task_runs
+             WHERE id IN (
+               SELECT id FROM managed_task_runs
+               WHERE started_at < ?1
+                 AND status NOT IN ('running','requested','queued')
+               ORDER BY started_at ASC, id ASC
+               LIMIT ?2
+             )",
+        )
+        .bind(&run_cutoff)
+        .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected() as usize;
+        let work_runs_deleted = sqlx::query(
             "DELETE FROM managed_task_work_runs
              WHERE rowid IN (
                SELECT rowid FROM (
-                 SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
+                 SELECT rowid, ROW_NUMBER() OVER (
+                   PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC
+                 ) AS sample_rank
                  FROM managed_task_work_runs WHERE status <> 'running'
-               ) WHERE sample_rank > 200
+               )
+               WHERE sample_rank > 200
+               ORDER BY rowid
+               LIMIT ?1
              )",
         )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        .bind(TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected() as usize;
+        transaction.commit().await?;
+
+        let committed = error_detail_cleared
+            .saturating_add(runs_deleted)
+            .saturating_add(work_runs_deleted);
+        Ok(ManagedTaskHistoryCleanupResult {
+            selected: committed,
+            committed,
+            has_more: error_detail_cleared == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS as usize
+                || runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS as usize
+                || work_runs_deleted == TASK_HISTORY_CLEANUP_MAX_ROWS_PER_PASS as usize,
+        })
     }
 
     pub(crate) async fn begin_run(
@@ -4308,6 +4899,42 @@ impl MaintenanceStore {
                 completion,
                 core_completion,
                 details,
+                retry_after_secs: None,
+                retry_reason: None,
+            }),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn finish_run_with_observation_and_retry(
+        &self,
+        id: i64,
+        status: &str,
+        finished_at: &str,
+        duration_ms: i64,
+        summary: Option<&str>,
+        detail: Option<&str>,
+        completion: Option<&str>,
+        core_completion: Option<&str>,
+        details: Option<&serde_json::Value>,
+        retry_after_secs: i64,
+        retry_reason: &str,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Run,
+            self.finish_run_with_observation_inner(FinishRunObservationContext {
+                id,
+                status,
+                finished_at,
+                duration_ms,
+                summary,
+                detail,
+                completion,
+                core_completion,
+                details,
+                retry_after_secs: Some(retry_after_secs),
+                retry_reason: Some(retry_reason),
             }),
         )
         .await
@@ -4327,42 +4954,183 @@ impl MaintenanceStore {
             completion,
             core_completion,
             details,
+            retry_after_secs,
+            retry_reason,
         } = context;
         let sanitized = detail.map(sanitize_task_detail);
+        let owner_v2 = details.is_some_and(|value| {
+            value
+                .get("ownershipVersion")
+                .and_then(serde_json::Value::as_i64)
+                == Some(2)
+        });
+        let owner_processed_count = details
+            .filter(|value| {
+                value
+                    .get("ownershipVersion")
+                    .and_then(serde_json::Value::as_i64)
+                    == Some(2)
+            })
+            .and_then(|value| {
+                value
+                    .get("committed")
+                    .and_then(serde_json::Value::as_i64)
+                    .or_else(|| {
+                        value
+                            .get("selectedScope")
+                            .and_then(|scope| scope.get("committed"))
+                            .and_then(serde_json::Value::as_i64)
+                    })
+                    .or_else(|| {
+                        value
+                            .get("processedCount")
+                            .and_then(serde_json::Value::as_i64)
+                    })
+            })
+            .map(|value| value.max(0));
         let details = details.map(serde_json::to_string).transpose()?;
+        // Finalization reads the run before updating it. Begin with a write intent so SQLite
+        // serializes that snapshot against every other connection that can write this store.
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let task_key: Option<String> =
             sqlx::query_scalar("SELECT task_key FROM managed_task_runs WHERE id=?")
                 .bind(id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *transaction)
                 .await?;
-        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
+        #[cfg(test)]
+        if let Some(hooks) = self.settlement_interleaving_hooks() {
+            hooks.finish_after_select.notify_one();
+            hooks.continue_finish.notified().await;
+        }
+        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),processed_count=COALESCE(?,processed_count),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=? AND status IN ('running','requested','queued')")
             .bind(status)
             .bind(finished_at)
             .bind(duration_ms)
             .bind(summary)
+            .bind(owner_processed_count)
             .bind(sanitized)
             .bind(completion)
             .bind(core_completion)
             .bind(&details)
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         if result.rows_affected() == 0 {
-            return Err(anyhow!("managed task run {id} was not found"));
+            let current_status: Option<String> =
+                sqlx::query_scalar("SELECT status FROM managed_task_runs WHERE id=?")
+                    .bind(id)
+                    .fetch_optional(&mut *transaction)
+                    .await?;
+            return match current_status.as_deref() {
+                Some(status) if !matches!(status, "running" | "requested" | "queued") => {
+                    // A terminal journal replay can arrive after startup recovery or a
+                    // competing finalizer already closed this generation. Treat it as an
+                    // acknowledged no-op so it cannot overwrite retry or catch-up state.
+                    transaction.commit().await?;
+                    if task_key.as_deref().is_some_and(is_retention_owner_v2_task) {
+                        self.sync_retention_owner_progress_schedule(
+                            task_key
+                                .as_deref()
+                                .expect("terminal managed task has a key"),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                Some(status) => Err(anyhow!(
+                    "managed task run {id} could not transition from status {status}"
+                )),
+                None => Err(anyhow!("managed task run {id} was not found")),
+            };
+        }
+        if let (Some(seconds), Some(reason)) = (retry_after_secs, retry_reason) {
+            Self::schedule_owned_work_for_run_in_transaction(
+                &mut transaction,
+                task_key.as_deref().unwrap_or_default(),
+                id,
+                seconds,
+                reason,
+            )
+            .await?;
         }
         let automatic: bool =
             sqlx::query_scalar("SELECT trigger_kind!='manual' FROM managed_task_runs WHERE id=?")
                 .bind(id)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *transaction)
                 .await?;
-        if automatic && task_key.as_deref() == Some("retention_archive") {
-            self.update_retention_catchup_after_finish(
+        let is_retention_archive = automatic && task_key.as_deref() == Some("retention_archive");
+        if is_retention_archive {
+            Self::update_retention_catchup_after_finish(
+                &mut *transaction,
+                id,
                 completion,
                 details.as_deref(),
-                &format_utc_iso_millis(Utc::now()),
+                finished_at,
             )
             .await?;
-            self.sync_retention_progress_schedule().await?;
+        }
+        let owner_run_is_complete_without_more_work = owner_v2
+            && matches!(
+                task_key.as_deref(),
+                Some(
+                    "retention_archive"
+                        | "pool_upstream_attempt_archive"
+                        | "forward_proxy_attempt_archive"
+                        | "invocation_detail_prune"
+                        | "quota_snapshot_compaction"
+                        | "model_route_expiry"
+                        | "task_run_history_cleanup"
+                )
+            )
+            && matches!(completion, Some("complete") | Some("no-work"))
+            && details
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .is_some_and(|owner_details| {
+                    let has_more = owner_details
+                        .get("selectedScope")
+                        .and_then(|scope| scope.get("hasMore"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let wait_reason = owner_details
+                        .get("waitReason")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty());
+                    let dry_run = owner_details
+                        .get("dryRun")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    !dry_run && !has_more && wait_reason.is_none()
+                });
+        if owner_run_is_complete_without_more_work {
+            sqlx::query("DELETE FROM maintenance_owner_retry_state WHERE task_key=?")
+                .bind(task_key.as_deref().expect("matched retention owner"))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        let should_clear_owner_catchup = automatic && owner_run_is_complete_without_more_work;
+        if should_clear_owner_catchup {
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET next_catchup_at=NULL,catchup_reason=NULL,updated_at=?
+                 WHERE task_key=? AND enabled!=0
+                   AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?",
+            )
+            .bind(finished_at)
+            .bind(task_key.as_deref().expect("matched retention owner"))
+            .bind(task_key.as_deref().expect("matched retention owner"))
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        if task_key.as_deref().is_some_and(is_retention_owner_v2_task) {
+            self.sync_retention_owner_progress_schedule(
+                task_key
+                    .as_deref()
+                    .expect("finished managed task has a key"),
+            )
+            .await?;
         }
         if automatic
             && completion == Some("completed")
@@ -4378,40 +5146,67 @@ impl MaintenanceStore {
             .bind(key)
             .fetch_one(&self.pool)
             .await?;
-            sqlx::query("UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL WHERE task_key=? AND enabled!=0")
+            sqlx::query("UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL WHERE task_key=? AND enabled!=0 AND (SELECT MAX(id) FROM managed_task_runs WHERE task_key=?)=?")
                 .bind(next_trigger_at(plan.0, plan.1.as_deref()))
-                .bind(key).execute(&self.pool).await?;
+                .bind(key)
+                .bind(key)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
         }
         Ok(())
     }
 
-    async fn update_retention_catchup_after_finish(
-        &self,
+    async fn update_retention_catchup_after_finish<'e, E>(
+        executor: E,
+        run_id: i64,
         completion: Option<&str>,
         details: Option<&str>,
         now: &str,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let Some(details) =
             details.and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
         else {
             return Ok(());
         };
-        let backlog_total = details.get("total").and_then(serde_json::Value::as_i64);
-        let completed = details
-            .get("invocationRowsArchived")
+        if details
+            .get("dryRun")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let backlog_total = details
+            .get("globalBacklogTotal")
             .and_then(serde_json::Value::as_i64)
+            .or_else(|| details.get("total").and_then(serde_json::Value::as_i64));
+        let completed = details
+            .get("selectedScope")
+            .and_then(|scope| scope.get("committed"))
+            .and_then(serde_json::Value::as_i64)
+            .or_else(|| details.get("committed").and_then(serde_json::Value::as_i64))
+            .or_else(|| {
+                details
+                    .get("invocationRowsArchived")
+                    .and_then(serde_json::Value::as_i64)
+            })
             .unwrap_or(0)
             .max(0);
         let wait_reason = details
             .get("waitReason")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty());
-        self.update_retention_catchup_from_summary(
+        Self::update_retention_catchup_from_summary_inner(
+            executor,
             completion,
             backlog_total,
             completed as usize,
             wait_reason,
             now,
+            Some(run_id),
         )
         .await
     }
@@ -4426,49 +5221,65 @@ impl MaintenanceStore {
     ) -> Result<()> {
         observe_store_write(
             StoreOperation::Control,
-            self.update_retention_catchup_from_summary_inner(
+            Self::update_retention_catchup_from_summary_inner(
+                &self.pool,
                 completion,
                 backlog_total,
                 completed,
                 wait_reason,
                 now,
+                None,
             ),
         )
         .await
     }
 
-    async fn update_retention_catchup_from_summary_inner(
-        &self,
+    async fn update_retention_catchup_from_summary_inner<'e, E>(
+        executor: E,
         completion: Option<&str>,
         backlog_total: Option<i64>,
         completed: usize,
         wait_reason: Option<&str>,
         now: &str,
-    ) -> Result<()> {
+        run_id: Option<i64>,
+    ) -> Result<()>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let completed = completed.min(i64::MAX as usize) as i64;
+        if completion.is_none() {
+            return Ok(());
+        }
+        let failed = completion == Some("failed");
         // Missing observation is not an empty backlog. Requalify after the consumed claim
         // with the same reason-specific backoff, retaining uncertainty in the displayed total.
-        let wait_reason =
-            wait_reason.or_else(|| backlog_total.is_none().then_some("backlog_unknown"));
+        let wait_reason = if failed {
+            wait_reason.or(Some("owner_failed"))
+        } else {
+            wait_reason.or_else(|| backlog_total.is_none().then_some("backlog_unknown"))
+        };
         let pending = backlog_total.map(|total| total.saturating_sub(completed));
-        if pending.is_some_and(|value| value <= 0) {
+        if !failed && wait_reason.is_none() && pending.is_some_and(|value| value <= 0) {
             sqlx::query(
                 "UPDATE managed_tasks
                  SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
-                 WHERE task_key='retention_archive' AND enabled!=0",
+                 WHERE task_key='retention_archive' AND enabled!=0
+                   AND (? IS NULL OR (SELECT MAX(id) FROM managed_task_runs WHERE task_key='retention_archive')=?)",
             )
             .bind(now)
-            .execute(&self.pool)
+            .bind(run_id)
+            .bind(run_id)
+            .execute(executor)
             .await?;
-            return Ok(());
-        }
-        if matches!(completion, Some("failed") | None) {
             return Ok(());
         }
         let delay_secs = match wait_reason {
             Some("retention_work_budget") => 1,
             Some("retention_write_admission") | Some("sqlite_pressure") => 30,
-            Some("retention_recovery_failure") | Some("retry_backoff") => 300,
+            Some("retention_recovery_failure") | Some("owner_failed") | Some("retry_backoff") => {
+                300
+            }
+            Some("task_execution_active") => 300,
             Some(_) => 15,
             None => 1,
         };
@@ -4483,25 +5294,35 @@ impl MaintenanceStore {
                  END,
                  catchup_reason=CASE WHEN enabled=0 THEN NULL ELSE ?2 END,
                  updated_at=?3
-             WHERE task_key='retention_archive'",
+             WHERE task_key='retention_archive'
+               AND (?4 IS NULL OR (SELECT MAX(id) FROM managed_task_runs WHERE task_key='retention_archive')=?4)",
         )
         .bind(&next_catchup_at)
         .bind(wait_reason.unwrap_or("backlog_remaining"))
         .bind(now)
-        .execute(&self.pool)
+        .bind(run_id)
+        .execute(executor)
         .await?;
         Ok(())
     }
 
     pub(crate) async fn sync_retention_progress_schedule(&self) -> Result<()> {
+        self.sync_retention_owner_progress_schedule("retention_archive")
+            .await
+    }
+
+    pub(crate) async fn sync_retention_owner_progress_schedule(
+        &self,
+        task_key: &str,
+    ) -> Result<()> {
         observe_store_write(
             StoreOperation::Progress,
-            self.sync_retention_progress_schedule_inner(),
+            self.sync_retention_progress_schedule_inner(task_key),
         )
         .await
     }
 
-    async fn sync_retention_progress_schedule_inner(&self) -> Result<()> {
+    async fn sync_retention_progress_schedule_inner(&self, task_key: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO managed_task_progress(
                  task_key,updated_at,freshness,next_inspection_at,next_catchup_at,catchup_state
@@ -4511,15 +5332,16 @@ impl MaintenanceStore {
                          WHEN next_catchup_at IS NOT NULL THEN 'scheduled'
                          ELSE 'idle' END
              FROM managed_tasks
-             WHERE task_key='retention_archive'
+             WHERE task_key=?2
              ON CONFLICT(task_key) DO UPDATE SET
-                 updated_at=excluded.updated_at,
-                 freshness='fresh',
+                 updated_at=managed_task_progress.updated_at,
+                 freshness=managed_task_progress.freshness,
                  next_inspection_at=excluded.next_inspection_at,
                  next_catchup_at=excluded.next_catchup_at,
                  catchup_state=excluded.catchup_state",
         )
         .bind(format_utc_iso_millis(Utc::now()))
+        .bind(task_key)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -4661,7 +5483,9 @@ impl MaintenanceStore {
                 duration_ms: row.actual_duration_ms,
                 result: row.status.clone(),
                 status: row.status,
-                reason: row.error_detail,
+                reason: row
+                    .error_detail
+                    .map(|value| sanitize_task_detail(&value)),
             };
             (row.task_key, summary)
         })
@@ -4830,7 +5654,7 @@ impl MaintenanceStore {
                     // Do not relabel a legacy queue-inclusive duration as actual work time.
                     duration_ms: run.actual_duration_ms,
                     status: run.status,
-                    reason: run.error_detail,
+                    reason: run.error_detail.map(|value| sanitize_task_detail(&value)),
                     sequence: 0,
                     pending: None,
                     discovered: None,
@@ -5001,8 +5825,9 @@ impl MaintenanceStore {
         .bind(task_key)
         .execute(&self.pool)
         .await?;
-        if task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(task_key) {
+            self.sync_retention_owner_progress_schedule(task_key)
+                .await?;
         }
         Ok(true)
     }
@@ -5054,8 +5879,9 @@ impl MaintenanceStore {
         };
         sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, next_trigger_at=?, schedule_source='override', updated_at=? WHERE task_key=? AND is_manual=0")
         .bind(interval_secs).bind(cron_expr).bind(next_trigger_at).bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&self.pool).await?;
-        if task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(task_key) {
+            self.sync_retention_owner_progress_schedule(task_key)
+                .await?;
         }
         Ok(true)
     }
@@ -5137,7 +5963,15 @@ impl MaintenanceStore {
         }
         let restore_retention_default = matches!(
             task_key,
-            "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+            "retention_archive"
+                | "pool_upstream_attempt_archive"
+                | "forward_proxy_attempt_archive"
+                | "invocation_detail_prune"
+                | "quota_snapshot_compaction"
+                | "model_route_expiry"
+                | "task_run_history_cleanup"
+                | "invocation_identity_cleanup"
+                | "raw_orphan_sweep"
         ) && update_schedule
             && interval_secs == Some(None)
             && cron_expr == Some(None);
@@ -5178,8 +6012,9 @@ impl MaintenanceStore {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        if task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(task_key) {
+            self.sync_retention_owner_progress_schedule(task_key)
+                .await?;
         }
         Ok(true)
     }
@@ -5210,8 +6045,9 @@ impl MaintenanceStore {
         .bind(&task.task_key)
         .execute(&self.pool)
         .await?;
-        if task.task_key == "retention_archive" {
-            self.sync_retention_progress_schedule().await?;
+        if is_retention_owner_v2_task(&task.task_key) {
+            self.sync_retention_owner_progress_schedule(&task.task_key)
+                .await?;
         }
         Ok(())
     }
@@ -5244,10 +6080,11 @@ mod tests {
 
     use super::{
         MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
-        TaskWorkloadMetric, TaskWorkloadSample, calculate_task_workload_summary,
-        canonical_managed_task_key, canonical_task_execution_key, cron_day_matches, ensure_schema,
-        ensure_task_colors, floor_utc_hour, next_trigger_at, sanitize_task_detail, seed_tasks,
-        task_enabled_by_default, task_measurement_capabilities, validate_cron_expr,
+        TaskWorkloadMetric, TaskWorkloadSample, active_task_execution_task_keys,
+        calculate_task_workload_summary, canonical_managed_task_key, canonical_task_execution_key,
+        cron_day_matches, ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at,
+        sanitize_task_detail, seed_tasks, task_enabled_by_default, task_measurement_capabilities,
+        try_acquire_task_execution, validate_cron_expr,
     };
 
     #[test]
@@ -5266,6 +6103,20 @@ mod tests {
             canonical_task_execution_key("summary_snapshot"),
             "summary_snapshot"
         );
+    }
+
+    #[test]
+    fn task_execution_lease_uses_real_mutex_and_shared_aliases() {
+        let lease = try_acquire_task_execution("prompt_cache_materialization")
+            .expect("first shared execution lease");
+        assert!(try_acquire_task_execution("startup_backfill.proxy_usage").is_none());
+        assert!(
+            active_task_execution_task_keys()
+                .iter()
+                .any(|key| key == "prompt_cache_materialization")
+        );
+        drop(lease);
+        assert!(try_acquire_task_execution("startup_backfill.proxy_usage").is_some());
     }
 
     #[test]
@@ -5896,7 +6747,7 @@ mod tests {
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
-        assert_eq!(MANAGED_TASKS.len(), 24);
+        assert_eq!(MANAGED_TASKS.len(), 30);
         assert_eq!(
             MANAGED_TASKS
                 .iter()
@@ -6359,7 +7210,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count protected workload samples");
-        assert_eq!(counts, (200, 102));
+        assert_eq!(counts, (205, 102));
 
         let store = MaintenanceStore::from_pool(pool);
         let detail = store
@@ -6780,7 +7631,7 @@ mod tests {
                 .iter()
                 .filter(|(key, _, _, _, is_manual)| task_enabled_by_default(key, *is_manual))
                 .count(),
-            16
+            22
         );
     }
 
@@ -6848,9 +7699,51 @@ mod tests {
 
     #[test]
     fn sanitizes_and_bounds_task_error_details() {
-        let detail = sanitize_task_detail("Authorization: secret\napi_key=abc, remaining");
+        let detail =
+            sanitize_task_detail("Authorization: Bearer bearer-secret\napi_key=abc, remaining");
+        assert!(!detail.contains("bearer-secret"));
         assert!(!detail.contains("secret"));
         assert!(!detail.contains("abc"));
+        let basic = sanitize_task_detail("upstream rejected Authorization: Basic abc123, retry");
+        assert!(!basic.contains("Basic"));
+        assert!(!basic.contains("abc123"));
+        let digest = sanitize_task_detail(
+            "upstream rejected Authorization: Digest username=alice, realm=example, nonce=nonce-secret",
+        );
+        assert!(!digest.contains("username=alice"));
+        assert!(!digest.contains("nonce-secret"));
+        let configured = sanitize_task_detail(
+            "upstream rejected authorization=Digest username=alice, realm=example, nonce=nonce-secret",
+        );
+        assert!(!configured.contains("Digest"));
+        assert!(!configured.contains("nonce-secret"));
+        for detail in [
+            "upstream rejected X-API-Key: x-api-key-secret, retry",
+            "upstream rejected x-api-key=x-api-key-secret, retry",
+            "upstream rejected api-key: api-key-secret, retry",
+            "upstream rejected api-key=api-key-secret, retry",
+            "upstream rejected api_key: api-key-secret, retry",
+        ] {
+            let sanitized = sanitize_task_detail(detail);
+            assert!(!sanitized.contains("api-key-secret"));
+            assert!(!sanitized.contains("x-api-key-secret"));
+        }
+        let url_credentials = sanitize_task_detail(
+            "upstream rejected https://alice:pass;word,more@example.com/v1/data, retry",
+        );
+        assert!(url_credentials.contains("https://[REDACTED]@example.com/v1/data"));
+        assert!(!url_credentials.contains("alice"));
+        assert!(!url_credentials.contains("pass;word,more"));
+        let adjacent_url_credentials = sanitize_task_detail(
+            "upstream rejected https://public.example,https://alice:password@example.com/path",
+        );
+        assert!(adjacent_url_credentials.contains("https://public.example"));
+        assert!(adjacent_url_credentials.contains("https://[REDACTED]@example.com/path"));
+        assert!(!adjacent_url_credentials.contains("password"));
+        assert_eq!(
+            sanitize_task_detail("upstream accepted https://public.example/path"),
+            "upstream accepted https://public.example/path"
+        );
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
@@ -6878,7 +7771,7 @@ mod tests {
             "INSERT INTO managed_task_runs
              (task_key,trigger_kind,started_at,finished_at,duration_ms,status,error_detail)
              VALUES('upstream_account_maintenance','interval','2026-10-03T00:00:00.000Z',
-                    '2026-10-03T00:00:07.000Z',777,'failed','legacy duration')",
+                    '2026-10-03T00:00:07.000Z',777,'failed','legacy Authorization: Basic old-secret')",
         )
         .execute(&pool)
         .await
@@ -6947,6 +7840,14 @@ mod tests {
             .await
             .expect("load legacy workload detail")
             .expect("legacy task detail");
+        let legacy_run = legacy_detail.recent_runs.first().expect("legacy task run");
+        assert!(
+            !legacy_run
+                .error_detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("old-secret")
+        );
         assert_eq!(
             legacy_detail
                 .workload_trend
@@ -6955,6 +7856,16 @@ mod tests {
                 .find(|sample| sample.managed_run_id.is_some())
                 .and_then(|sample| sample.duration_ms),
             None
+        );
+        assert!(
+            !legacy_detail
+                .workload_trend
+                .samples
+                .iter()
+                .find(|sample| sample.managed_run_id.is_some())
+                .and_then(|sample| sample.reason.as_deref())
+                .unwrap_or_default()
+                .contains("old-secret")
         );
     }
 
@@ -7126,6 +8037,13 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert incomplete managed task run");
+        sqlx::query(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,details)
+             VALUES ('pool_upstream_attempt_archive','manual','2026-09-30T00:00:00.000Z','running','started','{\"ownershipVersion\":1,\"dryRun\":true}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert dry-run owner task run");
         let fresh_started_at = crate::format_utc_iso_millis(Utc::now());
         sqlx::query(
             "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('forward_proxy_subscription_refresh','startup',?1,'running','started')",
@@ -7136,7 +8054,7 @@ mod tests {
         .expect("insert fresh managed task run");
 
         let store = MaintenanceStore::from_pool(pool);
-        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 2);
+        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 3);
         let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='retention_archive'",
         )
@@ -7146,6 +8064,23 @@ mod tests {
         assert_eq!(row.0, "failed");
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
+        let recovered_owner: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT details, next_catchup_at, catchup_reason
+                 FROM managed_tasks
+                 JOIN managed_task_runs ON managed_task_runs.task_key=managed_tasks.task_key
+                 WHERE managed_task_runs.task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load recovered owner retry state");
+        let details: serde_json::Value =
+            serde_json::from_str(recovered_owner.0.as_deref().expect("owner details"))
+                .expect("decode recovered owner details");
+        assert_eq!(details["ownershipVersion"], 2);
+        assert!(details["dryRun"].is_null());
+        assert_eq!(details["scheduleRetryReason"], "owner_failed");
+        assert!(recovered_owner.1.is_some());
+        assert_eq!(recovered_owner.2.as_deref(), Some("owner_failed"));
         let fresh_status = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
         )
@@ -7155,6 +8090,16 @@ mod tests {
         assert_eq!(fresh_status.0, "failed");
         assert!(fresh_status.1.is_some());
         assert_eq!(fresh_status.2.as_deref(), Some("服务重启时回收未完成运行"));
+        let recovered_dry_run: Option<String> = sqlx::query_scalar(
+            "SELECT details FROM managed_task_runs WHERE task_key='pool_upstream_attempt_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load recovered dry-run owner task");
+        let recovered_dry_run: serde_json::Value =
+            serde_json::from_str(recovered_dry_run.as_deref().expect("dry-run details"))
+                .expect("decode recovered dry-run details");
+        assert_eq!(recovered_dry_run["dryRun"], true);
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
     }
 
@@ -7333,6 +8278,71 @@ mod tests {
         .expect("load retired requested run");
         assert_eq!(row.0, "failed");
         assert_eq!(row.1.as_deref(), Some("任务已停用，未执行"));
+    }
+
+    #[tokio::test]
+    async fn shared_lease_conflict_requeues_the_claimed_run_until_release() {
+        let store = super::ownership_test_store().await;
+        let lease = super::try_acquire_task_execution("startup_backfill.proxy_usage")
+            .expect("hold the shared startup-backfill lease");
+        let run_id = store
+            .request_run("prompt_cache_materialization")
+            .await
+            .expect("queue prompt-cache run");
+        let unrelated_run_id = store
+            .request_run("retention_archive")
+            .await
+            .expect("queue unrelated retention run");
+        let claim = store
+            .claim_requested_run()
+            .await
+            .expect("claim requested run")
+            .expect("requested run");
+        assert_eq!(claim.0, run_id);
+        assert!(super::try_acquire_task_execution("prompt_cache_materialization").is_none());
+        assert!(
+            store
+                .requeue_claimed_run(run_id)
+                .await
+                .expect("requeue lease-conflicted run")
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM managed_task_runs WHERE id=?",)
+                .bind(run_id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("read requeued status"),
+            "requested"
+        );
+
+        let blocked = super::active_task_execution_task_keys();
+        let unrelated_claim = store
+            .claim_requested_run_excluding(&blocked)
+            .await
+            .expect("claim unrelated run")
+            .expect("unrelated run after exclusion");
+        assert_eq!(unrelated_claim.0, unrelated_run_id);
+        assert_eq!(unrelated_claim.1, "retention_archive");
+        assert!(
+            store
+                .requeue_claimed_run(unrelated_run_id)
+                .await
+                .expect("restore unrelated test run")
+        );
+
+        drop(lease);
+        let reclaimed = store
+            .claim_requested_run()
+            .await
+            .expect("reclaim requested run")
+            .expect("run after lease release");
+        assert_eq!(reclaimed.0, run_id);
+        assert!(
+            store
+                .requeue_claimed_run(run_id)
+                .await
+                .expect("restore test run")
+        );
     }
 
     #[tokio::test]
@@ -7640,6 +8650,16 @@ mod tests {
         assert_eq!(schedule.source, "default");
         assert_eq!(schedule.interval_secs, Some(3_600));
         assert!(schedule.next_trigger_at.is_some());
+        let owner_schedule = store
+            .detail("pool_upstream_attempt_archive")
+            .await
+            .unwrap()
+            .expect("pool attempt owner detail");
+        assert_eq!(owner_schedule.task.interval_secs, Some(300));
+        assert_eq!(
+            owner_schedule.task.schedule_source.as_deref(),
+            Some("default")
+        );
 
         assert!(
             store
@@ -7970,6 +8990,38 @@ mod tests {
         .await
         .unwrap();
         assert!(cleared.is_none());
+    }
+
+    #[tokio::test]
+    async fn known_backlog_with_unknown_observation_keeps_catchup() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention observed backlog fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore::from_pool(pool);
+
+        store
+            .update_retention_catchup_from_summary(
+                Some("partial"),
+                Some(2),
+                2,
+                Some("backlog_unknown"),
+                "2026-10-01T00:00:00.000Z",
+            )
+            .await
+            .expect("retain catch-up after unknown observation");
+        let scheduled = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read observed backlog catch-up");
+
+        assert!(scheduled.0.is_some());
+        assert_eq!(scheduled.1.as_deref(), Some("backlog_unknown"));
     }
 
     #[tokio::test]

@@ -2,16 +2,17 @@
 
 ## Context and Scope
 
-本主题约束 `retention_archive` 的运行边界、会话派生维护以及管理页观测。归档保留策略、Verified Archive 证明和 raw 文件所有权继续由既有 retention 规范约束。
+本主题约束 `retention_archive` invocation 归档 owner、六项独立保留策略 owner、会话派生维护以及管理页观测。归档保留策略、Verified Archive 证明和 raw 文件所有权继续由既有 retention 规范约束。
 
-范围包括手动、启动、固定间隔和恢复触发的同一任务执行入口；归档导致的 Prompt 缓存会话统计刷新及孤儿会话清理；此任务的调度、进度、运行历史和性能摘要；积压存在时的自动归档追赶，以及最近 7 天的小时积压观测。公共观测函数的必要修复须验证其他调用者兼容性，不扩展为全部 Managed Task 的重新设计。
+范围包括手动、启动、固定间隔和恢复触发的 owner 执行入口；归档导致的 Prompt 缓存会话统计刷新及孤儿会话清理；各 owner 的调度、进度、运行历史和性能摘要；积压存在时的 invocation 归档追赶，以及最近 7 天的小时积压观测。公共观测函数的必要修复须验证其他调用者兼容性，不扩展为全部 Managed Task 的重新设计。
 
 本主题不改变保留天数、归档格式、汇总定义或物化所有者的启用控制，不以提升吞吐为理由放宽删除安全、在线请求优先级或运行预算。归档行删除不承诺 SQLite 数据库文件立即缩小。
 
 ## Terms and Interfaces
 
 - 归档核心、会话派生维护、运行积压快照、运行完成度、待归档调用积压、最长归档逾期时长、自动归档追赶和小时积压观测采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。
-- 业务调用行、上游尝试行、会话 key、归档批次、文件和字节分别计量。
+- 业务调用行、上游尝试行、详情行、配额快照、模型路由、任务运行历史、会话 key、归档批次、文件和字节分别计量。
+- 新 retention-policy owner 结果使用 `no-work`、`complete`、`partial`、`deferred`、`failed`；旧组合 `retention_archive` 历史仍可保留 `completed`。
 - 管理接口：`/api/system/managed-tasks/retention_archive` 及现有运行控制接口。
 - Prompt 缓存会话统计与物化控制继续使用既有产品接口和独立的物化任务所有者。
 
@@ -23,7 +24,7 @@
 
 ### REQ-BRR-002 — 运行预算
 
-生产任务 MUST 不设置固定总工作时长、默认值或上限来截断一次调度。每次调度须从 live rows 选择一个有界候选窗口，并把它作为一个完整逻辑工作单元执行；只有 shutdown/cancellation、真实压力或准入延期，以及明确的操作级预算才能在安全边界停止该工作单元。文件候选、SQL 微批、SQLite 维护查询、raw catch-up 和 native worker 清理分别使用既有操作级边界；已开始的提交只能在安全边界结束，阶段耗时、锁等待、提交计数和停止原因 MUST 可观测。
+生产任务 MUST 不设置固定总工作时长、默认值或上限来截断一次调度。每次调度须从 live rows 选择一个有界候选窗口，并把它作为一个完整逻辑工作单元执行；只有 shutdown/cancellation、真实压力或准入延期，以及明确的操作级预算才能在安全边界停止该工作单元。健康压缩/解压不得使用固定 15 秒总截止；文件读写须使用实际 bytes、total input 与最后一次真实进展判断连续无进展，并在 shutdown、取消、磁盘不足或 I/O 错误时停止。文件候选、SQL 微批、SQLite 维护查询、raw catch-up 和 native worker 清理分别使用既有操作级边界；已开始的提交只能在安全边界结束，阶段耗时、锁等待、提交计数和停止原因 MUST 可观测。
 
 ### REQ-BRR-003 — 真正有界的 Prompt 查询
 
@@ -47,13 +48,13 @@
 
 ### REQ-BRR-008 — 完成度与阶段结果
 
-运行 MUST 同时记录归档核心结果、各阶段结果和总体完成度。捕获范围全部结束为 `completed`；有业务进展但仍有积压、预算耗尽或可恢复阶段异常为 `partial`；无业务进展且仅因压力或准入让行为 `deferred`；致命错误使用既有 `failed` 状态并保留原因。没有进展但存在可恢复待办的结果也须明确为 `partial`，不得伪装为 `deferred`。
+旧组合运行 MUST 同时记录归档核心结果、各阶段结果和总体完成度，并继续兼容 `completed`。新 owner 运行 MUST 使用 `no-work`、`complete`、`partial`、`deferred`、`failed`。捕获范围全部结束为 `complete`；有业务进展但仍有积压、预算耗尽或可恢复阶段异常为 `partial`；无业务进展且仅因压力或准入让行为为 `deferred`；无候选且完成扫描为 `no-work`；致命错误使用 `failed` 状态并保留原因。压缩/发布失败不得被归类为成功。
 
 后台刷新继续完成时 MUST 不改写已结束运行的审计结果。新增完成度须作为兼容的可选字段发布，旧的成功/失败状态不能被直接替换为新枚举。
 
 ### REQ-BRR-009 — 同单位的进度
 
-总量 MUST 来自本轮开始时观测的过期 invocation 积压，附带观察时间和范围。已完成 MUST 只计本轮成功提交、属于该范围的 invocation 行；其他阶段计数分别展示。观测无法覆盖本轮范围时总量和百分比保持未知；待办未结束时不得显示总体 100%。ETA 仅可基于有效且近期的同口径吞吐计算，否则为未知。
+invocation owner 的总量 MUST 来自本轮开始时固定 cutoff/source fence 观测的过期 invocation 积压，附带观察时间和范围；其他 owner 的 global backlog 只有在同一完整适用范围被准确观测时才可提供。`discovered`、`selected` 和 `committed` MUST 分开记录，已完成 MUST 只计本轮成功提交且属于 owner scope 的不同工作项；其他阶段计数分别展示。观测无法覆盖本轮范围时总量和百分比保持未知；待办未结束时不得显示总体 100%。ETA 仅可基于有效且近期的同口径吞吐计算，否则为未知。
 
 ### REQ-BRR-010 — 可解释的检查点
 
@@ -123,11 +124,19 @@
 
 ### REQ-BRR-022 — 任务内批次闭环
 
-每次运行 MUST 从 live rows 选择本轮固定候选范围，按数据集及月份合并候选，并在本轮完成文件准备、摘要与源身份校验、manifest 发布和对应源记录转换。该候选窗口是本次调度拥有的一个完整逻辑工作单元；不得用固定总时长把它拆成隐藏的后续任务。月份是目标文件分组键，不是任务完成边界；一个运行无需处理完整月份。正常负载且候选充足时文件批次至少 512 行，目标约 1000 行；配置上限、剩余尾批、空间或 payload 边界导致的小批须可解释，不能将 50 行当作吞吐目标。
+每次运行 MUST 从 live rows 选择本轮固定候选范围，按数据集及月份合并候选，并在本轮完成文件准备、摘要与源身份校验、manifest 发布和对应源记录转换。invocation archive 的单次候选窗口最多 1,000 行、估算输入最多 16 MiB，随后仍按最多 64 行/1 MiB 的短事务微批提交。该候选窗口是本次调度拥有的一个完整逻辑工作单元；不得用固定总时长把它拆成隐藏的后续任务。月份是目标文件分组键，不是任务完成边界；一个运行无需处理完整月份。正常负载且候选充足时文件批次至少 512 行，目标约 1000 行；配置上限、剩余尾批、空间或 payload 边界导致的小批须可解释，不能将 50 行当作吞吐目标。
 
 临时文件、未完成 prepared/staging、续作 cursor 或未完成累计值 MUST NOT 成为下一次运行的正常输入。成功、取消及失败出口清理本轮临时文件；进程中断留下的临时文件只可丢弃，不可继续写入。后续运行重新选择仍在线的源记录；绑定同一 `archive_batch_id` 与 manifest SHA、已发布在规范目标上的 gzip 文件，以及完整、持久的 V2 Summary proof，且 manifest/file/coverage/keyset 与当前 live source identity 重新验证一致时，可以复用该已发布文件作为崩溃/重启恢复证据，不能把它作为正常调度的跨任务续作机制，也不能恢复源候选 ID、临时文件、候选游标或源删除事务。proof 可以在 manifest 仍为 `materializing` 时持久化，但该状态永远不是 Summary 或 cleanup 的权威来源；只有正常源转换事务完成后才可转为 `completed`。任一文件、manifest、proof 或源身份复核失败都必须回到安全重建/延期路径。已完成的 manifest 是单调权威边界，过期 writer 不得将其降回 `materializing`；坏页清理必须以观测到的页指纹为条件，遇到并发修复则延期重试。已完成的独立批次保持成功事实，一个月份失败不得破坏其他已完成批次。基础任务内批次方案不要求新增主库结构；当前增量恢复扩展明确替换该边界，允许幂等新增 `archive_sha256`、repair progress/deferred 状态及 `pending_generation`，并须保留旧状态的未验证语义、前向修复和兼容回滚路径。
 
 发布用 staging 与恢复读取副本 MUST 分开管理。恢复读取可在预算耗尽时保留已完整解压且绑定当前 manifest SHA 的只读 SQLite 副本，路径按来源固定；来源被拒绝、部分解压、读取失败或恢复完成时清理副本及 sidecar。副本不可作为未完成归档写入的续作输入。重建最后有效统计前 MUST 非阻塞取得所有来源目录的发布围栏，同一目录只持有一次；目录忙时保留统计并延后，围栏保持到恢复事务提交或回滚。
+
+### REQ-BRR-025 — 独立 owner 与结果事实
+
+`retention_archive` MUST 只负责 invocation archive；pool upstream attempt、forward proxy attempt、invocation detail、quota snapshot、model route 和 task-run history MUST 使用独立 owner、独立 schedule、独立单实例和独立预算。cold raw compression 与 expired archive cleanup MUST 继续复用 `raw_compression` 与 `prune_archive_batches`；identity/raw orphan 与 Prompt-cache 任务不得被重新计入 invocation owner。每个 owner 的 committed fact MUST 在自己的成功边界记录，其他 owner 的失败、延期或后续物化不能改写该运行。
+
+### REQ-BRR-026 — 有界 dispatcher 与 native drain
+
+Managed-task dispatcher MUST 使用有限 worker、有限 finalizer、显式 finish queue 和结果写入退避，不得 inline-await 整个任务或无限启动 worker。同一 task key MUST 只有一个执行 lease；等待 heavy file gate、SQLite 准入或其他资源时不得持有数据库连接、写许可或文件 fence，准入后 MUST 重验 owner identity、source fence 和可执行范围。shutdown/cancel MUST 等 native file worker 退出后才释放 lease，并 MUST 将 `partial`、`deferred`、`failed` 与 `no-work` 的事实分别写入历史。
 
 ### REQ-BRR-023 — 同月目标与服务速率
 
@@ -212,6 +221,12 @@
 - covers: `REQ-BRR-002`, `REQ-BRR-004`, `REQ-BRR-022`, `REQ-BRR-023`
 - 方法：同月多次任务、迟到记录、重复身份、文件摘要失败、准入拒绝、超时及进程中断夹具；检查目标路径、源记录/raw link、临时文件和未新增主库结构。发布构建使用同种子百万级 cohort、30,000/day invocation、1.2 倍 attempt 与在线读写进行基线/候选各三次实测。
 - 通过条件：任务内闭环且下轮从 live rows 重选；只有重新通过 manifest、文件、coverage、keyset、durable proof 和当前 source identity 校验的同月已发布 artifact 可幂等复用；失败未证明源行不转换，不依赖旧 staging/cursor；同月只使用规范目标且重复记录不计数；正常批次达到数百到约千行，两个数据集达到规定服务速率并在 24 小时内消化固定 cohort；超时/空间/锁等待可观测，在线 p95/p99 不劣于基线。
+
+### VER-BRR-014
+
+- covers: `REQ-BRR-008`, `REQ-BRR-009`, `REQ-BRR-025`, `REQ-BRR-026`
+- 方法：CI 中使用 invocation source fence、超过 1,000 行/16 MiB 的候选、部分提交后失败、无候选、资源延期、压缩无进展、并发 owner、结果写入失败、取消和重启 fixture；同时读取旧 composite history 与新 ownership version 记录。
+- 通过条件：source reduction 等于已提交 archive rows；selected、committed、global backlog 与 processedCount 不混用；五种新结果值准确落盘且压缩失败不能成功；七个 owner 不重复执行，heavy file work 至多一个，等待释放资源，native worker 排空后才释放 lease；旧运行的组合字段和历史仍可读。
 
 ### VER-BRR-013
 

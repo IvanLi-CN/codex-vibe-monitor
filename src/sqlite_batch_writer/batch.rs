@@ -96,6 +96,7 @@ pub(crate) struct BatchedAccountSelectedTouch {
 #[derive(Debug, Clone)]
 pub(crate) struct BatchedSystemTaskFinish {
     pub(crate) run_id: i64,
+    pub(crate) task_key: String,
     pub(crate) task_kind: SystemTaskKind,
     pub(crate) trigger_kind: String,
     pub(crate) status: SystemTaskStatus,
@@ -103,6 +104,9 @@ pub(crate) struct BatchedSystemTaskFinish {
     pub(crate) detail: Option<String>,
     pub(crate) finished_at: String,
     pub(crate) duration_ms: i64,
+    pub(crate) completion: Option<String>,
+    pub(crate) core_completion: Option<String>,
+    pub(crate) details: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]

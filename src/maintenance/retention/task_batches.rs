@@ -27,6 +27,7 @@ impl RetentionDiagnosticRecorder {
     }
 
     fn mark_budget(&mut self) {
+        retention_record_defer("retention_batch", "retention_work_budget");
         self.mark(RecoveryDiagnostic::RetentionBudgetExhausted);
     }
 
@@ -35,19 +36,30 @@ impl RetentionDiagnosticRecorder {
     }
 
     fn mark_stop(&mut self) {
-        let outcome =
+        let (outcome, reason) =
             if retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled()) {
-                RecoveryDiagnostic::RetentionCancelled
+                (
+                    RecoveryDiagnostic::RetentionCancelled,
+                    "shutdown".to_string(),
+                )
             } else if retention_run_budget_expired()
                 || matches!(
                     retention_run_defer_reason().as_deref(),
                     Some("retention_work_budget") | Some("archive_design_budget")
                 )
             {
-                RecoveryDiagnostic::RetentionBudgetExhausted
+                (
+                    RecoveryDiagnostic::RetentionBudgetExhausted,
+                    "retention_work_budget".to_string(),
+                )
             } else {
-                RecoveryDiagnostic::RetentionPressureDeferred
+                (
+                    RecoveryDiagnostic::RetentionPressureDeferred,
+                    retention_run_defer_reason()
+                        .unwrap_or_else(|| "retention_write_admission".to_string()),
+                )
             };
+        retention_record_defer("retention_batch", reason);
         self.mark(outcome);
     }
 
@@ -212,6 +224,76 @@ async fn select_invocation_archive_group(
     Ok((ids, group))
 }
 
+fn invocation_archive_snapshot_pages(
+    group: &[InvocationArchiveCandidate],
+) -> Result<Vec<TaskArchiveSnapshotPage>> {
+    let mut rows = group
+        .iter()
+        .map(invocation_archive_candidate_to_hourly_source_record)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let invoke_ids_by_row_id = group
+        .iter()
+        .map(|candidate| (candidate.id, candidate.invoke_id.clone()))
+        .collect::<HashMap<_, _>>();
+
+    rows.chunks(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS)
+        .map(|rows| {
+            let first = rows.first().context("Summary archive page is empty")?;
+            let last = rows.last().context("Summary archive page is empty")?;
+            Ok(TaskArchiveSnapshotPage {
+                coverage_start: first.occurred_at.clone(),
+                coverage_end: last.occurred_at.clone(),
+                row_count: u32::try_from(rows.len())
+                    .context("Summary archive page row count overflow")?,
+                payload: encode_summary_archive_snapshot_v2_payload(rows, &invoke_ids_by_row_id)?,
+            })
+        })
+        .collect()
+}
+
+async fn persist_invocation_segment_summary_pages(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    pages: &[TaskArchiveSnapshotPage],
+) -> Result<bool> {
+    let Some(batch_id) = stage_task_summary_archive_manifest(
+        pool,
+        outcome,
+        Some(&outcome.sha256),
+        Some(outcome.row_count),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    for (page_index, page) in pages.iter().cloned().enumerate() {
+        if store_task_summary_snapshot_page(
+            pool,
+            outcome,
+            batch_id,
+            u32::try_from(page_index).context("Summary archive page index overflow")?,
+            page,
+        )
+        .await?
+        .is_none()
+        {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if let Ok(counter) = crate::maintenance::RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES
+            .try_with(Arc::clone)
+        {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 pub(crate) async fn invocation_archive_candidate_selection_for_test(
     pool: &Pool<Sqlite>,
@@ -247,6 +329,15 @@ fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
         || error
             .to_string()
             .contains("retention archive identity proof inflate exceeded the operation deadline")
+}
+
+fn archive_identity_proof_load_timed_out(error: &anyhow::Error) -> bool {
+    is_retention_archive_file_operation_budget_exhausted(error)
+        || error.chain().any(|cause| {
+            cause.to_string().contains(
+                "retention archive identity proof inflate exceeded the operation deadline",
+            )
+        })
 }
 
 fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {
@@ -538,7 +629,7 @@ async fn reuse_task_month_archive_if_proven(
 }
 
 struct RetentionBatchCommit {
-    raw_paths: Vec<Option<String>>,
+    raw_deletion_plan: ProxyRawDeletionPlan,
     raw_reference_check_elapsed: Option<Duration>,
     commit_started: Instant,
     prompt_cache_keys: Vec<String>,
@@ -578,6 +669,7 @@ pub(crate) async fn prune_old_invocation_details(
     let spec = archive_table_spec("codex_invocations");
     let success_like_condition = invocation_status_is_success_like_sql("status", "error_message");
     if dry_run {
+        let candidate_limit = archive_candidate_limit(config);
         let sql = format!(
             r#"
             SELECT id, occurred_at, request_raw_path, response_raw_path,
@@ -589,6 +681,7 @@ pub(crate) async fn prune_old_invocation_details(
               AND occurred_at < ?2
               AND occurred_at >= ?3
             ORDER BY occurred_at ASC, id ASC
+            LIMIT ?4
             "#,
             success_like_condition = success_like_condition,
         );
@@ -596,8 +689,15 @@ pub(crate) async fn prune_old_invocation_details(
             .bind(DETAIL_LEVEL_FULL)
             .bind(&prune_cutoff)
             .bind(&archive_cutoff)
+            .bind(candidate_limit.saturating_add(1) as i64)
             .fetch_all(pool)
             .await?;
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows("codex_invocation_details", discovered);
+        batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -624,7 +724,7 @@ pub(crate) async fn prune_old_invocation_details(
         return Ok((
             candidates.len(),
             by_group.len(),
-            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+            count_planned_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
         ));
     }
 
@@ -658,7 +758,7 @@ pub(crate) async fn prune_old_invocation_details(
             .bind(DETAIL_LEVEL_FULL)
             .bind(&prune_cutoff)
             .bind(&archive_cutoff)
-            .bind(candidate_limit as i64)
+            .bind(candidate_limit.saturating_add(1) as i64)
             .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -671,12 +771,18 @@ pub(crate) async fn prune_old_invocation_details(
         } else {
             candidates_query.await?
         };
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows("codex_invocation_details", discovered);
+        batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
 
         if candidates.is_empty() {
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
@@ -692,9 +798,14 @@ pub(crate) async fn prune_old_invocation_details(
                 recovery_diagnostic.mark_budget();
                 break;
             }
+            let group_candidate_count = group.len();
             let group = select_archive_batch(group, |candidate| {
                 candidate.estimated_write_bytes.max(1) as usize
             });
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
+            }
             let mut batch_observation = batch_plan::BatchObservation::begin(
                 "codex_invocation_details",
                 &group_key,
@@ -826,6 +937,9 @@ pub(crate) async fn prune_old_invocation_details(
                         break;
                     }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        if archive_identity_proof_load_timed_out(&error) {
+                            batch_observation.mark_timeout();
+                        }
                         retention_record_defer(
                             "archive_identity_proof",
                             RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
@@ -985,7 +1099,7 @@ pub(crate) async fn prune_old_invocation_details(
                             }
                             let raw_reference_check_started = Instant::now();
                             let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-                            let raw_paths = filter_unreferenced_proxy_raw_paths(
+                            let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
                                 tx.as_mut(),
                                 &raw_paths,
                                 raw_path_fallback_root,
@@ -995,7 +1109,7 @@ pub(crate) async fn prune_old_invocation_details(
                                 .then(|| raw_reference_check_started.elapsed());
                             let commit_started = Instant::now();
                     Ok(RetentionBatchCommit {
-                        raw_paths,
+                        raw_deletion_plan,
                         raw_reference_check_elapsed,
                         commit_started,
                         prompt_cache_keys: Vec::new(),
@@ -1039,7 +1153,7 @@ pub(crate) async fn prune_old_invocation_details(
                     return Err(error);
                 }
                 transaction_resources.mark_transaction_finished();
-                let raw_paths = commit.raw_paths;
+                let raw_deletion_plan = commit.raw_deletion_plan;
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
                     admission_mode,
@@ -1054,10 +1168,11 @@ pub(crate) async fn prune_old_invocation_details(
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
                     p1_waiter_count,
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 rows_pruned += group.len();
                 committed_rows += group.len();
+                workload::record_owner_processed_count("invocation_detail_prune", group.len());
                 recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
@@ -1068,10 +1183,13 @@ pub(crate) async fn prune_old_invocation_details(
                     ));
                 }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                if !raw_paths.is_empty() {
+                if !raw_deletion_plan.paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
-                raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
+                raw_files_removed += removed;
+                workload::record_owner_raw_files_removed("invocation_detail_prune", removed);
+                batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;
@@ -1123,20 +1241,31 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let spec = archive_table_spec("codex_invocations");
 
     if dry_run {
+        let candidate_limit = archive_candidate_limit(config);
         let candidates_query = load_invocation_archive_candidate_metadata(
             pool,
             cutoff,
             source_max_invocation_id,
-            None,
+            Some(candidate_limit.saturating_add(1)),
         );
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
-                Err(_) => return Ok((0, 0, 0, std::collections::HashSet::new())),
+                Err(_) => {
+                    bail!(
+                        "retention invocation archive candidate query exceeded the operation deadline"
+                    )
+                }
             }
         } else {
             candidates_query.await?
         };
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
 
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
@@ -1164,7 +1293,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         return Ok((
             candidates.len(),
             by_group.len(),
-            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+            count_planned_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
             std::collections::HashSet::new(),
         ));
     }
@@ -1190,7 +1319,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             pool,
             cutoff,
             source_max_invocation_id,
-            Some(candidate_limit),
+            Some(candidate_limit.saturating_add(1)),
         );
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -1203,6 +1332,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
         } else {
             candidates_query.await?
         };
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
 
         if candidates.is_empty() {
             break 'work_unit;
@@ -1211,14 +1346,14 @@ pub(super) async fn archive_old_invocations_with_source_max(
         discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
         workload::record_discovered_count(discovered_ids.len());
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let group_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
+            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
             by_group.entry(group_key).or_default().push(candidate);
         }
 
@@ -1227,6 +1362,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 recovery_diagnostic.mark_budget();
                 break;
             }
+            let group_candidate_count = group.len();
             let selection = select_invocation_archive_group(pool, group).await;
             let (ids, group) = match selection {
                 Ok(selection) => selection,
@@ -1242,6 +1378,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     return Err(error);
                 }
             };
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                batch_plan::record_candidate_window_has_more(spec.dataset, true);
+            }
             if ids.is_empty() || retention_run_budget_expired() {
                 if retention_run_budget_expired() {
                     recovery_diagnostic.mark_budget();
@@ -1292,7 +1432,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             let prepare_started = Instant::now();
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
-            let reusable_archive = {
+            let archive_layout = archive_layout_for_dataset(config, spec.dataset);
+            let reusable_archive = if archive_layout == ArchiveBatchLayout::LegacyMonth {
                 let reuse_future = reuse_task_month_archive_if_proven(
                     pool,
                     config,
@@ -1312,6 +1453,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 } else {
                     reuse_future.await?
                 }
+            } else {
+                None
             };
             let (archive_outcome, proof, mut archive_identity_proof, prepare_elapsed) =
                 if let Some(reusable_archive) = reusable_archive {
@@ -1327,17 +1470,34 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         elapsed,
                     )
                 } else {
-                    let mut snapshot_pages = Vec::new();
+                    let mut snapshot_pages = if archive_layout == ArchiveBatchLayout::SegmentV1 {
+                        invocation_archive_snapshot_pages(&group)?
+                    } else {
+                        Vec::new()
+                    };
                     let archive_writer_started = Instant::now();
                     let archive_result = {
-                        let archive_future = archive_rows_into_task_month_batch(
-                            pool,
-                            config,
-                            spec,
-                            &group_key,
-                            &ids,
-                            &mut snapshot_pages,
-                        );
+                        let archive_future = async {
+                            match archive_layout {
+                                ArchiveBatchLayout::LegacyMonth => {
+                                    archive_rows_into_task_month_batch(
+                                        pool,
+                                        config,
+                                        spec,
+                                        &group_key,
+                                        &ids,
+                                        &mut snapshot_pages,
+                                    )
+                                    .await
+                                }
+                                ArchiveBatchLayout::SegmentV1 => {
+                                    archive_rows_into_segment_batch(
+                                        pool, config, spec, &group_key, &ids,
+                                    )
+                                    .await
+                                }
+                            }
+                        };
                         tokio::pin!(archive_future);
                         if let Some(remaining) = retention_run_remaining_budget() {
                             match tokio::time::timeout(remaining, &mut archive_future).await {
@@ -1407,6 +1567,17 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             config.invocation_archive_ttl_days,
                         )?);
                     archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
+                    if archive_layout == ArchiveBatchLayout::SegmentV1
+                        && !persist_invocation_segment_summary_pages(
+                            pool,
+                            &archive_outcome,
+                            &snapshot_pages,
+                        )
+                        .await?
+                    {
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    }
                     let prepare_elapsed = prepare_started.elapsed();
                     batch_observation.file_prepared(prepare_elapsed);
                     drop(prepare_phase);
@@ -1422,6 +1593,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             break;
                         }
                         Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                            if archive_identity_proof_load_timed_out(&error) {
+                                batch_observation.mark_timeout();
+                            }
                             retention_record_defer(
                                 "archive_identity_proof",
                                 RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
@@ -1702,7 +1876,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     }
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-                    let raw_paths = filter_unreferenced_proxy_raw_paths(
+                    let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
                         tx.as_mut(),
                         &raw_paths,
                         raw_path_fallback_root,
@@ -1712,7 +1886,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                     let commit_started = Instant::now();
                     Ok(RetentionBatchCommit {
-                        raw_paths,
+                        raw_deletion_plan,
                         raw_reference_check_elapsed,
                         commit_started,
                         prompt_cache_keys: archived_prompt_cache_keys,
@@ -1757,7 +1931,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 }
                 transaction_resources.mark_transaction_finished();
                 prompt_cache_keys.extend(commit.prompt_cache_keys);
-                let raw_paths = commit.raw_paths;
+                let raw_deletion_plan = commit.raw_deletion_plan;
                 workload::record_processed_count(group.len());
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_archive",
@@ -1778,7 +1952,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
                     p1_waiter_count,
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
                 );
                 rows_archived += group.len();
                 committed_rows += group.len();
@@ -1792,11 +1966,14 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     ));
                 }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                if !raw_paths.is_empty() {
+                if !raw_deletion_plan.paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 retention_recovery_record_progress();
-                raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                let removed = delete_proxy_raw_paths(raw_deletion_plan, raw_path_fallback_root)?;
+                raw_files_removed += removed;
+                workload::record_owner_raw_files_removed("retention_archive", removed);
+                batch_observation.raw_files_removed(removed);
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;
@@ -1832,51 +2009,66 @@ pub(crate) async fn archive_timestamped_dataset(
     select_sql: &str,
     cutoff: String,
     dry_run: bool,
+    raw_path_fallback_root: Option<&Path>,
 ) -> Result<(usize, usize, usize)> {
     if dry_run {
-        let dry_run_sql = match spec.dataset {
-            "forward_proxy_attempts" => {
-                r#"
-                SELECT strftime('%Y-%m', datetime(occurred_at, '+8 hours')) AS month_key,
-                       COUNT(*) AS row_count
-                FROM forward_proxy_attempts
-                WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            "pool_upstream_request_attempts" => {
-                r#"
-                SELECT strftime('%Y-%m', occurred_at) AS month_key,
-                       COUNT(*) AS row_count
-                FROM pool_upstream_request_attempts
-                WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            other => bail!("unsupported dry-run archive dataset: {other}"),
-        };
-        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(dry_run_sql)
+        let candidate_limit = archive_candidate_limit(config);
+        let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
             .bind(&cutoff)
+            .bind(candidate_limit.saturating_add(1) as i64)
+            .fetch_all(pool);
+        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, candidates_query).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    bail!(
+                        "retention timestamped archive candidate query exceeded the operation deadline"
+                    )
+                }
+            }
+        } else {
+            candidates_query.await?
+        };
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let candidates = candidates
+            .into_iter()
+            .take(candidate_limit)
+            .collect::<Vec<_>>();
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+        let raw_files_planned = if spec.dataset == "pool_upstream_request_attempts" {
+            let ids = candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let raw_paths = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT response_raw_path
+                 FROM pool_upstream_request_attempts
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(serde_json::to_string(&ids)?)
             .fetch_all(pool)
             .await?;
-        for batch in &batch_counts {
+            count_planned_proxy_raw_paths(&raw_paths, raw_path_fallback_root)
+        } else {
+            0
+        };
+        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key =
+                archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
+            *by_month.entry(month_key).or_default() += 1;
+        }
+        for (month_key, rows) in &by_month {
             info!(
                 dataset = spec.dataset,
-                month_key = %batch.month_key,
-                rows = batch.row_count,
+                month_key = %month_key,
+                rows = *rows,
                 "retention dry-run planned archive batch"
             );
         }
-        return Ok((
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count as usize)
-                .sum(),
-            batch_counts.len(),
-            0,
-        ));
+        return Ok((by_month.values().sum(), by_month.len(), raw_files_planned));
     }
 
     let mut rows_archived = 0usize;
@@ -1896,7 +2088,7 @@ pub(crate) async fn archive_timestamped_dataset(
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
             .bind(&cutoff)
-            .bind(candidate_limit as i64)
+            .bind(candidate_limit.saturating_add(1) as i64)
             .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -1909,12 +2101,18 @@ pub(crate) async fn archive_timestamped_dataset(
         } else {
             candidates_query.await?
         };
+        let discovered = candidates.len();
+        let has_more = discovered > candidate_limit;
+        let mut candidates = candidates;
+        candidates.truncate(candidate_limit);
+        batch_plan::record_discovered_rows(spec.dataset, discovered);
+        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
 
         if candidates.is_empty() {
             break 'work_unit;
         }
 
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
+        let mut candidate_remaining_hint = has_more;
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
@@ -1933,9 +2131,14 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
+            let group_candidate_count = group.len();
             let group = select_archive_batch(group, |candidate| {
                 row_sizes.get(&candidate.id).copied().unwrap_or(512)
             });
+            if group.len() < group_candidate_count {
+                candidate_remaining_hint = true;
+                batch_plan::record_candidate_window_has_more(spec.dataset, true);
+            }
             let mut batch_observation =
                 batch_plan::BatchObservation::begin(spec.dataset, &month_key, group.len());
             let prepare_started = Instant::now();
@@ -2061,6 +2264,9 @@ pub(crate) async fn archive_timestamped_dataset(
                         break;
                     }
                     Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        if archive_identity_proof_load_timed_out(&error) {
+                            batch_observation.mark_timeout();
+                        }
                         retention_record_defer(
                             "archive_identity_proof",
                             RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON,
@@ -2305,28 +2511,28 @@ pub(crate) async fn archive_timestamped_dataset(
                     &materialized_forward_proxy_rows,
                 )
                 .await?;
-                let (raw_paths, raw_reference_check_elapsed) = if spec.dataset
+                let (raw_deletion_plan, raw_reference_check_elapsed) = if spec.dataset
                     == "pool_upstream_request_attempts"
                 {
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates =
                         pool_attempt_raw_paths.iter().any(Option::is_some);
-                    let raw_paths = filter_unreferenced_proxy_raw_paths(
+                    let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
                         tx.as_mut(),
                         &pool_attempt_raw_paths,
                         config.database_path.parent(),
                     )
                     .await?;
                     (
-                        raw_paths,
+                        raw_deletion_plan,
                         had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed()),
                     )
                 } else {
-                    (Vec::new(), None)
+                    (ProxyRawDeletionPlan::empty(), None)
                 };
                 let commit_started = Instant::now();
                 Ok(Some(RetentionBatchCommit {
-                    raw_paths,
+                    raw_deletion_plan,
                     raw_reference_check_elapsed,
                     commit_started,
                     prompt_cache_keys: Vec::new(),
@@ -2381,7 +2587,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     recovery_diagnostic.mark_stop();
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
-                let raw_paths = commit.raw_paths;
+                let raw_deletion_plan = commit.raw_deletion_plan;
                 let breached = retention_record_commit_with_reference_check!(
                     "timestamped_archive",
                     admission_mode,
@@ -2393,7 +2599,15 @@ pub(crate) async fn archive_timestamped_dataset(
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
                     p1_waiter_count,
-                    candidate_remaining_hint,
+                    usize::from(candidate_remaining_hint),
+                );
+                workload::record_owner_processed_count(
+                    if spec.dataset == "pool_upstream_request_attempts" {
+                        "pool_upstream_attempt_archive"
+                    } else {
+                        "forward_proxy_attempt_archive"
+                    },
+                    group.len(),
                 );
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
@@ -2405,13 +2619,19 @@ pub(crate) async fn archive_timestamped_dataset(
                 }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if spec.dataset == "pool_upstream_request_attempts" {
-                    if !raw_paths.is_empty() {
+                    if !raw_deletion_plan.paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;
                     }
                     rows_archived += group.len();
                     committed_rows += group.len();
-                    raw_files_removed +=
-                        delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                    let removed =
+                        delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?;
+                    raw_files_removed += removed;
+                    workload::record_owner_raw_files_removed(
+                        "pool_upstream_attempt_archive",
+                        removed,
+                    );
+                    batch_observation.raw_files_removed(removed);
                 } else {
                     rows_archived += group.len();
                     committed_rows += group.len();

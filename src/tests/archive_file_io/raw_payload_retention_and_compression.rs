@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::FutureExt;
 use serde_json::json;
 
 #[tokio::test]
@@ -891,8 +892,9 @@ async fn retention_pressure_defer_keeps_legacy_prepared_rows_unconsumed() {
 
 #[tokio::test]
 async fn retention_finalization_rejects_source_content_changed_after_archive_copy() {
-    let (pool, config, temp_dir) =
+    let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-source-content-identity").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     let occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
     let raw_path = config.proxy_raw_dir.join("source-content-identity.bin");
     fs::write(&raw_path, b"owned-until-verified-publication").expect("write raw response");
@@ -2058,6 +2060,69 @@ async fn raw_writer_fences_allow_concurrent_writers_and_block_sweep_lock() {
         .await;
     assert!(exclusive_after_writers_finish.is_ok());
 
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_raw_deletion_plan_defers_while_writer_holds_fence() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-delete-fence").await;
+    let raw_path = config.proxy_raw_dir.join("delete-fence.bin");
+    fs::write(&raw_path, b"old").expect("write raw candidate");
+    let _writer_fence = crate::maintenance::acquire_retention_raw_write_fence(&raw_path)
+        .expect("hold raw writer fence");
+    let mut connection = pool.acquire().await.expect("acquire retention connection");
+    let plan = crate::maintenance::filter_unreferenced_proxy_raw_paths(
+        &mut connection,
+        &[Some(raw_path.to_string_lossy().into_owned())],
+        None,
+    )
+    .await
+    .expect("build deferred raw deletion plan");
+    assert_eq!(
+        plan.paths,
+        vec![Some(raw_path.to_string_lossy().into_owned())]
+    );
+    assert!(plan.identities.is_empty());
+    let removed =
+        crate::maintenance::delete_proxy_raw_paths(plan, None).expect("skip deferred raw deletion");
+    assert_eq!(removed, 0);
+    assert!(raw_path.exists());
+
+    drop(_writer_fence);
+    drop(connection);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_raw_deletion_plan_preserves_replaced_identity() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-delete-identity").await;
+    let raw_path = config.proxy_raw_dir.join("delete-identity.bin");
+    fs::write(&raw_path, b"old").expect("write raw candidate");
+    let mut connection = pool.acquire().await.expect("acquire retention connection");
+    let plan = crate::maintenance::filter_unreferenced_proxy_raw_paths(
+        &mut connection,
+        &[Some(raw_path.to_string_lossy().into_owned())],
+        None,
+    )
+    .await
+    .expect("build identity-bound raw deletion plan");
+    fs::write(&raw_path, b"replacement-with-new-identity")
+        .expect("replace raw candidate after identity check");
+    let removed =
+        crate::maintenance::delete_proxy_raw_paths(plan, None).expect("skip replaced raw deletion");
+    assert_eq!(removed, 0);
+    assert_eq!(
+        fs::read(&raw_path).expect("read replacement raw file"),
+        b"replacement-with-new-identity"
+    );
+
+    drop(connection);
+    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 

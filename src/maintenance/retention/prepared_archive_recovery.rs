@@ -1124,11 +1124,11 @@ pub(crate) async fn retention_recovery_finalize_published(
         bail!("unsupported prepared archive publication kind");
     }
     retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
-    let raw_paths =
+    let raw_deletion_plan =
         filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths, config.database_path.parent())
             .await?;
     tx.commit().await?;
-    let inventory_intent_recorded = if raw_paths.is_empty() {
+    let inventory_intent_recorded = if raw_deletion_plan.paths.is_empty() {
         true
     } else {
         match mark_retention_raw_inventory_reset_intent(pool).await {
@@ -1143,8 +1143,9 @@ pub(crate) async fn retention_recovery_finalize_published(
         }
     };
     let removed = if inventory_intent_recorded {
-        delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?
+        delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?
     } else {
+        drop(raw_deletion_plan);
         0
     };
     drop(admission);

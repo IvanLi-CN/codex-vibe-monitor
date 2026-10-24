@@ -1494,6 +1494,7 @@ async fn system_task_finish_batch_marks_running_task_terminal() {
         vec![SqliteBatchWrite::SystemTaskFinish(
             BatchedSystemTaskFinish {
                 run_id: handle.id,
+                task_key: handle.task_kind.as_str().to_string(),
                 task_kind: handle.task_kind,
                 trigger_kind: handle.trigger_kind.clone(),
                 status: SystemTaskStatus::Success,
@@ -1501,6 +1502,9 @@ async fn system_task_finish_batch_marks_running_task_terminal() {
                 detail: None,
                 finished_at: "2026-07-01T10:00:05Z".to_string(),
                 duration_ms: 125,
+                completion: None,
+                core_completion: None,
+                details: None,
             },
         )],
     )

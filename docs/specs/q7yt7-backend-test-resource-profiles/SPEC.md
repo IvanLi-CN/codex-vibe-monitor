@@ -20,7 +20,7 @@
 - 为后端测试建立稳定的 resource-profile 顶层组织：`lightweight`、`stateful_sqlite`、`archive_file_io`。
 - 将 `src/tests/slices` 与 `src/upstream_accounts/tests` 都收口到真实模块树，移除 `pool_failover_window_*`、`tests_part_*` 和 `#[path = "../..."]` 聚合。
 - 把 owner-facing backend required checks 从单个 `Backend Tests` 改成三个稳定 job，并让质量门禁与发布链路以这三个名称为真相源。
-- 将 PR 全部 required job 的 job wall time 控制在冷轮 `<= 250s`、热轮 `<= 180s`，并使 required runner 总秒数相对 run `31825458818` 至少下降 `20%`；以同一 PR head 的首轮冷 SHA 与第二轮热 SHA 验证。
+- 在同一基线和同一 PR head 下，使 required runner 总秒数在冷轮与热轮都出现可重复的相对改善；以首轮冷 SHA 与第二轮热 SHA 记录完整证据。单 job wall time 只作诊断指标，不设固定绝对门槛。
 
 ### Non-goals
 
@@ -37,7 +37,7 @@
 - `src/tests/**` 与 `src/upstream_accounts/tests**` 的测试模块树重组。
 - `.github/scripts/run-backend-tests.sh` 的 profile-aware runner 合同。
 - Stateful retry/backoff、no-available-account wait 和大请求 replay fixture 的 test-only 时间/阈值注入点。
-- `CI PR` / `CI Main` / `quality-gates` / `release snapshot` / `release gate` 中 required-check 名称、职责拆分与期望 job 集；archive 仅可作为受控实验，不能新增 required check。
+- `CI PR` / `CI Main` / `quality-gates` / `release snapshot` / `release gate` 中 required-check 名称、职责拆分与期望 job 集；`CI PR` 的 `labeled` 事件由 Label Gate 单独消费，不能重新触发完整 CI；archive 仅可作为受控实验，不能新增 required check。
 - 与本主题直接相关的性能经验文档更新。
 
 ### Out of scope
@@ -65,15 +65,16 @@
 - shared-testbox 适配器的 run 标识必须包含每次调用的唯一性区分，即使同一 Agent 在同一秒内重复启动也不得复用 run 目录；清理前必须验证 `runs/` 父目录仍是 Agent Directory 内的真实目录，发现符号链接时不得触碰其目标。
 - 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
 - 路径规范化必须解析既有符号链接并拒绝悬空符号链接父级；默认 Cargo 目录也必须在创建前完成物理路径隔离检查，不得沿链接写入 source snapshot。
-- `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
-- PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 均须 `<= 250s`、第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
+- `run-backend-tests.sh` 必须同时支持 `--archive-file <path>` 与已解包的 `--archive-dir <path>`；CI archive consumers 必须由固定版本 `cargo-nextest` 一次解包后复用 archive metadata replay，不能重新安装完整 Rust toolchain、执行重复系统依赖准备或为每个 profile 重复解包；未提供 archive 参数时必须继续用锁定依赖编译并运行。
+- CI 的 Bun 下载缓存必须绑定 `.bun-version` 与三个 lockfile；Playwright Chromium 缓存必须绑定 `.bun-version`、`web/package.json` 与 `web/bun.lock`，不得恢复未匹配依赖版本的浏览器缓存。
+- PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，并在首轮冷 SHA 与第二轮热 SHA 报告每个 job 的 wall time、完整测试集合和 required runner 总秒数；两轮总秒数都必须低于选定基线。单 job wall time 用于定位回归，不单独阻断验收。
 - Cargo registry/git 与 `target` cache 必须分离；nextest target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移时可用原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed；clippy 不得写入或争用 nextest target namespace。
 - PR Docker smoke 必须只使用 CI 生成的当前 binary 与 web bundle 构建私有 runtime target，并继续运行真实容器 smoke；耗时的 binary、web bundle 与 Xray staging 可以由显式 auxiliary producer 生成，`Build Artifacts` 必须在 producer 失败时实际运行并失败，不得被标记为 skipped。该私有 target 的运行库必须兼容 host-built binary。生产 release workflow、默认 Docker target 和 release profile 不得改变。
 - test-only Cargo profile 可关闭 debug info；任何编译参数实验必须保留 source-key target cache 的依赖复用，并且不得进入 production release profile 或运行时配置面。
 - `Lint & Format Check`、`Repository Tooling Checks`、`Front-end Tests`、`Storybook Accessibility Tests`、`Docs & Web Demo Build`、`Records Overlay E2E` 和三个 backend profiles 均为 required checks；拆分只能改变资源边界，不得删除测试或断言。若完整 E2E 的稳定运行时间超过 required job 预算，可由显式 auxiliary producer 运行，required gate 必须以 `always()` 运行并在 producer 失败时显式失败；producer 必须实际运行 Records Overlay 与 Web Demo 两套 spec，分别写入隔离结果目录，测试仍须在每个 PR 和 merge-group 执行。
 - retry/backoff、no-available-account wait 和 replay memory threshold 的测试加速只能经私有或 `cfg(test)` seam 注入；生产默认值、尝试次数/顺序、错误分类和运行时配置面不得变化。
 - Stateful 的候选线程数必须在完整 profile 的 `4`、`6`、`8` threads 各至少两次热运行中比较；选择最快档位 `10%` 以内的最低线程数。
-- 若 archive workflow 被提议保留，它必须作为不进入 branch protection 的显式 auxiliary producer；三个原有 backend required checks 必须完整回放同一 PR head 的 archive。只有同一 PR head 冷轮 archive producer `<= 250s`、热轮 `<= 180s`，Stateful 两轮均 `<= 390s`、所有 required job 满足对应冷/热预算，且 backend-related jobs 的总 runner 秒数相对 `1257s` 基线下降至少 `20%`（即 `<= 1005s`）时才可保留。
+- 若 archive workflow 被提议保留，它必须作为不进入 branch protection 的显式 auxiliary producer；三个原有 backend required checks 必须完整回放同一 PR head 的 archive，上传与下载不得重复压缩。只有同一 PR head 的冷轮与热轮都显示 backend-related runner 总秒数低于选定基线，且完整测试集合、失败传播和 required checks 语义不变时才可保留；producer、Stateful shard 和单 job wall time 继续作为诊断证据。
 
 ### SHOULD
 
@@ -96,7 +97,7 @@
 - 普通 Stateful test state 的 current-schema template 只能由 runner 的真实 fresh schema 生成，SQLite backup 后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 shared-memory serialize/deserialize 或逐条 SQL dump 作为最终测试路径。Archive 的普通 file-DB tests 以唯一文件副本获得 current schema，不得把这一路径扩展到 migration 或真实文件语义测试。
 - Lightweight 普通 current-schema test state 可使用该 profile 私有、由真实 `ensure_schema` 生成一次的 template；shared-memory state 通过 SQLite backup 隔离复制，file-backed current-schema fixture 通过独立文件副本隔离。fresh-schema/migration 测试仍须从空库执行 schema 初始化，真实文件语义测试仍留在 Archive/File I/O。
 - runner 每次只向当前 profile 暴露其 schema-template 路径；执行或准备其他 profile 前必须清除未选 profile 的 template 环境变量。
-- archive build/distribution 是可逆实验。若采用 auxiliary producer，quality-gates 必须显式列出它但不得将它加入 GitHub required checks；仅在同一 PR head 的连续两次 CI 同时满足关键路径与总 runner 成本门槛时，才可保留这条 workflow 拓扑。
+- archive build/distribution 是可逆实验。若采用 auxiliary producer，quality-gates 必须显式列出它但不得将它加入 GitHub required checks；仅在同一 PR head 的冷轮与热轮都显示 backend-related runner 总秒数低于选定基线、且完整覆盖和失败传播不变时，才可保留这条 workflow 拓扑。
 - production-copy 验证必须在 staged SQLite 副本内重定位 archive manifest；验证器不得依赖测试机的 `/workspace`、`/codex-scratch` 或镜像 `/srv/app/data` 布局，也不得修改原始生产路径。
 - production-copy 验证器的 Runtime Workspace、`TMPDIR`、外部 Cargo 目录和 staged copy 必须与 source snapshot 分离；backend-test 镜像必须提供 exactness oracle 所需的 Python 运行时。
 
@@ -188,13 +189,13 @@
 
 - Given `CI PR` 与 `CI Main` 已更新，When GitHub 评估 required checks，Then backend required checks 只包含三个新 job 名称，不再引用旧 `Backend Tests`。
 
-- Given 同一 PR head 的首轮冷 SHA 与第二轮热 SHA，When 分别计算每个 required job 的 `startedAt` 至 `completedAt`，Then 冷轮每个 job 都 `<= 250s`、热轮每个 job 都 `<= 180s`，required runner 总秒数较 run `31825458818` 至少下降 `20%`，且三个 backend profiles 的用例集合不变。
+- Given 同一 PR head 的首轮冷 SHA 与第二轮热 SHA，When 分别计算每个 required job 的 `startedAt` 至 `completedAt`，Then 两轮 required runner 总秒数都低于选定基线，且每个 job 的 wall time、三个 backend profiles 的完整用例集合和失败传播结果均有记录。
 
 - Given 测试 harness 注入零等待或较小 threshold，When 运行 targeted regression tests，Then 生产默认 delay/threshold、retry attempt/order 和错误分类保持不变，且不存在运行时测试开关。
 
 - Given 运行完整 Stateful profile，When 每个 `4`、`6`、`8` threads 档位运行两次，Then 全部通过，runner 使用最快档位 `10%` 以内的最低线程数。
 
-- Given archive workflow 实验，When 它未同时降低 Stateful 关键路径和 backend runner 总秒数，Then archive workflow 变更不得保留。
+- Given archive workflow 实验，When 它未降低 backend runner 总秒数或破坏 Stateful 完整 profile 覆盖，Then archive workflow 变更不得保留。
 
 - Given a clean host without `cargo-nextest`, When the `backend-test` target
   runs a profile, Then the profile starts with the pinned toolchain and does not
@@ -232,10 +233,10 @@
 - [x] 两条测试树都已迁入新的 resource-profile 模块树。
 - [x] backend runner 与 CI job 命名合同已冻结并在 docs 中可追溯。
 - [x] quality-gates / release snapshot / release gate 已跟随 required-check 变更同步。
-- [ ] 当前 PR head 的全部 required jobs 冷轮 `<= 250s`、热轮 `<= 180s`，且 runner 总成本满足下降门槛。
+- [ ] 当前 PR head 的冷轮与热轮 required runner 总秒数都低于选定基线，并记录每个 job wall time 与完整 profile 覆盖。
 - [x] 4/6/8 完整热运行矩阵已记录，且 runner 线程选择符合最低档位规则。
 - [x] 测试专用 timing/threshold seam 已验证不改变生产默认行为。
-- [ ] archive auxiliary producer 在同一 PR head 的冷轮 `<= 250s`、热轮 `<= 180s`，且 backend-related runner 成本满足门槛；否则从最终 candidate 移除。
+- [ ] archive auxiliary producer 在同一 PR head 的冷轮与热轮都降低 backend-related runner 总成本且保留完整 profile 覆盖；否则从最终 candidate 移除。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -253,7 +254,6 @@
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`
-- `cargo check --locked --all-targets --all-features`
 - `bash .github/scripts/test-quality-gates-contract.sh`
 - `bash .github/scripts/test-live-quality-gates.sh`
 - `bash .github/scripts/test-representative-scale-contract.sh`

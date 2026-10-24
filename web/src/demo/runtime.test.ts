@@ -22,13 +22,30 @@ describe("demo runtime selection", () => {
     expect(() => appRuntime()).toThrow("Unsupported VITE_APP_RUNTIME");
   });
 
-  it("uses only hash query state for shareable scene and theme", () => {
+  it.each([
+    ["operational", "light"],
+    ["attention", "dark"],
+    ["empty", "light"],
+    ["network-failure", "dark"],
+  ] as const)("reads the %s/%s scene and theme pair from the hash", (scene, theme) => {
     const location = new URL(
-      "https://demo.invalid/#/records?demoScene=network-failure&demoTheme=dark",
+      `https://demo.invalid/#/records?demoScene=${scene}&demoTheme=${theme}`,
     ) as unknown as Location;
 
-    expect(sceneFromLocation(location)).toBe("network-failure");
-    expect(themeFromLocation(location)).toBe("dark");
+    expect(sceneFromLocation(location)).toBe(scene);
+    expect(themeFromLocation(location)).toBe(theme);
+    expect(demoSearchParamsFromLocation(location).toString()).toBe(
+      `demoScene=${scene}&demoTheme=${theme}`,
+    );
+  });
+
+  it("falls back to operational and light for unknown shareable values", () => {
+    const location = new URL(
+      "https://demo.invalid/#/records?demoScene=unknown&demoTheme=sepia",
+    ) as unknown as Location;
+
+    expect(sceneFromLocation(location)).toBe("operational");
+    expect(themeFromLocation(location)).toBe("light");
   });
 
   it("accepts the progressive account loading scene", () => {

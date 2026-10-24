@@ -10,7 +10,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -24,6 +24,24 @@ use crate::{
 };
 
 static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const ARCHIVE_FILE_NO_PROGRESS_GRACE: Duration = Duration::from_secs(30);
+
+struct ArchiveFileProgress {
+    last_progress_at: Instant,
+    processed_bytes: u64,
+    total_input_bytes: Option<u64>,
+}
+
+impl ArchiveFileProgress {
+    fn new(total_input_bytes: Option<u64>) -> Self {
+        Self {
+            last_progress_at: Instant::now(),
+            processed_bytes: 0,
+            total_input_bytes,
+        }
+    }
+}
+
 #[derive(Default)]
 struct ActiveArchiveFileOperations {
     writers: HashSet<PathBuf>,
@@ -192,7 +210,7 @@ pub(crate) fn normalize_path_for_compare(path: &Path) -> PathBuf {
     }
 }
 
-pub(crate) fn count_existing_proxy_raw_paths(
+pub(crate) fn count_planned_proxy_raw_paths(
     raw_paths: &[Option<String>],
     raw_path_fallback_root: Option<&Path>,
 ) -> usize {
@@ -208,14 +226,37 @@ pub(crate) fn count_existing_proxy_raw_paths(
 }
 
 pub(crate) fn delete_proxy_raw_paths(
-    raw_paths: &[Option<String>],
+    plan: super::retention::ProxyRawDeletionPlan,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<usize> {
+    let super::retention::ProxyRawDeletionPlan {
+        paths: raw_paths,
+        fences,
+        identities,
+    } = plan;
+    // Keep every exclusive raw-directory fence until all identity checks and unlinks finish.
+    let _fences = fences;
     let mut removed = 0usize;
     let mut seen = HashSet::new();
     for raw_path in raw_paths.iter().flatten() {
         for candidate in resolved_raw_path_read_candidates(raw_path, raw_path_fallback_root) {
             if !seen.insert(candidate.clone()) {
+                continue;
+            }
+            let Some(expected) = identities.iter().find(|entry| entry.path == candidate) else {
+                continue;
+            };
+            let metadata = match fs::metadata(&candidate) {
+                Ok(metadata) if metadata.file_type().is_file() => metadata,
+                Ok(_) | Err(_) => continue,
+            };
+            if super::retention::retention_raw_file_identity(&metadata) != expected.identity
+                || metadata.len() != expected.byte_size
+            {
+                warn!(
+                    path = %candidate.display(),
+                    "retaining raw payload because its identity changed before deletion"
+                );
                 continue;
             }
             match fs::remove_file(&candidate) {
@@ -458,7 +499,7 @@ pub(crate) fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) 
 }
 
 pub(crate) fn inflate_gzip_sqlite_file(source: &Path, destination: &Path) -> Result<()> {
-    inflate_gzip_sqlite_file_with_limits(source, destination, None, None, None)
+    inflate_gzip_sqlite_file_with_limits(source, destination, None, None, None, None)
 }
 
 pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
@@ -473,13 +514,14 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
         vec![source.clone()],
         vec![destination.clone()],
         vec![destination.clone()],
-        move |deadline, shutdown, cancellation| {
+        move |deadline, shutdown, cancellation, progress| {
             inflate_gzip_sqlite_file_with_limits(
                 &source,
                 &destination,
-                Some(deadline),
+                deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
             )
         },
     )
@@ -509,13 +551,14 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_elapsed_budget(
             timeout,
             shutdown: super::retention::retention_run_shutdown_token(),
         },
-        move |operation_deadline, shutdown, cancellation| {
+        move |operation_deadline, shutdown, cancellation, progress| {
             inflate_gzip_sqlite_file_with_elapsed_limits(
                 &source,
                 &destination,
                 operation_deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
             )
         },
     )
@@ -528,20 +571,26 @@ fn inflate_gzip_sqlite_file_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open archive batch {}", source.display()))?;
     let mut decoder = GzDecoder::new(input);
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
+    let total_input_bytes = fs::metadata(source).ok().map(|metadata| metadata.len());
     let mut writer = io::BufWriter::new(output);
     copy_archive_bytes_with_limits(
         &mut decoder,
         &mut writer,
-        destination,
-        operation_deadline,
-        shutdown,
-        cancellation,
+        ArchiveCopyLimits {
+            destination,
+            operation_deadline,
+            shutdown,
+            cancellation,
+            total_input_bytes,
+            progress,
+        },
     )
     .with_context(|| {
         format!(
@@ -560,12 +609,14 @@ fn inflate_gzip_sqlite_file_with_elapsed_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<bool> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open archive batch {}", source.display()))?;
     let mut decoder = GzDecoder::new(input);
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
+    let total_input_bytes = fs::metadata(source).ok().map(|metadata| metadata.len());
     let mut writer = io::BufWriter::new(output);
     let completed = copy_archive_bytes_with_elapsed_budget(
         &mut decoder,
@@ -573,6 +624,8 @@ fn inflate_gzip_sqlite_file_with_elapsed_limits(
         operation_deadline,
         shutdown,
         cancellation,
+        total_input_bytes,
+        progress,
     )
     .with_context(|| {
         format!(
@@ -586,7 +639,7 @@ fn inflate_gzip_sqlite_file_with_elapsed_limits(
 }
 
 pub(crate) fn deflate_sqlite_file_to_gzip(source: &Path, destination: &Path) -> Result<()> {
-    deflate_sqlite_file_to_gzip_with_limits(source, destination, None, None, None)
+    deflate_sqlite_file_to_gzip_with_limits(source, destination, None, None, None, None)
 }
 
 pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
@@ -601,13 +654,14 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
         Vec::new(),
         vec![destination.clone()],
         vec![source.clone(), destination.clone()],
-        move |deadline, shutdown, cancellation| {
+        move |deadline, shutdown, cancellation, progress| {
             deflate_sqlite_file_to_gzip_with_limits(
                 &source,
                 &destination,
-                Some(deadline),
+                deadline,
                 shutdown.as_ref(),
                 Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
             )
         },
     )
@@ -620,6 +674,7 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<()> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open temp archive db {}", source.display()))?;
@@ -627,13 +682,18 @@ fn deflate_sqlite_file_to_gzip_with_limits(
         .with_context(|| format!("failed to create archive gzip {}", destination.display()))?;
     let mut encoder = GzEncoder::new(io::BufWriter::new(output), Compression::default());
     let mut reader = io::BufReader::new(input);
+    let total_input_bytes = fs::metadata(source).ok().map(|metadata| metadata.len());
     copy_archive_bytes_with_limits(
         &mut reader,
         &mut encoder,
-        destination,
-        operation_deadline,
-        shutdown,
-        cancellation,
+        ArchiveCopyLimits {
+            destination,
+            operation_deadline,
+            shutdown,
+            cancellation,
+            total_input_bytes,
+            progress,
+        },
     )
     .with_context(|| {
         format!(
@@ -649,23 +709,38 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     Ok(())
 }
 
-async fn run_archive_file_work_with_operation_budget<F>(
+async fn run_archive_file_work_with_operation_budget<T, F>(
     operation: &'static str,
     protected_paths: Vec<PathBuf>,
     shared_read_paths: Vec<PathBuf>,
     failure_cleanup_paths: Vec<PathBuf>,
     timeout_cleanup_paths: Vec<PathBuf>,
     work: F,
-) -> Result<()>
+) -> Result<T>
 where
-    F: FnOnce(Instant, Option<CancellationToken>, Arc<AtomicBool>) -> Result<()> + Send + 'static,
+    T: Send + 'static,
+    F: FnOnce(
+            Option<Instant>,
+            Option<CancellationToken>,
+            Arc<AtomicBool>,
+            Arc<Mutex<ArchiveFileProgress>>,
+        ) -> Result<T>
+        + Send
+        + 'static,
 {
-    let deadline = super::retention::retention_archive_file_operation_deadline();
     let shutdown = super::retention::retention_run_shutdown_token();
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(super::retention::retention_archive_file_operation_budget_exhausted());
-    }
+    // Production compression is governed by cancellation and the no-progress guard. The
+    // legacy fixed operation budget remains available only to deterministic unit tests.
+    #[cfg(test)]
+    let (deadline, timeout) = {
+        let deadline = super::retention::retention_archive_file_operation_deadline();
+        (
+            Some(deadline),
+            Some(deadline.saturating_duration_since(Instant::now())),
+        )
+    };
+    #[cfg(not(test))]
+    let (deadline, timeout) = (None, None);
     run_archive_file_work_with_deadline(
         ArchiveFileWorkRequest {
             operation,
@@ -673,17 +748,11 @@ where
             shared_read_paths,
             failure_cleanup_paths,
             timeout_cleanup_paths,
-            deadline: Some(deadline),
-            timeout: Some(remaining),
+            deadline,
+            timeout,
             shutdown,
         },
-        move |operation_deadline, shutdown, cancellation| {
-            work(
-                operation_deadline.expect("operation budget must provide a deadline"),
-                shutdown,
-                cancellation,
-            )
-        },
+        work,
     )
     .await
 }
@@ -705,7 +774,12 @@ async fn run_archive_file_work_with_deadline<T, F>(
 ) -> Result<T>
 where
     T: Send + 'static,
-    F: FnOnce(Option<Instant>, Option<CancellationToken>, Arc<AtomicBool>) -> Result<T>
+    F: FnOnce(
+            Option<Instant>,
+            Option<CancellationToken>,
+            Arc<AtomicBool>,
+            Arc<Mutex<ArchiveFileProgress>>,
+        ) -> Result<T>
         + Send
         + 'static,
 {
@@ -727,8 +801,10 @@ where
     let timed_out = Arc::clone(&lease.timed_out);
     let worker_timed_out = Arc::clone(&timed_out);
     let worker_cancellation = Arc::clone(&timed_out);
+    let progress = Arc::new(Mutex::new(ArchiveFileProgress::new(None)));
+    let worker_progress = Arc::clone(&progress);
     let _cancellation_signal = ArchiveFileOperationCancellationSignal(Arc::clone(&timed_out));
-    let worker = tokio::task::spawn_blocking(move || {
+    let mut worker = tokio::task::spawn_blocking(move || {
         let _lease = lease;
         let cleanup_paths = |paths: &[PathBuf]| {
             for path in paths {
@@ -736,7 +812,7 @@ where
             }
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            work(deadline, shutdown, worker_cancellation)
+            work(deadline, shutdown, worker_cancellation, worker_progress)
         }));
         match result {
             Ok(result) => {
@@ -765,34 +841,139 @@ where
             }
         }
     });
+    let watchdog_triggered = Arc::new(AtomicBool::new(false));
+    let watchdog = (deadline.is_none() && timeout.is_none()).then(|| {
+        let progress = Arc::clone(&progress);
+        let timed_out = Arc::clone(&timed_out);
+        let watchdog_triggered = Arc::clone(&watchdog_triggered);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(ARCHIVE_FILE_NO_PROGRESS_GRACE).await;
+                let stale = progress
+                    .lock()
+                    .map(|state| state.last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE)
+                    .unwrap_or(true);
+                if stale {
+                    watchdog_triggered.store(true, Ordering::Release);
+                    timed_out.store(true, Ordering::Release);
+                    return;
+                }
+            }
+        })
+    });
     let joined = match timeout {
-        Some(timeout) => match tokio::time::timeout(timeout, worker).await {
+        Some(timeout) => match tokio::time::timeout(timeout, &mut worker).await {
             Ok(joined) => joined,
             Err(_) => {
                 timed_out.store(true, Ordering::Release);
+                match worker.await {
+                    Ok(_) => {}
+                    Err(error) => {
+                        return Err(anyhow!(
+                            "retention archive {operation} worker panicked after operation budget: {error}"
+                        ));
+                    }
+                }
                 return Err(super::retention::retention_archive_file_operation_budget_exhausted());
             }
         },
-        None => worker.await,
+        None => match watchdog {
+            Some(mut watchdog) => {
+                tokio::select! {
+                    joined = &mut worker => {
+                        watchdog.abort();
+                        let joined = joined.with_context(|| {
+                            format!("retention archive {operation} worker panicked")
+                        })?;
+                        if watchdog_triggered.load(Ordering::Acquire) {
+                            let (processed_bytes, total_input_bytes) = progress
+                                .lock()
+                                .map(|state| (state.processed_bytes, state.total_input_bytes))
+                                .unwrap_or((0, None));
+                            return Err(
+                                super::retention::retention_archive_file_operation_no_progress(
+                                    processed_bytes,
+                                    total_input_bytes,
+                                ),
+                            );
+                        }
+                        return joined;
+                    }
+                    _ = &mut watchdog => {
+                        match worker.await {
+                            Ok(_) => {}
+                            Err(error) => {
+                                return Err(anyhow!(
+                                    "retention archive {operation} worker panicked after no-progress watchdog: {error}"
+                                ));
+                            }
+                        }
+                        let (processed_bytes, total_input_bytes) = progress
+                            .lock()
+                            .map(|state| (state.processed_bytes, state.total_input_bytes))
+                            .unwrap_or((0, None));
+                        return Err(
+                            super::retention::retention_archive_file_operation_no_progress(
+                                processed_bytes,
+                                total_input_bytes,
+                            ),
+                        );
+                    }
+                }
+            }
+            None => worker.await,
+        },
     };
     joined.with_context(|| format!("retention archive {operation} worker panicked"))?
+}
+
+struct ArchiveCopyLimits<'a> {
+    destination: &'a Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&'a CancellationToken>,
+    cancellation: Option<&'a AtomicBool>,
+    total_input_bytes: Option<u64>,
+    progress: Option<&'a Mutex<ArchiveFileProgress>>,
 }
 
 fn copy_archive_bytes_with_limits(
     reader: &mut impl io::Read,
     writer: &mut impl io::Write,
-    destination: &Path,
-    operation_deadline: Option<Instant>,
-    shutdown: Option<&CancellationToken>,
-    cancellation: Option<&AtomicBool>,
+    limits: ArchiveCopyLimits<'_>,
 ) -> Result<()> {
+    let ArchiveCopyLimits {
+        destination,
+        operation_deadline,
+        shutdown,
+        cancellation,
+        total_input_bytes,
+        progress,
+    } = limits;
     let mut buffer = [0_u8; 64 * 1024];
+    let mut processed_bytes = 0_u64;
+    let mut last_progress_at = Instant::now();
+    if let Some(progress) = progress
+        && let Ok(mut state) = progress.lock()
+    {
+        state.total_input_bytes = total_input_bytes;
+        state.last_progress_at = last_progress_at;
+    }
     loop {
         if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
             || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
             || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
         {
             return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+        }
+        if operation_deadline.is_none()
+            && last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE
+        {
+            return Err(
+                super::retention::retention_archive_file_operation_no_progress(
+                    processed_bytes,
+                    total_input_bytes,
+                ),
+            );
         }
         if shutdown.is_some_and(CancellationToken::is_cancelled)
             || (shutdown.is_none()
@@ -813,6 +994,14 @@ fn copy_archive_bytes_with_limits(
             bail!("insufficient disk space for task-local archive file work");
         }
         writer.write_all(&buffer[..read])?;
+        processed_bytes = processed_bytes.saturating_add(read as u64);
+        last_progress_at = Instant::now();
+        if let Some(progress) = progress
+            && let Ok(mut state) = progress.lock()
+        {
+            state.processed_bytes = processed_bytes;
+            state.last_progress_at = last_progress_at;
+        }
     }
 }
 
@@ -822,8 +1011,17 @@ fn copy_archive_bytes_with_elapsed_budget(
     operation_deadline: Option<Instant>,
     shutdown: Option<&CancellationToken>,
     cancellation: Option<&AtomicBool>,
+    total_input_bytes: Option<u64>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
 ) -> Result<bool> {
     let mut buffer = [0_u8; 64 * 1024];
+    let mut processed_bytes = 0_u64;
+    if let Some(progress) = progress
+        && let Ok(mut state) = progress.lock()
+    {
+        state.total_input_bytes = total_input_bytes;
+        state.last_progress_at = Instant::now();
+    }
     loop {
         if shutdown.is_some_and(CancellationToken::is_cancelled)
             || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
@@ -843,6 +1041,13 @@ fn copy_archive_bytes_with_elapsed_budget(
             return Err(super::retention::retention_write_deferred(
                 "historical_rollup_archive_inflate",
             ));
+        }
+        processed_bytes = processed_bytes.saturating_add(read as u64);
+        if let Some(progress) = progress
+            && let Ok(mut state) = progress.lock()
+        {
+            state.processed_bytes = processed_bytes;
+            state.last_progress_at = Instant::now();
         }
         if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(false);
@@ -879,6 +1084,88 @@ pub(crate) fn sha256_hex_file_with_deadline(path: &Path, deadline: Instant) -> R
             break;
         }
         hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(crate) async fn sha256_hex_file_with_operation_budget(path: &Path) -> Result<String> {
+    let path = path.to_path_buf();
+    run_archive_file_work_with_operation_budget(
+        "archive_file_hash",
+        Vec::new(),
+        vec![path.clone()],
+        Vec::new(),
+        Vec::new(),
+        move |deadline, shutdown, cancellation, progress| {
+            sha256_hex_file_with_progress_guard(
+                &path,
+                deadline,
+                shutdown.as_ref(),
+                Some(cancellation.as_ref()),
+                Some(progress.as_ref()),
+            )
+        },
+    )
+    .await
+}
+
+fn sha256_hex_file_with_progress_guard(
+    path: &Path,
+    operation_deadline: Option<Instant>,
+    shutdown: Option<&CancellationToken>,
+    cancellation: Option<&AtomicBool>,
+    progress: Option<&Mutex<ArchiveFileProgress>>,
+) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
+    let total_input_bytes = file.metadata().ok().map(|metadata| metadata.len());
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 8192];
+    let mut processed_bytes = 0_u64;
+    let mut last_progress_at = Instant::now();
+    if let Some(progress) = progress
+        && let Ok(mut state) = progress.lock()
+    {
+        state.total_input_bytes = total_input_bytes;
+        state.last_progress_at = last_progress_at;
+    }
+    loop {
+        if operation_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || (operation_deadline.is_none() && super::retention::retention_run_budget_expired())
+            || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(super::retention::retention_archive_file_operation_budget_exhausted());
+        }
+        if shutdown.is_some_and(CancellationToken::is_cancelled)
+            || (shutdown.is_none()
+                && super::retention::retention_run_shutdown_token()
+                    .is_some_and(|shutdown| shutdown.is_cancelled()))
+        {
+            return Err(super::retention::retention_write_deferred(
+                "archive_file_hash",
+            ));
+        }
+        if last_progress_at.elapsed() >= ARCHIVE_FILE_NO_PROGRESS_GRACE {
+            return Err(
+                super::retention::retention_archive_file_operation_no_progress(
+                    processed_bytes,
+                    total_input_bytes,
+                ),
+            );
+        }
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        processed_bytes = processed_bytes.saturating_add(read as u64);
+        last_progress_at = Instant::now();
+        if let Some(progress) = progress
+            && let Ok(mut state) = progress.lock()
+        {
+            state.processed_bytes = processed_bytes;
+            state.last_progress_at = last_progress_at;
+        }
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
@@ -945,8 +1232,10 @@ mod tests {
         let suffix = RETENTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let work_path = PathBuf::from(format!("archive-timeout-worker-{suffix}.sqlite"));
         let worker_started = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::new(AtomicBool::new(false));
         let worker_release = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&worker_started);
+        let cancelled = Arc::clone(&worker_cancelled);
         let release = Arc::clone(&worker_release);
         let task = tokio::spawn(run_archive_file_work_with_deadline(
             ArchiveFileWorkRequest {
@@ -959,11 +1248,12 @@ mod tests {
                 timeout: Some(Duration::from_millis(20)),
                 shutdown: None,
             },
-            move |_, _, _| {
+            move |_, _, cancellation, _| {
                 started.store(true, Ordering::Release);
-                while !release.load(Ordering::Acquire) {
+                while !cancellation.load(Ordering::Acquire) && !release.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(1));
                 }
+                cancelled.store(cancellation.load(Ordering::Acquire), Ordering::Release);
                 Ok(())
             },
         ));
@@ -992,16 +1282,8 @@ mod tests {
             }
         };
         assert!(result.is_err());
-        assert!(is_archive_file_operation_active(&work_path));
-        worker_release.store(true, Ordering::Release);
-
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while is_archive_file_operation_active(&work_path) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("archive worker should drain and release its lease");
+        assert!(worker_cancelled.load(Ordering::Acquire));
+        assert!(!is_archive_file_operation_active(&work_path));
     }
 
     #[tokio::test]
@@ -1025,7 +1307,7 @@ mod tests {
                 timeout: None,
                 shutdown: None,
             },
-            move |_, _, cancellation| {
+            move |_, _, cancellation, _| {
                 started.store(true, Ordering::Release);
                 while !cancellation.load(Ordering::Acquire)
                     && !force_release.load(Ordering::Acquire)

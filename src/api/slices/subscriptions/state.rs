@@ -44,6 +44,10 @@ pub(crate) struct SubscriptionHubState {
     pub(crate) dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     pub(crate) summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
     pub(crate) summary_projection: Option<Arc<SummaryProjection>>,
+    // Compacted-source recovery publishes a bounded, day-boundary-only snapshot separately from
+    // the general projection so 30d/all-time coverage keeps its existing fail-closed boundary.
+    pub(crate) summary_dashboard_recovery: Option<Arc<SummaryDashboardRecoverySnapshot>>,
+    pub(crate) summary_compacted_source_recovery_state: SummaryCompactedSourceRecoveryState,
     // Terminal slices are ephemeral delivery batches. The Summary-owned journal only receives
     // entries after the writer's SQLite commit ACK, so it is a bounded exact delta between an
     // immutable base projection and the latest rolling view.

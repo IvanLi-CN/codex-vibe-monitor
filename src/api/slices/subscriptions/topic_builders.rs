@@ -66,7 +66,7 @@ impl SubscriptionTopic {
                         gaps,
                     )) = projection_with_overlay
                     {
-                        let (source_gap_pending, source_gap_unavailable) =
+                        let (source_gap_pending, source_gap_unavailable, _) =
                             crate::summary_source_gap_status(
                                 projection.as_ref(),
                                 &gaps,

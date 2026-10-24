@@ -74,9 +74,18 @@ pub(super) fn record_discovered_count(count: usize) {
 }
 
 pub(super) fn record_processed_count(count: usize) {
+    record_owner_processed_count("retention_archive", count);
     let _ = RETENTION_WORKLOAD_OBSERVATION.try_with(|observation| {
         if let Some(observation) = observation.borrow().as_ref() {
             observation.add_processed_work(count as i64);
         }
     });
+}
+
+pub(super) fn record_owner_processed_count(task_key: &str, count: usize) {
+    crate::record_managed_task_processed_work(&[task_key], count as i64);
+}
+
+pub(super) fn record_owner_raw_files_removed(task_key: &str, count: usize) {
+    crate::record_managed_task_raw_files_removed(&[task_key], count as i64);
 }

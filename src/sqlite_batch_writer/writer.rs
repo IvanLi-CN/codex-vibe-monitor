@@ -611,6 +611,14 @@ impl SqliteBatchWriter {
             })
     }
 
+    pub(crate) fn system_task_recovery_blocked_task_keys(&self) -> Option<HashSet<String>> {
+        self.terminal_journal.lock().ok().and_then(|journal| {
+            journal
+                .as_ref()
+                .map(TerminalJournal::system_task_recovery_blocked_task_keys)
+        })
+    }
+
     pub(crate) fn start_terminal_journal_recovery(&self) -> TerminalJournalStats {
         let stats = self.terminal_journal.lock().ok().and_then(|mut journal| {
             journal.as_mut().map(|journal| {

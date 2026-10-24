@@ -179,6 +179,8 @@ where
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
     let requested_at = Instant::now();
+    let pressure_retry_started = Instant::now();
+    let mut pressure_retry_attempts = 0;
 
     loop {
         // Confirm pool readiness before taking the archive fence. This readiness notification is
@@ -221,17 +223,28 @@ where
         #[cfg(test)]
         pause_after_gate_generation().await;
         if let Some(reason) = gate.background_deny_reason() {
-            if matches!(
-                reason,
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-            ) {
-                if !wait_for_background_change(gate, operation, gate_generation).await {
-                    return Ok(None);
+            match reason {
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+                    if let Some(defer_reason) = wait_for_pressure_cooldown_retry(
+                        gate,
+                        operation,
+                        pressure_retry_started,
+                        &mut pressure_retry_attempts,
+                    )
+                    .await
+                    {
+                        retention_record_defer(operation, defer_reason);
+                        return Ok(None);
+                    }
+                    continue;
                 }
-                continue;
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                    if !wait_for_background_change(gate, operation, gate_generation).await {
+                        return Ok(None);
+                    }
+                    continue;
+                }
             }
-            retention_record_defer(operation, reason);
-            return Ok(None);
         }
         if retention_run_budget_expired()
             || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
@@ -309,17 +322,28 @@ where
             }
             Err(RetentionWriteAdmissionRejection::GateDenied { reason, generation }) => {
                 drop(archive_lock);
-                if matches!(
-                    reason,
-                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-                ) {
-                    if !wait_for_background_change(gate, operation, generation).await {
-                        return Ok(None);
+                match reason {
+                    crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+                        if let Some(defer_reason) = wait_for_pressure_cooldown_retry(
+                            gate,
+                            operation,
+                            pressure_retry_started,
+                            &mut pressure_retry_attempts,
+                        )
+                        .await
+                        {
+                            retention_record_defer(operation, defer_reason);
+                            return Ok(None);
+                        }
+                        continue;
                     }
-                    continue;
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                        if !wait_for_background_change(gate, operation, generation).await {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
                 }
-                retention_record_defer(operation, reason);
-                return Ok(None);
             }
             Err(RetentionWriteAdmissionRejection::CoordinatorBusy) => {
                 drop(archive_lock);
@@ -424,6 +448,62 @@ async fn wait_for_maintenance_eligibility(operation: &'static str, requested_at:
     waited
 }
 
+async fn wait_for_pressure_cooldown_retry(
+    gate: &crate::db_pressure::DbPressureGate,
+    operation: &'static str,
+    retry_started: Instant,
+    retry_attempts: &mut usize,
+) -> Option<&'static str> {
+    let Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms }) =
+        gate.background_deny_reason()
+    else {
+        return None;
+    };
+    if *retry_attempts >= RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS
+        || retry_started.elapsed() >= RETENTION_PRESSURE_RETRY_BUDGET
+    {
+        return Some("pressure_cooldown");
+    }
+
+    let mut wait = Duration::from_millis(remaining_ms.saturating_add(50));
+    wait = wait.min(RETENTION_PRESSURE_RETRY_BUDGET.saturating_sub(retry_started.elapsed()));
+    if let Some(remaining) = retention_run_remaining_budget() {
+        wait = wait.min(remaining);
+    }
+    if wait.is_zero() {
+        return Some(if retention_run_budget_expired() {
+            "retention_work_budget"
+        } else {
+            "pressure_cooldown"
+        });
+    }
+
+    *retry_attempts += 1;
+    tracing::debug!(
+        operation,
+        attempt = *retry_attempts,
+        max_attempts = RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS,
+        wait_ms = wait.as_millis() as u64,
+        "retention admission retry waiting for SQLite pressure cooldown"
+    );
+    let sleep = tokio::time::sleep(wait);
+    if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                return Some("shutdown");
+            }
+            _ = sleep => {}
+        }
+    } else {
+        sleep.await;
+    }
+    if retention_run_budget_expired() {
+        return Some("retention_work_budget");
+    }
+    None
+}
+
 pub(super) async fn acquire_write_connection(
     pool: &Pool<Sqlite>,
     operation: &'static str,
@@ -436,16 +516,31 @@ pub(super) async fn acquire_write_connection(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let pressure_retry_started = Instant::now();
+    let mut pressure_retry_attempts = 0;
     loop {
-        if let Some(reason) = gate.background_deny_reason()
-            && (!wait_for_busy
-                || matches!(
-                    reason,
-                    crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }
-                ))
-        {
-            retention_record_defer(operation, reason);
-            return Ok(None);
+        if let Some(reason) = gate.background_deny_reason() {
+            if matches!(
+                reason,
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }
+            ) {
+                if let Some(defer_reason) = wait_for_pressure_cooldown_retry(
+                    gate,
+                    operation,
+                    pressure_retry_started,
+                    &mut pressure_retry_attempts,
+                )
+                .await
+                {
+                    retention_record_defer(operation, defer_reason);
+                    return Ok(None);
+                }
+                continue;
+            }
+            if !wait_for_busy {
+                retention_record_defer(operation, reason);
+                return Ok(None);
+            }
         }
         // Confirm pool readiness with no admission held, then finish SQLx's asynchronous
         // return before queueing for the coordinator. Never retain one resource for another.
@@ -523,21 +618,35 @@ pub(super) async fn acquire_write_admission(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let pressure_retry_started = Instant::now();
+    let mut pressure_retry_attempts = 0;
     loop {
         let generation = gate.eligibility_generation();
         if let Some(reason) = gate.background_deny_reason() {
-            if wait_for_busy
-                && matches!(
-                    reason,
-                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-                )
-            {
-                if wait_for_background_change(gate, operation, generation).await {
+            match reason {
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+                    if let Some(defer_reason) = wait_for_pressure_cooldown_retry(
+                        gate,
+                        operation,
+                        pressure_retry_started,
+                        &mut pressure_retry_attempts,
+                    )
+                    .await
+                    {
+                        retention_record_defer(operation, defer_reason);
+                        return None;
+                    }
                     continue;
                 }
-            } else {
-                retention_record_defer(operation, reason);
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                    if wait_for_busy
+                        && wait_for_background_change(gate, operation, generation).await
+                    {
+                        continue;
+                    }
+                }
             }
+            retention_record_defer(operation, reason);
             return None;
         }
         if retention_run_budget_expired() {
@@ -573,18 +682,30 @@ pub(super) async fn acquire_write_admission(
                     write_permit.suppress_background_eligibility_wakeup();
                 }
                 drop(write_permit);
-                if wait_for_busy
-                    && matches!(
-                        reason,
-                        crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-                    )
-                {
-                    if wait_for_background_change(gate, operation, try_generation).await {
+                match reason {
+                    crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+                        if let Some(defer_reason) = wait_for_pressure_cooldown_retry(
+                            gate,
+                            operation,
+                            pressure_retry_started,
+                            &mut pressure_retry_attempts,
+                        )
+                        .await
+                        {
+                            retention_record_defer(operation, defer_reason);
+                            return None;
+                        }
                         continue;
                     }
-                } else {
-                    retention_record_defer(operation, reason);
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                        if wait_for_busy
+                            && wait_for_background_change(gate, operation, try_generation).await
+                        {
+                            continue;
+                        }
+                    }
                 }
+                retention_record_defer(operation, reason);
                 return None;
             }
         }

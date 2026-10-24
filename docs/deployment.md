@@ -146,7 +146,7 @@ labels:
 - `UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS`：一次性 OAuth 登录会话 TTL；默认 10 分钟。
 - `UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` / `UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS`：后台账号保活与配额同步主频默认值回退 / 提前刷新窗口。运行期实际使用的主频、次频与主层账号上限由 Web `号池 -> 上游账号 -> 高级路由与同步设置` 持久化到 SQLite；缺失 DB 字段时默认回退为 `300 / 1800 / 100`。对 `deactivated_workspace` / `upstream_http_402` / `upstream_rejected` 这类明确上游拒绝账号，维护调度会额外施加 6 小时 `cooldown_until`，并跳过同轮 browser-UA fallback retry；升级后仍处于窗口内的 legacy 空字段行会在 maintenance pass 中自动补齐。
 - `UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS`：上游账号 `5 小时 / 7 天` 历史样本保留天数。
-- 后台归档、调用身份清理和 raw 孤儿文件清理由系统任务页分别控制自动触发，默认启用；暂停后仍可手动运行。环境变量 `RETENTION_ENABLED` 与 `XY_RETENTION_ENABLED` 已退出配置，遗留值无效。
+- 七项 retention-policy owner（调用归档、上游尝试归档、正向代理尝试归档、调用明细裁剪、配额快照压缩、模型路由过期、任务运行历史清理）以及调用身份清理和 raw 孤儿文件清理，均由系统任务页分别控制自动触发，默认启用；暂停后仍可手动运行。环境变量 `RETENTION_ENABLED` 与 `XY_RETENTION_ENABLED` 已退出配置，遗留值无效。
 - `RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
 - `RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
 - `RETENTION_BATCH_ROWS`：单批处理上限；用于降低 SQLite 长事务与锁表风险。
@@ -249,6 +249,7 @@ services:
 
 - 首次 backlog cleanup 先执行 `cargo run -- --retention-run-once --retention-dry-run`，确认预计归档行数、目标 archive 路径与磁盘变化。
 - 正式清理使用 `cargo run -- --retention-run-once`；执行顺序必须保持 `导出成功 -> archive_batches manifest 成功 -> 删除源数据`。
+- 六项独立保留策略可分别使用 `maintenance pool-upstream-attempt-archive`、`maintenance forward-proxy-attempt-archive`、`maintenance invocation-detail-prune`、`maintenance quota-snapshot-compaction`、`maintenance model-route-expiry` 和 `maintenance task-run-history-cleanup`，各命令均支持 `--dry-run`。
 - retention 在 prune/archive 前会先执行 raw cold-compress：默认 `>= PROXY_RAW_IMMEDIATE_GZIP_BYTES` 的 raw 在首次落盘时就直接写成 `*.bin.gz`，其余小 payload 仍先保留明文 `*.bin`，并在超过 `PROXY_RAW_HOT_SECS` 后转成 `*.bin.gz`；数据库 raw path / codec 会与真实文件同步，`request_raw_size` / `response_raw_size` 仍表示原始 payload 字节。
 - `codex_invocations` archive 文件按上海自然日切成不可变 segment；若 `ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/codex_invocations/YYYY/MM/DD/part-<seq>.sqlite.gz`。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。

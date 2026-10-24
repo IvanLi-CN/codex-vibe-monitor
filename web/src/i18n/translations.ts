@@ -3617,6 +3617,10 @@ const baseTranslations = {
     "table.accountDrawer.tabs.overview": "Overview",
     "table.accountDrawer.tabs.health": "Health",
     "stats.cards.loadError": "Failed to load stats: {{error}}",
+    "stats.cards.recoveryPending":
+      "Summary recovery is in progress. The dashboard will show exact values when it completes.",
+    "stats.cards.recoveryFailed":
+      "Summary recovery failed. Retry after the service reports recovery has resumed.",
     "stats.cards.totalCalls": "Total calls",
     "stats.cards.success": "Success",
     "stats.cards.failures": "Failures",
@@ -7065,6 +7069,8 @@ const baseTranslations = {
     "table.accountDrawer.tabs.overview": "概览",
     "table.accountDrawer.tabs.health": "健康",
     "stats.cards.loadError": "加载统计失败：{{error}}",
+    "stats.cards.recoveryPending": "统计摘要正在后台恢复，完成后将显示精确数据。",
+    "stats.cards.recoveryFailed": "统计摘要恢复失败，请在服务恢复后重试。",
     "stats.cards.totalCalls": "调用总数",
     "stats.cards.success": "成功",
     "stats.cards.failures": "失败",

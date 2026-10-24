@@ -46,6 +46,7 @@
 - 已入队请求 MUST 显示任务身份、触发来源、请求时间和等待用时；队列顺序仅在对应 dispatcher 有权威顺序时展示，不得将独立 worker 合成为跨任务 FIFO 或可编辑优先级队列。
 - 准入延后任务 MUST 显示观测到的等待原因、观测时间，以及有权威依据时的重试或下次资格时间。不得根据历史延期记录或一般系统告警推测任务仍在等待。
 - 当前执行与两类等待 MUST 独立于目录筛选刷新，明确区分空结果、观测过期与观测未知；父子任务共享实例时不得重复计数。
+- dispatcher MUST 使用有限 worker/finalizer 和显式结果队列，不得 inline-await 完整任务或无限启动；同一 task key MUST 只有一个 execution lease。等待 heavy file gate、SQLite 准入或写许可时不得持有数据库连接、写许可或文件 fence，shutdown/cancel 只有在 native worker 退出后才可释放 lease。
 
 ### REQ-TASK-OPS-006 — 固定任务配色
 
@@ -94,6 +95,8 @@
 - “本次发现” MUST 计本轮实际确认符合处理条件的不同候选，允许多页或边扫描边处理累计。扫描过但不符合条件的项目不得计入；重复扫描和重试不得重复累计。读取既有队列并确认本轮候选也属于本轮发现，不能把它误称为跨轮新增。
 - “本次处理” MUST 计到达任务专属成功完成边界的不同工作项；对事务任务以成功提交为准。运行失败、中断或部分完成 MUST 保留已有确认成果；未执行、失败尝试和未提交批次不得计入。
 - Retention 主计量范围 MUST 使用待归档 invocation 行；裁剪详情、上游尝试、会话、文件、字节和归档批次分别计量。不得把混合处理总数放到 invocation 积压轴上。归档回填中的扫描批次数与更新行数或账号数不得合成为同单位的子集关系。
+- `retention_archive` MUST 只声明 invocation archive scope；pool upstream attempt、forward proxy attempt、invocation detail、quota snapshot、model route 和 task-run history MUST 使用各自 owner、unit、scope 与 schedule。cold raw compression 和 expired archive cleanup 继续由 `raw_compression` 与 `prune_archive_batches` 负责，既有 identity/raw orphan 与 Prompt-cache owner 不得并入 invocation 计量。
+- 新 owner MUST 将 `no-work`、`complete`、`partial`、`deferred`、`failed` 与 `discovered`、`selected`、`committed`、`globalBacklogTotal` 和 `selectedScope` 一起记录；`processedCount` 只能等于该 owner 的已提交事实。旧 composite history 的 `completed` 和 mixed summary 继续按 ownership version 读取，不被重算或当作新 owner 事实。
 - 采集 MUST 在既有工作边界记录事实并异步进入维护库，独立于页面打开。页面读取不得补做全量 COUNT、文件遍历或业务重建以填充图表；任务预算、业务正确性、启停与调度规则保持原有边界。
 
 ### REQ-TASK-OPS-011 — 最近 100 次运行样本
@@ -279,6 +282,12 @@
 - Method: focused frontend regressions, the `task-timeline-pressure-dense` demo and Storybook state, plus production demo Chromium sampling at `1280x900` and `393x852` with a 10-second warm-up, 30-second observation window and revision injection every three seconds.
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-008`, and the performance constraints in this Spec.
 - Pass condition: two module-level formatters remain stable; dense waits preserve task identities, two reasons, open intervals, strict overlap semantics and one-second clock progression; history is not recomputed on each tick; complete details appear only on hover/focus and refresh on revision; application main-thread occupancy stays below 20%, no application long task exceeds 200 ms, and hover, keyboard focus and task filtering remain below 100 ms p95 on both viewports.
+
+### VER-TASK-OPS-018
+
+- Method: CI dispatcher and managed-task history fixtures for bounded worker/finalizer counts, per-task leases, heavy-file admission, source fences, partial commits, result-write retry, shutdown drain, and the seven retention-policy owner scopes.
+- covers: `REQ-TASK-OPS-005`, `REQ-TASK-OPS-009`, `REQ-TASK-OPS-010`, `REQ-TASK-OPS-015`, `REQ-TASK-OPS-019`, `REQ-TASK-OPS-020`
+- Pass condition: no unbounded worker starts or duplicate task execution; waiting releases database and file resources; owner details preserve discovered/selected/committed facts and exact result values; failed compression is not success; old composite records remain readable and frontend labels cover both legacy `completed` and new `complete`/`no-work` values.
 
 ## Related ADRs
 
