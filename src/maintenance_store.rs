@@ -492,6 +492,9 @@ pub(crate) struct TaskExecutionSummary {
     pub(crate) trigger_kind: String,
     pub(crate) attempted_at: String,
     pub(crate) actual_started_at: Option<String>,
+    pub(crate) actual_finished_at: Option<String>,
+    pub(crate) execution_duration_ms: Option<i64>,
+    pub(crate) scheduler_wait_ms: Option<i64>,
     pub(crate) finished_at: Option<String>,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) status: String,
@@ -5494,13 +5497,19 @@ impl MaintenanceStore {
         .await?
         .into_iter()
         .map(|row| {
+            let scheduler_wait_ms =
+                scheduler_wait_duration_ms(&row.started_at, row.actual_started_at.as_deref());
+            let finished_at = row.actual_finished_at.clone().or(row.finished_at);
             let summary = TaskExecutionSummary {
                 execution_uid: row.execution_uid,
                 run_id: row.id,
                 trigger_kind: row.trigger_kind,
                 attempted_at: row.started_at,
                 actual_started_at: row.actual_started_at,
-                finished_at: row.actual_finished_at.or(row.finished_at),
+                actual_finished_at: row.actual_finished_at,
+                execution_duration_ms: row.actual_duration_ms.map(|value| value.max(0)),
+                scheduler_wait_ms,
+                finished_at,
                 // Legacy duration_ms may include dispatcher wait; only the observer-owned
                 // field proves the actual execution interval.
                 duration_ms: row.actual_duration_ms,
@@ -7811,8 +7820,8 @@ mod tests {
               duration_ms,actual_duration_ms,status,error_detail)
              VALUES('retention_archive','manual','2026-10-03T00:00:00.000Z',
                     'execution-retention-1',
-                    '2026-10-03T00:00:05.000Z','2026-10-03T00:00:07.000Z',
-                    '2026-10-03T00:00:06.000Z',777,2,'failed','committed failure')",
+                    '2026-10-03T00:22:40.000Z','2026-10-03T00:31:01.000Z',
+                    '2026-10-03T00:31:00.000Z',777,500000,'failed','committed failure')",
         )
         .execute(&pool)
         .await
@@ -7865,9 +7874,15 @@ mod tests {
         assert_eq!(latest.attempted_at, "2026-10-03T00:00:00.000Z");
         assert_eq!(
             latest.actual_started_at.as_deref(),
-            Some("2026-10-03T00:00:05.000Z")
+            Some("2026-10-03T00:22:40.000Z")
         );
-        assert_eq!(latest.duration_ms, Some(2));
+        assert_eq!(
+            latest.actual_finished_at.as_deref(),
+            Some("2026-10-03T00:31:00.000Z")
+        );
+        assert_eq!(latest.execution_duration_ms, Some(500_000));
+        assert_eq!(latest.scheduler_wait_ms, Some(1_360_000));
+        assert_eq!(latest.duration_ms, Some(500_000));
         assert_eq!(latest.result, "failed");
         assert_eq!(latest.reason.as_deref(), Some("committed failure"));
         assert_eq!(
@@ -7889,15 +7904,27 @@ mod tests {
         );
         assert_eq!(
             retention_run.actual_started_at.as_deref(),
-            Some("2026-10-03T00:00:05.000Z")
+            Some("2026-10-03T00:22:40.000Z")
         );
         assert_eq!(
             retention_run.actual_finished_at.as_deref(),
-            Some("2026-10-03T00:00:06.000Z")
+            Some("2026-10-03T00:31:00.000Z")
         );
-        assert_eq!(retention_run.execution_duration_ms, Some(2));
-        assert_eq!(retention_run.scheduler_wait_ms, Some(5_000));
+        assert_eq!(retention_run.execution_duration_ms, Some(500_000));
+        assert_eq!(retention_run.scheduler_wait_ms, Some(1_360_000));
         assert_eq!(retention_run.duration_ms, Some(777));
+        let latest_json = serde_json::to_value(latest).expect("serialize latest execution");
+        assert_eq!(latest_json["actualFinishedAt"], "2026-10-03T00:31:00.000Z");
+        assert_eq!(latest_json["executionDurationMs"], 500_000);
+        assert_eq!(latest_json["schedulerWaitMs"], 1_360_000);
+        let retention_run_json =
+            serde_json::to_value(retention_run).expect("serialize detail execution");
+        assert_eq!(
+            retention_run_json["actualFinishedAt"],
+            "2026-10-03T00:31:00.000Z"
+        );
+        assert_eq!(retention_run_json["executionDurationMs"], 500_000);
+        assert_eq!(retention_run_json["schedulerWaitMs"], 1_360_000);
         let status_without_run = tasks
             .iter()
             .find(|task| task.task_key == "system_status_snapshot")

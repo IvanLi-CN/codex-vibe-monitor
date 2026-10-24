@@ -2326,7 +2326,7 @@ async fn run_managed_task_worker(
     let execution_started_at = Instant::now();
     let result =
         run_managed_task_once_with_observation(&state, &task_key, run_id, &observation).await;
-    let (status, summary, detail, completion, core_completion, details) = match result {
+    let (status, summary, detail, completion, core_completion, mut details) = match result {
         Ok(execution) => {
             let status = match execution.completion.as_deref() {
                 Some("partial") | Some("deferred") => SystemTaskStatus::Skipped,
@@ -2372,6 +2372,14 @@ async fn run_managed_task_worker(
             )
         }
     };
+    // Freeze after the owner returns so its rates and persisted execution interval share one clock value.
+    let execution_duration_ms = observation.freeze_execution_duration_ms();
+    if is_retention_owner_v2_task(&task_key)
+        && let Some(duration_ms) = execution_duration_ms
+        && let Some(details) = details.as_mut()
+    {
+        crate::maintenance::retention::finalize_retention_owner_details(details, duration_ms);
+    }
     let workload_reason = details
         .as_ref()
         .and_then(|details| details.get("waitReason"))
@@ -2385,7 +2393,6 @@ async fn run_managed_task_worker(
         },
         workload_reason,
     );
-    let execution_duration_ms = observation.execution_duration_ms();
     let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
     let task_dimension = managed_task_metric_dimension(&task_key);
     let task_outcome = match completion.as_deref() {
@@ -3159,7 +3166,8 @@ async fn run_managed_task_once(
         | "quota_snapshot_compaction"
         | "model_route_expiry"
         | "task_run_history_cleanup" => {
-            let summary = run_retention_owner_task(
+            let started_at = Instant::now();
+            let mut summary = run_retention_owner_task(
                 &state.pool,
                 &state.config,
                 task_key,
@@ -3167,6 +3175,7 @@ async fn run_managed_task_once(
                 &state.shutdown,
             )
             .await?;
+            summary.finalize_execution_metrics(started_at.elapsed());
             Ok(format!(
                 "{} 完成：提交 {} {}",
                 task_key, summary.committed, summary.unit

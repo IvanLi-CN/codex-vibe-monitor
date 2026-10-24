@@ -144,6 +144,7 @@ pub(crate) struct RetentionOwnerRunSummary {
     pub(crate) fatal_error: Option<String>,
     pub(crate) error_chain: Option<Vec<String>>,
     pub(crate) has_more: Option<bool>,
+    pub(crate) arrival_rates: HashMap<String, f64>,
     pub(crate) elapsed_ms: u64,
 }
 
@@ -168,13 +169,31 @@ impl RetentionOwnerRunSummary {
             fatal_error: None,
             error_chain: None,
             has_more: None,
+            arrival_rates: HashMap::new(),
             elapsed_ms: 0,
         }
+    }
+
+    pub(crate) fn finalize_execution_metrics(&mut self, elapsed: Duration) {
+        self.elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        self.populate_arrival_rates();
+        populate_retention_owner_batch_metrics(
+            &mut self.archive_batches,
+            &self.arrival_rates,
+            elapsed,
+        );
     }
 
     fn finish(mut self, started_at: Instant) -> Self {
         self.elapsed_ms = started_at.elapsed().as_millis() as u64;
         self
+    }
+
+    pub(crate) fn populate_arrival_rates(&mut self) {
+        let arrival_rates = &self.arrival_rates;
+        for batch in &mut self.archive_batches {
+            batch.arrival_rows_per_second = arrival_rates.get(&batch.dataset).copied();
+        }
     }
 }
 
@@ -375,8 +394,6 @@ fn retention_owner_success_completion(
         }
     } else if committed < selected {
         if committed > 0 { "partial" } else { "deferred" }
-    } else if has_wait_reason {
-        "partial"
     } else {
         "complete"
     }
@@ -988,6 +1005,39 @@ fn populate_retention_owner_batch_metrics(
     }
 }
 
+pub(crate) fn finalize_retention_owner_details(
+    details: &mut serde_json::Value,
+    execution_duration_ms: i64,
+) {
+    let execution_duration_ms = execution_duration_ms.max(0);
+    details["elapsedMs"] = json!(execution_duration_ms);
+    let run_seconds = execution_duration_ms as f64 / 1_000.0;
+    let Some(batches) = details
+        .get_mut("archiveBatches")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for batch in batches {
+        let service_rate = batch
+            .get("committedRows")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|_| run_seconds > 0.0)
+            .map(|committed| committed as f64 / run_seconds);
+        batch["committedRowsPerSecond"] =
+            service_rate.map_or(serde_json::Value::Null, |rate| json!(rate));
+        let arrival_rate = batch
+            .get("arrivalRowsPerSecond")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|arrival| *arrival > 0.0);
+        batch["serviceRateMultiple"] = arrival_rate
+            .zip(service_rate)
+            .map_or(serde_json::Value::Null, |(arrival, service)| {
+                json!(service / arrival)
+            });
+    }
+}
+
 pub(crate) async fn run_retention_owner_task(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -995,7 +1045,6 @@ pub(crate) async fn run_retention_owner_task(
     dry_run: bool,
     shutdown: &CancellationToken,
 ) -> Result<RetentionOwnerRunSummary> {
-    let started_at = Instant::now();
     let result = RETENTION_MAINTENANCE_ACTIVE
         .scope(
             (),
@@ -1031,11 +1080,9 @@ pub(crate) async fn run_retention_owner_task(
             ),
         )
         .await;
-    let elapsed_before_arrival = started_at.elapsed();
     let arrival_rates = batch_plan::arrival_rates(pool).await;
     match result {
         (Ok(mut summary), archive_batches, candidate_window_has_more) => {
-            let execution_elapsed = Duration::from_millis(summary.elapsed_ms);
             summary.archive_batches = archive_batches;
             summary.raw_files_removed = summary.raw_files_removed.max(
                 summary
@@ -1044,11 +1091,7 @@ pub(crate) async fn run_retention_owner_task(
                     .map(|batch| batch.raw_files_removed)
                     .sum(),
             );
-            populate_retention_owner_batch_metrics(
-                &mut summary.archive_batches,
-                &arrival_rates,
-                execution_elapsed,
-            );
+            summary.arrival_rates = arrival_rates;
             if summary.has_more.is_none() {
                 summary.has_more = candidate_window_has_more;
             }
@@ -1064,11 +1107,7 @@ pub(crate) async fn run_retention_owner_task(
             summary.archive_batches = archive_batches;
             let batch_facts = summary.archive_batches.clone();
             apply_retention_owner_batch_metrics(&mut summary, &batch_facts);
-            populate_retention_owner_batch_metrics(
-                &mut summary.archive_batches,
-                &arrival_rates,
-                elapsed_before_arrival,
-            );
+            summary.arrival_rates = arrival_rates;
             summary.raw_files_removed = summary
                 .archive_batches
                 .iter()
@@ -1076,7 +1115,6 @@ pub(crate) async fn run_retention_owner_task(
                 .sum();
             summary.has_more = candidate_window_has_more;
             apply_retention_owner_error(&mut summary, &error);
-            summary.elapsed_ms = elapsed_before_arrival.as_millis() as u64;
             Ok(summary)
         }
     }
@@ -2579,9 +2617,43 @@ mod owner_fact_tests {
         assert_eq!(deferred.completion, "deferred");
     }
 
+    #[tokio::test]
+    async fn prior_wait_diagnostic_does_not_downgrade_fully_committed_owner() {
+        let (summary, defer_reason) = retention_test_with_recorded_defer_reason(async {
+            retention_record_defer("retention_batch", "sqlite_pressure");
+            let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+            apply_retention_owner_success(&mut summary, 866, 866, 866, 1, 0, Some(true));
+            summary
+        })
+        .await;
+
+        assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.has_more, Some(true));
+    }
+
     #[test]
-    fn owner_batch_rate_uses_execution_seconds_and_matching_arrival_units() {
-        let mut batches = vec![batch_plan::RetentionBatchMetrics {
+    fn required_stage_incomplete_or_failed_does_not_report_complete() {
+        let mut partial = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(&mut partial, 866, 866, 12, 1, 0, Some(false));
+        assert_eq!(partial.completion, "partial");
+
+        let mut failed = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_post_commit_error(
+            &mut failed,
+            866,
+            866,
+            &anyhow::anyhow!("required stage failed after commit"),
+        );
+        assert_eq!(failed.completion, "failed");
+        assert!(failed.fatal_error.is_some());
+    }
+
+    #[test]
+    fn owner_batch_rate_uses_one_frozen_execution_denominator() {
+        let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        summary.archive_batches = vec![batch_plan::RetentionBatchMetrics {
             dataset: "codex_invocations".to_string(),
             month_key: "2026-10".to_string(),
             batch_rows: 866,
@@ -2599,18 +2671,53 @@ mod owner_fact_tests {
             archive_writer_ms: None,
             summary_proof_ms: None,
         }];
-        let mut arrival_rates = std::collections::HashMap::new();
-        arrival_rates.insert("codex_invocations".to_string(), 0.673);
+        summary
+            .arrival_rates
+            .insert("codex_invocations".to_string(), 0.673);
 
-        populate_retention_owner_batch_metrics(
-            &mut batches,
-            &arrival_rates,
-            Duration::from_secs(500),
-        );
+        summary.finalize_execution_metrics(Duration::from_secs(500));
 
-        let batch = &batches[0];
+        assert_eq!(summary.elapsed_ms, 500_000);
+        let batch = &summary.archive_batches[0];
         assert!((batch.committed_rows_per_second.unwrap() - 1.732).abs() < 0.001);
         assert!((batch.service_rate_multiple.unwrap() - 2.574).abs() < 0.002);
+    }
+
+    #[test]
+    fn owner_details_keep_arrival_units_and_hide_rates_for_zero_duration() {
+        let mut details = json!({
+            "elapsedMs": 0,
+            "archiveBatches": [{
+                "committedRows": 866,
+                "arrivalRowsPerSecond": 0.673,
+                "committedRowsPerSecond": null,
+                "serviceRateMultiple": null
+            }]
+        });
+
+        finalize_retention_owner_details(&mut details, 500_000);
+        assert_eq!(details["elapsedMs"], 500_000);
+        assert!(
+            (details["archiveBatches"][0]["committedRowsPerSecond"]
+                .as_f64()
+                .unwrap()
+                - 1.732)
+                .abs()
+                < 0.001
+        );
+        assert!(
+            (details["archiveBatches"][0]["serviceRateMultiple"]
+                .as_f64()
+                .unwrap()
+                - 2.574)
+                .abs()
+                < 0.002
+        );
+
+        finalize_retention_owner_details(&mut details, 0);
+        assert!(details["archiveBatches"][0]["committedRowsPerSecond"].is_null());
+        assert!(details["archiveBatches"][0]["serviceRateMultiple"].is_null());
+        assert_eq!(details["archiveBatches"][0]["arrivalRowsPerSecond"], 0.673);
     }
 
     #[test]

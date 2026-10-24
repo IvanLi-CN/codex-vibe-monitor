@@ -301,6 +301,7 @@ struct ObservationLease {
     trigger_kind: String,
     started_clock: Instant,
     work_started_clock: Mutex<Option<Instant>>,
+    frozen_duration_ms: Mutex<Option<i64>>,
     raw_files_removed: AtomicU64,
     raw_files_observed: AtomicBool,
     ended: AtomicBool,
@@ -429,6 +430,7 @@ impl TaskExecutionObservation {
                 trigger_kind: trigger_kind.to_string(),
                 started_clock,
                 work_started_clock: Mutex::new((!waiting_resources).then_some(started_clock)),
+                frozen_duration_ms: Mutex::new(None),
                 raw_files_removed: AtomicU64::new(0),
                 raw_files_observed: AtomicBool::new(false),
                 ended: AtomicBool::new(false),
@@ -520,13 +522,33 @@ impl TaskExecutionObservation {
         crate::task_timeline::execution_work_started(self.inner.execution_uid.clone(), started_at);
     }
 
-    pub(crate) fn execution_duration_ms(&self) -> Option<i64> {
+    fn live_execution_duration_ms(&self) -> Option<i64> {
         self.inner
             .work_started_clock
             .lock()
             .ok()
             .and_then(|clock| *clock)
             .map(|clock| clock.elapsed().as_millis().min(i64::MAX as u128) as i64)
+    }
+
+    pub(crate) fn freeze_execution_duration_ms(&self) -> Option<i64> {
+        let duration_ms = self.live_execution_duration_ms();
+        let Ok(mut frozen) = self.inner.frozen_duration_ms.lock() else {
+            return duration_ms;
+        };
+        if frozen.is_none() {
+            *frozen = duration_ms;
+        }
+        *frozen
+    }
+
+    pub(crate) fn execution_duration_ms(&self) -> Option<i64> {
+        self.inner
+            .frozen_duration_ms
+            .lock()
+            .ok()
+            .and_then(|duration| *duration)
+            .or_else(|| self.live_execution_duration_ms())
     }
 
     pub(crate) fn resource_wait_ms(&self) -> u64 {
@@ -1466,6 +1488,10 @@ mod tests {
         );
         admitted.mark_work_started();
         assert!(admitted.execution_duration_ms().is_some());
+        let frozen_duration_ms = admitted
+            .freeze_execution_duration_ms()
+            .expect("admitted execution has a duration");
+        assert_eq!(admitted.execution_duration_ms(), Some(frozen_duration_ms));
         admitted.set_discovered_work(
             0,
             crate::format_utc_iso_millis(chrono::Utc::now()),
