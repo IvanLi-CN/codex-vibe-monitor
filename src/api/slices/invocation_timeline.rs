@@ -441,8 +441,6 @@ fn append_timeline_db_predicates(
     persisted_filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
-    attempt_snapshot_id: i64,
-    upstream_account_id: Option<i64>,
     start_bound: &str,
     overlap_start_bound: &str,
     end_bound: &str,
@@ -471,27 +469,6 @@ fn append_timeline_db_predicates(
         query.push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
     }
     query.push("))");
-    if let Some(upstream_account_id) = upstream_account_id {
-        let payload_account_id_sql = timeline_payload_account_id_sql("codex_invocations");
-        let payload_account_id_is_valid_sql =
-            timeline_payload_account_id_is_valid_sql("codex_invocations");
-        query
-            .push(" AND ((")
-            .push(payload_account_id_is_valid_sql.as_str())
-            .push(" = 1 AND ")
-            .push(payload_account_id_sql.as_str())
-            .push(" = ")
-            .push_bind(upstream_account_id)
-            .push(") OR (")
-            .push(payload_account_id_is_valid_sql.as_str())
-            .push(" = 0 AND (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts AS attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt WHERE attempt.invoke_id = codex_invocations.invoke_id AND attempt.occurred_at = codex_invocations.occurred_at AND attempt.id > 0 AND attempt.id <= ")
-            .push_bind(attempt_snapshot_id)
-            .push(" AND typeof(attempt.upstream_account_id) = 'integer' AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < ")
-            .push_bind(TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE)
-            .push(" ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1) = ")
-            .push_bind(upstream_account_id)
-            .push("))");
-    }
     if let Some(cursor) = cursor
         && let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id)
     {
@@ -1793,8 +1770,6 @@ async fn materialize_timeline_snapshot(
             &persisted_filters,
             source_scope,
             snapshot_id,
-            attempt_snapshot_id,
-            upstream_account_id,
             start_bound,
             overlap_start_bound,
             end_bound,
@@ -3055,7 +3030,7 @@ mod tests {
             occurred_at: Some(start_bound.clone()),
             invoke_id: Some("timeline-perf-00000".to_string()),
         };
-        for (scope, upstream_account_id) in [("global", None), ("account", Some(42_i64))] {
+        for scope in ["global", "account"] {
             let mut source_plan = build_timeline_source_select_query_with_prefix(
                 "EXPLAIN QUERY PLAN ",
                 attempt_snapshot_id,
@@ -3065,8 +3040,6 @@ mod tests {
                 &InvocationRecordsFilters::default(),
                 InvocationSourceScope::All,
                 snapshot_id,
-                attempt_snapshot_id,
-                upstream_account_id,
                 &start_bound,
                 &overlap_start_bound,
                 &end_bound,
@@ -3106,16 +3079,6 @@ mod tests {
                 }),
                 "timeline source latest-attempt expressions must use the invoke/attempt index: {source_plan_details:?}"
             );
-            if upstream_account_id.is_some() {
-                assert!(
-                    source_plan_details.iter().any(|detail| {
-                        detail.contains(
-                            "SEARCH attempt USING INDEX idx_pool_upstream_request_attempts_invoke_attempt",
-                        )
-                    }),
-                    "account timeline source must use the invoke/attempt index: {source_plan_details:?}"
-                );
-            }
         }
         let dedup_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
             "EXPLAIN QUERY PLAN SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = ?1 AND duplicate.occurred_at = ?2 AND duplicate.id > ?3 AND duplicate.id <= ?4 LIMIT 1",
