@@ -13,6 +13,9 @@ const CAPACITY_SCENARIO_DURATION_MS =
     : defaultScenarioDurationMs;
 const MINIMUM_TRAVERSALS = Math.max(2, Math.floor(CAPACITY_SCENARIO_DURATION_MS / 15_000) - 1);
 const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
+// Keep the delayed request just beyond one refresh interval to exercise overlap
+// protection without adding an unnecessary fixed wait to every viewport.
+const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS + 250;
 const REVISION_INTERVAL_MS = 1_000;
 const MINIMUM_LIVE_EVENTS = Math.max(
   10,
@@ -393,12 +396,12 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
     const traversalCountBeforeDelay = initialDesktopDiagnostics?.traversalStarts.length ?? 0;
     const liveMessageCountBeforeRevision = initialDesktopDiagnostics?.sseLiveMessageCount ?? 0;
     const revisionTriggerCountBeforeRevision = initialDesktopDiagnostics?.demoRevisionTriggers ?? 0;
-    await page.evaluate(() => {
+    await page.evaluate((delayMs) => {
       const diagnostics = (window as TimelineDiagnosticsWindow)
         .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
       if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-      diagnostics.nextTraversalDelayMs = 20_000;
-    });
+      diagnostics.nextTraversalDelayMs = delayMs;
+    }, DELAYED_TRAVERSAL_MS);
     const triggerRevision = async () =>
       Promise.all(
         pages.map((clientPage) =>
@@ -489,9 +492,6 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
     const elapsedBeforeSteadyState = Date.now() - startedAt;
     await new Promise<void>((resolve) => {
       setTimeout(resolve, Math.max(0, CAPACITY_SCENARIO_DURATION_MS - elapsedBeforeSteadyState));
-    });
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 16_000);
     });
     const results = await Promise.all(
       pages.map((clientPage) =>
@@ -597,12 +597,12 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         ...timelineMountLongTasks.map((task) => task.duration),
       );
 
-      await page.evaluate(() => {
+      await page.evaluate((delayMs) => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
         if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-        diagnostics.nextTraversalDelayMs = 20_000;
-      });
+        diagnostics.nextTraversalDelayMs = delayMs;
+      }, DELAYED_TRAVERSAL_MS);
       const beforeRefresh = await page.evaluate(() => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
