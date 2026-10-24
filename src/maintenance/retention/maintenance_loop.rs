@@ -615,13 +615,9 @@ async fn run_invocation_archive_owner_inner(
             apply_retention_owner_error(&mut summary, &error);
         }
     }
-    if summary.wait_reason.is_some() && summary.completion == "complete" {
-        summary.completion = if summary.committed > 0 || summary.has_more == Some(true) {
-            "partial"
-        } else {
-            "deferred"
-        };
-    }
+    // Backlog observation is independent from the selected work's completion.
+    // Keep a fully committed scope complete while persisting any observation
+    // diagnostic separately through `wait_reason` and `has_more`.
     Ok(summary.finish(started_at))
 }
 
@@ -2618,6 +2614,22 @@ mod owner_fact_tests {
         apply_retention_owner_success(&mut summary, 1_200, 866, 866, 2, 0, Some(true));
 
         assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.has_more, Some(true));
+    }
+
+    #[test]
+    fn failed_backlog_observation_keeps_fully_committed_owner_complete() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "retention_archive",
+            "expired_invocations:retention_policy",
+            "invocation rows",
+        );
+
+        mark_retention_owner_backlog_unknown(&mut summary);
+        apply_retention_owner_success(&mut summary, 866, 866, 866, 1, 0, Some(true));
+
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.wait_reason.as_deref(), Some("backlog_unknown"));
         assert_eq!(summary.has_more, Some(true));
     }
 
