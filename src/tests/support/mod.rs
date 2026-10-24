@@ -12,3 +12,7 @@ pub(crate) use sqlx::error::DatabaseError;
 pub(crate) use sqlx::error::ErrorKind;
 pub(crate) use std::sync::Mutex as StdMutex;
 pub(crate) use tokio::sync::Notify;
+
+mod timing;
+
+pub(crate) use timing::{STATEFUL_TEST_TIMING_ENV, TestTimingSpan, test_timing_span};

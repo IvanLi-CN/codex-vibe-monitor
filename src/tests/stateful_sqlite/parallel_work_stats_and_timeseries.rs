@@ -21759,6 +21759,7 @@ async fn timeseries_startup_recovery_baseline_reenters_after_stopped_release() {
 
 #[tokio::test]
 async fn restart_schema_refreshes_existing_objects_across_primed_pool_connections() {
+    let _whole_test = test_timing_span("whole_test");
     let temp_dir = make_temp_test_dir("existing-schema-objects-across-pool");
     let database_path = temp_dir.join("projection.db");
     fs::File::create(&database_path).expect("create projection database");
@@ -21791,9 +21792,12 @@ async fn restart_schema_refreshes_existing_objects_across_primed_pool_connection
     }
     drop(connections);
 
-    crate::ensure_schema(&pool)
-        .await
-        .expect("restart schema initialization must refresh existing schema objects");
+    {
+        let _operation = test_timing_span("production_operation");
+        crate::ensure_schema(&pool)
+            .await
+            .expect("restart schema initialization must refresh existing schema objects");
+    }
 
     let trigger_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement'",

@@ -26,6 +26,7 @@ fn current_test_state_schema_template_path() -> Option<PathBuf> {
 }
 
 pub(crate) async fn write_current_schema_template(path: &Path) -> anyhow::Result<()> {
+    let _timing = test_timing_span("schema_template");
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -56,6 +57,7 @@ pub(crate) async fn write_current_schema_template(path: &Path) -> anyhow::Result
 }
 
 pub(crate) async fn restore_test_state_schema_template(pool: &SqlitePool) -> anyhow::Result<()> {
+    let _timing = test_timing_span("schema_restore");
     let Some(template_path) = current_test_state_schema_template_path() else {
         return ensure_schema(pool).await;
     };
@@ -72,6 +74,7 @@ pub(crate) async fn restore_current_schema_template_from_path(
     pool: &SqlitePool,
     template_path: &Path,
 ) -> anyhow::Result<()> {
+    let _timing = test_timing_span("schema_template_restore");
     let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(template_path))
         .context("build current-schema template reader options")?
         .read_only(true)
