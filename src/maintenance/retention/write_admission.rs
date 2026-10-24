@@ -144,6 +144,7 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicBool>;
     pub(crate) static RETENTION_TEST_RAW_MIDPASS_WRITE_DENY:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
+    pub(crate) static RETENTION_TEST_BACKLOG_OBSERVATION_FAILURE: ();
     pub(crate) static RETENTION_TEST_INVOCATION_STAGE_TRACE:
         std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
 }

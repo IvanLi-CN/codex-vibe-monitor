@@ -144,6 +144,7 @@ pub(crate) struct RetentionOwnerRunSummary {
     pub(crate) fatal_error: Option<String>,
     pub(crate) error_chain: Option<Vec<String>>,
     pub(crate) has_more: Option<bool>,
+    pub(crate) arrival_rates: HashMap<String, f64>,
     pub(crate) elapsed_ms: u64,
 }
 
@@ -168,13 +169,31 @@ impl RetentionOwnerRunSummary {
             fatal_error: None,
             error_chain: None,
             has_more: None,
+            arrival_rates: HashMap::new(),
             elapsed_ms: 0,
         }
+    }
+
+    pub(crate) fn finalize_execution_metrics(&mut self, elapsed: Duration) {
+        self.elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        self.populate_arrival_rates();
+        populate_retention_owner_batch_metrics(
+            &mut self.archive_batches,
+            &self.arrival_rates,
+            elapsed,
+        );
     }
 
     fn finish(mut self, started_at: Instant) -> Self {
         self.elapsed_ms = started_at.elapsed().as_millis() as u64;
         self
+    }
+
+    pub(crate) fn populate_arrival_rates(&mut self) {
+        let arrival_rates = &self.arrival_rates;
+        for batch in &mut self.archive_batches {
+            batch.arrival_rows_per_second = arrival_rates.get(&batch.dataset).copied();
+        }
     }
 }
 
@@ -362,36 +381,57 @@ fn set_retention_owner_raw_file_facts(
     }
 }
 
-fn apply_retention_owner_success(
-    summary: &mut RetentionOwnerRunSummary,
+fn retention_owner_success_completion(
+    selected: usize,
+    committed: usize,
+    has_wait_reason: bool,
+    dry_run: bool,
+) -> &'static str {
+    if selected == 0 {
+        if has_wait_reason {
+            "deferred"
+        } else {
+            "no-work"
+        }
+    } else if dry_run {
+        "complete"
+    } else if committed < selected {
+        if committed > 0 { "partial" } else { "deferred" }
+    } else {
+        "complete"
+    }
+}
+
+struct RetentionOwnerSuccessFacts {
     discovered: usize,
     selected: usize,
     committed: usize,
     batches: usize,
     raw_files_removed: usize,
     has_more: Option<bool>,
+    dry_run: bool,
+}
+
+fn apply_retention_owner_success(
+    summary: &mut RetentionOwnerRunSummary,
+    facts: RetentionOwnerSuccessFacts,
 ) {
     summary.workload_observed = true;
-    summary.discovered = discovered;
-    summary.selected = selected;
-    summary.committed = committed;
-    summary.batches = batches;
-    summary.raw_files_removed = raw_files_removed;
-    summary.has_more = has_more;
+    summary.discovered = facts.discovered;
+    summary.selected = facts.selected;
+    summary.committed = facts.committed;
+    summary.batches = facts.batches;
+    summary.raw_files_removed = facts.raw_files_removed;
+    summary.has_more = facts.has_more;
     if let Some(reason) = retention_run_defer_reason() {
         summary.wait_reason = Some(reason);
     }
-    summary.completion = if summary.wait_reason.is_some() || summary.has_more == Some(true) {
-        if summary.committed > 0 {
-            "partial"
-        } else {
-            "deferred"
-        }
-    } else if selected == 0 {
-        "no-work"
-    } else {
-        "complete"
-    };
+    summary.completion = retention_owner_success_completion(
+        summary.selected,
+        summary.committed,
+        summary.wait_reason.is_some(),
+        facts.dry_run,
+    );
 }
 
 async fn invocation_archive_fence(pool: &Pool<Sqlite>, cutoff: &str) -> Result<(Option<i64>, i64)> {
@@ -422,6 +462,13 @@ async fn remaining_invocation_archive_rows(
     let Some(source_max_id) = source_max_id else {
         return Ok(0);
     };
+    #[cfg(test)]
+    if RETENTION_TEST_BACKLOG_OBSERVATION_FAILURE
+        .try_with(|_| ())
+        .is_ok()
+    {
+        return Err(anyhow!("injected retention backlog observation failure"));
+    }
     let remaining = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1 AND id <= ?2",
     )
@@ -557,12 +604,15 @@ async fn run_invocation_archive_owner_inner(
             };
             apply_retention_owner_success(
                 &mut summary,
-                discovered,
-                selected_scope,
-                committed,
-                batches,
-                raw_files_removed,
-                has_more,
+                RetentionOwnerSuccessFacts {
+                    discovered,
+                    selected: selected_scope,
+                    committed,
+                    batches,
+                    raw_files_removed,
+                    has_more,
+                    dry_run,
+                },
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -584,13 +634,9 @@ async fn run_invocation_archive_owner_inner(
             apply_retention_owner_error(&mut summary, &error);
         }
     }
-    if summary.wait_reason.is_some() && summary.completion == "complete" {
-        summary.completion = if summary.committed > 0 || summary.has_more == Some(true) {
-            "partial"
-        } else {
-            "deferred"
-        };
-    }
+    // Backlog observation is independent from the selected work's completion.
+    // Keep a fully committed scope complete while persisting any observation
+    // diagnostic separately through `wait_reason` and `has_more`.
     Ok(summary.finish(started_at))
 }
 
@@ -626,12 +672,15 @@ async fn run_timestamped_archive_owner(
                 retention_owner_success_facts(dataset, selected, dry_run);
             apply_retention_owner_success(
                 &mut summary,
-                discovered,
-                selected_scope,
-                committed,
-                batches,
-                raw_files_removed,
-                batch_plan::candidate_window_has_more(dataset),
+                RetentionOwnerSuccessFacts {
+                    discovered,
+                    selected: selected_scope,
+                    committed,
+                    batches,
+                    raw_files_removed,
+                    has_more: batch_plan::candidate_window_has_more(dataset),
+                    dry_run,
+                },
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -674,12 +723,15 @@ async fn run_invocation_detail_prune_owner(
                 retention_owner_success_facts("codex_invocation_details", selected, dry_run);
             apply_retention_owner_success(
                 &mut summary,
-                discovered,
-                selected_scope,
-                committed,
-                batches,
-                raw_files_removed,
-                batch_plan::candidate_window_has_more("codex_invocation_details"),
+                RetentionOwnerSuccessFacts {
+                    discovered,
+                    selected: selected_scope,
+                    committed,
+                    batches,
+                    raw_files_removed,
+                    has_more: batch_plan::candidate_window_has_more("codex_invocation_details"),
+                    dry_run,
+                },
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -707,12 +759,15 @@ async fn run_quota_snapshot_compaction_owner(
                 retention_owner_success_facts("codex_quota_snapshots", selected, dry_run);
             apply_retention_owner_success(
                 &mut summary,
-                discovered,
-                selected_scope,
-                committed,
-                batches,
-                0,
-                batch_plan::candidate_window_has_more("codex_quota_snapshots"),
+                RetentionOwnerSuccessFacts {
+                    discovered,
+                    selected: selected_scope,
+                    committed,
+                    batches,
+                    raw_files_removed: 0,
+                    has_more: batch_plan::candidate_window_has_more("codex_quota_snapshots"),
+                    dry_run,
+                },
             );
         }
         Err(error) => {
@@ -740,12 +795,15 @@ async fn run_model_route_expiry_owner(
         {
             Ok((discovered, has_more)) => apply_retention_owner_success(
                 &mut summary,
-                discovered,
-                discovered.min(candidate_limit),
-                0,
-                0,
-                0,
-                Some(has_more),
+                RetentionOwnerSuccessFacts {
+                    discovered,
+                    selected: discovered.min(candidate_limit),
+                    committed: 0,
+                    batches: 0,
+                    raw_files_removed: 0,
+                    has_more: Some(has_more),
+                    dry_run,
+                },
             ),
             Err(error) => apply_retention_owner_error(&mut summary, &error),
         }
@@ -765,7 +823,18 @@ async fn run_model_route_expiry_owner(
         summary.workload_observed = true;
         summary.discovered = discovered;
         let Some(admission) = acquire_retention_write_admission("model_route_purge").await else {
-            apply_retention_owner_success(&mut summary, discovered, 0, 0, 0, 0, Some(true));
+            apply_retention_owner_success(
+                &mut summary,
+                RetentionOwnerSuccessFacts {
+                    discovered,
+                    selected: 0,
+                    committed: 0,
+                    batches: 0,
+                    raw_files_removed: 0,
+                    has_more: Some(true),
+                    dry_run,
+                },
+            );
             return Ok(summary.finish(started_at));
         };
         let execute_started = Instant::now();
@@ -814,12 +883,15 @@ async fn run_model_route_expiry_owner(
         };
         apply_retention_owner_success(
             &mut summary,
-            discovered,
-            committed,
-            committed,
-            0,
-            0,
-            Some(has_more),
+            RetentionOwnerSuccessFacts {
+                discovered,
+                selected: committed,
+                committed,
+                batches: 0,
+                raw_files_removed: 0,
+                has_more: Some(has_more),
+                dry_run,
+            },
         );
     }
     Ok(summary.finish(started_at))
@@ -886,15 +958,18 @@ async fn run_task_run_history_cleanup_owner(
     let batches = legacy_batches + usize::from(managed_history.selected > 0);
     apply_retention_owner_success(
         &mut summary,
-        selected,
-        selected,
-        committed,
-        batches,
-        0,
-        Some(
-            legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
-                || managed_history.has_more,
-        ),
+        RetentionOwnerSuccessFacts {
+            discovered: selected,
+            selected,
+            committed,
+            batches,
+            raw_files_removed: 0,
+            has_more: Some(
+                legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
+                    || managed_history.has_more,
+            ),
+            dry_run,
+        },
     );
     if !dry_run && summary.completion == "complete" && committed != selected {
         summary.completion = if committed > 0 { "partial" } else { "deferred" };
@@ -974,6 +1049,54 @@ fn populate_retention_owner_batch_metrics(
     }
 }
 
+pub(crate) fn finalize_retention_owner_details(
+    details: &mut serde_json::Value,
+    execution_duration_ms: i64,
+) {
+    let execution_duration_ms = execution_duration_ms.max(0);
+    details["elapsedMs"] = json!(execution_duration_ms);
+    let run_seconds = execution_duration_ms as f64 / 1_000.0;
+    let Some(batches) = details
+        .get_mut("archiveBatches")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for batch in batches {
+        let service_rate = batch
+            .get("committedRows")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|_| run_seconds > 0.0)
+            .map(|committed| committed as f64 / run_seconds);
+        batch["committedRowsPerSecond"] =
+            service_rate.map_or(serde_json::Value::Null, |rate| json!(rate));
+        let arrival_rate = batch
+            .get("arrivalRowsPerSecond")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|arrival| *arrival > 0.0);
+        batch["serviceRateMultiple"] = arrival_rate
+            .zip(service_rate)
+            .map_or(serde_json::Value::Null, |(arrival, service)| {
+                json!(service / arrival)
+            });
+    }
+}
+
+pub(crate) fn freeze_and_finalize_retention_owner_observation(
+    task_key: &str,
+    observation: &crate::TaskExecutionObservation,
+    details: Option<&mut serde_json::Value>,
+) -> Option<i64> {
+    let execution_duration_ms = observation.freeze_execution_duration_ms();
+    if crate::maintenance_store::is_retention_owner_v2_task(task_key)
+        && let Some(duration_ms) = execution_duration_ms
+        && let Some(details) = details
+    {
+        finalize_retention_owner_details(details, duration_ms);
+    }
+    execution_duration_ms
+}
+
 pub(crate) async fn run_retention_owner_task(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -981,7 +1104,6 @@ pub(crate) async fn run_retention_owner_task(
     dry_run: bool,
     shutdown: &CancellationToken,
 ) -> Result<RetentionOwnerRunSummary> {
-    let started_at = Instant::now();
     let result = RETENTION_MAINTENANCE_ACTIVE
         .scope(
             (),
@@ -1028,11 +1150,7 @@ pub(crate) async fn run_retention_owner_task(
                     .map(|batch| batch.raw_files_removed)
                     .sum(),
             );
-            populate_retention_owner_batch_metrics(
-                &mut summary.archive_batches,
-                &arrival_rates,
-                started_at.elapsed(),
-            );
+            summary.arrival_rates = arrival_rates;
             if summary.has_more.is_none() {
                 summary.has_more = candidate_window_has_more;
             }
@@ -1041,18 +1159,14 @@ pub(crate) async fn run_retention_owner_task(
                     summary.raw_files_planned.max(summary.raw_files_removed);
                 summary.raw_files_removed = 0;
             }
-            Ok(summary.finish(started_at))
+            Ok(summary)
         }
         (Err(error), archive_batches, candidate_window_has_more) => {
             let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
             summary.archive_batches = archive_batches;
             let batch_facts = summary.archive_batches.clone();
             apply_retention_owner_batch_metrics(&mut summary, &batch_facts);
-            populate_retention_owner_batch_metrics(
-                &mut summary.archive_batches,
-                &arrival_rates,
-                started_at.elapsed(),
-            );
+            summary.arrival_rates = arrival_rates;
             summary.raw_files_removed = summary
                 .archive_batches
                 .iter()
@@ -1060,7 +1174,7 @@ pub(crate) async fn run_retention_owner_task(
                 .sum();
             summary.has_more = candidate_window_has_more;
             apply_retention_owner_error(&mut summary, &error);
-            Ok(summary.finish(started_at))
+            Ok(summary)
         }
     }
 }
@@ -2535,6 +2649,232 @@ mod owner_fact_tests {
         assert_eq!(summary.committed, 5);
         assert_eq!(summary.batches, 1);
         assert_eq!(summary.raw_files_removed, 2);
+    }
+
+    #[test]
+    fn selected_work_can_complete_while_global_backlog_remains() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "retention_archive",
+            "expired_invocations:retention_policy",
+            "invocation rows",
+        );
+
+        apply_retention_owner_success(
+            &mut summary,
+            RetentionOwnerSuccessFacts {
+                discovered: 1_200,
+                selected: 866,
+                committed: 866,
+                batches: 2,
+                raw_files_removed: 0,
+                has_more: Some(true),
+                dry_run: false,
+            },
+        );
+
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.has_more, Some(true));
+    }
+
+    #[test]
+    fn owner_completion_preserves_real_boundaries_and_dry_run_preview() {
+        let mut partial = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(
+            &mut partial,
+            RetentionOwnerSuccessFacts {
+                discovered: 866,
+                selected: 866,
+                committed: 12,
+                batches: 1,
+                raw_files_removed: 0,
+                has_more: Some(true),
+                dry_run: false,
+            },
+        );
+        assert_eq!(partial.completion, "partial");
+
+        let mut deferred = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(
+            &mut deferred,
+            RetentionOwnerSuccessFacts {
+                discovered: 866,
+                selected: 866,
+                committed: 0,
+                batches: 1,
+                raw_files_removed: 0,
+                has_more: Some(false),
+                dry_run: false,
+            },
+        );
+        assert_eq!(deferred.completion, "deferred");
+
+        let mut dry_run = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(
+            &mut dry_run,
+            RetentionOwnerSuccessFacts {
+                discovered: 866,
+                selected: 866,
+                committed: 0,
+                batches: 1,
+                raw_files_removed: 0,
+                has_more: Some(false),
+                dry_run: true,
+            },
+        );
+        assert_eq!(dry_run.committed, 0);
+        assert_eq!(dry_run.completion, "complete");
+    }
+
+    #[tokio::test]
+    async fn prior_wait_diagnostic_does_not_downgrade_fully_committed_owner() {
+        let (summary, defer_reason) = retention_test_with_recorded_defer_reason(async {
+            retention_record_defer("retention_batch", "sqlite_pressure");
+            let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+            apply_retention_owner_success(
+                &mut summary,
+                RetentionOwnerSuccessFacts {
+                    discovered: 866,
+                    selected: 866,
+                    committed: 866,
+                    batches: 1,
+                    raw_files_removed: 0,
+                    has_more: Some(true),
+                    dry_run: false,
+                },
+            );
+            summary
+        })
+        .await;
+
+        assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.has_more, Some(true));
+    }
+
+    #[tokio::test]
+    async fn prior_wait_diagnostic_does_not_downgrade_selected_dry_run_preview() {
+        let (summary, defer_reason) = retention_test_with_recorded_defer_reason(async {
+            retention_record_defer("retention_batch", "sqlite_pressure");
+            let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+            apply_retention_owner_success(
+                &mut summary,
+                RetentionOwnerSuccessFacts {
+                    discovered: 866,
+                    selected: 866,
+                    committed: 0,
+                    batches: 1,
+                    raw_files_removed: 0,
+                    has_more: Some(false),
+                    dry_run: true,
+                },
+            );
+            summary
+        })
+        .await;
+
+        assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.committed, 0);
+    }
+
+    #[test]
+    fn required_stage_incomplete_or_failed_does_not_report_complete() {
+        let mut partial = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(
+            &mut partial,
+            RetentionOwnerSuccessFacts {
+                discovered: 866,
+                selected: 866,
+                committed: 12,
+                batches: 1,
+                raw_files_removed: 0,
+                has_more: Some(false),
+                dry_run: false,
+            },
+        );
+        assert_eq!(partial.completion, "partial");
+
+        let mut failed = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_post_commit_error(
+            &mut failed,
+            866,
+            866,
+            &anyhow::anyhow!("required stage failed after commit"),
+        );
+        assert_eq!(failed.completion, "failed");
+        assert!(failed.fatal_error.is_some());
+    }
+
+    #[test]
+    fn owner_batch_rate_uses_one_frozen_execution_denominator() {
+        let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        summary.archive_batches = vec![batch_plan::RetentionBatchMetrics {
+            dataset: "codex_invocations".to_string(),
+            month_key: "2026-10".to_string(),
+            batch_rows: 866,
+            committed_rows: 866,
+            raw_files_removed: 0,
+            file_prepare_ms: None,
+            lock_wait_ms: 0,
+            elapsed_ms: 0,
+            timeout_count: 0,
+            committed_rows_per_second: None,
+            arrival_rows_per_second: None,
+            service_rate_multiple: None,
+            small_batch_reason: None,
+            source_identity_ms: None,
+            archive_writer_ms: None,
+            summary_proof_ms: None,
+        }];
+        summary
+            .arrival_rates
+            .insert("codex_invocations".to_string(), 0.673);
+
+        summary.finalize_execution_metrics(Duration::from_secs(500));
+
+        assert_eq!(summary.elapsed_ms, 500_000);
+        let batch = &summary.archive_batches[0];
+        assert!((batch.committed_rows_per_second.unwrap() - 1.732).abs() < 0.001);
+        assert!((batch.service_rate_multiple.unwrap() - 2.574).abs() < 0.002);
+    }
+
+    #[test]
+    fn owner_details_keep_arrival_units_and_hide_rates_for_zero_duration() {
+        let mut details = json!({
+            "elapsedMs": 0,
+            "archiveBatches": [{
+                "committedRows": 866,
+                "arrivalRowsPerSecond": 0.673,
+                "committedRowsPerSecond": null,
+                "serviceRateMultiple": null
+            }]
+        });
+
+        finalize_retention_owner_details(&mut details, 500_000);
+        assert_eq!(details["elapsedMs"], 500_000);
+        assert!(
+            (details["archiveBatches"][0]["committedRowsPerSecond"]
+                .as_f64()
+                .unwrap()
+                - 1.732)
+                .abs()
+                < 0.001
+        );
+        assert!(
+            (details["archiveBatches"][0]["serviceRateMultiple"]
+                .as_f64()
+                .unwrap()
+                - 2.574)
+                .abs()
+                < 0.002
+        );
+
+        finalize_retention_owner_details(&mut details, 0);
+        assert!(details["archiveBatches"][0]["committedRowsPerSecond"].is_null());
+        assert!(details["archiveBatches"][0]["serviceRateMultiple"].is_null());
+        assert_eq!(details["archiveBatches"][0]["arrivalRowsPerSecond"], 0.673);
     }
 
     #[test]

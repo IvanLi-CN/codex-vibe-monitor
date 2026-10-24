@@ -20,6 +20,7 @@ mod gpt6_cache_write_migration;
 mod invocation_range_native_recovery;
 mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;
+mod offline_cli_task_observation;
 mod payload_metadata_backfills;
 mod performance_index_ownership;
 mod prompt_cache_control_file_lock;
