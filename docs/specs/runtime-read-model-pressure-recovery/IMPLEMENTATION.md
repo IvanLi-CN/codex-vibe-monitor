@@ -49,15 +49,22 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
   the candidate query measures text byte lengths before loading source fields,
   then materializes only the selected rows. The page byte budget is 8 MiB, the
-  write-transaction budget is 250 ms, and a worker turn is capped at 2 s. An
-  oversized error message is represented by a stable classification sentinel
-  after canonical SQL has resolved its failure class, so one pathological row
-  advances as a singleton instead of permanently failing recovery. Pressure or
-  contention records `deferred`, a restart resumes the last committed page, and
-  a changed generation fence clears unpublishable staging before rebuilding.
-  Transaction timeout cancellation awaits rollback before releasing the
-  background admission. Only completed staging that still matches the fence is
-  published into the in-memory Summary projection.
+  write-transaction budget is 250 ms including a bounded commit wait, and a
+  worker turn is capped at 2 s. An oversized error message is represented by a
+  stable classification sentinel after canonical SQL has resolved its failure
+  class, so a row oversized only because of its error text can advance as a
+  bounded singleton; an oversized non-error field fails closed before
+  materialization. Pressure or contention records `deferred`, a restart resumes
+  the last committed page, a concurrent worker loses a durable cursor
+  compare-and-swap without applying its page, and a changed coverage fence
+  clears unpublishable staging before rebuilding.
+  Transaction-body timeout cancellation awaits rollback before releasing the
+  background admission; a commit timeout drops the SQLx transaction so its
+  native rollback is queued on the pooled connection. Append-only live-tail
+  changes do not clear committed historical staging; completed staging is
+  published against its coverage fence and newer exact terminal deltas are
+  overlaid at read time. Only completed staging that still matches the coverage
+  fence is published into the in-memory Summary projection.
 - ADR 0010 separates the immutable Summary Coverage Fence from the bounded live
   tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
   AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy
@@ -158,7 +165,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - The invocation-range recovery component has separate [API/version impact](assets/invocation-range-version-impact.json) and [durable reservation/re-entry](assets/invocation-range-persistent-state.json) records. They preserve the deployed v4.8 reservation representation and explicitly leave final integrated verification pending.
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The current implementation candidate is `7ea3b6415c4d744623005a12ff434d1157c067a0` on `th/summary-source-recovery-batch`, based directly on the locked development baseline `207e6d6341240dd722d15a9e853485bed5e441a9`. Current required-lane evidence and the local validation boundary are tracked in `assets/current-candidate-validation.json`; CI and Tier 4 review must bind to the pushed branch head.
+- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-source-recovery-batch`, based directly on the locked development baseline `207e6d6341240dd722d15a9e853485bed5e441a9`. Current required-lane evidence and the local validation boundary are tracked there; CI and Tier 4 review must bind to the pushed branch head.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary

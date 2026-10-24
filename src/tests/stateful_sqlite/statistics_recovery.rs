@@ -517,6 +517,35 @@ async fn compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_afte
     .await
     .expect("read staged first page total");
     assert_eq!(first_total, 512);
+    let target_live_high_watermark = sqlx::query_scalar::<_, i64>(
+        "SELECT target_live_high_watermark_id
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read recovery target live watermark");
+    commit_statistics_recovery_terminal(
+        state.as_ref(),
+        "compacted-source-live-tail-after-target",
+        &db_occurred_at_lower_bound(Utc::now()),
+    )
+    .await;
+    run_compacted_source_recovery_one_page_for_test(state.as_ref())
+        .await
+        .expect("live-tail changes must not reset committed recovery progress");
+    let after_live_tail = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT processed_rows, target_live_high_watermark_id
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read recovery progress after live-tail append");
+    assert_eq!(after_live_tail.0, 1_024);
+    assert_eq!(after_live_tail.1, target_live_high_watermark);
     let restarted_state =
         crate::tests::test_state_from_existing_pool(state.pool.clone(), state.config.clone(), true)
             .await;

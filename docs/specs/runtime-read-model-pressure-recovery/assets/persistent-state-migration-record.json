@@ -56,7 +56,7 @@
       },
       {
         "id": "backfill-dashboard-compacted-source-recovery",
-        "description": "When a source compaction proof intersects the Dashboard day windows, create or resume the fixed-Shanghai today/yesterday/previous7d checkpoint. Read canonical terminal rows by occurred_at,id keyset pages of at most 512 rows, and commit aggregate, usage, bounded record identities, tuple cursor, target generation fence, processed-row count, and state atomically. Yield at 8 MiB, 250 ms transaction, 2 s turn, pressure, contention, cancellation, or shutdown; restart resumes the last committed page and a fence change discards unpublishable staging. No request-path SQL, production copy, destructive cleanup, or payload staging is allowed.",
+        "description": "When a source compaction proof intersects the Dashboard day windows, create or resume the fixed-Shanghai today/yesterday/previous7d checkpoint. Read canonical terminal rows by occurred_at,id keyset pages of at most 512 rows, and commit aggregate, usage, bounded record identities, tuple cursor, target generation fence, processed-row count, and state atomically. A concurrent page must match the durable cursor and target before applying aggregate deltas; coverage-fence changes discard unpublishable staging, while append-only live-tail changes preserve progress and are overlaid by exact bounded deltas. Yield at 8 MiB, 250 ms transaction including bounded commit wait, 2 s turn, pressure, contention, cancellation, or shutdown; restart resumes the last committed page. Non-error text over the materialization budget fails closed before loading. No request-path SQL, production copy, destructive cleanup, or payload staging is allowed.",
         "order": 5,
         "depends_on": [
           "ddl-dashboard-compacted-source-recovery"
@@ -84,7 +84,7 @@
       "A full-repair page that clears the marker predicate still resumes from its durable archive and per-archive row cursors before any additive replay can run",
       "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication",
       "A 10,001-row compacted canonical source range is accepted without a global COUNT(*) or LIMIT 10001 gate and converges through 512-row occurred_at,id pages",
-      "A committed Dashboard page resumes after restart without duplicate aggregate or usage contributions, and a generation-fence change leaves the old staging unpublished",
+      "A committed Dashboard page resumes after restart without duplicate aggregate or usage contributions; a concurrent stale page is discarded by cursor compare-and-swap; a coverage-fence change leaves the old staging unpublished while live-tail changes preserve it",
       "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract"
     ],
     "pause_points": [

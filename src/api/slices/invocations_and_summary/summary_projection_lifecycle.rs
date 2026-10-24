@@ -1286,6 +1286,7 @@ mod compacted_source_recovery_budget_tests {
             id,
             occurred_at: "2026-10-22 12:00:00".to_string(),
             estimated_bytes: i64::try_from(192 + payload_bytes).expect("test byte estimate"),
+            error_message_bytes: 0,
         }
     }
 
@@ -1309,9 +1310,15 @@ mod compacted_source_recovery_budget_tests {
     }
 
     #[test]
-    fn oversized_source_row_is_admitted_as_a_singleton() {
+    fn oversized_error_message_is_admitted_as_a_singleton() {
         let page = vec![
-            candidate(1, SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES + 1),
+            CompactedSourceRecoveryCandidate {
+                error_message_bytes: i64::try_from(
+                    SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES + 1,
+                )
+                .expect("test error message byte estimate"),
+                ..candidate(1, SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES + 1)
+            },
             candidate(2, 1),
         ];
         let (selected, completed) = select_compacted_source_recovery_candidates(page)
@@ -1319,6 +1326,45 @@ mod compacted_source_recovery_budget_tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, 1);
         assert!(!completed);
+    }
+
+    #[test]
+    fn oversized_non_error_source_row_fails_closed() {
+        let page = vec![candidate(
+            1,
+            SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES + 1,
+        )];
+        let error = select_compacted_source_recovery_candidates(page)
+            .expect_err("oversized non-error source row should fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("bounded recovery materialization budget")
+        );
+    }
+
+    #[test]
+    fn live_tail_advancement_does_not_invalidate_recovery_coverage() {
+        let coverage = SummaryProjectionGenerationFence {
+            live_high_watermark_id: 10,
+            rollup_live_cursor: 20,
+            account_rollup_live_cursor: Some(30),
+            completed_manifest_high_watermark_id: Some(40),
+            coverage_revision: 50,
+            account_coverage_revision: 60,
+            durable_terminal_sequence_watermark: 70,
+        };
+        let live_tail_advanced = SummaryProjectionGenerationFence {
+            live_high_watermark_id: 11,
+            rollup_live_cursor: 21,
+            account_rollup_live_cursor: Some(31),
+            completed_manifest_high_watermark_id: Some(40),
+            coverage_revision: 50,
+            account_coverage_revision: 60,
+            durable_terminal_sequence_watermark: 71,
+        };
+        assert!(coverage.coverage_sources_match(live_tail_advanced));
+        assert_ne!(coverage, live_tail_advanced);
     }
 
     #[test]
@@ -1400,6 +1446,7 @@ struct CompactedSourceRecoveryCandidate {
     id: i64,
     occurred_at: String,
     estimated_bytes: i64,
+    error_message_bytes: i64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -1439,25 +1486,63 @@ struct CompactedSourceRecoveryContributions {
 enum CompactedSourceRecoveryPageOutcome {
     Progress { completed: bool, deferred: bool },
     Reset,
+    Stale,
 }
+
+const COMPACTED_SOURCE_RECOVERY_CHECKPOINT_SELECT: &str = "SELECT scope, format_version, time_zone, range_start, range_end, window_ranges_json, \
+            cursor_occurred_at, cursor_id, target_live_high_watermark_id, \
+            target_rollup_live_cursor, target_account_rollup_live_cursor, \
+            target_manifest_high_watermark_id, target_coverage_revision, \
+            target_account_coverage_revision, target_terminal_sequence, list_limit_max, \
+            processed_rows, state, last_error_code, last_error_message \
+       FROM summary_compacted_source_recovery_checkpoint \
+      WHERE scope = ?1";
 
 async fn load_compacted_source_recovery_checkpoint(
     pool: &sqlx::SqlitePool,
 ) -> Result<Option<CompactedSourceRecoveryCheckpoint>> {
     sqlx::query_as::<_, CompactedSourceRecoveryCheckpoint>(
-        "SELECT scope, format_version, time_zone, range_start, range_end, window_ranges_json, \
-                cursor_occurred_at, cursor_id, target_live_high_watermark_id, \
-                target_rollup_live_cursor, target_account_rollup_live_cursor, \
-                target_manifest_high_watermark_id, target_coverage_revision, \
-                target_account_coverage_revision, target_terminal_sequence, list_limit_max, \
-                processed_rows, state, last_error_code, last_error_message \
-           FROM summary_compacted_source_recovery_checkpoint \
-          WHERE scope = ?1",
+        COMPACTED_SOURCE_RECOVERY_CHECKPOINT_SELECT,
     )
     .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
     .fetch_optional(pool)
     .await
     .context("load compacted source recovery checkpoint")
+}
+
+async fn load_compacted_source_recovery_checkpoint_tx(
+    transaction: &mut sqlx::SqliteConnection,
+) -> Result<Option<CompactedSourceRecoveryCheckpoint>> {
+    sqlx::query_as::<_, CompactedSourceRecoveryCheckpoint>(
+        COMPACTED_SOURCE_RECOVERY_CHECKPOINT_SELECT,
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_optional(transaction)
+    .await
+    .context("load compacted source recovery checkpoint in transaction")
+}
+
+fn compacted_source_recovery_checkpoint_progress_matches(
+    expected: &CompactedSourceRecoveryCheckpoint,
+    current: &CompactedSourceRecoveryCheckpoint,
+) -> bool {
+    expected.scope == current.scope
+        && expected.format_version == current.format_version
+        && expected.time_zone == current.time_zone
+        && expected.range_start == current.range_start
+        && expected.range_end == current.range_end
+        && expected.window_ranges_json == current.window_ranges_json
+        && expected.cursor_occurred_at == current.cursor_occurred_at
+        && expected.cursor_id == current.cursor_id
+        && expected.target_live_high_watermark_id == current.target_live_high_watermark_id
+        && expected.target_rollup_live_cursor == current.target_rollup_live_cursor
+        && expected.target_account_rollup_live_cursor == current.target_account_rollup_live_cursor
+        && expected.target_manifest_high_watermark_id == current.target_manifest_high_watermark_id
+        && expected.target_coverage_revision == current.target_coverage_revision
+        && expected.target_account_coverage_revision == current.target_account_coverage_revision
+        && expected.target_terminal_sequence == current.target_terminal_sequence
+        && expected.list_limit_max == current.list_limit_max
+        && expected.processed_rows == current.processed_rows
 }
 
 fn compacted_source_recovery_fence(
@@ -1574,7 +1659,7 @@ fn compacted_source_recovery_checkpoint_matches(
                 .unwrap_or_default()
         && checkpoint.list_limit_max == i64::try_from(list_limit_max).unwrap_or(i64::MAX)
         && compacted_source_recovery_windows_match(current_windows, &stored_windows)
-        && compacted_source_recovery_fence(checkpoint) == target_fence)
+        && compacted_source_recovery_fence(checkpoint).coverage_sources_match(target_fence))
 }
 
 async fn ensure_compacted_source_recovery(state: &AppState) -> Result<()> {
@@ -1787,7 +1872,10 @@ async fn load_compacted_source_recovery_candidates(
     ] {
         push_compacted_source_recovery_text_length(&mut query, expression);
     }
-    query.push(") AS estimated_bytes FROM codex_invocations WHERE ");
+    query.push(
+        ") AS estimated_bytes, length(CAST(COALESCE(error_message, '') AS BLOB)) \
+        AS error_message_bytes FROM codex_invocations WHERE ",
+    );
     push_compacted_source_recovery_filter(&mut query, checkpoint, windows);
     query
         .push(" ORDER BY occurred_at ASC, id ASC LIMIT ")
@@ -1978,9 +2066,21 @@ fn select_compacted_source_recovery_candidates(
         let row_bytes = usize::try_from(row.estimated_bytes)
             .context("compacted source recovery byte estimate overflow")?;
         if selected_rows.is_empty() && row_bytes > SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES {
-            // Admit an oversized source row as a singleton. The candidate query measured it
-            // before loading any text into Rust, so one pathological row cannot materialize a
-            // 512-row page or permanently strand the cursor behind a hard failure.
+            let error_message_bytes = usize::try_from(row.error_message_bytes)
+                .context("compacted source recovery error message byte estimate overflow")?;
+            let non_error_bytes = row_bytes.saturating_sub(error_message_bytes);
+            let bounded_materialized_bytes = non_error_bytes.saturating_add(
+                error_message_bytes.min(SUMMARY_COMPACTED_SOURCE_RECOVERY_ERROR_MESSAGE_BYTES),
+            );
+            if bounded_materialized_bytes > SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES {
+                bail!(
+                    "canonical source row {} exceeds the bounded recovery materialization budget",
+                    row.id
+                );
+            }
+            // An oversized raw row is admitted only when the bounded error-message projection
+            // brings its materialized text back under the page budget. Other oversized fields
+            // fail closed before they can be loaded into Rust.
             selected_rows.push(row);
             break;
         }
@@ -2045,12 +2145,32 @@ async fn stage_compacted_source_recovery_page(
             transaction.rollback().await.ok();
             Ok(CompactedSourceRecoveryPageOutcome::Reset)
         }
+        Ok(Ok(CompactedSourceRecoveryPageOutcome::Stale)) => {
+            transaction.rollback().await.ok();
+            Ok(CompactedSourceRecoveryPageOutcome::Stale)
+        }
         Ok(Ok(outcome)) => {
-            transaction
-                .commit()
-                .await
-                .context("commit compacted source recovery page")?;
-            Ok(outcome)
+            let remaining_budget = transaction_budget.saturating_sub(transaction_started.elapsed());
+            if remaining_budget.is_zero() {
+                transaction.rollback().await.ok();
+                return Ok(CompactedSourceRecoveryPageOutcome::Progress {
+                    completed: false,
+                    deferred: true,
+                });
+            }
+            // Commit is the transaction's atomic boundary. Bound it by the remaining budget;
+            // dropping a timed-out SQLx transaction queues its rollback on the pooled
+            // connection, so a slow commit cannot publish a partially staged page.
+            match tokio::time::timeout(remaining_budget, transaction.commit()).await {
+                Ok(result) => {
+                    result.context("commit compacted source recovery page")?;
+                    Ok(outcome)
+                }
+                Err(_) => Ok(CompactedSourceRecoveryPageOutcome::Progress {
+                    completed: false,
+                    deferred: true,
+                }),
+            }
         }
         Ok(Err(error)) => {
             transaction.rollback().await.ok();
@@ -2078,14 +2198,23 @@ async fn stage_compacted_source_recovery_page_in_transaction(
     transaction_started: Instant,
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
 ) -> Result<CompactedSourceRecoveryPageOutcome> {
-    let mut contributions = CompactedSourceRecoveryContributions::default();
-    for row in rows {
-        add_compacted_source_row_contributions(&mut contributions, row, windows)?;
+    let Some(current_checkpoint) =
+        load_compacted_source_recovery_checkpoint_tx(transaction.as_mut()).await?
+    else {
+        return Ok(CompactedSourceRecoveryPageOutcome::Stale);
+    };
+    if !compacted_source_recovery_checkpoint_progress_matches(checkpoint, &current_checkpoint) {
+        return Ok(CompactedSourceRecoveryPageOutcome::Stale);
     }
     let current_fence =
         load_summary_projection_generation_fence_tx(state, transaction.as_mut()).await?;
-    if current_fence != compacted_source_recovery_fence(checkpoint) {
+    if !current_fence.coverage_sources_match(compacted_source_recovery_fence(checkpoint)) {
         return Ok(CompactedSourceRecoveryPageOutcome::Reset);
+    }
+
+    let mut contributions = CompactedSourceRecoveryContributions::default();
+    for row in rows {
+        add_compacted_source_row_contributions(&mut contributions, row, windows)?;
     }
 
     if !contributions.aggregates.is_empty() {
@@ -2291,7 +2420,7 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
     }
     let expected_fence = compacted_source_recovery_fence(&checkpoint);
     let current_fence = load_summary_projection_generation_fence(state).await?;
-    if current_fence != expected_fence {
+    if !current_fence.coverage_sources_match(expected_fence) {
         ensure_compacted_source_recovery(state).await?;
         return Ok(false);
     }
@@ -2431,7 +2560,7 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
     .context("count compacted source recovery record identities")?
     .max(0) as usize;
     let published_fence = load_summary_projection_generation_fence(state).await?;
-    if published_fence != expected_fence {
+    if !published_fence.coverage_sources_match(expected_fence) {
         ensure_compacted_source_recovery(state).await?;
         return Ok(false);
     }
@@ -2629,6 +2758,12 @@ async fn run_compacted_source_recovery_turn(
                 ),
             }));
         }
+        if outcome == CompactedSourceRecoveryPageOutcome::Stale {
+            return Ok(Some(SummaryCoverageRecoveryTurn {
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                reservation: None,
+            }));
+        }
         let CompactedSourceRecoveryPageOutcome::Progress {
             completed,
             deferred,
@@ -2700,6 +2835,9 @@ pub(crate) async fn run_compacted_source_recovery_one_page_for_test(
         CompactedSourceRecoveryPageOutcome::Progress { .. } => Ok(()),
         CompactedSourceRecoveryPageOutcome::Reset => {
             bail!("test recovery page observed a generation fence reset")
+        }
+        CompactedSourceRecoveryPageOutcome::Stale => {
+            bail!("test recovery page observed a stale checkpoint")
         }
     }
 }

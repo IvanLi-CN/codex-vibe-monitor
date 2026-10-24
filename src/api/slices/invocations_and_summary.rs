@@ -30339,29 +30339,21 @@ async fn fetch_summary_inner(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-        if let Some(response) = dashboard_recovery_response_if_ready(
-            state.as_ref(),
-            projection.as_ref(),
-            &window,
-            reporting_tz,
-            params.upstream_account_id,
-        )
-        .await?
-        {
-            return Ok(Json(response));
-        }
-        let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
-            projection.as_ref(),
-            &gaps,
-            &deltas,
-            &window,
-            reporting_tz,
-            params.upstream_account_id,
-        );
+        let (source_gap_pending, source_gap_unavailable, source_gap_recovery_applicable) =
+            summary_source_gap_status(
+                projection.as_ref(),
+                &gaps,
+                &deltas,
+                &window,
+                reporting_tz,
+                params.upstream_account_id,
+            );
         if source_gap_unavailable {
             return Err(summary_source_gap_unavailable_error(
                 state.as_ref(),
                 &window,
+                reporting_tz,
+                source_gap_recovery_applicable,
                 "summary source journal has an unproven change for the requested selection",
             )
             .await);
@@ -30414,29 +30406,21 @@ async fn fetch_summary_inner(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    if let Some(response) = dashboard_recovery_response_if_ready(
-        state.as_ref(),
-        projection.as_ref(),
-        &window,
-        reporting_tz,
-        account_id,
-    )
-    .await?
-    {
-        return Ok(Json(response));
-    }
-    let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
-        projection.as_ref(),
-        &gaps,
-        &deltas,
-        &window,
-        reporting_tz,
-        account_id,
-    );
+    let (source_gap_pending, source_gap_unavailable, source_gap_recovery_applicable) =
+        summary_source_gap_status(
+            projection.as_ref(),
+            &gaps,
+            &deltas,
+            &window,
+            reporting_tz,
+            account_id,
+        );
     if source_gap_unavailable {
         return Err(summary_source_gap_unavailable_error(
             state.as_ref(),
             &window,
+            reporting_tz,
+            source_gap_recovery_applicable,
             "summary source journal has an unproven change for the requested selection",
         )
         .await);
@@ -30452,6 +30436,20 @@ async fn fetch_summary_inner(
     );
     if matches!(window, SummaryWindow::Current(_)) && delta_gap_pending {
         return Err(ApiError::unavailable(anyhow!("current rank unproven")));
+    }
+    if (!source_gap_pending || source_gap_recovery_applicable)
+        && !delta_gap_pending
+        && let Some(response) = dashboard_recovery_response_if_ready(
+            state.as_ref(),
+            projection.as_ref(),
+            &window,
+            reporting_tz,
+            account_id,
+            &deltas,
+        )
+        .await?
+    {
+        return Ok(Json(response));
     }
     let delta_overlay_affects_selection = summary_delta_affects_selection(
         projection.as_ref(),

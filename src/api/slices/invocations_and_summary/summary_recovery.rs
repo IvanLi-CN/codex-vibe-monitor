@@ -164,6 +164,7 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
     window: &SummaryWindow,
     reporting_tz: Tz,
     upstream_account_id: Option<i64>,
+    deltas: &[DashboardActivityTerminalDelta],
 ) -> Result<Option<StatsResponse>, ApiError> {
     let Some(window_name) = summary_dashboard_recovery_window_name(window) else {
         return Ok(None);
@@ -175,7 +176,9 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
         return Ok(None);
     };
     if snapshot.time_zone != SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE
-        || snapshot.generation_fence != projection.generation_fence()
+        || !snapshot
+            .generation_fence
+            .coverage_sources_match(projection.generation_fence())
     {
         return Ok(None);
     }
@@ -195,21 +198,70 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
             },
         });
     let range = summary_window_range(window, reporting_tz, Utc::now())?;
-    Ok(Some(projection.response_for_dashboard_recovery(
+    let mut response = projection.response_for_dashboard_recovery(
         window,
         range,
         Utc::now(),
         &entry,
         upstream_account_id,
-    )))
+    );
+    let target_live_tail = snapshot.generation_fence.live_tail_cursor();
+    let has_unfenced_replayed_delta = deltas.iter().any(|delta| {
+        delta.terminal_sequence == 0
+            && delta
+                .persisted_row_id
+                .is_some_and(|row_id| row_id <= target_live_tail.live_high_watermark_id)
+            && upstream_account_id
+                .is_none_or(|account_id| delta.upstream_account_id == Some(account_id))
+            && range.is_some_and(|(start, end)| {
+                parse_to_utc_datetime(&delta.occurred_at)
+                    .is_none_or(|occurred_at| occurred_at >= start && occurred_at < end)
+            })
+    });
+    if has_unfenced_replayed_delta {
+        // A restarted durable-tail replay may have no trustworthy process-local sequence. If its
+        // row id is inside the snapshot target, applying it could double count a row already
+        // reduced into the snapshot; withholding the snapshot preserves exact/unavailable.
+        return Ok(None);
+    }
+    let live_deltas = deltas
+        .iter()
+        .filter(|delta| {
+            delta.terminal_sequence > target_live_tail.durable_terminal_sequence_watermark
+                || delta
+                    .persisted_row_id
+                    .is_some_and(|row_id| row_id > target_live_tail.live_high_watermark_id)
+                || (delta.terminal_sequence == 0 && delta.persisted_row_id.is_none())
+        })
+        .cloned()
+        .collect();
+    let mut terminal_sequence = target_live_tail.durable_terminal_sequence_watermark;
+    apply_dashboard_terminal_slice_to_summary_response(
+        &mut response,
+        &mut terminal_sequence,
+        window,
+        reporting_tz,
+        InvocationSourceScope::All,
+        upstream_account_id,
+        &DashboardTerminalProjectionSlice {
+            revision: 0,
+            deltas: live_deltas,
+        },
+    );
+    Ok(Some(response))
 }
 
 pub(crate) async fn summary_source_gap_unavailable_error(
     state: &AppState,
     window: &SummaryWindow,
+    reporting_tz: Tz,
+    recovery_applicable: bool,
     message: &'static str,
 ) -> ApiError {
-    if summary_dashboard_recovery_window_name(window).is_some() {
+    if recovery_applicable
+        && reporting_tz.to_string() == SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE
+        && summary_dashboard_recovery_window_name(window).is_some()
+    {
         let code = state
             .subscription_hub
             .summary_compacted_source_recovery_state()
