@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
-  "candidate_head_sha": "fa244b28",
-  "implementation_commit": "fa244b28",
+  "status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-and-visual-pending",
+  "candidate_head_sha": "255dcae0",
+  "implementation_commit": "255dcae0",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -28,7 +28,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle"
         ],
-        "status": "implemented; targeted Rust execution pending CI"
+        "status": "passed in current-head CI run 40082082769"
       },
       {
         "id": "A2",
@@ -38,7 +38,7 @@
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
         ],
-        "status": "implemented; targeted Rust execution pending CI"
+        "status": "passed in current-head CI run 40082082769"
       },
       {
         "id": "A3",
@@ -49,7 +49,7 @@
           "scripts/test-summary-production-exact-oracle.py::ExactOracleUsageTests",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle"
         ],
-        "status": "implemented; naive-Shanghai boundary and mixed-case usage oracle unit tests passed; representative-scale execution pending CI"
+        "status": "passed in current-head CI run 40082082769; exact oracle and representative-scale acceptance completed"
       },
       {
         "id": "A4",
@@ -58,7 +58,7 @@
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "implemented; local static validation passed with a 2 s recovery-turn budget, independent 250 ms reset/page/publication transactions, deadline-bounded SQLite reads, rollback/close cleanup, and publication; pressure execution pending CI"
+        "status": "passed in current-head CI run 40082082769; bounded page, transaction, turn, contention, cancellation and publication checks completed"
       },
       {
         "id": "A5",
@@ -69,7 +69,7 @@
           "src/api/slices/system_routes_and_tasks.rs",
           "web/src/lib/api/core-foundation.ts"
         ],
-        "status": "implemented; backend contract execution pending CI; an eligible overlay remains coded pending until exact generation-fenced publication"
+        "status": "passed in current-head CI run 40082082769; coded pending/failed 503 and system-status contracts remain exact/unavailable until publication"
       },
       {
         "id": "A6",
@@ -80,7 +80,7 @@
           "web/src/features/dashboard/DashboardActivityOverview.test.tsx",
           "web/src/features/stats/StatsCards.tsx"
         ],
-        "status": "targeted pending/failed web tests passed; visual evidence displayed and awaiting owner confirmation"
+        "status": "targeted pending/failed web tests passed in current-head CI run 40082082769; visual evidence displayed and awaiting owner confirmation"
       },
       {
         "id": "A7",
@@ -90,7 +90,7 @@
           "src/tests/stateful_sqlite/record_budget.rs",
           "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json"
         ],
-        "status": "implemented; targeted Rust execution pending CI"
+        "status": "passed in current-head CI run 40082082769; idempotent migration and forward-repair validation completed"
       },
       {
         "id": "A8",
@@ -99,7 +99,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head fa244b28; CI, Tier 4 review, empirical acceptance, and visual confirmation pending"
+        "status": "PR #1181 implementation head 255dcae0; CI and empirical acceptance passed, Tier 4 review and visual confirmation pending, base sync blocked by PR behind state"
       }
     ]
   },
@@ -130,11 +130,11 @@
   "empirical_acceptance": {
     "required": true,
     "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
-    "status": "unavailable",
-    "candidate_sha": null,
+    "status": "passed",
+    "candidate_sha": "255dcae032d673aa28a3448cb999b842003429fa",
     "contract_digest": null,
     "scenario_set_digest": null,
-    "evidence_locator": null
+    "evidence_locator": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40082082769"
   },
   "deployment_surfaces": {
     "github_release_and_ghcr": "No release publication is authorized by this candidate; release workflow policy applies only after PR validation and merge.",
@@ -175,5 +175,26 @@
     "assets/dashboard-recovery-pending.png",
     "assets/dashboard-recovery-failed.png"
   ],
-  "visual_evidence_owner_confirmation": "pending"
+  "visual_evidence_owner_confirmation": "pending",
+  "execution_evidence": {
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40082082769",
+    "head_sha": "255dcae032d673aa28a3448cb999b842003429fa",
+    "passed_lanes": [
+      "Backend Tests (Archive / File I/O)",
+      "Backend Tests (Lightweight)",
+      "Backend Tests (Representative Scale)",
+      "Backend Tests (Stateful SQLite shard 1/2)",
+      "Backend Tests (Stateful SQLite shard 2/2)",
+      "Backend Tests (Stateful SQLite)",
+      "Retention Migration Validation",
+      "Build Artifacts",
+      "Front-end Tests",
+      "Storybook Accessibility Tests",
+      "Lint & Format Check",
+      "Repository Tooling Checks",
+      "Docs & Web Demo Build",
+      "PR E2E Test Producer",
+      "Records Overlay E2E"
+    ]
+  }
 }

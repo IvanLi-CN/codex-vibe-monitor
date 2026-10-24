@@ -234,6 +234,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 5. long-term migration 读取 cursor 后执行一个最多 512 行的微事务；压力、取消或时间预算耗尽时安全退出，后续从持久 cursor 继续。
 6. 每个 checkpoint 的 GitHub release 由累计 integration frontier 生成；主人部署确认后才开始相关 Ticket 的只读 900 秒观察。
 7. 当 source journal compaction proof 使旧 tail 不再完整时，Supervisor 创建或续跑 Dashboard compacted-source checkpoint；每一页只读取 canonical 必要列，在同一事务中写聚合、受 `list_limit_max` 限制的 record identity、游标和状态，完成后再以 generation fence 发布内存 snapshot。
+8. 当 broad compaction proof 已生效时，rolling refresh 不再同时走 legacy source-tail fallback；该范围由 compacted-source recovery worker 独占修复，避免同一 canonical rows 被重复登记为 strict scoped gap，遮蔽已经精确发布的 generation-fenced snapshot。
 
 ### Edge cases / errors
 

@@ -194,6 +194,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   exact or failed, so completion is observed without waiting for remount or
   day rollover.
 - When an eligible compaction gap has a generation-fenced Dashboard snapshot, the HTTP path validates and serves that exact snapshot before applying the generic source-gap failure branch. The generic unavailable response remains the fallback for pending, failed, stale, or out-of-scope recovery and for gaps that the Dashboard worker cannot prove.
+- While a broad compaction proof is active, rolling refresh does not also run the legacy source-tail fallback. The canonical compacted-source recovery worker owns that range; allowing the fallback to register the same rows as strict scoped gaps would keep an exact, generation-fenced snapshot unavailable after publication.
 - A valid temporary terminal overlay does not authorize a Dashboard day-window
   response while the generation-fenced compacted snapshot is pending. The
   request path returns the coded unavailable contract until exact recovery
