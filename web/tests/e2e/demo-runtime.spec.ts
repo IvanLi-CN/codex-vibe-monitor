@@ -260,9 +260,13 @@ async function expectSceneTerminalState(page: Page, path: string, scene: DemoSce
     case "/#/system/settings":
     case "/#/settings":
     case "/#/settings/legacy":
+      await expect(
+        page.locator(".settings-page").getByText("代理配置", { exact: true }),
+      ).toBeVisible();
+      return;
     case "/#/system/proxy":
       await expect(
-        page.locator("input:visible, textarea:visible, button:visible").first(),
+        page.locator(".settings-page").getByText("正向代理路由", { exact: true }),
       ).toBeVisible();
       return;
     default:
@@ -379,6 +383,10 @@ function networkFailureApiPath(path: string): string {
     default:
       throw new Error(`Missing network failure API path for ${path}`);
   }
+}
+
+function networkFailureApiRequest(path: string): Pick<DemoFetchResult, "method" | "path"> {
+  return { method: "GET", path: networkFailureApiPath(path) };
 }
 
 function isDashboardRoute(path: string) {
@@ -615,11 +623,11 @@ test.describe("Web Demo runtime", () => {
         await expect(networkFailureState(page, route.path)).toBeVisible({
           timeout: DEMO_ROUTE_TIMEOUT_MS,
         });
-        const expectedApiPath = networkFailureApiPath(route.path);
+        const expectedApiRequest = networkFailureApiRequest(route.path);
         await expect
           .poll(
             () =>
-              page.evaluate((expectedPath) => {
+              page.evaluate((expectedRequest) => {
                 const results =
                   (
                     window as Window & {
@@ -628,13 +636,16 @@ test.describe("Web Demo runtime", () => {
                   ).__CVM_DEMO_FETCH_RESULTS__ ?? [];
                 return {
                   matched: results.some(
-                    (result) => result.outcome === "failed" && result.path === expectedPath,
+                    (result) =>
+                      result.outcome === "failed" &&
+                      result.method === expectedRequest.method &&
+                      result.path === expectedRequest.path,
                   ),
                   results,
                 };
-              }, expectedApiPath),
+              }, expectedApiRequest),
             {
-              message: `Missing ${expectedApiPath} fetch for ${route.path}`,
+              message: `Missing ${expectedApiRequest.method} ${expectedApiRequest.path} fetch for ${route.path}`,
               timeout: DEMO_ROUTE_TIMEOUT_MS,
             },
           )

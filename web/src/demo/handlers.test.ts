@@ -46,14 +46,59 @@ describe("demo MSW handlers", () => {
     });
     expect(await paused.json()).toMatchObject({
       enabled: false,
-      completedKeys: 418,
-      queuePending: 0,
-      progressPercent: 100,
+      phase: "stats_rebuild",
+      completedKeys: 312,
+      queuePending: 7,
+      progressPercent: 74.6,
+      estimatedRemainingMs: 126_000,
       lastStatus: "disabled",
+      suspensionReason: "manual_pause",
     });
 
+    const managedPaused = await fetch("http://demo.invalid/api/system/managed-tasks");
+    const managedPausedPayload = (await managedPaused.json()) as Array<{
+      taskKey: string;
+      enabled: boolean;
+    }>;
+    expect(
+      managedPausedPayload.find((task) => task.taskKey === "prompt_cache_materialization"),
+    ).toMatchObject({ enabled: false });
+
+    const managedResumed = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      },
+    );
+    expect((await managedResumed.json()).task).toMatchObject({ enabled: true });
+
     const refreshed = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
-    expect(await refreshed.json()).toMatchObject({ enabled: false, lastStatus: "disabled" });
+    expect(await refreshed.json()).toMatchObject({ enabled: true, lastStatus: "running" });
+
+    const managedPausedAgain = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/prompt_cache_materialization",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: false }),
+      },
+    );
+    expect((await managedPausedAgain.json()).task).toMatchObject({ enabled: false });
+
+    demoModel.reset();
+    const reset = await fetch("http://demo.invalid/api/system/prompt-cache/materialization");
+    expect(await reset.json()).toMatchObject({ enabled: true, lastStatus: "running" });
+
+    const managedReset = await fetch("http://demo.invalid/api/system/managed-tasks");
+    const managedResetPayload = (await managedReset.json()) as Array<{
+      taskKey: string;
+      enabled: boolean;
+    }>;
+    expect(
+      managedResetPayload.find((task) => task.taskKey === "prompt_cache_materialization"),
+    ).toMatchObject({ enabled: true });
   });
 
   it("exposes synthetic observability destinations without a performance database", async () => {
