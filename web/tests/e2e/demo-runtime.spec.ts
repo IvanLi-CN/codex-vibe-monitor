@@ -206,14 +206,11 @@ async function expectSceneTerminalState(page: Page, path: string, scene: DemoSce
     case "/#/account-pool/upstream-accounts":
     case "/#/account-pool/transits":
     case "/#/account-pool/pool": {
-      const rosterTerminal = page
+      const nonEmptyRoster = page
         .locator('[data-testid="upstream-accounts-grouped-roster"]:visible')
-        .or(page.locator('[data-testid="upstream-accounts-table-empty"]:visible'))
-        .or(page.locator('[data-testid="upstream-accounts-grouped-empty"]:visible'))
         .or(page.locator('[title="alpha@demo.invalid"]:visible'))
         .or(page.locator('[title="Aster"]:visible'))
         .first();
-      await expect(rosterTerminal).toBeVisible();
       if (scene === "empty") {
         await expect(
           page
@@ -221,19 +218,36 @@ async function expectSceneTerminalState(page: Page, path: string, scene: DemoSce
             .or(page.locator('[data-testid="upstream-accounts-grouped-empty"]:visible'))
             .first(),
         ).toBeVisible();
+      } else {
+        await expect(nonEmptyRoster).toBeVisible();
       }
       return;
     }
     case "/#/account-pool/upstream-accounts/new?mode=apiKey":
-    case "/#/account-pool/upstream-accounts/new?mode=oauth":
-      await expect(page.locator("input:visible, textarea:visible").first()).toBeVisible();
-      return;
-    case "/#/account-pool/maintenance-records": {
-      const recordsTerminal = page
-        .locator('[data-testid="maintenance-records-empty"]:visible')
-        .or(page.locator('[data-maintenance-event-badge="true"]:visible'))
+    case "/#/account-pool/upstream-accounts/new?mode=oauth": {
+      const createPage = page
+        .locator(".surface-panel")
+        .filter({ has: page.getByRole("heading", { name: "新增账号", exact: true }) })
         .first();
-      await expect(recordsTerminal).toBeVisible();
+      await expect(createPage.locator(".animate-spin:visible")).toHaveCount(0);
+      await expect(createPage.getByRole("alert")).toHaveCount(0);
+      const fieldName = path.endsWith("mode=apiKey") ? "apiKeyDisplayName" : "oauthDisplayName";
+      await expect(createPage.locator(`input[name="${fieldName}"]:visible`)).toBeVisible();
+      return;
+    }
+    case "/#/account-pool/maintenance-records": {
+      if (scene === "empty") {
+        await expect(
+          page.locator('[data-testid="maintenance-records-empty"]:visible'),
+        ).toBeVisible();
+      } else {
+        await expect(
+          page
+            .locator("span:visible")
+            .filter({ hasText: /^同步成功$/ })
+            .first(),
+        ).toBeVisible();
+      }
       return;
     }
     case "/#/system":
@@ -580,13 +594,9 @@ test.describe("Web Demo runtime", () => {
         get: () => currentFetch,
         set: (nextFetch: typeof window.fetch) => {
           currentFetch = ((...args: Parameters<typeof window.fetch>) => {
-            const requestInput = args[0];
-            const requestUrl = new URL(
-              requestInput instanceof Request ? requestInput.url : String(requestInput),
-              window.location.href,
-            );
-            const method =
-              requestInput instanceof Request ? requestInput.method : (args[1]?.method ?? "GET");
+            const request = new Request(args[0], args[1]);
+            const requestUrl = new URL(request.url, window.location.href);
+            const method = request.method;
             if (!requestUrl.pathname.startsWith("/api/")) return nextFetch(...args);
             try {
               const result = nextFetch(...args);
@@ -740,5 +750,15 @@ test.describe("Web Demo runtime", () => {
       return (await response.json()) as { items: Array<{ name: string }> };
     });
     expect(createdKeys.items.some((item) => item.name === "Synthetic integration 7")).toBe(true);
+  });
+
+  test("keeps maintenance records terminal on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 393, height: 844 });
+    const route = {
+      path: "/#/account-pool/maintenance-records",
+      expectedPath: "/account-pool/maintenance-records",
+    };
+    await gotoDemoRoute(page, route, "operational");
+    await expectDemoShell(page, route, { scene: "operational" });
   });
 });
