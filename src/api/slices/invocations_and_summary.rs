@@ -510,7 +510,7 @@ pub(crate) fn latest_pool_attempt_phase_sql_at_snapshot(
         .unwrap_or_default();
     format!(
         "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
-            FROM pool_upstream_request_attempts attempt \
+            FROM pool_upstream_request_attempts AS attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
            WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
              AND attempt.occurred_at = {invocation_ref}.occurred_at \
              {attempt_snapshot_predicate} \
@@ -529,7 +529,7 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
         final_pool_attempt_timing_evidence_sql(attempt_ref, invocation_ref, "first_token_ms");
     format!(
         "CASE WHEN {attempt_ref}.id = (SELECT final_attempt.id \
-           FROM pool_upstream_request_attempts AS final_attempt \
+           FROM pool_upstream_request_attempts AS final_attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
            WHERE final_attempt.invoke_id = {attempt_ref}.invoke_id \
              AND final_attempt.occurred_at = {attempt_ref}.occurred_at \
              AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
@@ -561,7 +561,7 @@ pub(crate) fn final_pool_invocation_timing_sql_at_snapshot(
         .unwrap_or_default();
     format!(
         "CASE WHEN NOT EXISTS (SELECT 1 \
-           FROM pool_upstream_request_attempts AS final_attempt \
+           FROM pool_upstream_request_attempts AS final_attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
             {attempt_snapshot_predicate}) \

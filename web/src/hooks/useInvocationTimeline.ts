@@ -105,57 +105,52 @@ async function fetchInvocationTimelineSnapshot(options: {
   let firstPage: InvocationTimelineResponse | null = null;
   const records = new Map<string, InvocationTimelineResponse["records"][number]>();
 
-  try {
-    for (let pageIndex = 0; pageIndex < INVOCATION_TIMELINE_MAX_PAGES; pageIndex += 1) {
-      const page = await fetchInvocationTimeline({
-        ...options,
-        limit: INVOCATION_TIMELINE_PAGE_SIZE,
-        cursor,
-        asOf,
-      });
-      firstPage ??= page;
-      if (asOf == null) asOf = page.asOf;
-      if (page.asOf !== asOf) {
-        throw new Error("Invocation timeline snapshot changed while paging");
-      }
-      for (const record of page.records) {
-        const key = timelineRecordKey(record);
-        const current = records.get(key);
-        records.set(key, current ? preferTimelineRecord(current, record) : record);
-      }
-      if (!page.hasMore) break;
-      if (!page.nextCursor) throw new Error("Invocation timeline page is missing nextCursor");
-      cursor = page.nextCursor;
-      if (pageIndex === INVOCATION_TIMELINE_MAX_PAGES - 1) {
-        throw new Error("Invocation timeline has too many pages");
-      }
-    }
-
-    if (!firstPage || !asOf) throw new Error("Invocation timeline returned no snapshot");
-    if (!Number.isSafeInteger(firstPage.total) || firstPage.total < 0) {
-      throw new Error("Invocation timeline returned an invalid total");
-    }
-    const mergedRecords = [...records.values()].sort(
-      (left, right) =>
-        Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.id - right.id,
-    );
-    if (mergedRecords.length !== firstPage.total) {
-      throw new Error("Invocation timeline snapshot is incomplete");
-    }
-    void releaseTimelineSnapshotBestEffort(asOf);
-    return {
-      ...firstPage,
+  for (let pageIndex = 0; pageIndex < INVOCATION_TIMELINE_MAX_PAGES; pageIndex += 1) {
+    const page = await fetchInvocationTimeline({
+      ...options,
+      limit: INVOCATION_TIMELINE_PAGE_SIZE,
+      cursor,
       asOf,
-      snapshotAtMs: Date.now(),
-      total: firstPage.total,
-      hasMore: false,
-      nextCursor: null,
-      records: mergedRecords,
-    } satisfies InvocationTimelineResponse;
-  } catch (error) {
-    if (asOf) await releaseTimelineSnapshotBestEffort(asOf);
-    throw error;
+    });
+    firstPage ??= page;
+    if (asOf == null) asOf = page.asOf;
+    if (page.asOf !== asOf) {
+      throw new Error("Invocation timeline snapshot changed while paging");
+    }
+    for (const record of page.records) {
+      const key = timelineRecordKey(record);
+      const current = records.get(key);
+      records.set(key, current ? preferTimelineRecord(current, record) : record);
+    }
+    if (!page.hasMore) break;
+    if (!page.nextCursor) throw new Error("Invocation timeline page is missing nextCursor");
+    cursor = page.nextCursor;
+    if (pageIndex === INVOCATION_TIMELINE_MAX_PAGES - 1) {
+      throw new Error("Invocation timeline has too many pages");
+    }
   }
+
+  if (!firstPage || !asOf) throw new Error("Invocation timeline returned no snapshot");
+  if (!Number.isSafeInteger(firstPage.total) || firstPage.total < 0) {
+    throw new Error("Invocation timeline returned an invalid total");
+  }
+  const mergedRecords = [...records.values()].sort(
+    (left, right) =>
+      Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.id - right.id,
+  );
+  if (mergedRecords.length !== firstPage.total) {
+    throw new Error("Invocation timeline snapshot is incomplete");
+  }
+  void releaseTimelineSnapshotBestEffort(asOf);
+  return {
+    ...firstPage,
+    asOf,
+    snapshotAtMs: Date.now(),
+    total: firstPage.total,
+    hasMore: false,
+    nextCursor: null,
+    records: mergedRecords,
+  } satisfies InvocationTimelineResponse;
 }
 
 export function useInvocationTimeline({
