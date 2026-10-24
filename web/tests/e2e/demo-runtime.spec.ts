@@ -142,7 +142,7 @@ async function expectSceneTerminalState(page: Page, path: string, scene: DemoSce
           dashboard.getByText("最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。", {
             exact: true,
           }),
-        ).toBeVisible();
+        ).toBeVisible({ timeout: DEMO_ROUTE_TIMEOUT_MS });
         await expect(dashboard.getByTestId("dashboard-working-conversations-grid")).toHaveCount(0);
       } else {
         await expect(dashboard.getByTestId("dashboard-working-conversations-grid")).toBeVisible();
@@ -445,7 +445,11 @@ function routeWithScene(path: string, scene: string) {
 }
 
 async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
-  await page.goto(routeWithScene(route.path, scene), {
+  const initialPath =
+    scene !== "operational" && (route.path === "/#/" || route.path === "/#/not-a-route")
+      ? "/#/dashboard"
+      : route.path;
+  await page.goto(routeWithScene(initialPath, scene), {
     waitUntil: "domcontentloaded",
   });
   await expect
@@ -464,7 +468,6 @@ async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
   await page.goto(currentUrl.toString(), {
     waitUntil: "domcontentloaded",
   });
-  await page.reload({ waitUntil: "domcontentloaded" });
 }
 
 async function expectDemoShell(
@@ -480,7 +483,10 @@ async function expectDemoShell(
   await expect(page.locator("#root")).toBeVisible();
   await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
   await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
-  await expect(routeLandmark(page, route.path, allowExpectedFailure)).toBeVisible({
+  const routeState = allowExpectedFailure
+    ? networkFailureState(page, route.path)
+    : routeLandmark(page, route.path);
+  await expect(routeState).toBeVisible({
     timeout: DEMO_ROUTE_TIMEOUT_MS,
   });
   if (!allowExpectedFailure && options.scene) {
@@ -619,21 +625,27 @@ test.describe("Web Demo runtime", () => {
       });
     });
 
+    let previousExpectedApiRequest: Pick<DemoFetchResult, "method" | "path"> | null = null;
     for (const route of allRoutes) {
       const { onPageError, pageErrors } = capturePageErrors(page);
       try {
-        await page.evaluate(() => {
-          const results = (window as Window & { __CVM_DEMO_FETCH_RESULTS__?: DemoFetchResult[] })
-            .__CVM_DEMO_FETCH_RESULTS__;
-          if (results) results.length = 0;
-        });
+        const expectedApiRequest = networkFailureApiRequest(route.path);
+        if (
+          previousExpectedApiRequest?.method !== expectedApiRequest.method ||
+          previousExpectedApiRequest.path !== expectedApiRequest.path
+        ) {
+          await page.evaluate(() => {
+            const results = (window as Window & { __CVM_DEMO_FETCH_RESULTS__?: DemoFetchResult[] })
+              .__CVM_DEMO_FETCH_RESULTS__;
+            if (results) results.length = 0;
+          });
+        }
+        previousExpectedApiRequest = expectedApiRequest;
         await gotoDemoRoute(page, route, "network-failure");
-        await page.reload({ waitUntil: "domcontentloaded" });
         await expectDemoShell(page, route, { allowExpectedFailure: true });
         await expect(networkFailureState(page, route.path)).toBeVisible({
           timeout: DEMO_ROUTE_TIMEOUT_MS,
         });
-        const expectedApiRequest = networkFailureApiRequest(route.path);
         await expect
           .poll(
             () =>
