@@ -214,6 +214,87 @@ async fn offline_retention_cli_persists_frozen_owner_timing_and_rates() {
 }
 
 #[tokio::test]
+async fn offline_retention_cli_keeps_committed_owner_complete_when_backlog_observation_fails() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("offline-cli-backlog-observation-failure").await;
+    seed_offline_cli_retention_fixture(&pool, &config).await;
+    pool.close().await;
+
+    crate::maintenance::RETENTION_TEST_BACKLOG_OBSERVATION_FAILURE
+        .scope(
+            (),
+            crate::maintenance::run_owned_maintenance_cli(&config, RETENTION_TASK_KEY, false),
+        )
+        .await
+        .expect("offline retention CLI should preserve a completed owner result");
+
+    let source_pool = SqlitePool::connect(&test_sqlite_url_for_path(&config.database_path))
+        .await
+        .expect("open converted source database");
+    let remaining_expired: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations
+         WHERE invoke_id LIKE 'offline-cli-expired-%'",
+    )
+    .fetch_one(&source_pool)
+    .await
+    .expect("count converted source rows");
+    assert_eq!(remaining_expired, 0);
+    let remaining_recent: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations
+         WHERE invoke_id LIKE 'offline-cli-recent-%'",
+    )
+    .fetch_one(&source_pool)
+    .await
+    .expect("count retained source rows");
+    assert_eq!(remaining_recent, 32);
+    let archived_rows: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+         WHERE dataset = 'codex_invocations' AND status = 'completed'",
+    )
+    .fetch_one(&source_pool)
+    .await
+    .expect("count completed archive rows");
+    assert_eq!(archived_rows, 16);
+    let archive_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches
+         WHERE dataset = 'codex_invocations' AND status = 'completed'",
+    )
+    .fetch_all(&source_pool)
+    .await
+    .expect("load completed archive paths");
+    assert!(!archive_paths.is_empty());
+    for archive_path in archive_paths {
+        assert!(
+            Path::new(&archive_path).is_file(),
+            "completed archive file should exist: {archive_path}"
+        );
+    }
+    source_pool.close().await;
+
+    let maintenance_pool = SqlitePool::connect(&test_sqlite_url_for_path(
+        &config.maintenance_database_path(),
+    ))
+    .await
+    .expect("open persisted maintenance database");
+    let observation = load_persisted_task_observation(&maintenance_pool).await;
+    assert_persisted_timing(&observation, "success");
+    assert_eq!(observation.details["ownershipVersion"].as_i64(), Some(2));
+    assert_eq!(observation.details["result"].as_str(), Some("complete"));
+    assert_eq!(observation.details["committed"].as_i64(), Some(16));
+    assert_eq!(
+        observation.details["waitReason"].as_str(),
+        Some("backlog_unknown")
+    );
+    assert_eq!(
+        observation.details["selectedScope"]["hasMore"].as_bool(),
+        Some(true)
+    );
+
+    maintenance_pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn offline_retention_cli_persists_frozen_owner_timing_on_failure() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("offline-cli-task-observation-failure").await;
