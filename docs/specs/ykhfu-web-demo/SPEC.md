@@ -93,7 +93,7 @@
 
 - Unit tests: runtime parsing, scene/model reset, redaction and route handlers.
 - Route coverage is a shared 26-route x 4-scene (104-case) matrix. The jsdom integration suite mounts the real `App`, router, providers, demo handlers, and EventSource fallback for every matrix case; Chromium keeps all 26 operational routes plus four representative routes for attention, empty, and network-failure scenes, together with sharing, mutation, mobile, and security scenarios.
-- E2E tests: the shared route matrix contract, Inspector sharing, simulated mutation and network failure inside the existing Playwright job. CI invokes one functional project batch and one performance batch in PRs; main adds the isolated timeline-capacity batch.
+- E2E tests: the shared route matrix contract, Inspector sharing, simulated mutation and network failure inside the existing Playwright job. CI invokes one functional project batch followed by one performance batch in PRs; main adds the isolated timeline-capacity batch after the performance batch so browser load cannot contaminate performance or capacity measurements.
 
 ### UI / Storybook (if applicable)
 

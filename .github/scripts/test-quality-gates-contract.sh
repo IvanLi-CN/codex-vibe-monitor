@@ -1234,7 +1234,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run the functional and performance batches concurrently" "$tmp_dir/e2e-spec.log"
+grep -q "must run the functional and performance batches serially" "$tmp_dir/e2e-spec.log"
 
 e2e_config_spec_repo="$tmp_dir/e2e-config-spec-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_config_spec_repo"
@@ -1308,8 +1308,8 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "--project=performance --workers=1 --output=test-results/performance &"
-replacement = "--project=performance --workers=1 --output=test-results/performance || performance_status=$?"
+needle = "--project=performance --workers=1 --output=test-results/performance || performance_status=$?"
+replacement = "--project=performance --workers=1 --output=test-results/performance &"
 if needle not in text:
     raise SystemExit("failed to locate serial dashboard performance command")
 path.write_text(text.replace(needle, replacement, 1))
@@ -1320,7 +1320,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run the functional and performance batches concurrently" "$tmp_dir/e2e-parallel.log"
+grep -q "must run the functional and performance batches serially" "$tmp_dir/e2e-parallel.log"
 
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
