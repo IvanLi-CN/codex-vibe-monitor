@@ -216,6 +216,52 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
         run_compacted_source_recovery_until_complete_for_test(state.as_ref())
             .await
             .expect("complete staged compacted source recovery");
+        let recovery_checkpoint =
+            sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, i64, i64)>(
+                "SELECT state, cursor_occurred_at, cursor_id, processed_rows,\
+                    target_live_high_watermark_id, target_coverage_revision,\
+                    target_account_coverage_revision\
+               FROM summary_compacted_source_recovery_checkpoint\
+              WHERE scope = 'dashboard'",
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("read completed compacted source recovery checkpoint");
+        let recovery_snapshot = state
+            .subscription_hub
+            .summary_dashboard_recovery()
+            .await
+            .map(|snapshot| {
+                (
+                    snapshot.time_zone.clone(),
+                    snapshot.window_ranges_json.clone(),
+                    snapshot.generation_fence,
+                    snapshot.entries.len(),
+                    snapshot.bounded_record_count,
+                )
+            });
+        let SummaryRollingDeltaSnapshot {
+            projection: rolling_projection,
+            entries: rolling_deltas,
+            gaps: rolling_gaps,
+        } = state
+            .subscription_hub
+            .summary_projection_with_rolling_delta()
+            .await
+            .expect("read rolling summary state after recovery");
+        let recovery_status = summary_source_gap_status(
+            rolling_projection.as_ref(),
+            &rolling_gaps,
+            &rolling_deltas,
+            &SummaryWindow::Calendar("today".to_string()),
+            "Asia/Shanghai"
+                .parse()
+                .expect("parse Shanghai test timezone"),
+            None,
+        );
+        println!(
+            "compacted recovery diagnostics: checkpoint={recovery_checkpoint:?} snapshot={recovery_snapshot:?} status={recovery_status:?}"
+        );
         let Json(recent) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
