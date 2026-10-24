@@ -149,6 +149,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage", choices=sorted(STAGES), required=True)
     parser.add_argument("--profile", choices=("pr", "main"), required=True)
     parser.add_argument("--rounds", type=int, default=7)
+    parser.add_argument("--pair-start", type=int, default=1)
+    parser.add_argument("--partitioned", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -394,7 +396,11 @@ def write_summary(output_dir: Path, metadata: dict[str, Any], samples: list[Samp
         if baseline_median is not None and mad_value is not None
         else None
     )
-    if metadata["profile"] == "main":
+    required_delta = None
+    if metadata.get("partitioned"):
+        acceptance_passed = complete_and_valid
+        acceptance_mode = "partition-validity-only"
+    elif metadata["profile"] == "main":
         acceptance_passed = bool(
             complete_and_valid
             and allowed_main_regression is not None
@@ -467,6 +473,8 @@ def main() -> int:
     args = parse_args()
     if args.rounds < 1:
         raise SystemExit("--rounds must be positive")
+    if args.pair_start < 1:
+        raise SystemExit("--pair-start must be positive")
     output_dir = args.output
     output_dir.mkdir(parents=True, exist_ok=True)
     baseline_source = args.baseline_src.resolve()
@@ -488,6 +496,8 @@ def main() -> int:
         "stage": args.stage,
         "profile": args.profile,
         "rounds": args.rounds,
+        "pair_start": args.pair_start,
+        "partitioned": args.partitioned,
         "python": sys.version,
         "platform": sys.platform,
         "cpu_count": os.cpu_count(),
@@ -545,7 +555,7 @@ def main() -> int:
             )
         )
         order += 1
-    for pair in range(1, args.rounds + 1):
+    for pair in range(args.pair_start, args.pair_start + args.rounds):
         versions = (("baseline", args.baseline_src, args.baseline_sha), ("candidate", args.candidate_src, args.candidate_sha))
         if pair % 2 == 0:
             versions = tuple(reversed(versions))

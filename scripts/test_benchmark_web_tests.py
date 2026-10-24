@@ -41,6 +41,34 @@ class BenchmarkAggregationTests(unittest.TestCase):
             "mad_seconds": None,
         })
 
+    def test_partitioned_sample_uses_validity_only_acceptance(self):
+        metadata = {
+            "baseline_sha": "baseline",
+            "candidate_sha": "candidate",
+            "stage": "frontend",
+            "profile": "pr",
+            "rounds": 1,
+            "pair_start": 4,
+            "partitioned": True,
+        }
+        samples = [
+            MODULE.Sample(
+                version, "frontend", "pr", pair, phase, index, (), "source", version,
+                100.0, 1.0, 1, 0, 0, True, "log",
+            )
+            for index, (version, phase, pair) in enumerate(
+                (("baseline", "warmup", None), ("candidate", "warmup", None),
+                 ("baseline", "warm", 4), ("candidate", "warm", 4)),
+                start=1,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            MODULE.write_summary(output, metadata, samples)
+            summary = json.loads((output / "summary.json").read_text())
+        self.assertTrue(summary["acceptance"]["passed"])
+        self.assertEqual(summary["acceptance"]["mode"], "partition-validity-only")
+
     def test_retry_count_is_read_from_output(self):
         self.assertEqual(MODULE.retry_count("1 retry, 2 retries"), 2)
         self.assertEqual(MODULE.retry_count("1 retry"), 1)
