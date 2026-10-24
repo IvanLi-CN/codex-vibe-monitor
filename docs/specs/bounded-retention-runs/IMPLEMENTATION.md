@@ -10,6 +10,18 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## Current Status
 
+ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文件许可、主库 SQL 与压力等待阻塞其他文件任务的问题仍待实现修复；文件阶段公平性、取消后的 native 排空、重新准入身份复验，以及执行耗时／服务速率与调度等待分离的验收均未完成。该设计确认不构成容量目标通过或已部署的证据。
+
+### Sustained convergence acceptance
+
+本轮交付要求在独立 GitHub Actions 中证明 invocation 和 pool upstream attempt 各自持续成功提交量至少为实际新增量的 10 倍。固定基线为 `76beb053ac529bde47961dddb1e14b4d176700f8`，候选绑定实际被测 SHA、生产镜像及输入指纹；两版本在同一测量主机使用相同资源配置、种子、cutoff 和双月合成快照，包含 100,000 条 invocation、120,000 条上游尝试、单 key 倾斜及代表性 payload。输入速率分别为 0.673 rows/s 和其 1.2 倍，保留实际新增计数及全部准备、调度与轮间间隙。只计已通过归档证明并成功转换的不同源记录，不计 staging、压缩输出或重复提交。
+
+基线和候选各串行重复三次，每次观测 120 秒；镜像在独立 job 预构建，测量 job 不编译，测试阶段连同准备和清理最多 900 秒。候选三次须分别在两个数据集达到至少 10 倍，前台读写 p95/p99 的三次中位数不得劣于基线，稳态写许可 p95 不超过 250ms。缺失竞争任务、身份不匹配、证明失败、超时或缺测均不能签收。验收工作流按 PR 标签单独启动，不加入通用 PR 必过套件；其结果是本轮父 PR 的额外合并门槛。
+
+该短时受控门槛不替代既有 50 倍容量、百万级固定存量 24 小时清空或真实生产持续收敛目标，这些目标继续保持未签收。生产复核在主人合并并更新服务后只读开展，保留调度影响并独立报告。
+
+### Historical implementation context
+
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
 当前候选绑定为 PR #1108；基线和当前 head 以 PR 当前提交及其 required CI 为准。旧候选日志、retained profile 和历史兼容卡仅作历史证据，不替代当前 head 证明。

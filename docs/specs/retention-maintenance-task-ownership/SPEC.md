@@ -75,11 +75,15 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 每项任务的完成度 MUST 只依据自身本轮捕获范围和已提交成果。其他任务的后续推进 MUST 不改写已结束运行结果；没有进展、部分完成、延期与失败必须按对应原因呈现。调用行、上游尝试行、对话身份、小时前缀、文件与字节 MUST 分别计量；缺测或未知总体 MUST 保持未知，不能补零或生成混合单位完成率。
 
+真实运行本轮已选中工作全部提交且没有未完成的本轮必需阶段时 MUST 记为 `complete` 并显示“本轮完成”；例如选中 866 条且提交 866 条，不能仅因全局仍有积压或窗口后还有候选而记为 `partial`。`partial` MUST 表达本轮已选中工作仍有未完成部分，并保留已提交成果。剩余积压和后续追赶资格 MUST 独立展示和推进，不能因本轮成功就取消仍有依据的追赶；真正的后续阶段失败仍须保留失败或未完成事实。dry-run 继续表达预演结果，不伪造提交。
+
 新 owner 运行 MUST 使用 `no-work`、`complete`、`partial`、`deferred`、`failed` 五种结果值。`discovered`、`selected`、`committed`、`globalBacklogTotal` 与 `selectedScope` MUST 分开持久化；`processedCount` 只能复述本 owner 的已提交事实，不能再把多个职责相加。旧 `retention_archive` 组合记录可继续使用 `completed` 等旧值，页面和接口必须按 ownership version 区分两种历史口径。
 
 ### REQ-RMO-012 — 页面与历史口径
 
 目录、当前执行区和详情 MUST 分别展示七项 retention-policy owner 的真实状态、自动触发状态、计划来源、运行与等待原因。界面 MUST 明确停用表示暂停自动触发，停用时立即运行仍可使用；任务运行中仍须遵守单实例限制。归档页 MUST 通过关联入口连接物化、raw 与 identity 详情，新归档记录不得将它们或其他 retention-policy owner 作为自身执行阶段。raw 新执行与压力事件 MUST 归属于既有 raw owner。
+
+任务详情 MUST 区分调度器放行前的等待与任务实际执行耗时，显示浏览器时区的触发时间和持久执行身份。服务速率及倍率只使用任务执行耗时，包含执行内部的锁等待与压力重试，排除调度等待；不得将包含调度等待的旧总耗时与执行期速率混为同一口径，也不得将所有资源等待都称为 SQLite 锁等待。
 
 旧 `retention_archive` URL 与历史 MUST 保持可读。旧记录的组合完成度、核心完成度及明细不得重算；新记录 MUST 明确自己的职责范围，缺少范围证据的旧记录按旧口径或未知展示，不伪造独立清理运行、历史零指标或新的完成结果。
 
@@ -93,13 +97,15 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 七项 retention-policy owner MUST 通过有界 dispatcher 执行，每个任务同时最多一个运行实例；dispatcher 不得 inline-await 完整任务、不得无限启动 worker，并 MUST 使用有限 worker/finalizer、显式队列、结果写入失败的重试与下一次资格。等待重资源时必须释放数据库连接、写许可和文件 fence，准入后重新校验 owner identity 与 source fence；租约冲突不得以缺少 completion/details 的失败结束 owner 运行，必须写入 `failed` 与 `task_execution_active` 事实并安排有界重试；shutdown/cancel 只能在 native worker 已退出后释放执行 lease。
 
+重文件许可 MUST 仅在实际文件操作阶段占用，不得跨越主库 SQL 等待、压力退避或最终观测写入。安全释放边界须确保 native 文件操作已排空，再次排队获取文件许可前 MUST 释放数据库连接、写许可和文件 fence，重新准入后仍须校验既有身份与证明；本轮工作范围、内部压力重试、单实例 lease、短事务与前台优先不因阶段互斥改变。不可分割的文件发布继续保持既有 rename、sync、manifest COMMIT 及补偿围栏顺序，不得持事务资源阻塞等待新的文件许可。
+
 ## Verification
 
 ### VER-RMO-001 — 执行归属与事务
 
-- Method: 任务目录、执行入口和成功／延期／失败场景的受控夹具，配合归档发布与刷新队列事务回归。
-- covers: `REQ-RMO-001`, `REQ-RMO-006`, `REQ-RMO-007`, `REQ-RMO-011`
-- Pass condition: 七项 retention-policy owner 各只有一个执行者；并发请求不重复运行；归档提交与刷新入队原子，派生任务故障不改变归档成果；进度单位和真实执行计时准确。
+- Method: 任务目录、执行入口和成功／延期／失败场景的受控夹具，配合归档发布与刷新队列事务回归，并覆盖 dispatcher 并发界限、结果写入失败、租约冲突、文件阶段公平排队、资源等待和 native worker 取消排空。
+- covers: `REQ-RMO-001`, `REQ-RMO-006`, `REQ-RMO-007`, `REQ-RMO-011`, `REQ-RMO-014`
+- Pass condition: 七项 retention-policy owner 各只有一个执行者；并发请求不重复运行；归档提交与刷新入队原子，派生任务故障不改变归档成果；进度单位和真实执行计时准确；dispatcher 保持 worker/finalizer 边界，结果写入失败和租约冲突保留有界重试，资源等待不持有数据库连接、写许可或文件 fence。主库 SQL、压力重试与进度写入期间其他文件任务可以推进，重文件阶段同时最多一个且排队者不被反复重入饿死，取消后 native worker 排空前不释放文件许可或执行 lease，重新准入后拒绝已变更的 artifact/source identity。
 
 ### VER-RMO-002 — 控制与默认值
 
@@ -133,9 +139,9 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 
 ### VER-RMO-007 — 页面和审计兼容
 
-- Method: 新旧记录混合、缺少范围或指标字段、归档完成而相关任务待办、自动触发暂停和手动运行场景的界面与接口夹具。
+- Method: 新旧记录混合、缺少范围或指标字段、选中 866 条且全部提交但仍有全局积压、选中后部分提交、归档完成而相关任务待办、自动触发暂停和手动运行场景的界面与接口夹具。
 - covers: `REQ-RMO-001`, `REQ-RMO-004`, `REQ-RMO-011`, `REQ-RMO-012`
-- Pass condition: 七项 owner 详情和关联入口可用；暂停含义与手动按钮一致；旧 URL 与历史可读、旧结果不重算；新记录范围和事件归属准确，owner v2 的全局积压、本轮检查／选中／提交、单位与窗口覆盖可见，缺测不补零、不生成混合进度。
+- Pass condition: 七项 owner 详情和关联入口可用；暂停含义与手动按钮一致；旧 URL 与历史可读、旧结果不重算；新记录范围和事件归属准确，owner v2 的全局积压、本轮检查／选中／提交、单位与窗口覆盖可见，缺测不补零、不生成混合进度。选中工作全部提交且必需阶段完成时显示“本轮完成”，仍有积压时保留追赶；选中工作未全部提交时保留真实部分结果；调度等待和执行耗时独立显示，速率分母与执行耗时一致。
 
 ### VER-RMO-008 — 发布状态兼容
 
@@ -239,6 +245,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 - [Versioned task timeline SSE compatibility](../../adr/0030-versioned-managed-task-timeline-sse-compatibility.md)
 - [Retention task-local batches and monthly targets](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)
 - [Independent maintenance task ownership](../../adr/0034-retention-maintenance-task-ownership.md)
+- [Maintenance file permits at operation boundaries](../../adr/0048-maintenance-file-permits-at-operation-boundaries.md)
 
 ## References
 
