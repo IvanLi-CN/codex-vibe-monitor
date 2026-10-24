@@ -418,3 +418,184 @@ async fn statistics_recovery_revalidates_live_tail_before_advancing_checkpoint()
     assert_eq!(summary.total_tokens, 38);
     state.pool.close().await;
 }
+
+async fn insert_compacted_source_recovery_rows(state: &Arc<AppState>, count: usize) -> String {
+    let occurred_at = db_occurred_at_lower_bound(Utc::now() - chrono::Duration::days(2));
+    for start in (0..count).step_by(256) {
+        let end = (start + 256).min(count);
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO codex_invocations (\
+                invoke_id, occurred_at, source, status, model, payload, raw_response, input_tokens, output_tokens,\
+                cache_input_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read,\
+                cost_output, cost_reasoning, failure_kind\
+            ) ",
+        );
+        query.push_values(start..end, |mut values, index| {
+            let failed = index % 10 == 0;
+            let account_id = if index % 2 == 0 { 7 } else { 9 };
+            let payload = format!(
+                r#"{{"upstreamAccountId":{account_id},"responseModel":"gpt-test","reasoningEffort":"high"}}"#
+            );
+            values
+                .push_bind(format!("compacted-source-{index}"))
+                .push_bind(&occurred_at)
+                .push_bind("proxy")
+                .push_bind(if failed { "http_500" } else { "success" })
+                .push_bind("gpt-test")
+                .push_bind(payload)
+                .push_bind("{}")
+                .push_bind(16_i64)
+                .push_bind(3_i64)
+                .push_bind(4_i64)
+                .push_bind(19_i64)
+                .push_bind(1.5_f64)
+                .push_bind(0.6_f64)
+                .push_bind(0.1_f64)
+                .push_bind(0.2_f64)
+                .push_bind(0.5_f64)
+                .push_bind(0.1_f64)
+                .push_bind(if failed {
+                    Some("upstream_http_5xx")
+                } else {
+                    None
+                });
+        });
+        query
+            .build()
+            .execute(&state.pool)
+            .await
+            .expect("insert compacted source recovery rows");
+    }
+    occurred_at
+}
+
+#[tokio::test]
+async fn compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let occurred_at = insert_compacted_source_recovery_rows(&state, 10_001).await;
+
+    sqlx::query(
+        "INSERT INTO summary_source_change_compaction_proof (
+            first_cursor, last_cursor, retained_after_cursor, proof_kind, proof_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(1_i64)
+    .bind(10_001_i64)
+    .bind(10_002_i64)
+    .bind("source_union")
+    .bind(r#"{"retainedAfterCursor":10002}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert compacted source proof");
+
+    run_compacted_source_recovery_one_page_for_test(state.as_ref())
+        .await
+        .expect("commit the first bounded source recovery page");
+    let first_checkpoint = sqlx::query_as::<_, (String, i64, i64, Option<String>)>(
+        "SELECT state, processed_rows, cursor_id, cursor_occurred_at
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read first compacted source recovery checkpoint");
+    assert_eq!(first_checkpoint.0, "running");
+    assert_eq!(first_checkpoint.1, 512);
+    assert!(first_checkpoint.2 > 0);
+    assert_eq!(first_checkpoint.3.as_deref(), Some(occurred_at.as_str()));
+    let first_total = sqlx::query_scalar::<_, i64>(
+        "SELECT total_count
+           FROM summary_compacted_source_recovery_aggregate
+          WHERE scope = ?1 AND window_name = 'previous7d' AND upstream_account_id = 0",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read staged first page total");
+    assert_eq!(first_total, 512);
+    let restarted_state =
+        crate::tests::test_state_from_existing_pool(state.pool.clone(), state.config.clone(), true)
+            .await;
+    run_compacted_source_recovery_until_complete_for_test(restarted_state.as_ref())
+        .await
+        .expect("resume compacted source recovery after the committed page");
+    let completed = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT state, processed_rows, cursor_id
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read completed compacted source recovery checkpoint");
+    assert_eq!(completed.0, "completed");
+    assert_eq!(completed.1, 10_001);
+    assert!(completed.2 > first_checkpoint.2);
+
+    let totals = sqlx::query_as::<_, (i64, i64, i64, i64, f64)>(
+        "SELECT total_count, success_count, failure_count, total_tokens, total_cost
+           FROM summary_compacted_source_recovery_aggregate
+          WHERE scope = ?1 AND window_name = 'previous7d' AND upstream_account_id = 0",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read completed compacted source recovery totals");
+    assert_eq!(totals.0, 10_001);
+    assert_eq!(totals.1, 9_000);
+    assert_eq!(totals.2, 1_001);
+    assert_eq!(totals.3, 190_019);
+    assert!((totals.4 - 15_001.5).abs() < 1e-6);
+
+    let usage = sqlx::query_as::<_, (i64, i64, i64, f64, f64, f64, f64, f64)>(
+        "SELECT cache_write_tokens, cache_read_tokens, output_tokens, cost_input,
+                cost_cache_write, cost_cache_read, cost_output, cost_reasoning
+           FROM summary_compacted_source_recovery_usage
+          WHERE scope = ?1 AND window_name = 'previous7d' AND upstream_account_id = 0
+                AND normalized_model = 'gpt-test' AND normalized_reasoning_effort = 'high'",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read completed compacted source recovery usage");
+    assert_eq!(usage.0, 120_012);
+    assert_eq!(usage.1, 40_004);
+    assert_eq!(usage.2, 30_003);
+    assert!((usage.3 - 6_000.6).abs() < 1e-6);
+    assert!((usage.4 - 1_000.1).abs() < 1e-6);
+    assert!((usage.5 - 2_000.2).abs() < 1e-6);
+    assert!((usage.6 - 5_000.5).abs() < 1e-6);
+    assert!((usage.7 - 1_000.1).abs() < 1e-6);
+
+    let record_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM summary_compacted_source_recovery_record WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count bounded recovery record identities");
+    assert!(
+        record_count
+            <= i64::try_from(state.config.list_limit_max.max(1) * 6)
+                .expect("record budget fits in sqlite integer")
+    );
+
+    run_compacted_source_recovery_until_complete_for_test(restarted_state.as_ref())
+        .await
+        .expect("re-running completed recovery is idempotent");
+    let repeated_total = sqlx::query_scalar::<_, i64>(
+        "SELECT total_count
+           FROM summary_compacted_source_recovery_aggregate
+          WHERE scope = ?1 AND window_name = 'previous7d' AND upstream_account_id = 0",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read repeated compacted source recovery total");
+    assert_eq!(repeated_total, totals.0);
+    state.pool.close().await;
+}

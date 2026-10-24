@@ -7,16 +7,23 @@ interface StatsCardsProps {
   stats: StatsResponse | null;
   loading: boolean;
   error?: string | null;
+  errorCode?: string | null;
 }
 
-export function StatsCards({ stats, loading, error }: StatsCardsProps) {
+export function StatsCards({ stats, loading, error, errorCode }: StatsCardsProps) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
 
   if (error) {
     return (
       <Alert variant="error">
-        <span>{t("stats.cards.loadError", { error })}</span>
+        <span>
+          {errorCode === "summary_recovery_pending"
+            ? t("stats.cards.recoveryPending")
+            : errorCode === "summary_recovery_failed"
+              ? t("stats.cards.recoveryFailed")
+              : t("stats.cards.loadError", { error })}
+        </span>
       </Alert>
     );
   }

@@ -2,12 +2,12 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
+    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then add the Dashboard compacted-source recovery checkpoint/staging set and repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
     "release_unit_description": "PR-B runtime Summary read-model recovery.",
-    "version_impact": "patch"
+    "version_impact": "minor"
   },
   "durable_state": {
-    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, and invocation_rollup_hourly derived rows used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state.",
+    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, invocation_rollup_hourly derived rows, and additive Dashboard compacted-source checkpoint/staging tables used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state. Dashboard staging stores only normalized aggregates, a tuple cursor, generation-fence values, state, and list-limited record identities; it never stores invocation payloads.",
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
@@ -22,6 +22,13 @@
         "id": "ddl-001",
         "description": "During ensure_schema, create the partial idx_archive_batches_pending_summary_rollup_order and idx_archive_batches_summary_rollup_repair_seek indexes on existing archive_batches columns. CREATE INDEX IF NOT EXISTS makes installation idempotent; the indexes are optimizer-only and do not alter business rows.",
         "order": 1,
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "ddl-dashboard-compacted-source-recovery",
+        "description": "During ensure_schema, create the additive Dashboard compacted-source recovery checkpoint, aggregate, usage, and bounded record-identity tables. Existing databases receive missing usage columns through idempotent ensure-column operations; no existing business row is rewritten or deleted.",
+        "order": 4,
         "observable": true,
         "pauseable": true
       }
@@ -46,6 +53,16 @@
         ],
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "backfill-dashboard-compacted-source-recovery",
+        "description": "When a source compaction proof intersects the Dashboard day windows, create or resume the fixed-Shanghai today/yesterday/previous7d checkpoint. Read canonical terminal rows by occurred_at,id keyset pages of at most 512 rows, and commit aggregate, usage, bounded record identities, tuple cursor, target generation fence, processed-row count, and state atomically. Yield at 8 MiB, 250 ms transaction, 2 s turn, pressure, contention, cancellation, or shutdown; restart resumes the last committed page and a fence change discards unpublishable staging. No request-path SQL, production copy, destructive cleanup, or payload staging is allowed.",
+        "order": 5,
+        "depends_on": [
+          "ddl-dashboard-compacted-source-recovery"
+        ],
+        "observable": true,
+        "pauseable": true
       }
     ]
   },
@@ -54,7 +71,9 @@
     "operation_sequence": [
       "ddl-001",
       "dml-001",
-      "backfill-001"
+      "backfill-001",
+      "ddl-dashboard-compacted-source-recovery",
+      "backfill-dashboard-compacted-source-recovery"
     ],
     "progress_signals": [
       "sqlite_master and EXPLAIN QUERY PLAN show the partial index",
@@ -63,7 +82,10 @@
       "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass",
       "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail",
       "A full-repair page that clears the marker predicate still resumes from its durable archive and per-archive row cursors before any additive replay can run",
-      "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication"
+      "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication",
+      "A 10,001-row compacted canonical source range is accepted without a global COUNT(*) or LIMIT 10001 gate and converges through 512-row occurred_at,id pages",
+      "A committed Dashboard page resumes after restart without duplicate aggregate or usage contributions, and a generation-fence change leaves the old staging unpublished",
+      "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",
@@ -93,7 +115,10 @@
       ]
     },
     "minor": {
-      "required_test_evidence": []
+      "required_test_evidence": [
+        "ensure_schema creates all Dashboard recovery tables idempotently and adds missing usage columns to an existing database without rewriting or deleting old rows",
+        "the forward-only migration record explicitly excludes production backup, VACUUM/WAL truncation, proof/journal deletion, deployment, restart, rollback, and automatic repair"
+      ]
     },
     "major": {
       "required_test_evidence": []

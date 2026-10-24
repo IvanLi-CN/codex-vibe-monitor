@@ -46,6 +46,7 @@ mod summary_observability;
 #[path = "../../tests/lightweight/summary_fallback_contention.rs"]
 mod summary_projection_fallback_contention;
 mod summary_projection_lifecycle;
+mod summary_recovery;
 
 #[cfg(test)]
 pub(crate) use summary_live_tail_transaction::{
@@ -127,6 +128,16 @@ pub(crate) use summary_projection_lifecycle::{
     spawn_summary_coverage_recovery_maintenance,
 };
 
+pub(crate) use summary_recovery::{
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES, SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE, SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET, SUMMARY_RECOVERY_FAILED_CODE,
+    SummaryCompactedSourceRecoveryState, SummaryDashboardRecoveryEntry,
+    SummaryDashboardRecoverySnapshot, dashboard_recovery_response_if_ready,
+    summary_source_gap_unavailable_error,
+};
+
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
     hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
@@ -139,6 +150,8 @@ pub(crate) use summary_projection_lifecycle::{
     note_summary_projection_historical_identity_hydration,
     renew_summary_projection_freshness_if_generation_matches,
     renew_summary_projection_freshness_if_live_tail_matches,
+    run_compacted_source_recovery_one_page_for_test,
+    run_compacted_source_recovery_until_complete_for_test,
     store_summary_live_tail_reconciliation_checkpoint,
     summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
     summary_coverage_recovery_requires_second_v2_turn,
@@ -18030,7 +18043,7 @@ impl UsageBreakdownAccumulator {
         }
     }
 
-    fn into_response(self) -> UsageBreakdownResponse {
+    pub(crate) fn into_response(self) -> UsageBreakdownResponse {
         let mut models = self
             .models
             .into_iter()
@@ -30325,6 +30338,17 @@ async fn fetch_summary_inner(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+        if let Some(response) = dashboard_recovery_response_if_ready(
+            state.as_ref(),
+            projection.as_ref(),
+            &window,
+            reporting_tz,
+            params.upstream_account_id,
+        )
+        .await?
+        {
+            return Ok(Json(response));
+        }
         let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
             projection.as_ref(),
             &gaps,
@@ -30334,9 +30358,12 @@ async fn fetch_summary_inner(
             params.upstream_account_id,
         );
         if source_gap_unavailable {
-            return Err(ApiError::unavailable(anyhow!(
-                "summary source journal has an unproven change for the requested selection"
-            )));
+            return Err(summary_source_gap_unavailable_error(
+                state.as_ref(),
+                &window,
+                "summary source journal has an unproven change for the requested selection",
+            )
+            .await);
         }
         let delta_gap_pending = summary_delta_gap_affects_selection(
             projection.as_ref(),
@@ -30386,6 +30413,17 @@ async fn fetch_summary_inner(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    if let Some(response) = dashboard_recovery_response_if_ready(
+        state.as_ref(),
+        projection.as_ref(),
+        &window,
+        reporting_tz,
+        account_id,
+    )
+    .await?
+    {
+        return Ok(Json(response));
+    }
     let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
         projection.as_ref(),
         &gaps,
@@ -30395,9 +30433,12 @@ async fn fetch_summary_inner(
         account_id,
     );
     if source_gap_unavailable {
-        return Err(ApiError::unavailable(anyhow!(
-            "summary source journal has an unproven change for the requested selection"
-        )));
+        return Err(summary_source_gap_unavailable_error(
+            state.as_ref(),
+            &window,
+            "summary source journal has an unproven change for the requested selection",
+        )
+        .await);
     }
     let delta_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),

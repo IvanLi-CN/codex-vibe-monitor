@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiInvocation, StatsResponse } from "../lib/api";
-import { fetchSummary } from "../lib/api";
+import { ApiRequestError, fetchSummary } from "../lib/api";
 import { buildTopicDescriptor } from "../lib/sse";
 import { getBrowserTimeZone } from "../lib/timeZone";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
@@ -298,9 +298,12 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     () => !supportsPureSse && initialCachedSummary == null,
   );
   const [httpError, setHttpError] = useState<string | null>(null);
+  const [httpErrorCode, setHttpErrorCode] = useState<string | null>(null);
 
   const loadHttpSummary = useCallback(async () => {
     setHttpLoading(true);
+    setHttpError(null);
+    setHttpErrorCode(null);
     try {
       const response = await fetchSummary(window, {
         limit: options?.limit,
@@ -315,8 +318,10 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         options?.upstreamAccountId,
       );
       setHttpError(null);
+      setHttpErrorCode(null);
     } catch (error) {
       setHttpError(error instanceof Error ? error.message : String(error));
+      setHttpErrorCode(error instanceof ApiRequestError ? (error.code ?? null) : null);
     } finally {
       setHttpLoading(false);
     }
@@ -375,12 +380,14 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     : httpSummary;
   const isLoading = supportsPureSse ? sse.isLoading && summary == null : httpLoading;
   const error = supportsPureSse ? sse.error : httpError;
+  const errorCode = supportsPureSse ? null : httpErrorCode;
   const refresh = supportsPureSse ? sse.refresh : loadHttpSummary;
 
   return {
     summary,
     isLoading,
     error,
+    errorCode,
     refresh,
   };
 }

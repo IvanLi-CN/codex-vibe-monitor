@@ -21,6 +21,7 @@ from typing import Any
 
 
 UTC = dt.timezone.utc
+SHANGHAI = dt.timezone(dt.timedelta(hours=8))
 SUCCESS_STATUSES = {"success", "completed", "warning_success"}
 
 
@@ -308,6 +309,23 @@ def payload_text(row: dict[str, Any], key: str) -> str:
     return str(candidate or "").strip().lower()
 
 
+def upstream_account_id(row: dict[str, Any]) -> int | None:
+    value = row.get("upstream_account_id")
+    if value is None:
+        payload = row.get("payload")
+        try:
+            decoded = json.loads(payload) if isinstance(payload, str) else payload
+        except (TypeError, json.JSONDecodeError):
+            decoded = None
+        if isinstance(decoded, dict):
+            value = decoded.get("upstreamAccountId", decoded.get("upstream_account_id"))
+    try:
+        account_id = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return account_id if account_id is not None and account_id > 0 else None
+
+
 def resolved_failure_class(row: dict[str, Any]) -> str:
     status = str(row.get("status") or "").strip().lower()
     error = str(row.get("error_message") or "").strip().lower()
@@ -353,17 +371,32 @@ def numeric(row: dict[str, Any], key: str) -> float:
     return float(value or 0)
 
 
-def expected(rows: list[dict[str, Any]], window: str, now: dt.datetime) -> dict[str, Any]:
+def expected(
+    rows: list[dict[str, Any]],
+    window: str,
+    now: dt.datetime,
+    account_id: int | None = None,
+) -> dict[str, Any]:
     parsed = [(parse_time(str(row["occurred_at"])), row) for row in rows]
+    if account_id is not None:
+        parsed = [(at, row) for at, row in parsed if upstream_account_id(row) == account_id]
     if window == "current":
         selected = [row for _at, row in sorted(parsed, key=lambda item: (item[0], int(item[1].get("id") or 0)), reverse=True)[:50]]
     else:
         if window == "all":
             start, end = None, None
-        elif window == "today":
-            local = now.astimezone(dt.timezone(dt.timedelta(hours=8)))
-            start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
-            end = start + dt.timedelta(days=1)
+        elif window in {"today", "yesterday", "previous7d"}:
+            local = now.astimezone(SHANGHAI)
+            today_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            if window == "today":
+                start = today_start.astimezone(UTC)
+                end = (today_start + dt.timedelta(days=1)).astimezone(UTC)
+            elif window == "yesterday":
+                start = (today_start - dt.timedelta(days=1)).astimezone(UTC)
+                end = today_start.astimezone(UTC)
+            else:
+                start = (today_start - dt.timedelta(days=7)).astimezone(UTC)
+                end = today_start.astimezone(UTC)
         else:
             days = {"1d": 1, "7d": 7, "30d": 30}[window]
             start, end = now - dt.timedelta(days=days), now
@@ -486,11 +519,25 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--archives", type=Path, required=True)
     parser.add_argument("--response", type=Path, required=True)
-    parser.add_argument("--window", choices=("current", "1d", "7d", "30d", "today", "all"), required=True)
+    parser.add_argument(
+        "--window",
+        choices=("current", "1d", "7d", "30d", "today", "yesterday", "previous7d", "all"),
+        required=True,
+    )
     parser.add_argument("--now", type=int, required=True)
+    parser.add_argument("--account-id", type=int)
     args = parser.parse_args()
     rows = load_rows(args.database, args.archives)
-    compare(args.response, expected(rows, args.window, dt.datetime.fromtimestamp(args.now, UTC)), args.window)
+    compare(
+        args.response,
+        expected(
+            rows,
+            args.window,
+            dt.datetime.fromtimestamp(args.now, UTC),
+            args.account_id,
+        ),
+        args.window,
+    )
     return 0
 
 

@@ -56,6 +56,7 @@ export interface TodayStatsOverviewProps {
   stats: StatsResponse | null;
   loading: boolean;
   error?: string | null;
+  errorCode?: string | null;
   now?: Date;
   rate?: DashboardTodayRateSnapshot | null;
   rateLoading?: boolean;
@@ -366,8 +367,8 @@ function MetricTile({
           data-testid={valueTestId ? `${valueTestId}-stacked-meta` : undefined}
           className="mt-3 grid min-h-[4.75rem] grid-cols-1 gap-y-2 text-xs leading-5"
         >
-          {stackedMetaItems.map((item, index) => (
-            <div key={`${item.label}-${index}`} className="min-w-0">
+          {stackedMetaItems.map((item) => (
+            <div key={item.valueTestId ?? item.label} className="min-w-0">
               <div className="flex min-w-0 items-baseline gap-1">
                 <span className="shrink-0 whitespace-nowrap text-base-content/52">
                   {item.label}
@@ -389,7 +390,7 @@ function MetricTile({
         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
           {inlineSecondaryItems.map((item, index) => (
             <div
-              key={`${item.label}-${index}`}
+              key={item.valueTestId ?? item.label}
               className={cn("min-w-0", index % 2 === 1 ? "justify-self-end text-right" : undefined)}
             >
               <div className="flex min-w-0 items-baseline gap-1">
@@ -464,6 +465,7 @@ export function TodayStatsOverview({
   stats,
   loading,
   error,
+  errorCode,
   now,
   rate,
   rateLoading = false,
@@ -723,7 +725,13 @@ export function TodayStatsOverview({
       ) : null}
 
       {error ? (
-        <Alert variant="error">{t("stats.cards.loadError", { error })}</Alert>
+        <Alert variant="error">
+          {errorCode === "summary_recovery_pending"
+            ? t("stats.cards.recoveryPending")
+            : errorCode === "summary_recovery_failed"
+              ? t("stats.cards.recoveryFailed")
+              : t("stats.cards.loadError", { error })}
+        </Alert>
       ) : (
         <div
           data-testid="today-stats-metrics-grid"

@@ -498,6 +498,7 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
     summary,
     isLoading: summaryLoading,
     error: summaryError,
+    errorCode: summaryErrorCode,
   } = useScopedSummary("today", upstreamAccountId);
   const { summary: comparisonSummary } = useScopedSummary("yesterday", upstreamAccountId);
   const { summary: previous7dSummary } = useScopedSummary("previous7d", upstreamAccountId);
@@ -545,6 +546,7 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
       stats={summary}
       loading={summaryLoading || dashboardActivityLoading}
       error={summaryError ?? dashboardActivityError}
+      errorCode={summaryErrorCode}
       rate={snapshotRate}
       rateLoading={dashboardActivityLoading}
       rateError={dashboardActivityError}
@@ -686,6 +688,7 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
     summary,
     isLoading: summaryLoading,
     error: summaryError,
+    errorCode: summaryErrorCode,
   } = useScopedSummary("yesterday", upstreamAccountId);
   const { summary: comparisonSummary } = useScopedSummary("previous1d", upstreamAccountId);
   const { summary: previous7dSummary } = useScopedSummary("previous7d", upstreamAccountId);
@@ -733,6 +736,7 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
       stats={summary}
       loading={summaryLoading || dashboardActivityLoading}
       error={summaryError ?? dashboardActivityError}
+      errorCode={summaryErrorCode}
       rate={snapshotRate}
       rateLoading={dashboardActivityLoading}
       rateError={dashboardActivityError}
@@ -862,7 +866,7 @@ function Dashboard24HourRangePanel({
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
 }) {
-  const { summary, isLoading, error } = useScopedSummary("1d", upstreamAccountId);
+  const { summary, isLoading, error, errorCode } = useScopedSummary("1d", upstreamAccountId);
   const { summary: comparisonSummary } = useScopedSummary("previous24h", upstreamAccountId);
   const { data: timeseries } = useTimeseries(
     "1d",
@@ -905,6 +909,7 @@ function Dashboard24HourRangePanel({
         stats={snapshotActive ? dashboardActivity.summary.stats : summary}
         loading={snapshotActive ? false : isLoading || dashboardActivityLoading === true}
         error={snapshotActive ? null : (error ?? dashboardActivityError)}
+        errorCode={errorCode}
         rate={
           snapshotActive
             ? buildDashboardActivityRate(dashboardActivity)

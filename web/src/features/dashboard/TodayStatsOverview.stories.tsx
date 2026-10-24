@@ -379,7 +379,7 @@ const meta = {
       <I18nProvider>
         <div
           data-visual-evidence-surface
-          className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+          className="min-h-screen bg-base-200 px-8 py-8 text-base-content"
         >
           <div data-visual-evidence-target className="mx-auto w-full max-w-[1560px]">
             <Story />
@@ -1355,6 +1355,26 @@ function StateGalleryPreview() {
             error="Request failed: 500 unable to open database file"
           />
         </div>
+        <div className="space-y-4">
+          <div className="text-sm font-semibold text-base-content/70">Summary recovery pending</div>
+          <TodayStatsOverview
+            stats={null}
+            rate={null}
+            loading={false}
+            error="summary recovery is not complete"
+            errorCode="summary_recovery_pending"
+          />
+        </div>
+        <div className="space-y-4">
+          <div className="text-sm font-semibold text-base-content/70">Summary recovery failed</div>
+          <TodayStatsOverview
+            stats={null}
+            rate={null}
+            loading={false}
+            error="summary recovery failed"
+            errorCode="summary_recovery_failed"
+          />
+        </div>
       </div>
     </div>
   );
@@ -1373,4 +1393,34 @@ export const StateGallery: Story = {
     },
   },
   render: () => <StateGalleryPreview />,
+};
+
+export const RecoveryPending: Story = {
+  args: {
+    stats: null,
+    rate: null,
+    loading: false,
+    error: "summary recovery is not complete",
+    errorCode: "summary_recovery_pending",
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1280",
+    },
+  },
+};
+
+export const RecoveryFailed: Story = {
+  args: {
+    stats: null,
+    rate: null,
+    loading: false,
+    error: "summary recovery failed",
+    errorCode: "summary_recovery_failed",
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1280",
+    },
+  },
 };

@@ -3,7 +3,7 @@ import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StatsResponse } from "../lib/api";
+import { ApiRequestError, type StatsResponse } from "../lib/api";
 import { clearSummaryRemountCache, useSummary } from "./useStats";
 
 const apiMocks = vi.hoisted(() => ({
@@ -94,11 +94,13 @@ function text(testId: string) {
 }
 
 function Probe({ window }: { window: string }) {
-  const { summary, isLoading } = useSummary(window);
+  const { summary, isLoading, error, errorCode } = useSummary(window);
   return (
     <div>
       <div data-testid="total">{String(summary?.totalCount ?? 0)}</div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
+      <div data-testid="error">{error ?? ""}</div>
+      <div data-testid="error-code">{errorCode ?? ""}</div>
     </div>
   );
 }
@@ -141,6 +143,22 @@ describe("useSummary", () => {
     expect(topicMocks.lastEnabled).toBe(false);
     expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
     expect(text("total")).toBe("7");
+  });
+
+  it("exposes coded HTTP recovery failures to the dashboard", async () => {
+    apiMocks.fetchSummary.mockRejectedValue(
+      new ApiRequestError(503, "Request failed: 503", {
+        code: "summary_recovery_pending",
+      }),
+    );
+
+    render(<Probe window="yesterday" />);
+    await flushAsync();
+
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toContain("503");
+    expect(text("error-code")).toBe("summary_recovery_pending");
+    expect(text("total")).toBe("0");
   });
 
   it("uses HTTP for previous7d summaries", async () => {

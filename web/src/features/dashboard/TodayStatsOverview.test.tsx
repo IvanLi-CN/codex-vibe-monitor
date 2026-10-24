@@ -56,6 +56,8 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.secondary.failureRate": "Failure rate",
         "dashboard.today.secondary.cacheHitRate": "Cache hit",
         "stats.cards.loadError": "Load error",
+        "stats.cards.recoveryPending": "Summary recovery pending",
+        "stats.cards.recoveryFailed": "Summary recovery failed",
         "stats.cards.success": "Success",
         "stats.cards.failures": "Failures",
         "stats.cards.totalCost": "Cost",
@@ -245,6 +247,33 @@ function render(ui: React.ReactNode) {
 }
 
 describe("TodayStatsOverview", () => {
+  it("shows coded recovery status instead of loading or zero metrics", () => {
+    render(
+      <TodayStatsOverview
+        stats={null}
+        loading={false}
+        error="Request failed"
+        errorCode="summary_recovery_pending"
+      />,
+    );
+
+    expect(host?.textContent).toContain("Summary recovery pending");
+    expect(host?.textContent).not.toContain("Load error");
+    expect(host?.querySelector('[data-testid="today-stats-metrics-grid"]')).toBeNull();
+
+    act(() => {
+      root?.render(
+        <TodayStatsOverview
+          stats={null}
+          loading={false}
+          error="Request failed"
+          errorCode="summary_recovery_failed"
+        />,
+      );
+    });
+    expect(host?.textContent).toContain("Summary recovery failed");
+  });
+
   it("reuses same-progress comparisons on live-clock rerenders and refreshes changed series", () => {
     const timeseries = buildTimeseriesWithLatency();
     const comparisonTimeseries = {
