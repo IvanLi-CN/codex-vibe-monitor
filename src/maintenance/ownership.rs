@@ -230,7 +230,7 @@ pub(crate) async fn execute_owned_maintenance(
         | "quota_snapshot_compaction"
         | "model_route_expiry"
         | "task_run_history_cleanup" => {
-            let summary = run_retention_owner_task(
+            let mut summary = run_retention_owner_task(
                 context.pool,
                 context.config,
                 task_key,
@@ -238,6 +238,11 @@ pub(crate) async fn execute_owned_maintenance(
                 context.shutdown,
             )
             .await?;
+            if run_observation.is_some() {
+                summary.populate_arrival_rates();
+            } else {
+                summary.finalize_execution_metrics(started.elapsed());
+            }
             return Ok(retention_owner_execution(
                 summary,
                 options,
