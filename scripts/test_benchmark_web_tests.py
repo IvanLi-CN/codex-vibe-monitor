@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).with_name("benchmark-web-tests.py")
@@ -18,6 +19,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class BenchmarkAggregationTests(unittest.TestCase):
+    def test_main_rejects_non_github_actions_execution(self):
+        with patch.dict(MODULE.os.environ, {"GITHUB_ACTIONS": "false"}, clear=False):
+            with self.assertRaisesRegex(SystemExit, "must run in GitHub Actions"):
+                MODULE.main()
+
     def test_median_and_mad_are_stable(self):
         self.assertEqual(MODULE.summarize([10.0, 12.0, 11.0]), {
             "count": 3,

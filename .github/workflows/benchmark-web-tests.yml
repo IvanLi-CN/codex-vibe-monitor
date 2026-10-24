@@ -1,0 +1,106 @@
+name: Web Test Performance Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: "Baseline commit SHA"
+        required: true
+        type: string
+      candidate_sha:
+        description: "Candidate commit SHA"
+        required: true
+        type: string
+      stage:
+        description: "Benchmark stage"
+        required: true
+        default: frontend
+        type: choice
+        options:
+          - demo
+          - unit
+          - functional-e2e
+          - frontend
+      profile:
+        description: "CI scheduling profile"
+        required: true
+        default: pr
+        type: choice
+        options:
+          - pr
+          - main
+      rounds:
+        description: "Number of paired warm runs"
+        required: true
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Remote A/B benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate
+          fetch-depth: 1
+
+      - name: Checkout baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          path: baseline
+          fetch-depth: 1
+
+      - name: Setup Bun 1.3.14
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install candidate web dependencies
+        working-directory: candidate/web
+        run: bun install --frozen-lockfile
+
+      - name: Install candidate docs dependencies
+        working-directory: candidate/docs-site
+        run: bun install --frozen-lockfile
+
+      - name: Install baseline web dependencies
+        working-directory: baseline/web
+        run: bun install --frozen-lockfile
+
+      - name: Install baseline docs dependencies
+        working-directory: baseline/docs-site
+        run: bun install --frozen-lockfile
+
+      - name: Install Chromium
+        working-directory: candidate/web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run paired benchmark
+        run: |
+          set -euo pipefail
+          python3 candidate/scripts/benchmark-web-tests.py \
+            --baseline-src "$GITHUB_WORKSPACE/baseline" \
+            --candidate-src "$GITHUB_WORKSPACE/candidate" \
+            --baseline-sha "${{ inputs.baseline_sha }}" \
+            --candidate-sha "${{ inputs.candidate_sha }}" \
+            --stage "${{ inputs.stage }}" \
+            --profile "${{ inputs.profile }}" \
+            --rounds "${{ inputs.rounds }}" \
+            --output "$GITHUB_WORKSPACE/benchmark-output"
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-benchmark-${{ github.run_id }}
+          path: benchmark-output
+          if-no-files-found: error
+          retention-days: 1

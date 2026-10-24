@@ -440,6 +440,8 @@ def write_summary(output_dir: Path, metadata: dict[str, Any], samples: list[Samp
 
 
 def main() -> int:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise SystemExit("AB performance benchmarks must run in GitHub Actions; local and Agent VM execution is forbidden")
     args = parse_args()
     if args.rounds < 1:
         raise SystemExit("--rounds must be positive")
