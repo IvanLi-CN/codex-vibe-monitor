@@ -568,7 +568,7 @@ pub(crate) fn final_pool_invocation_timing_sql_at_snapshot(
            OR COALESCE((SELECT CASE \
              WHEN ({final_attempt_evidence_sql}) THEN 1 \
              ELSE 0 END \
-           FROM pool_upstream_request_attempts AS final_attempt \
+           FROM pool_upstream_request_attempts AS final_attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
             {attempt_snapshot_predicate} \

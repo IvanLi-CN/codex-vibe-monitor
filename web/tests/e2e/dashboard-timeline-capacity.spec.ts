@@ -532,10 +532,6 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
           ?.releasedSnapshots ?? 0,
     );
     expect(releasesDuringDelayedRefresh).toBe(releaseCountBeforeDelay);
-    if (revisionInterval != null) {
-      clearInterval(revisionInterval);
-      revisionInterval = null;
-    }
     await expect
       .poll(
         () =>
@@ -551,6 +547,10 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
     await new Promise<void>((resolve) => {
       setTimeout(resolve, Math.max(0, CAPACITY_SCENARIO_DURATION_MS - elapsedBeforeSteadyState));
     });
+    if (revisionInterval != null) {
+      clearInterval(revisionInterval);
+      revisionInterval = null;
+    }
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 16_000);
     });
