@@ -38,6 +38,73 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   under the 10,000-entry / 64 MiB bound with a durable proof, and the Snapshot
   API verifies manifest identity, coverage and payload SHA before cleanup can
   retire an authoritative archive.
+- Dashboard compacted-source recovery no longer treats the journal retention
+  bound as a full-table replay limit. When a compaction proof intersects the
+  Dashboard day windows, the `SummaryCoverageRecoverySupervisor` creates an
+  additive checkpoint for fixed `Asia/Shanghai` `today`, `yesterday`, and
+  `previous7d` ranges. It pages canonical terminal rows by `(occurred_at, id)`
+  with a maximum of 512 rows and records aggregate, usage, bounded record
+  identity, cursor, fence, and state in SQLite without copying invocation
+  payloads. This checkpoint intentionally owns only those Shanghai reporting
+  ranges; a request in another reporting zone does not reinterpret the staged
+  rows and remains generic unavailable until a matching range is prepared.
+- Each Dashboard recovery page is committed atomically with its tuple cursor;
+  the candidate query measures only text byte lengths that the source-row
+  projection will load before materializing source fields; raw `payload` is
+  neither materialized nor charged against the page budget,
+  then materializes only the selected rows. Candidate reads, source-row reads,
+  page staging, and publication use dedicated SQLite connections whose native
+  busy-timeout and progress handler share the remaining recovery deadline. The
+  page byte budget is 8 MiB, the
+  write-transaction budget is 250 ms including a bounded commit wait, and a
+  worker turn is capped at 2 s. An oversized error message is represented by a
+  stable classification sentinel after canonical SQL has resolved its failure
+  class, so a row oversized only because of its error text can advance as a
+  bounded singleton; an oversized non-error field fails closed before
+  materialization. Pressure or contention records `deferred`, a restart resumes
+  the last committed page, a concurrent worker loses a durable cursor
+  compare-and-swap without applying its page, and a changed coverage fence
+  clears unpublishable staging before rebuilding. Page staging uses a dedicated
+  SQLite connection with the same transaction budget as its busy timeout and
+  SQLite progress handler; cancellation rolls back and closes that connection
+  within the remaining transaction deadline, and drops it when that deadline is
+  exhausted, so an interrupted transaction is never returned to the pool.
+  Checkpoint initialization and generation-fence reset use a dedicated read
+  connection for the full recovery turn, then a separate dedicated reset
+  transaction connection capped at 250 ms. Both connections use
+  deadline-aligned busy timeout, progress handler, bounded rollback, and
+  bounded close paths; reset cleanup cannot fall back to the shared pool or
+  extend the recovery turn under SQLite contention. This keeps read
+  preparation within the 2 s worker turn while preserving the independent
+  250 ms write-transaction budget.
+  Append-only live-tail changes do not clear committed
+  historical staging; completed staging is
+  published against its coverage fence and newer exact terminal deltas are
+  overlaid at read time. Only completed staging that still matches the coverage
+  fence is published into the in-memory Summary projection, and the hub snapshot
+  becomes visible only after the publication transaction commits. Recovery state
+  transitions use the same dedicated connection, SQLite progress handler, and
+  remaining turn deadline; if a state write cannot fit its budget, the hub
+  reports `deferred` and the next turn retries it instead of allowing status
+  bookkeeping to consume the recovery worker's 2-second turn.
+- Publication uses a dedicated deadline-bounded connection and holds
+  `BEGIN IMMEDIATE` while it rereads the checkpoint and
+  coverage fence, verifies that canonical terminal row counts still equal
+  staged global totals for every window, and loads staging; it stores the
+  in-memory snapshot only after the transaction commits. A row that becomes
+  terminal after the scan therefore forces a
+  bounded reset/rescan instead of publishing an incomplete snapshot. Stored
+  Shanghai window boundaries are revalidated at read time, so a snapshot from
+  the previous reporting day cannot be served as today's exact result.
+  Restart-ambiguous persisted replay identities at or below the target sequence
+  fail closed until the source proof is unambiguous; a mixed compaction gap and
+  strict scoped gap remains generic unavailable rather than claiming this
+  recovery can resolve it.
+- Dashboard natural-day panels do not treat an already loaded activity snapshot as exact while
+  the matching `today` or `yesterday` Summary is loading or returns a coded recovery error. The
+  UI waits for the exact Summary state and routes pending/failed results through the existing
+  localized unavailable surface, so a retained snapshot cannot mask recovery with stale or zero
+  metrics.
 - ADR 0010 separates the immutable Summary Coverage Fence from the bounded live
   tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
   AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy
@@ -121,6 +188,28 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - Projection freshness renewal compares the complete durable generation fence before it extends a published rolling response. A matching fence renews only the in-memory freshness lease; a changed live watermark, global/account rollup cursor, archive manifest high-watermark, or settled terminal sequence takes the normal bounded recovery path. An all-time task that observes a changed fence cancels before publication, releases its refresh lock, and hands off to the live-tail reconciler or Historical Coverage Supervisor; staged finalization checks the fence before and after its atomic swap.
 - Live-tail reconciliation now uses a durable `(row_id, invoke_id, occurred_at)` identity. ACKs and restart replays already represented by the immutable Projection are absorbed idempotently; descriptors without a durable row identity retain a broad fail-closed proof. A versioned checkpoint fixes the base revision and target watermark, performs bounded descriptor reconstruction under the pressure permit, and records no source payload. Its readiness state is exposed only through no-payload health fields and structured stage telemetry.
 - Summary Delta Journal retains a broad fail-closed proof instead of evicting an older scoped proof when its proof budget saturates, while preserving whether the broad proof came from source loss or terminal-only overflow. Terminal-journal and shutdown replay records become exact committed rolling overlays with their own bounded residency, because their prior process-local dashboard sequence is not valid after restart; replay does not trigger full live admission.
+- The Dashboard recovery API keeps HTTP 503 for `today`, `yesterday`, and
+  `previous7d` until the compacted snapshot is ready, and adds stable
+  `summary_recovery_pending` or `summary_recovery_failed` JSON codes while
+  retaining the human-readable message. System status exposes only state,
+  processed-row count, and an optional error code; the web client renders the
+  coded pending/failed state rather than indefinite loading or zero-valued
+  success. A pending coded response schedules bounded 1s/2s/5s/10s/30s HTTP
+  retries, then continues polling at the 30-second cap until the response is
+  exact or failed, so completion is observed without waiting for remount or
+  day rollover.
+- When an eligible compaction gap has a generation-fenced Dashboard snapshot, the HTTP path validates and serves that exact snapshot before applying the generic source-gap failure branch. The generic unavailable response remains the fallback for pending, failed, stale, or out-of-scope recovery and for gaps that the Dashboard worker cannot prove.
+- While a broad compaction proof is active, rolling refresh does not also run the legacy source-tail fallback. The canonical compacted-source recovery worker owns that range; allowing the fallback to register the same rows as strict scoped gaps would keep an exact, generation-fenced snapshot unavailable after publication.
+- A valid temporary terminal overlay does not authorize a Dashboard day-window
+  response while the generation-fenced compacted snapshot is pending. The
+  request path returns the coded unavailable contract until exact recovery
+  publication, so degraded totals cannot be mistaken for exact totals.
+- The independent exactness oracle interprets naive canonical `occurred_at`
+  values as `Asia/Shanghai`, matching SQLite storage, before reducing
+  `today`, `yesterday`, and `previous7d`; usage grouping preserves the source
+  case of `responseModel` and `reasoningEffort`, matching the production
+  reducer. Focused regressions cover local midnight boundaries and mixed-case
+  usage groups.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
@@ -129,7 +218,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - The invocation-range recovery component has separate [API/version impact](assets/invocation-range-version-impact.json) and [durable reservation/re-entry](assets/invocation-range-persistent-state.json) records. They preserve the deployed v4.8 reservation representation and explicitly leave final integrated verification pending.
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The current PR-B delivery is rebased onto `origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0`; runtime implementation commit `f34d3663c305de0f31db6cb997fbff90e0ab4167` contains no unrelated base merge, and the test-only follow-up `535397fb30e0ee0953161d4c6a50d960f6cb13b4` records the split-module materialization regression. Current required-lane evidence is tracked in `assets/current-candidate-validation.json`; documentation follow-ups do not alter the runtime candidate.
+- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-source-recovery-batch`, rebased directly onto `origin/main@76beb053ac529bde47961dddb1e14b4d176700f8` from the locked development baseline `207e6d6341240dd722d15a9e853485bed5e441a9`. No merge commit or unrelated base merge is included. The recorded candidate SHA is the implementation-code head; evidence-only documentation commits may follow it, while CI and Tier 4 review must bind to the pushed branch head.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary
@@ -139,9 +228,17 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   in-memory delta fast path; restart recovery reconstructs only the
   descriptor's bounded keys and does not perform complete live admission.
 - The global durable cursor checkpoint is monotonic and is written only after a
-  bounded tail has been reconstructed. The active tail remains bounded to
-  `10,000 entries / 64 MiB`; compaction preserves a range/account/current-rank
-  proof, and descriptors/proofs contain no raw text or duplicate Summary rows.
+  bounded tail has been reconstructed. `SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES`
+  remains a `10,000 entries / 64 MiB` journal-retention bound; it is not a
+  Dashboard recovery admission threshold. Compaction preserves a
+  range/account/current-rank proof, and descriptors/proofs contain no raw text
+  or duplicate Summary rows.
+- Dashboard recovery uses a separate additive checkpoint and staging set. It
+  retains only normalized aggregates, `(occurred_at, id)` progress, generation
+  fence values, and `list_limit_max`-bounded record identities, so a 10,001-row
+  source range remains recoverable without a production database copy. The
+  stateful oracle covers 10,001 historical rows plus today/yesterday rows
+  across two accounts and asserts exact global and account aggregates.
 - Archive maintenance exposes the normalized Snapshot page writer and cleanup
   proof gate in main SQLite. Snapshot proof includes manifest identity,
   coverage and payload SHA; a seek-paged legacy backfill can reuse the writer

@@ -266,6 +266,7 @@ body,
   );
   --app-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
   --app-surface-shadow: 0 18px 40px rgba(15, 23, 42, 0.09);
+  --summary-recovery-overlay-shadow: 0 18px 60px rgba(15, 23, 42, 0.16);
 
   --dialog-overlay-bg: rgba(15, 23, 42, 0.16);
   --dialog-overlay-blur: 2px;
@@ -479,6 +480,7 @@ body,
   );
   --app-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
   --app-surface-shadow: 0 20px 54px rgba(2, 6, 23, 0.55);
+  --summary-recovery-overlay-shadow: 0 18px 60px rgba(2, 6, 23, 0.58);
 
   --dialog-overlay-bg: rgba(2, 6, 23, 0.58);
   --dialog-overlay-blur: 6px;

@@ -259,6 +259,33 @@ describe("releaseInvocationTimelineSnapshot", () => {
 });
 
 describe("fetchSystemStatus retention recovery compatibility", () => {
+  it("normalizes optional Summary recovery progress and failure code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              summaryRecovery: {
+                state: "failed",
+                processedRows: 512,
+                lastErrorCode: "summary_recovery_failed",
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(fetchSystemStatus()).resolves.toMatchObject({
+      summaryRecovery: {
+        state: "failed",
+        processedRows: 512,
+        lastErrorCode: "summary_recovery_failed",
+      },
+    });
+  });
+
   it("keeps raw bytes unknown while the inventory is not ready", async () => {
     vi.stubGlobal(
       "fetch",
