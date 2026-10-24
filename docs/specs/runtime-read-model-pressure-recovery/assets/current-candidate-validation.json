@@ -6,7 +6,7 @@
   "implementation_commit": "6a58adf8c516fd6e4f81521e17f7608ec2c9e38b",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
-  "pr_number": null,
+  "pr_number": 1181,
   "candidate_branch": "th/summary-source-recovery-batch",
   "base_sync": {
     "previous_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
@@ -96,7 +96,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "local branch ready for PR; CI and Tier 4 review pending"
+        "status": "PR #1181 created; CI and Tier 4 review pending"
       }
     ]
   },
