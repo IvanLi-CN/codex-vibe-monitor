@@ -23113,9 +23113,15 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             .expect("legacy manifest replacement must not block the snapshot reader")
             .expect("commit legacy manifest replacement");
     });
-    let hydration =
-        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
-            .await;
+    // This test exercises archive identity revalidation after a complete boundary admission.
+    // Its 4,097-manifest fixture can exceed the production rolling freshness deadline on a cold
+    // runner before reaching the interleave gate, so use a test-only deadline for this control.
+    let hydration = refresh_summary_snapshots_with_test_deadline(
+        state.as_ref(),
+        SummaryProjectionBuildMode::Rolling,
+        Duration::from_secs(30),
+    )
+    .await;
     replacement.await.expect("run legacy manifest replacement");
     clear_summary_projection_test_interleave();
     let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");

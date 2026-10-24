@@ -130,6 +130,7 @@ pub(crate) use summary_projection_lifecycle::{
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
     hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
+    refresh_summary_snapshots_with_test_deadline,
 };
 
 #[cfg(test)]

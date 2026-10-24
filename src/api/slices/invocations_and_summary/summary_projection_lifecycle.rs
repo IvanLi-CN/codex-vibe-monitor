@@ -1657,6 +1657,15 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     refresh_summary_snapshots_with_deadline(state, mode, Some(deadline), true).await
 }
 
+#[cfg(test)]
+pub(crate) async fn refresh_summary_snapshots_with_test_deadline(
+    state: &AppState,
+    mode: SummaryProjectionBuildMode,
+    deadline: Duration,
+) -> Result<()> {
+    refresh_summary_snapshots_with_deadline(state, mode, Some(deadline), true).await
+}
+
 async fn refresh_summary_snapshots_with_deadline(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
