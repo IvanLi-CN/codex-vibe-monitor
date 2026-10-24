@@ -1705,20 +1705,22 @@ fn compacted_source_recovery_checkpoint_matches(
 }
 
 async fn ensure_compacted_source_recovery(state: &AppState) -> Result<()> {
-    ensure_compacted_source_recovery_with_force(state, false).await
+    let _ = ensure_compacted_source_recovery_with_force_bounded(
+        state,
+        false,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
+    )
+    .await?;
+    Ok(())
 }
 
-async fn force_reset_compacted_source_recovery(state: &AppState) -> Result<()> {
-    ensure_compacted_source_recovery_with_force(state, true).await
-}
-
-async fn ensure_compacted_source_recovery_with_force(
+async fn ensure_compacted_source_recovery_with_force_bounded(
     state: &AppState,
     force_reset: bool,
-) -> Result<()> {
+    budget: Duration,
+) -> Result<bool> {
     let now = Utc::now();
     let current_windows = compacted_source_recovery_windows_at(now)?;
-    let current_fence = load_summary_projection_generation_fence(state).await?;
     let list_limit_max = state.config.list_limit_max.max(1);
     let range_start = current_windows
         .iter()
@@ -1740,9 +1742,89 @@ async fn ensure_compacted_source_recovery_with_force(
         .unwrap_or_default();
     let window_ranges_json = to_string(&current_windows)
         .context("serialize compacted source recovery window boundaries")?;
+    let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
+        state,
+        budget,
+        "open compacted source recovery reset connection",
+    )
+    .await?
+    else {
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(
+                SummaryCompactedSourceRecoveryState::Deferred,
+            )
+            .await;
+        return Ok(false);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let current_fence = match tokio::time::timeout(
+        remaining,
+        load_summary_projection_generation_fence_tx(state, &mut connection),
+    )
+    .await
+    {
+        Ok(Ok(fence)) => fence,
+        Ok(Err(error)) => {
+            let contention = is_sqlite_contention(&error);
+            let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await;
+            if contention || interrupted.load(Ordering::Acquire) || Instant::now() >= deadline {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(false);
+            }
+            return Err(error.context("load compacted source recovery reset generation fence"));
+        }
+        Err(_) => {
+            let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await;
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(false);
+        }
+    };
     let target_terminal_sequence = i64::try_from(current_fence.durable_terminal_sequence_watermark)
         .context("compacted source recovery terminal sequence overflow")?;
-    let existing = load_compacted_source_recovery_checkpoint(&state.pool).await?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let existing = match tokio::time::timeout(
+        remaining,
+        load_compacted_source_recovery_checkpoint_tx(&mut connection),
+    )
+    .await
+    {
+        Ok(Ok(checkpoint)) => checkpoint,
+        Ok(Err(error)) => {
+            let contention = is_sqlite_contention(&error);
+            let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await;
+            if contention || interrupted.load(Ordering::Acquire) || Instant::now() >= deadline {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(false);
+            }
+            return Err(error.context("load compacted source recovery reset checkpoint"));
+        }
+        Err(_) => {
+            let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await;
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(false);
+        }
+    };
     if !force_reset
         && let Some(checkpoint) = existing.as_ref()
         && compacted_source_recovery_checkpoint_matches(
@@ -1752,73 +1834,197 @@ async fn ensure_compacted_source_recovery_with_force(
             list_limit_max,
         )?
     {
+        let closed =
+            close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        if !closed {
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(false);
+        }
         state
             .subscription_hub
             .set_summary_compacted_source_recovery_state(
                 SummaryCompactedSourceRecoveryState::from_storage(&checkpoint.state),
             )
             .await;
-        return Ok(());
+        return Ok(true);
     }
 
-    let mut transaction = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("begin compacted source recovery reset")?;
-    for table in [
-        "summary_compacted_source_recovery_aggregate",
-        "summary_compacted_source_recovery_usage",
-        "summary_compacted_source_recovery_record",
-    ] {
-        sqlx::query(&format!("DELETE FROM {table} WHERE scope = ?1"))
-            .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-            .execute(&mut *transaction)
-            .await
-            .with_context(|| format!("clear compacted source recovery {table}"))?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(
+                SummaryCompactedSourceRecoveryState::Deferred,
+            )
+            .await;
+        return Ok(false);
     }
-    sqlx::query(
-        "INSERT INTO summary_compacted_source_recovery_checkpoint (\
-            scope, format_version, time_zone, range_start, range_end, window_ranges_json,\
-            cursor_occurred_at, cursor_id, target_live_high_watermark_id, target_rollup_live_cursor,\
-            target_account_rollup_live_cursor, target_manifest_high_watermark_id,\
-            target_coverage_revision, target_account_coverage_revision, target_terminal_sequence,\
-            list_limit_max, processed_rows, state, last_error_code, last_error_message, updated_at\
-        ) VALUES (?1, 1, ?2, ?3, ?4, ?5, NULL, 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 'pending', NULL, NULL, datetime('now')) \
-        ON CONFLICT(scope) DO UPDATE SET \
-            format_version = excluded.format_version, time_zone = excluded.time_zone,\
-            range_start = excluded.range_start, range_end = excluded.range_end,\
-            window_ranges_json = excluded.window_ranges_json, cursor_occurred_at = NULL,\
-            cursor_id = 0, target_live_high_watermark_id = excluded.target_live_high_watermark_id,\
-            target_rollup_live_cursor = excluded.target_rollup_live_cursor,\
-            target_account_rollup_live_cursor = excluded.target_account_rollup_live_cursor,\
-            target_manifest_high_watermark_id = excluded.target_manifest_high_watermark_id,\
-            target_coverage_revision = excluded.target_coverage_revision,\
-            target_account_coverage_revision = excluded.target_account_coverage_revision,\
-            target_terminal_sequence = excluded.target_terminal_sequence,\
-            list_limit_max = excluded.list_limit_max, processed_rows = 0, state = 'pending',\
-            last_error_code = NULL, last_error_message = NULL, updated_at = datetime('now')",
+    let begin_result = tokio::time::timeout(
+        remaining,
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut connection),
     )
-    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE)
-    .bind(range_start)
-    .bind(range_end)
-    .bind(window_ranges_json)
-    .bind(current_fence.live_high_watermark_id)
-    .bind(current_fence.rollup_live_cursor)
-    .bind(current_fence.account_rollup_live_cursor)
-    .bind(current_fence.completed_manifest_high_watermark_id)
-    .bind(current_fence.coverage_revision)
-    .bind(current_fence.account_coverage_revision)
-    .bind(target_terminal_sequence)
-    .bind(i64::try_from(list_limit_max).context("compacted source recovery list limit overflow")?)
-    .execute(&mut *transaction)
-    .await
-    .context("reset compacted source recovery checkpoint")?;
-    transaction
-        .commit()
+    .await;
+    match begin_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let error = anyhow!(error).context("begin compacted source recovery reset");
+            let contention = is_sqlite_contention(&error);
+            let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await;
+            if contention || interrupted.load(Ordering::Acquire) || Instant::now() >= deadline {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await;
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(false);
+        }
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let reset_result = tokio::time::timeout(remaining, async {
+        for table in [
+            "summary_compacted_source_recovery_aggregate",
+            "summary_compacted_source_recovery_usage",
+            "summary_compacted_source_recovery_record",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE scope = ?1"))
+                .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+                .execute(&mut connection)
+                .await
+                .with_context(|| format!("clear compacted source recovery {table}"))?;
+        }
+        sqlx::query(
+            "INSERT INTO summary_compacted_source_recovery_checkpoint (\
+                scope, format_version, time_zone, range_start, range_end, window_ranges_json,\
+                cursor_occurred_at, cursor_id, target_live_high_watermark_id, target_rollup_live_cursor,\
+                target_account_rollup_live_cursor, target_manifest_high_watermark_id,\
+                target_coverage_revision, target_account_coverage_revision, target_terminal_sequence,\
+                list_limit_max, processed_rows, state, last_error_code, last_error_message, updated_at\
+            ) VALUES (?1, 1, ?2, ?3, ?4, ?5, NULL, 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 'pending', NULL, NULL, datetime('now')) \
+            ON CONFLICT(scope) DO UPDATE SET \
+                format_version = excluded.format_version, time_zone = excluded.time_zone,\
+                range_start = excluded.range_start, range_end = excluded.range_end,\
+                window_ranges_json = excluded.window_ranges_json, cursor_occurred_at = NULL,\
+                cursor_id = 0, target_live_high_watermark_id = excluded.target_live_high_watermark_id,\
+                target_rollup_live_cursor = excluded.target_rollup_live_cursor,\
+                target_account_rollup_live_cursor = excluded.target_account_rollup_live_cursor,\
+                target_manifest_high_watermark_id = excluded.target_manifest_high_watermark_id,\
+                target_coverage_revision = excluded.target_coverage_revision,\
+                target_account_coverage_revision = excluded.target_account_coverage_revision,\
+                target_terminal_sequence = excluded.target_terminal_sequence,\
+                list_limit_max = excluded.list_limit_max, processed_rows = 0, state = 'pending',\
+                last_error_code = NULL, last_error_message = NULL, updated_at = datetime('now')",
+        )
+        .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+        .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE)
+        .bind(range_start)
+        .bind(range_end)
+        .bind(window_ranges_json)
+        .bind(current_fence.live_high_watermark_id)
+        .bind(current_fence.rollup_live_cursor)
+        .bind(current_fence.account_rollup_live_cursor)
+        .bind(current_fence.completed_manifest_high_watermark_id)
+        .bind(current_fence.coverage_revision)
+        .bind(current_fence.account_coverage_revision)
+        .bind(target_terminal_sequence)
+        .bind(i64::try_from(list_limit_max).context("compacted source recovery list limit overflow")?)
+        .execute(&mut connection)
         .await
-        .context("commit compacted source recovery reset")?;
+        .context("reset compacted source recovery checkpoint")?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await;
+    match reset_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let budget_expired = interrupted.load(Ordering::Acquire) || Instant::now() >= deadline;
+            let contention = is_sqlite_contention(&error);
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
+            if budget_expired || contention {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(false);
+        }
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let commit_result =
+        tokio::time::timeout(remaining, sqlx::query("COMMIT").execute(&mut connection)).await;
+    match commit_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let error = anyhow!(error).context("commit compacted source recovery reset");
+            let budget_expired = interrupted.load(Ordering::Acquire) || Instant::now() >= deadline;
+            let contention = is_sqlite_contention(&error);
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
+            if budget_expired || contention {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(false);
+        }
+    }
+    let closed = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
     state
         .subscription_hub
         .clear_summary_dashboard_recovery()
@@ -1827,7 +2033,7 @@ async fn ensure_compacted_source_recovery_with_force(
         .subscription_hub
         .set_summary_compacted_source_recovery_state(SummaryCompactedSourceRecoveryState::Pending)
         .await;
-    Ok(())
+    Ok(closed)
 }
 
 fn push_compacted_source_recovery_source_columns(query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>) {
@@ -2537,6 +2743,20 @@ async fn rollback_and_close_compacted_source_recovery_connection_bounded(
     close_compacted_source_recovery_connection_bounded(connection, deadline).await
 }
 
+async fn rollback_compacted_source_recovery_transaction_bounded(
+    connection: &mut SqliteConnection,
+    deadline: Instant,
+) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    matches!(
+        tokio::time::timeout(remaining, sqlx::query("ROLLBACK").execute(&mut *connection),).await,
+        Ok(Ok(_))
+    )
+}
+
 async fn stage_compacted_source_recovery_page_in_transaction(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
@@ -2975,26 +3195,38 @@ async fn publish_compacted_source_recovery_snapshot_in_transaction(
         Err(_) => return Ok(false),
     }
     let Some(checkpoint) = load_compacted_source_recovery_checkpoint_tx(connection).await? else {
-        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
+        let _ = rollback_compacted_source_recovery_transaction_bounded(connection, deadline).await;
         return Ok(false);
     };
     if checkpoint.state != SummaryCompactedSourceRecoveryState::Completed.as_str() {
-        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
+        let _ = rollback_compacted_source_recovery_transaction_bounded(connection, deadline).await;
         return Ok(false);
     }
     let expected_fence = compacted_source_recovery_fence(&checkpoint);
     let current_fence = load_summary_projection_generation_fence_tx(state, connection).await?;
     if !current_fence.coverage_sources_match(expected_fence) {
-        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
-        ensure_compacted_source_recovery(state).await?;
+        if rollback_compacted_source_recovery_transaction_bounded(connection, deadline).await {
+            let _ = ensure_compacted_source_recovery_with_force_bounded(
+                state,
+                false,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await?;
+        }
         return Ok(false);
     }
     let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
     if !compacted_source_recovery_staged_totals_match_source(connection, &checkpoint, &windows)
         .await?
     {
-        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
-        force_reset_compacted_source_recovery(state).await?;
+        if rollback_compacted_source_recovery_transaction_bounded(connection, deadline).await {
+            let _ = ensure_compacted_source_recovery_with_force_bounded(
+                state,
+                true,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await?;
+        }
         return Ok(false);
     }
     let mut entries = HashMap::<(String, Option<i64>), SummaryDashboardRecoveryEntry>::new();
@@ -3140,7 +3372,6 @@ async fn publish_compacted_source_recovery_snapshot_in_transaction(
     };
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
         return Ok(false);
     }
     match tokio::time::timeout(remaining, sqlx::query("COMMIT").execute(&mut *connection)).await {
