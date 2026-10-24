@@ -6,6 +6,10 @@ import { ListBodyState } from "../../features/shared/ListBodyState";
 import { managedTaskColor } from "../../features/system/managedTaskColor";
 import { TaskTimelineChart } from "../../features/system/TaskTimelineChart";
 import { TaskWorkloadSparkline } from "../../features/system/TaskWorkloadSparkline";
+import {
+  formatManagedTaskDuration,
+  formatManagedTaskTimestamp,
+} from "../../features/system/taskRunFacts";
 import { useManagedTaskTimeline } from "../../hooks/useManagedTaskTimeline";
 import useSseStatus from "../../hooks/useSseStatus";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
@@ -35,26 +39,6 @@ function formatElapsed(ms: number): string {
   return hours > 0
     ? `${hours} 小时 ${String(minutes).padStart(2, "0")} 分`
     : `${minutes} 分 ${String(seconds).padStart(2, "0")} 秒`;
-}
-
-function formatUtc(value: string): string {
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return "未知";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(new Date(timestamp));
-}
-
-function formatTaskDuration(durationMs: number | null | undefined): string {
-  if (durationMs == null || !Number.isFinite(durationMs)) return "—";
-  if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))} 毫秒`;
-  return formatElapsed(durationMs);
 }
 
 function taskResultLabel(status: string): string {
@@ -151,7 +135,7 @@ function RunningTask({
       </div>
       <div className="text-sm sm:flex sm:items-center sm:gap-2">
         <div className="text-xs text-base-content/55">实际开始</div>
-        <div className="mt-1 font-medium sm:mt-0">{formatUtc(run.startedAt)}</div>
+        <div className="mt-1 font-medium sm:mt-0">{formatManagedTaskTimestamp(run.startedAt)}</div>
       </div>
       <div className="text-sm sm:flex sm:items-center sm:justify-end sm:gap-2">
         <div className="text-xs text-base-content/55">用时</div>
@@ -201,7 +185,7 @@ function WaitingTask({
         <div>{detail}</div>
         <div className="mt-0.5 text-xs text-base-content/55">
           {kind === "queue" ? "请求时间" : "等待开始"} ·{" "}
-          {waitingStartedAt ? formatUtc(waitingStartedAt) : "未知"}
+          {waitingStartedAt ? formatManagedTaskTimestamp(waitingStartedAt) : "未知"}
         </div>
       </div>
       <div className="text-sm sm:flex sm:items-center sm:justify-end sm:gap-2">
@@ -219,7 +203,7 @@ function admissionReason(wait: TaskAdmissionWait): string {
       : wait.reason === "resource_busy"
         ? "资源占用等待"
         : wait.reason;
-  return `${reason} · 重试时间 ${wait.retryAt ? formatUtc(wait.retryAt) : "未知"}`;
+  return `${reason} · 重试时间 ${wait.retryAt ? formatManagedTaskTimestamp(wait.retryAt) : "未知"}`;
 }
 
 export default function SystemTasksPage(): JSX.Element {
@@ -385,9 +369,9 @@ export default function SystemTasksPage(): JSX.Element {
             </div>
             <span className="text-xs text-base-content/55">
               {runtimeFresh && runtime
-                ? `观测于 ${formatUtc(runtime.observedAt)}`
+                ? `观测于 ${formatManagedTaskTimestamp(runtime.observedAt)}`
                 : lastRuntimeObservedAt
-                  ? `最后确认 ${formatUtc(lastRuntimeObservedAt)} · 动态计时已暂停`
+                  ? `最后确认 ${formatManagedTaskTimestamp(lastRuntimeObservedAt)} · 动态计时已暂停`
                   : "观测未知"}
             </span>
           </div>
@@ -407,7 +391,8 @@ export default function SystemTasksPage(): JSX.Element {
               <span>实时数据断开，正在重连 · 已中断 {formatElapsed(sseStatus.downtimeMs)}</span>
               {sseStatus.nextRetryAt != null ? (
                 <span className="text-xs text-base-content/65">
-                  下次尝试 {formatUtc(new Date(sseStatus.nextRetryAt).toISOString())}
+                  下次尝试{" "}
+                  {formatManagedTaskTimestamp(new Date(sseStatus.nextRetryAt).toISOString())}
                 </span>
               ) : null}
             </div>
@@ -663,12 +648,13 @@ export default function SystemTasksPage(): JSX.Element {
                   {task.lastExecution ? (
                     <>
                       <div className="mt-1 font-medium">
-                        {formatUtc(task.lastExecution.attemptedAt)} ·{" "}
+                        触发 {formatManagedTaskTimestamp(task.lastExecution.attemptedAt)} ·{" "}
                         {taskResultLabel(task.lastExecution.result)}
                       </div>
                       <div className="mt-1 text-xs text-base-content/55">
-                        用时 {formatTaskDuration(task.lastExecution.durationMs)} · 来源{" "}
-                        {task.lastExecution.triggerKind}
+                        实际开始 {formatManagedTaskTimestamp(task.lastExecution.actualStartedAt)} ·
+                        执行用时 {formatManagedTaskDuration(task.lastExecution.executionDurationMs)}{" "}
+                        · 来源 {task.lastExecution.triggerKind}
                       </div>
                       {task.lastExecution.reason ? (
                         <div

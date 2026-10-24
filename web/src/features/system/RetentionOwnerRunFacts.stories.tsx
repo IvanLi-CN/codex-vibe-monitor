@@ -46,7 +46,7 @@ export const Committed: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("本任务运行事实")).toBeVisible();
-    await expect(canvas.getByText("实际运行 · 结果：完成")).toBeVisible();
+    await expect(canvas.getByText("实际运行 · 结果：本轮完成")).toBeVisible();
     await expect(canvas.getByText("12,480")).toBeVisible();
     await expect(canvas.getByText("覆盖：本轮窗口未发现更多候选")).toBeVisible();
   },

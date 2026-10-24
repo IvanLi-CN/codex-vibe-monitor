@@ -185,10 +185,19 @@ describe("retention throughput optional contract", () => {
                 { id: 1, startedAt: "2026-10-04T00:00:00Z", status: "success" },
                 {
                   id: 2,
+                  executionUid: "execution-2",
                   startedAt: "2026-10-04T01:00:00Z",
+                  actualStartedAt: "2026-10-04T01:22:40Z",
+                  actualFinishedAt: "2026-10-04T01:31:00Z",
+                  executionDurationMs: 500_000,
+                  schedulerWaitMs: 1_360_000,
+                  finishedAt: "2026-10-04T01:31:00Z",
+                  durationMs: 1_860_000,
                   status: "success",
                   details: {
                     timeoutCount: 0,
+                    resourceWaitMs: 45_000,
+                    fileResourceWaitMs: 7_000,
                     archiveBatches: [
                       {
                         dataset: "codex_invocations",
@@ -216,6 +225,20 @@ describe("retention throughput optional contract", () => {
                     ],
                   },
                 },
+                {
+                  id: 3,
+                  executionUid: "  ",
+                  startedAt: "2026-10-04T02:00:00Z",
+                  actualStartedAt: 42,
+                  actualFinishedAt: null,
+                  executionDurationMs: -1,
+                  schedulerWaitMs: -1,
+                  status: "running",
+                  details: {
+                    resourceWaitMs: -1,
+                    fileResourceWaitMs: -1,
+                  },
+                },
               ],
             }),
             { status: 200 },
@@ -224,6 +247,16 @@ describe("retention throughput optional contract", () => {
     );
     const detail = await fetchManagedTask("retention_archive");
     expect(detail.recentRuns[0].details).toBeUndefined();
+    expect(detail.recentRuns[1]).toMatchObject({
+      executionUid: "execution-2",
+      actualStartedAt: "2026-10-04T01:22:40Z",
+      actualFinishedAt: "2026-10-04T01:31:00Z",
+      executionDurationMs: 500_000,
+      schedulerWaitMs: 1_360_000,
+      durationMs: 1_860_000,
+    });
+    expect(detail.recentRuns[1].details?.resourceWaitMs).toBe(45_000);
+    expect(detail.recentRuns[1].details?.fileResourceWaitMs).toBe(7_000);
     expect(detail.recentRuns[1].details?.archiveBatches).toHaveLength(4);
     expect(detail.recentRuns[1].details?.archiveBatches?.[0]).toMatchObject({
       committedRows: 0,
@@ -241,6 +274,15 @@ describe("retention throughput optional contract", () => {
     });
     expect(detail.recentRuns[1].details?.archiveBatches?.[2].timeoutCount).toBeNull();
     expect(detail.recentRuns[1].details?.archiveBatches?.[3].timeoutCount).toBeNull();
+    expect(detail.recentRuns[2]).toMatchObject({
+      executionUid: null,
+      actualStartedAt: null,
+      actualFinishedAt: null,
+      executionDurationMs: null,
+      schedulerWaitMs: null,
+    });
+    expect(detail.recentRuns[2].details?.resourceWaitMs).toBeNull();
+    expect(detail.recentRuns[2].details?.fileResourceWaitMs).toBeNull();
   });
 });
 

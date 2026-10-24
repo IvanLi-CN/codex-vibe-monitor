@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 import type { ManagedTaskRunDetails } from "../../lib/api";
+import { formatManagedTaskDuration } from "./taskRunFacts";
 
 const DATASET_LABELS: Record<string, string> = {
   codex_invocations: "调用记录",
@@ -10,25 +11,88 @@ const DATASET_LABELS: Record<string, string> = {
 };
 
 function rate(value?: number | null): string {
-  return value == null ? "未知" : `${value.toFixed(2)} 条/s`;
+  return value == null || !Number.isFinite(value) || value < 0
+    ? "未知"
+    : `${value.toFixed(2)} 条/s`;
 }
 
 function duration(value?: number | null): string {
-  return value == null ? "未知" : `${(value / 1000).toFixed(2)} s`;
+  return value == null || !Number.isFinite(value) || value < 0
+    ? "未知"
+    : `${(value / 1000).toFixed(2)} s`;
+}
+
+function serviceRate(
+  committedRowsPerSecond: number | null | undefined,
+  committedRows: number | null | undefined,
+  executionDurationMs: number | null | undefined,
+): number | null {
+  if (
+    committedRowsPerSecond != null &&
+    Number.isFinite(committedRowsPerSecond) &&
+    committedRowsPerSecond >= 0
+  ) {
+    return committedRowsPerSecond;
+  }
+  if (
+    committedRows == null ||
+    !Number.isFinite(committedRows) ||
+    committedRows < 0 ||
+    executionDurationMs == null ||
+    !Number.isFinite(executionDurationMs) ||
+    executionDurationMs <= 0
+  ) {
+    return null;
+  }
+  return committedRows / (executionDurationMs / 1000);
+}
+
+function serviceRateMultiple(
+  authoritativeMultiple: number | null | undefined,
+  serviceRateValue: number | null,
+  arrivalRowsPerSecond: number | null | undefined,
+): number | null {
+  if (
+    authoritativeMultiple != null &&
+    Number.isFinite(authoritativeMultiple) &&
+    authoritativeMultiple >= 0
+  ) {
+    return authoritativeMultiple;
+  }
+  if (
+    serviceRateValue == null ||
+    arrivalRowsPerSecond == null ||
+    !Number.isFinite(arrivalRowsPerSecond) ||
+    arrivalRowsPerSecond <= 0
+  ) {
+    return null;
+  }
+  return serviceRateValue / arrivalRowsPerSecond;
 }
 
 export function RetentionRunThroughput({
   details,
+  executionDurationMs,
+  schedulerWaitMs,
 }: {
   details?: ManagedTaskRunDetails | null;
+  executionDurationMs?: number | null;
+  schedulerWaitMs?: number | null;
 }): JSX.Element {
   const batches = details?.archiveBatches;
+  const canUseRunFallback = batches?.length === 1;
   return (
     <section className="space-y-2 text-xs" aria-label="归档吞吐">
       <div className={details?.timeoutCount ? "text-warning" : "text-base-content/65"}>
         超时次数：{details?.timeoutCount ?? "未知"}
         {details?.timeoutCount ? " · 超时兜底已触发，需检查批次规划" : ""}
       </div>
+      {executionDurationMs !== undefined || schedulerWaitMs !== undefined ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-base-content/65">
+          <span>执行用时：{formatManagedTaskDuration(executionDurationMs)}</span>
+          <span>调度等待：{formatManagedTaskDuration(schedulerWaitMs)}</span>
+        </div>
+      ) : null}
       {batches == null ? (
         <div className="text-base-content/60">归档吞吐：未知（本次记录未提供）</div>
       ) : batches.length === 0 ? (
@@ -48,19 +112,38 @@ export function RetentionRunThroughput({
                   "已提交 / 批次",
                   `${batch.committedRows ?? "未知"} / ${batch.batchRows ?? "未知"} 条`,
                 ],
-                ["服务速率", rate(batch.committedRowsPerSecond)],
+                [
+                  "服务速率",
+                  rate(
+                    serviceRate(
+                      batch.committedRowsPerSecond,
+                      batch.committedRows,
+                      canUseRunFallback ? executionDurationMs : null,
+                    ),
+                  ),
+                ],
                 ["到达速率（24h）", rate(batch.arrivalRowsPerSecond)],
                 [
                   "服务倍率",
-                  batch.serviceRateMultiple == null
-                    ? "未知"
-                    : `${batch.serviceRateMultiple.toFixed(1)}×`,
+                  (() => {
+                    const observedServiceRate = serviceRate(
+                      batch.committedRowsPerSecond,
+                      batch.committedRows,
+                      canUseRunFallback ? executionDurationMs : null,
+                    );
+                    const observedMultiple = serviceRateMultiple(
+                      batch.serviceRateMultiple,
+                      observedServiceRate,
+                      batch.arrivalRowsPerSecond,
+                    );
+                    return observedMultiple == null ? "未知" : `${observedMultiple.toFixed(1)}×`;
+                  })(),
                 ],
                 ["文件准备", duration(batch.filePrepareMs)],
                 ["身份读取", duration(batch.sourceIdentityMs)],
                 ["归档写入", duration(batch.archiveWriterMs)],
                 ["证明准备", duration(batch.summaryProofMs)],
-                ["锁等待", duration(batch.lockWaitMs)],
+                ["SQLite 写入准入等待", duration(batch.lockWaitMs)],
               ].map(([label, value]) => (
                 <div key={label}>
                   <dt className="text-base-content/60">{label}</dt>
@@ -79,11 +162,6 @@ export function RetentionRunThroughput({
           </div>
         ))
       )}
-      {batches?.length ? (
-        <div className="text-base-content/55">
-          服务速率 = 本批已提交条数 / 本次任务耗时；到达速率按最近 24 小时新增记录计算。
-        </div>
-      ) : null}
     </section>
   );
 }
