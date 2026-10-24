@@ -18,6 +18,7 @@ const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS + 250;
 // The dense render proof only needs an in-flight request; cross-refresh overlap is covered above.
 const DENSE_TRAVERSAL_DELAY_MS = 250;
+const LIVE_REFRESH_TIMER_GUARD_MS = 50;
 const REVISION_INTERVAL_MS = 1_000;
 const MINIMUM_LIVE_EVENTS = Math.max(
   10,
@@ -658,6 +659,15 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
       await expectVisibleCallsAreVirtualized(page, 550);
 
+      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
+      // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
+      await page.evaluate(
+        (advanceByMs) => {
+          const now = Date.now();
+          Date.now = () => now + advanceByMs;
+        },
+        MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1,
+      );
       await expect
         .poll(
           () =>
