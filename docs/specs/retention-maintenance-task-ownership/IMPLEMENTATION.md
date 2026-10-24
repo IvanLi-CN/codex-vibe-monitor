@@ -2,6 +2,8 @@
 
 ## Current Status
 
+- Integration validation remains pending: the runtime caller now uses the public maintenance re-export after automatic CI reported E0603 for the private retention module path. Formatting, diff and commit hooks pass; backend compilation, regressions and formal review require refreshed current-candidate GitHub Actions evidence. The shared historical-carrier identity check is a separate tooling issue and is not bypassed by this correction.
+
 - Owner result and timing candidate: a fully committed selected work unit reports `complete` when its necessary stages succeed; remaining backlog, `hasMore`, catch-up and a diagnostic from an earlier resolved wait do not downgrade that result. Partial commits, necessary-stage failures, dry-run and no-work retain distinct outcomes. Online execution freezes one owner-admitted monotonic duration after the owner returns and applies it to persisted execution duration and per-dataset rates; offline summaries also finalize after arrival-rate observation. Added regressions cover sticky prior waits, required-stage failure, the shared denominator and missing/zero measurements. Local formatting and source inspection do not establish passing runtime tests; GitHub Actions and formal review remain pending. UI presentation is separate work. ADR 0048 accepts the file-phase permit boundary, whose implementation and scheduling validation remain outstanding.
 
 - Implementation: 已实现；数据库替换竞态、编译合同、owner 失败重试与租约冲突事实已修复，详情裁剪覆盖门禁、取消事实、失败退避资格、shutdown observation 重放、归档 no-progress watchdog、raw 文件删除计量、dry-run 接续约束、预演文件计量、native worker 排空、task-run history 的 SQLite 压力延期事实和 Rust source-quality inventory 基线已补齐。历史批次曾记录 `a5cf8bd9` 等修复 head；当前候选、PR 头、远端 CI 与迁移回放状态以当前候选验证卡为准，生产二进制与十四来源升级和进程验证使用的历史二进制保持可追溯。
