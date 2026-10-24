@@ -643,6 +643,91 @@ async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
 }
 
 #[tokio::test]
+async fn retention_owner_preview_and_admission_defer_use_real_owner_classification() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("owner-preview-classification").await;
+    let account_id = 8_901_i64;
+    let timestamp = format_utc_iso_millis(Utc::now());
+    sqlx::query(
+        "INSERT INTO pool_upstream_accounts (id, kind, provider, display_name, status, enabled, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+    )
+    .bind(account_id)
+    .bind("api_key")
+    .bind("test")
+    .bind("Owner classification test")
+    .bind("active")
+    .bind(true)
+    .bind(&timestamp)
+    .execute(&pool)
+    .await
+    .expect("seed model route account");
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, last_seen_at) VALUES (?1, ?2, ?3)",
+    )
+    .bind(account_id)
+    .bind("gpt-owner-classification")
+    .bind("2000-01-01T00:00:00.000Z")
+    .execute(&pool)
+    .await
+    .expect("seed expired model route");
+
+    let preview = crate::maintenance::run_retention_owner_task(
+        &pool,
+        &config,
+        "model_route_expiry",
+        true,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("run model route dry-run owner");
+    assert_eq!(preview.discovered, 1);
+    assert_eq!(preview.selected, 1);
+    assert_eq!(preview.committed, 0);
+    assert_eq!(preview.completion, "complete");
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE account_id=?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count preview routes");
+    assert_eq!(remaining, 1);
+
+    let deferred = crate::maintenance::retention_test_with_work_budget(
+        Duration::ZERO,
+        crate::maintenance::run_retention_owner_task(
+            &pool,
+            &config,
+            "model_route_expiry",
+            false,
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("run model route deferred owner");
+    assert_eq!(deferred.discovered, 1);
+    assert_eq!(deferred.selected, 0);
+    assert_eq!(deferred.committed, 0);
+    assert_eq!(deferred.completion, "deferred");
+    assert_eq!(
+        deferred.wait_reason.as_deref(),
+        Some("retention_work_budget")
+    );
+
+    let remaining_after_defer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE account_id=?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count deferred routes");
+    assert_eq!(remaining_after_defer, 1);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn ownership_initialization_preserves_controls_and_recovers_interrupted_schedule_write() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();
