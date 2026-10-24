@@ -2,7 +2,9 @@
 """Deterministic unit checks for benchmark aggregation and validity rules."""
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,7 +34,63 @@ class BenchmarkAggregationTests(unittest.TestCase):
 
     def test_retry_count_is_read_from_output(self):
         self.assertEqual(MODULE.retry_count("1 retry, 2 retries"), 2)
+        self.assertEqual(MODULE.retry_count("1 retry"), 1)
         self.assertEqual(MODULE.retry_count("all tests passed"), 0)
+
+    def test_frontend_acceptance_requires_the_full_improvement_gate(self):
+        metadata = {
+            "baseline_sha": "baseline",
+            "candidate_sha": "candidate",
+            "stage": "frontend",
+            "profile": "pr",
+            "rounds": 7,
+        }
+        samples = []
+        order = 1
+        for version in ("baseline", "candidate"):
+            samples.append(
+                MODULE.Sample(
+                    version, "frontend", "pr", None, "warmup", order, (), "source", version,
+                    100.0 if version == "baseline" else 90.0, 1.0, 1, 0, 0, True, "log",
+                )
+            )
+            order += 1
+        for pair in range(1, 8):
+            for version, wall in (("baseline", 100.0), ("candidate", 90.0)):
+                samples.append(
+                    MODULE.Sample(
+                        version, "frontend", "pr", pair, "warm", order, (), "source", version,
+                        wall, 1.0, 1, 0, 0, True, "log",
+                    )
+                )
+                order += 1
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            MODULE.write_summary(output, metadata, samples)
+            summary = json.loads((output / "summary.json").read_text())
+        self.assertTrue(summary["acceptance"]["passed"])
+        self.assertEqual(summary["candidate_faster_pairs"], 7)
+
+    def test_invalid_warm_sample_fails_acceptance(self):
+        metadata = {
+            "baseline_sha": "baseline",
+            "candidate_sha": "candidate",
+            "stage": "frontend",
+            "profile": "pr",
+            "rounds": 7,
+        }
+        samples = [
+            MODULE.Sample(
+                version, "frontend", "pr", None, "warmup", index, (), "source", version,
+                100.0, 1.0, 1, 0, 0, True, "log",
+            )
+            for index, version in enumerate(("baseline", "candidate"), start=1)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            MODULE.write_summary(output, metadata, samples)
+            summary = json.loads((output / "summary.json").read_text())
+        self.assertFalse(summary["acceptance"]["passed"])
 
 
 if __name__ == "__main__":

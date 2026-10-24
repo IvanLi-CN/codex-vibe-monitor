@@ -108,7 +108,9 @@ class MockValidationEventSource implements EventTarget {
 
   dispatchEvent(event: Event): boolean {
     const current = Array.from(this.listeners.get(event.type) ?? []);
-    current.forEach((listener) => listener(event));
+    current.forEach((listener) => {
+      listener(event);
+    });
     return true;
   }
 

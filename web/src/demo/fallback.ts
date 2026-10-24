@@ -20,7 +20,10 @@ export function installDemoFetchFallback(
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request && init == null ? input : new Request(input, init);
+    const request =
+      input instanceof Request && init == null
+        ? input
+        : new Request(new URL(input.toString(), window.location.href), init);
     if (isDemoApiRequest(request)) {
       return handleDemoRequest(request);
     }

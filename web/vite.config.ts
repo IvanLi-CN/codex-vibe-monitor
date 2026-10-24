@@ -157,6 +157,7 @@ const ACCOUNT_POOL_SUITE_SCOPE_KEYS = [
   "mockBulkSyncPage",
   "mockAccountsPage",
   "mockRosterFreshnessPage",
+  "storage",
   "host",
   "root",
   "dateNowSpy",

@@ -569,6 +569,7 @@ const UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS = [
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 const originalResizeObserver = globalThis.ResizeObserver;
+const originalConsoleError = console.error.bind(console);
 const storage = new Map<string, string>();
 let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null;
 const localStorageMock = {
@@ -649,6 +650,7 @@ beforeEach(() => {
     if (message.includes("not wrapped in act") || message.includes("The result of getSnapshot")) {
       return;
     }
+    originalConsoleError(...args);
   });
   window.scrollBy = vi.fn();
 });
