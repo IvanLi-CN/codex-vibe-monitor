@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
-  "candidate_head_sha": "099033e5",
-  "implementation_commit": "099033e5",
+  "candidate_head_sha": "148e5d63",
+  "implementation_commit": "148e5d63",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -46,9 +46,10 @@
         "evidence": [
           "scripts/summary-production-exact-oracle.py",
           "scripts/test-summary-production-exact-oracle.py::ExactOracleTimeTests",
+          "scripts/test-summary-production-exact-oracle.py::ExactOracleUsageTests",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle"
         ],
-        "status": "implemented; naive-Shanghai boundary oracle unit tests passed; representative-scale execution pending CI"
+        "status": "implemented; naive-Shanghai boundary and mixed-case usage oracle unit tests passed; representative-scale execution pending CI"
       },
       {
         "id": "A4",
@@ -57,7 +58,7 @@
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "implemented; local static validation passed with deadline-bounded SQLite reads/publication, pressure execution pending CI"
+        "status": "implemented; local static validation passed with deadline-bounded SQLite reads, rollback/close cleanup, and publication; pressure execution pending CI"
       },
       {
         "id": "A5",
@@ -98,7 +99,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head 099033e5; CI and Tier 4 review pending"
+        "status": "PR #1181 implementation head 148e5d63; CI and Tier 4 review pending"
       }
     ]
   },

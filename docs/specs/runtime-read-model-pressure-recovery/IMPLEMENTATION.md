@@ -66,8 +66,9 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   clears unpublishable staging before rebuilding. Page staging uses a dedicated
   SQLite connection with the same transaction budget as its busy timeout and
   SQLite progress handler; cancellation rolls back and closes that connection
-  before the worker releases admission, so an interrupted transaction is never
-  returned to the pool. Append-only live-tail changes do not clear committed
+  within the remaining transaction deadline, and drops it when that deadline is
+  exhausted, so an interrupted transaction is never returned to the pool.
+  Append-only live-tail changes do not clear committed
   historical staging; completed staging is
   published against its coverage fence and newer exact terminal deltas are
   overlaid at read time. Only completed staging that still matches the coverage
@@ -189,8 +190,10 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   publication, so degraded totals cannot be mistaken for exact totals.
 - The independent exactness oracle interprets naive canonical `occurred_at`
   values as `Asia/Shanghai`, matching SQLite storage, before reducing
-  `today`, `yesterday`, and `previous7d`; a focused regression covers local
-  midnight boundaries.
+  `today`, `yesterday`, and `previous7d`; usage grouping preserves the source
+  case of `responseModel` and `reasoningEffort`, matching the production
+  reducer. Focused regressions cover local midnight boundaries and mixed-case
+  usage groups.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
