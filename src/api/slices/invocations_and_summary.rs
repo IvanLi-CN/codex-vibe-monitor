@@ -30415,6 +30415,21 @@ async fn fetch_summary_inner(
             reporting_tz,
             account_id,
         );
+    if source_gap_unavailable
+        && source_gap_recovery_applicable
+        && let Some(response) = dashboard_recovery_response_if_ready(
+            state.as_ref(),
+            projection.as_ref(),
+            &window,
+            reporting_tz,
+            account_id,
+            &deltas,
+            true,
+        )
+        .await?
+    {
+        return Ok(Json(response));
+    }
     if source_gap_unavailable {
         return Err(summary_source_gap_unavailable_error(
             state.as_ref(),
