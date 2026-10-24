@@ -10,13 +10,13 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## Current Status
 
-执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；当前修复又让 owner 成功分类显式接收 `dry_run`，使任何有候选的预演记录 `complete`、`committed=0` 并单独保留等待诊断，无候选且存在等待原因时仍为 `deferred`，同时保留真实运行的 `partial`/`deferred` 边界。新增 stateful SQLite 回归通过真实 `model_route_expiry` owner 核对预演不变更和写准入延期；此前真实离线 CLI 的归档提交后 backlog 观测失败回归仍保留，核对源转换、归档文件及持久 `complete`/`backlog_unknown` 事实。当前候选尚待发布、当前 head 的 GitHub Actions 编译与回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
+执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；当前修复又让 owner 成功分类显式接收 `dry_run`，使任何有候选的预演记录 `complete`、`committed=0` 并单独保留等待诊断，无候选且存在等待原因时仍为 `deferred`，同时保留真实运行的 `partial`/`deferred` 边界。新增 stateful SQLite 回归通过真实 `model_route_expiry` owner 核对预演不变更和写准入延期；此前真实离线 CLI 的归档提交后 backlog 观测失败回归仍保留，核对源转换、归档文件及持久 `complete`/`backlog_unknown` 事实。Exact head `b943aa273d32652ec70dbbf91a8a069bdd2675fc` 的 source-quality policy 曾拒绝未登记的 `#[expect(clippy::too_many_arguments)]`，当前修复改用显式 owner facts 聚合且不新增 suppression。当前候选尚待发布、当前 head 的 GitHub Actions 编译与回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
 
 候选身份工具已区分普通进度文档同步与修改绑定证明记录的证据载体，前者绑定真实 checkout、GitHub SHA 和二进制，后者继续严格要求四份文件及直接实现父提交。临时 Git 历史回归和质量门禁合同检查通过，不表示归档迁移或持续性能验证通过。
 
 ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文件许可、主库 SQL 与压力等待阻塞其他文件任务的问题仍待实现修复；文件阶段公平性、取消后的 native 排空、重新准入身份复验，以及执行耗时／服务速率与调度等待分离的验收均未完成。该设计确认不构成容量目标通过或已部署的证据。
 
-计量候选已在 owner 返回后冻结单调执行耗时，包含任务内等待、重试、native 排空及到达率查询尾部；持久执行耗时与每个数据集的提交速率、未舍入倍率使用该同一分母，调度器放行前等待独立记录。在线 runtime 和离线 CLI 的成功、失败路径复用同一冻结终结入口；真实离线 CLI 回归核对持久执行身份、起止时间、耗时和工作量样本，成功归档另核对提交速率及倍率使用持久耗时。未知耗时不产生零值直方图样本，明确测得的零值保留。866 条选中且全部提交、必要阶段成功时为本轮完成；任何有候选的 dry-run 预演同样报告 `complete` 但不伪造提交并保留等待诊断，无候选且存在等待原因时为 `deferred`，真实运行的 partial/deferred 仍按已提交边界分类；历史等待原因与剩余全局积压不再强制部分完成，必要阶段失败仍保留失败事实。新增回归尚待 GitHub Actions 验证，文件互斥和执行效率改动仍未实现，不以此计量修正签发持续 10 倍性能验收。
+计量候选已在 owner 返回后冻结单调执行耗时，包含任务内等待、重试、native 排空及到达率查询尾部；持久执行耗时与每个数据集的提交速率、未舍入倍率使用该同一分母，调度器放行前等待独立记录。在线 runtime 和离线 CLI 的成功、失败路径复用同一冻结终结入口；真实离线 CLI 回归核对持久执行身份、起止时间、耗时和工作量样本，成功归档另核对提交速率及倍率使用持久耗时。未知耗时不产生零值直方图样本，明确测得的零值保留。866 条选中且全部提交、必要阶段成功时为本轮完成；任何有候选的 dry-run 预演同样报告 `complete` 但不伪造提交并保留等待诊断，无候选且存在等待原因时为 `deferred`，真实运行的 partial/deferred 仍按已提交边界分类；历史等待原因与剩余全局积压不再强制部分完成，必要阶段失败仍保留失败事实。当前修复移除 CI source-quality policy 拒绝的未登记 suppression，不改变 owner 分类或真实 stateful 回归范围。新增回归尚待 GitHub Actions 验证，文件互斥和执行效率改动仍未实现，不以此计量修正签发持续 10 倍性能验收。
 
 ### Sustained convergence acceptance
 
