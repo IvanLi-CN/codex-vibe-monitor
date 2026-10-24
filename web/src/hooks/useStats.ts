@@ -304,6 +304,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const [httpErrorCode, setHttpErrorCode] = useState<string | null>(null);
   const pendingRecoveryRetryAttempt = useRef(0);
   const pendingRecoveryRetryRequestKey = useRef<string | null>(null);
+  const [pendingRecoveryRetryTick, setPendingRecoveryRetryTick] = useState(0);
 
   const loadHttpSummary = useCallback(async () => {
     const requestKey = [window, options?.limit ?? "", options?.upstreamAccountId ?? ""].join("\0");
@@ -353,16 +354,17 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       return undefined;
     }
     const attempt = pendingRecoveryRetryAttempt.current;
-    const delayMs = SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS[attempt];
-    if (delayMs == null) {
-      return undefined;
-    }
+    const delayMs =
+      SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS[
+        Math.min(attempt, SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS.length - 1)
+      ];
     const timerId = globalThis.setTimeout(() => {
       pendingRecoveryRetryAttempt.current += 1;
+      setPendingRecoveryRetryTick((tick) => tick + 1);
       void loadHttpSummary();
     }, delayMs);
     return () => globalThis.clearTimeout(timerId);
-  }, [httpErrorCode, loadHttpSummary, supportsPureSse]);
+  }, [httpErrorCode, loadHttpSummary, pendingRecoveryRetryTick, supportsPureSse]);
 
   useEffect(() => {
     if (supportsPureSse) {

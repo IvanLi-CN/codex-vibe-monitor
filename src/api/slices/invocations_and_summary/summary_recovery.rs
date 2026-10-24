@@ -260,6 +260,8 @@ pub(crate) async fn summary_source_gap_unavailable_error(
     recovery_applicable: bool,
     message: &'static str,
 ) -> ApiError {
+    // The recovery checkpoint is intentionally fixed to Asia/Shanghai by the Spec. Other
+    // reporting zones keep the generic unavailable contract until a matching staged range exists.
     if recovery_applicable
         && reporting_tz.to_string() == SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE
         && summary_dashboard_recovery_window_name(window).is_some()

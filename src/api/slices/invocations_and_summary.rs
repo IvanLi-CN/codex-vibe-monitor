@@ -33939,13 +33939,14 @@ mod request_compression_query_tests {
             .summary_projection()
             .await
             .expect("published projection");
+        let historical_gap_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
         let gap = DeltaGapProof {
             cursor: SummaryDeltaCursor(4),
             terminal_sequence: Some(4),
             source_gap: false,
             compaction_gap: false,
             upstream_account_id: Some(42),
-            occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
+            occurred_at: historical_gap_at,
             row_id: Some(i64::MAX),
             invoke_id: Some("summary-delta-gap-tail".to_string()),
         };

@@ -194,6 +194,37 @@ describe("useSummary", () => {
     }
   });
 
+  it("keeps polling pending recovery at the capped delay", async () => {
+    vi.useFakeTimers();
+    const pending = () =>
+      new ApiRequestError(503, "Request failed: 503", {
+        code: "summary_recovery_pending",
+      });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      apiMocks.fetchSummary.mockRejectedValueOnce(pending());
+    }
+    apiMocks.fetchSummary.mockResolvedValueOnce({
+      totalCount: 10,
+      successCount: 9,
+      failureCount: 1,
+    } as StatsResponse);
+
+    try {
+      render(<Probe window="yesterday" />);
+      await flushAsync();
+      for (const delayMs of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000]) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delayMs);
+        });
+      }
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(7);
+      expect(text("total")).toBe("10");
+      expect(text("error-code")).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses HTTP for previous7d summaries", async () => {
     apiMocks.fetchSummary.mockResolvedValue({
       totalCount: 17,

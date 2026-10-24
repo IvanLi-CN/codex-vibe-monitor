@@ -2117,6 +2117,9 @@ fn select_compacted_source_recovery_candidates(
     let mut selected_bytes = 0usize;
     let mut selected_rows = Vec::with_capacity(page.len());
     for row in page {
+        if selected_rows.len() >= SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE {
+            break;
+        }
         let row_bytes = usize::try_from(row.estimated_bytes)
             .context("compacted source recovery byte estimate overflow")?;
         if selected_rows.is_empty() && row_bytes > SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES {
@@ -2542,28 +2545,124 @@ fn is_sqlite_contention(error: &anyhow::Error) -> bool {
     })
 }
 
+const COMPACTED_SOURCE_RECOVERY_STATE_UPDATE_SQL: &str = "UPDATE summary_compacted_source_recovery_checkpoint SET state = ?1, last_error_code = ?2,\
+                last_error_message = ?3, updated_at = datetime('now') WHERE scope = ?4";
+
 async fn update_compacted_source_recovery_state(
     state: &AppState,
     recovery_state: SummaryCompactedSourceRecoveryState,
     error_code: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<()> {
-    sqlx::query(
-        "UPDATE summary_compacted_source_recovery_checkpoint SET state = ?1, last_error_code = ?2,\
-                last_error_message = ?3, updated_at = datetime('now') WHERE scope = ?4",
-    )
-    .bind(recovery_state.as_str())
-    .bind(error_code)
-    .bind(error_message.map(|message| message.chars().take(256).collect::<String>()))
-    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-    .execute(&state.pool)
-    .await
-    .context("update compacted source recovery state")?;
+    sqlx::query(COMPACTED_SOURCE_RECOVERY_STATE_UPDATE_SQL)
+        .bind(recovery_state.as_str())
+        .bind(error_code)
+        .bind(error_message.map(|message| message.chars().take(256).collect::<String>()))
+        .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+        .execute(&state.pool)
+        .await
+        .context("update compacted source recovery state")?;
     state
         .subscription_hub
         .set_summary_compacted_source_recovery_state(recovery_state)
         .await;
     Ok(())
+}
+
+async fn update_compacted_source_recovery_state_bounded(
+    state: &AppState,
+    recovery_state: SummaryCompactedSourceRecoveryState,
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+    budget: Duration,
+) -> Result<bool> {
+    if budget.is_zero() {
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(recovery_state)
+            .await;
+        return Ok(false);
+    }
+    let started = Instant::now();
+    let deadline = started + budget;
+    let options = state
+        .pool
+        .connect_options()
+        .as_ref()
+        .clone()
+        .busy_timeout(budget);
+    let mut connection =
+        match tokio::time::timeout(budget, SqliteConnection::connect_with(&options)).await {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(error)) => {
+                let error = anyhow!(error).context("open bounded recovery state connection");
+                if is_sqlite_contention(&error) {
+                    state
+                        .subscription_hub
+                        .set_summary_compacted_source_recovery_state(recovery_state)
+                        .await;
+                    return Ok(false);
+                }
+                return Err(error);
+            }
+            Err(_) => {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(recovery_state)
+                    .await;
+                return Ok(false);
+            }
+        };
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = interrupted.clone();
+        let mut handle = connection
+            .lock_handle()
+            .await
+            .context("acquire bounded recovery state progress handle")?;
+        handle.set_progress_handler(1_000, move || {
+            let keep_running = Instant::now() < deadline;
+            if !keep_running {
+                interrupted.store(true, Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    let remaining = budget.saturating_sub(started.elapsed());
+    let result = if remaining.is_zero() {
+        Ok(false)
+    } else {
+        match tokio::time::timeout(
+            remaining,
+            sqlx::query(COMPACTED_SOURCE_RECOVERY_STATE_UPDATE_SQL)
+                .bind(recovery_state.as_str())
+                .bind(error_code)
+                .bind(error_message.map(|message| message.chars().take(256).collect::<String>()))
+                .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+                .execute(&mut connection),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Ok(true),
+            Ok(Err(error)) => {
+                let budget_expired =
+                    interrupted.load(Ordering::Acquire) || Instant::now() >= deadline;
+                let error = anyhow!(error);
+                if budget_expired || is_sqlite_contention(&error) {
+                    Ok(false)
+                } else {
+                    Err(error.context("update bounded recovery state"))
+                }
+            }
+            Err(_) => Ok(false),
+        }
+    };
+    close_compacted_source_recovery_connection(connection).await?;
+    state
+        .subscription_hub
+        .set_summary_compacted_source_recovery_state(recovery_state)
+        .await;
+    result
 }
 
 async fn compacted_source_recovery_staged_totals_match_source(
@@ -2846,27 +2945,39 @@ async fn run_compacted_source_recovery_turn(
         | SummaryCompactedSourceRecoveryState::Running
         | SummaryCompactedSourceRecoveryState::Deferred => {}
     }
-    update_compacted_source_recovery_state(
+    let started = Instant::now();
+    if !update_compacted_source_recovery_state_bounded(
         state,
         SummaryCompactedSourceRecoveryState::Running,
         None,
         None,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
     )
-    .await?;
-    let started = Instant::now();
+    .await?
+    {
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(
+                SummaryCompactedSourceRecoveryState::Deferred,
+            )
+            .await;
+        return Ok(Some(SummaryCoverageRecoveryTurn {
+            next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+            reservation: None,
+        }));
+    }
     loop {
         let Some(checkpoint) = load_compacted_source_recovery_checkpoint(&state.pool).await? else {
             return Ok(None);
         };
         let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
         if started.elapsed() >= SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET {
-            update_compacted_source_recovery_state(
-                state,
-                SummaryCompactedSourceRecoveryState::Deferred,
-                None,
-                None,
-            )
-            .await?;
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
             return Ok(Some(SummaryCoverageRecoveryTurn {
                 next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
                 reservation: Some(
@@ -2884,11 +2995,12 @@ async fn run_compacted_source_recovery_turn(
         {
             Ok(result) => result,
             Err(_) => {
-                update_compacted_source_recovery_state(
+                let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
                     None,
                     None,
+                    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()),
                 )
                 .await?;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
@@ -2904,11 +3016,13 @@ async fn run_compacted_source_recovery_turn(
                 Ok(selection) => selection,
                 Err(error) => {
                     let message = error.to_string();
-                    update_compacted_source_recovery_state(
+                    let _ = update_compacted_source_recovery_state_bounded(
                         state,
                         SummaryCompactedSourceRecoveryState::Failed,
                         Some(SUMMARY_RECOVERY_FAILED_CODE),
                         Some(&message),
+                        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET
+                            .saturating_sub(started.elapsed()),
                     )
                     .await?;
                     return Ok(None);
@@ -2924,11 +3038,12 @@ async fn run_compacted_source_recovery_turn(
         {
             Ok(result) => result?,
             Err(_) => {
-                update_compacted_source_recovery_state(
+                let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
                     None,
                     None,
+                    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()),
                 )
                 .await?;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
@@ -2952,11 +3067,12 @@ async fn run_compacted_source_recovery_turn(
         .await
         {
             Err(error) if is_sqlite_contention(&error) => {
-                update_compacted_source_recovery_state(
+                let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
                     None,
                     None,
+                    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()),
                 )
                 .await?;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
@@ -2966,11 +3082,12 @@ async fn run_compacted_source_recovery_turn(
             }
             Err(error) => {
                 warn!(error = ?error, "compacted source recovery page failed");
-                update_compacted_source_recovery_state(
+                let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Failed,
                     Some(SUMMARY_RECOVERY_FAILED_CODE),
                     Some(&error.to_string()),
+                    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()),
                 )
                 .await?;
                 return Ok(None);
@@ -3011,11 +3128,12 @@ async fn run_compacted_source_recovery_turn(
             }));
         }
         if deferred || started.elapsed() >= SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET {
-            update_compacted_source_recovery_state(
+            let _ = update_compacted_source_recovery_state_bounded(
                 state,
                 SummaryCompactedSourceRecoveryState::Deferred,
                 None,
                 None,
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()),
             )
             .await?;
             return Ok(Some(SummaryCoverageRecoveryTurn {
