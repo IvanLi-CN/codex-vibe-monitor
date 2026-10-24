@@ -218,11 +218,13 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
             .expect("complete staged compacted source recovery");
         let recovery_checkpoint =
             sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, i64, i64)>(
-                "SELECT state, cursor_occurred_at, cursor_id, processed_rows,\
-                    target_live_high_watermark_id, target_coverage_revision,\
-                    target_account_coverage_revision\
-               FROM summary_compacted_source_recovery_checkpoint\
-              WHERE scope = 'dashboard'",
+                r#"
+                    SELECT state, cursor_occurred_at, cursor_id, processed_rows,
+                           target_live_high_watermark_id, target_coverage_revision,
+                           target_account_coverage_revision
+                      FROM summary_compacted_source_recovery_checkpoint
+                     WHERE scope = 'dashboard'
+                "#,
             )
             .fetch_optional(&state.pool)
             .await
