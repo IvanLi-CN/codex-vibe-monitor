@@ -92,7 +92,8 @@
 ### Testing
 
 - Unit tests: runtime parsing, scene/model reset, redaction and route handlers.
-- E2E tests: route matrix, Inspector sharing, simulated mutation and network failure inside the existing Playwright job.
+- Route coverage is a shared 26-route x 4-scene (104-case) matrix. The jsdom integration suite mounts the real `App`, router, providers, demo handlers, and EventSource fallback for every matrix case; Chromium keeps all 26 operational routes plus four representative routes for attention, empty, and network-failure scenes, together with sharing, mutation, mobile, and security scenarios.
+- E2E tests: the shared route matrix contract, Inspector sharing, simulated mutation and network failure inside the existing Playwright job. CI invokes one functional project batch and one performance batch in PRs; main adds the isolated timeline-capacity batch.
 
 ### UI / Storybook (if applicable)
 
@@ -104,6 +105,7 @@
 ### Quality checks
 
 - `bun run lint`, `bun run test`, `bun run test-storybook`, demo build, Storybook build and Pages assembly smoke.
+- Test-runtime changes must be measured with `scripts/benchmark-web-tests.py` on the fixed Bun/Chromium environment. Each report keeps JSONL samples, median/MAD summaries, failed samples, source SHAs, and cache policy; only successful zero-retry paired samples can satisfy an acceptance comparison.
 
 ## Visual Evidence
 

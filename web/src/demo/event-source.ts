@@ -149,10 +149,10 @@ export function isDemoTopicEventSourcePath(requestPath: string, baseUrl: string)
   return requestUrl.pathname === eventsUrl.pathname;
 }
 
-export function installDemoEventSource() {
-  if (typeof window === "undefined") return;
+export function installDemoEventSource(): () => void {
+  if (typeof window === "undefined") return () => undefined;
   const demoWindow = window as DemoEventSourceWindow;
-  if (demoWindow[DEMO_EVENT_SOURCE_KEY]) return;
+  if (demoWindow[DEMO_EVENT_SOURCE_KEY]) return () => undefined;
 
   const NativeEventSource = window.EventSource;
   window.__CVM_DEMO_CREATE_EVENT_SOURCE__ = (path) => {
@@ -163,4 +163,9 @@ export function installDemoEventSource() {
     return new NativeEventSource(path);
   };
   demoWindow[DEMO_EVENT_SOURCE_KEY] = true;
+  return () => {
+    window.EventSource = NativeEventSource;
+    delete window.__CVM_DEMO_CREATE_EVENT_SOURCE__;
+    delete demoWindow[DEMO_EVENT_SOURCE_KEY];
+  };
 }

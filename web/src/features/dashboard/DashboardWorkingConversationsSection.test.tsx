@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { fireEvent, waitFor } from "@testing-library/dom";
+import { fireEvent } from "@testing-library/dom";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -570,6 +570,7 @@ let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 const originalResizeObserver = globalThis.ResizeObserver;
 const storage = new Map<string, string>();
+let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null;
 const localStorageMock = {
   getItem: (key: string) => storage.get(key) ?? null,
   setItem: (key: string, value: string) => {
@@ -643,6 +644,12 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    const message = String(args[0] ?? "");
+    if (message.includes("not wrapped in act") || message.includes("The result of getSnapshot")) {
+      return;
+    }
+  });
   window.scrollBy = vi.fn();
 });
 
@@ -666,8 +673,14 @@ afterEach(() => {
   upstreamAccountActivityMock.calls = [];
   window.localStorage.clear();
   globalThis.ResizeObserver = originalResizeObserver;
+  consoleErrorSpy?.mockRestore();
+  consoleErrorSpy = null;
   vi.restoreAllMocks();
 });
+
+async function waitFor<T>(callback: () => T | Promise<T>): Promise<T> {
+  return vi.waitFor(callback, { interval: 1, timeout: 1_000 });
+}
 
 function renderSection(
   response: PromptCacheConversationsResponse,

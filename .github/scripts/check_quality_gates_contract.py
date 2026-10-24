@@ -1415,46 +1415,37 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         e2e_run = str(e2e_run_step.get("run", ""))
         require(
-            "records-filter-overlay.spec.ts" in e2e_run
-            and "demo-runtime.spec.ts" in e2e_run
-            and "dashboard-working-conversations-layout.spec.ts" in e2e_run
-            and "dashboard-render-performance.spec.ts" in e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression specs",
+            "playwright.ci.config.ts" in e2e_run
+            and "--project=fixtures-functional" in e2e_run
+            and "--project=demo-functional" in e2e_run
+            and "--project=performance" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression projects",
         )
         require(
-            "--output=test-results/records-overlay" in e2e_run
-            and "--output=test-results/demo-runtime" in e2e_run
-            and "--output=test-results/dashboard-working-conversations" in e2e_run
-            and "--output=test-results/dashboard-render-performance" in e2e_run,
+            "--output=test-results/functional" in e2e_run
+            and "--output=test-results/performance" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate all Playwright result directories",
         )
         expected_e2e_run = "\n".join(
             [
                 "set -euo pipefail",
-                "records_status=0",
-                "demo_status=0",
-                "dashboard_status=0",
+                "functional_status=0",
                 "performance_status=0",
-                "retention_status=0",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts || records_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts || demo_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-retention-ownership \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/retention-ownership retention-maintenance-ownership.spec.ts || retention_status=$?",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts || dashboard_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?",
-                "exit $(( records_status || demo_status || dashboard_status || performance_status || retention_status ))",
+                "CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
+                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?",
+                "CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 \\",
+                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
+                "exit $(( functional_status || performance_status ))",
             ]
         )
         require(
             e2e_run.strip() == expected_e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all four Playwright specs serially and propagate each status",
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run the functional and performance batches serially and propagate each status",
         )
         require(
-            "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,
+            "E2E_DEMO_BASE_URL=http://127.0.0.1:60083" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must run Web Demo against its mock-only server",
         )
         smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
