@@ -1408,6 +1408,23 @@ export const RecoveryPending: Story = {
       defaultViewport: "desktop1280",
     },
   },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByTestId("today-stats-metrics-grid")).toBeVisible();
+      expect(canvas.getByTestId("today-stats-error-overlay")).toBeVisible();
+      expect(canvas.getByTestId("today-stats-error-overlay")).toHaveTextContent(
+        /后台恢复|recovery/i,
+      );
+    });
+    await expect(canvas.getByTestId("today-stats-metrics-grid")).toHaveAttribute("inert", "");
+    await expect(canvas.getByTestId("today-stats-metrics-state")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    await expect(canvas.getAllByTestId("today-stats-metric-tile")).toHaveLength(7);
+    await expect(canvas.getByTestId("today-stats-value-tpm-loading")).toBeVisible();
+  },
 };
 
 export const RecoveryFailed: Story = {
@@ -1422,5 +1439,19 @@ export const RecoveryFailed: Story = {
     viewport: {
       defaultViewport: "desktop1280",
     },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByTestId("today-stats-metrics-grid")).toBeVisible();
+      expect(canvas.getByTestId("today-stats-error-overlay")).toBeVisible();
+      expect(canvas.getByTestId("today-stats-error-overlay")).toHaveTextContent(
+        /恢复失败|recovery/i,
+      );
+    });
+    await expect(canvas.getByTestId("today-stats-metrics-grid")).toHaveAttribute("inert", "");
+    await expect(canvas.getByTestId("today-stats-metrics-state")).not.toHaveAttribute("aria-busy");
+    await expect(canvas.getAllByTestId("today-stats-metric-tile")).toHaveLength(7);
+    await expect(canvas.getByTestId("today-stats-value-tpm-loading")).toBeVisible();
   },
 };

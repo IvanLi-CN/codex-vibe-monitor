@@ -259,7 +259,20 @@ describe("TodayStatsOverview", () => {
 
     expect(host?.textContent).toContain("Summary recovery pending");
     expect(host?.textContent).not.toContain("Load error");
-    expect(host?.querySelector('[data-testid="today-stats-metrics-grid"]')).toBeNull();
+    const pendingGrid = host?.querySelector('[data-testid="today-stats-metrics-grid"]');
+    expect(pendingGrid).not.toBeNull();
+    expect(pendingGrid?.getAttribute("aria-hidden")).toBe("true");
+    expect(pendingGrid?.getAttribute("inert")).toBe("");
+    expect(pendingGrid?.className).toContain("pointer-events-none");
+    expect(
+      host?.querySelector('[data-testid="today-stats-metrics-state"]')?.getAttribute("aria-busy"),
+    ).toBe("true");
+    expect(host?.querySelector('[data-testid="today-stats-error-overlay"]')).not.toBeNull();
+    expect(host?.querySelector('[role="alert"]')?.textContent).toContain(
+      "Summary recovery pending",
+    );
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7);
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm-loading"]')).not.toBeNull();
 
     act(() => {
       root?.render(
@@ -272,6 +285,14 @@ describe("TodayStatsOverview", () => {
       );
     });
     expect(host?.textContent).toContain("Summary recovery failed");
+    const failedGrid = host?.querySelector('[data-testid="today-stats-metrics-grid"]');
+    expect(failedGrid).not.toBeNull();
+    expect(failedGrid?.getAttribute("inert")).toBe("");
+    expect(host?.querySelector('[data-testid="today-stats-error-overlay"]')).not.toBeNull();
+    expect(host?.querySelector('[role="alert"]')?.textContent).toContain("Summary recovery failed");
+    expect(
+      host?.querySelector('[data-testid="today-stats-metrics-state"]')?.getAttribute("aria-busy"),
+    ).toBeNull();
   });
 
   it("reuses same-progress comparisons on live-clock rerenders and refreshes changed series", () => {

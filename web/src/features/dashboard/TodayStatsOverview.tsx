@@ -310,7 +310,7 @@ function MetricTile({
           {icon}
           <div
             data-testid={valueTestId ? `${valueTestId}-loading` : undefined}
-            className="h-8 w-full max-w-[7.5rem] animate-pulse rounded bg-base-300/65"
+            className="h-8 w-full max-w-[7.5rem] motion-safe:animate-pulse rounded bg-base-300/65"
           />
         </div>
       ) : displaySpec ? (
@@ -705,6 +705,15 @@ export function TodayStatsOverview({
       maximumFractionDigits: 4,
       presentation: "usage-breakdown",
     });
+  const summaryErrorMessage = error
+    ? errorCode === "summary_recovery_pending"
+      ? t("stats.cards.recoveryPending")
+      : errorCode === "summary_recovery_failed"
+        ? t("stats.cards.recoveryFailed")
+        : t("stats.cards.loadError", { error })
+    : null;
+  const metricsLoading = loading || summaryErrorMessage != null;
+  const metricsBusy = loading || errorCode === "summary_recovery_pending";
 
   const content = (
     <>
@@ -724,17 +733,15 @@ export function TodayStatsOverview({
         </div>
       ) : null}
 
-      {error ? (
-        <Alert variant="error">
-          {errorCode === "summary_recovery_pending"
-            ? t("stats.cards.recoveryPending")
-            : errorCode === "summary_recovery_failed"
-              ? t("stats.cards.recoveryFailed")
-              : t("stats.cards.loadError", { error })}
-        </Alert>
-      ) : (
+      <div
+        data-testid="today-stats-metrics-state"
+        className="relative"
+        aria-busy={metricsBusy ? "true" : undefined}
+      >
         <div
           data-testid="today-stats-metrics-grid"
+          aria-hidden={summaryErrorMessage != null ? "true" : undefined}
+          inert={summaryErrorMessage != null ? true : undefined}
           className={cn(
             "grid grid-cols-1 gap-3 min-[400px]:grid-cols-2",
             showLivePhaseSplit
@@ -742,6 +749,7 @@ export function TodayStatsOverview({
               : showInProgressConversations
                 ? "lg:grid-cols-4 xl:grid-cols-7"
                 : "lg:grid-cols-3 xl:grid-cols-6",
+            summaryErrorMessage != null && "pointer-events-none select-none",
           )}
         >
           <MetricTile
@@ -749,7 +757,7 @@ export function TodayStatsOverview({
             description={t("dashboard.today.tokensPerMinuteDescription")}
             value={tokensPerMinute}
             localeTag={localeTag}
-            loading={loading || rateLoading}
+            loading={metricsLoading || rateLoading}
             kind="integer"
             toneClass="text-primary"
             iconName="speedometer"
@@ -811,7 +819,7 @@ export function TodayStatsOverview({
             description={t("dashboard.today.spendRateDescription")}
             value={spendRate}
             localeTag={localeTag}
-            loading={loading || rateLoading}
+            loading={metricsLoading || rateLoading}
             toneClass="text-accent"
             iconName="cash-clock"
             valueTestId="today-stats-value-spend-rate"
@@ -847,7 +855,7 @@ export function TodayStatsOverview({
               description={parallelDescription}
               value={runningInvocationCount ?? 0}
               localeTag={localeTag}
-              loading={loading}
+              loading={metricsLoading}
               kind="integer"
               toneClass="text-info"
               iconName="send"
@@ -890,7 +898,7 @@ export function TodayStatsOverview({
               description={parallelDescription}
               value={displayedParallelCurrentCount ?? 0}
               localeTag={localeTag}
-              loading={loading}
+              loading={metricsLoading}
               kind="integer"
               toneClass="text-info"
               iconName="send"
@@ -925,7 +933,7 @@ export function TodayStatsOverview({
             label={t("dashboard.today.firstResponseTime")}
             description={t("dashboard.today.responseTimeDescription")}
             localeTag={localeTag}
-            loading={loading || rateLoading}
+            loading={metricsLoading || rateLoading}
             toneClass="text-secondary"
             iconName="timer-outline"
             valueTestId="today-stats-value-response-time"
@@ -982,7 +990,7 @@ export function TodayStatsOverview({
             description={t("dashboard.today.successDescription")}
             value={successCount}
             localeTag={localeTag}
-            loading={loading}
+            loading={metricsLoading}
             toneClass="text-success"
             iconName="check-circle-outline"
             valueTestId="today-stats-value-success"
@@ -1014,7 +1022,7 @@ export function TodayStatsOverview({
             description={t("dashboard.today.totalCostDescription")}
             value={totalCost}
             localeTag={localeTag}
-            loading={loading}
+            loading={metricsLoading}
             toneClass="text-accent"
             iconName="currency-usd"
             displaySpec={buildCurrencyAmountValueSpec(totalCost, localeTag)}
@@ -1058,7 +1066,7 @@ export function TodayStatsOverview({
             description={t("dashboard.today.totalTokensDescription")}
             value={totalTokens}
             localeTag={localeTag}
-            loading={loading}
+            loading={metricsLoading}
             preserveLabelCase
             labelTestId="today-stats-label-total-tokens"
             iconName="database-outline"
@@ -1099,7 +1107,27 @@ export function TodayStatsOverview({
             ]}
           />
         </div>
-      )}
+        {summaryErrorMessage ? (
+          <div
+            data-testid="today-stats-error-overlay"
+            className="pointer-events-auto absolute inset-0 z-10 flex items-start justify-center rounded-[inherit] bg-base-100/38 px-4 pt-5 backdrop-blur-[3px] sm:items-center sm:pt-0"
+          >
+            <Alert
+              role="alert"
+              aria-live="assertive"
+              variant="error"
+              className="w-full max-w-[min(100%,36rem)] items-start shadow-[var(--summary-recovery-overlay-shadow)] backdrop-blur-xl"
+            >
+              <AppIcon
+                name="alert-circle-outline"
+                className="mt-0.5 h-4 w-4 shrink-0"
+                aria-hidden
+              />
+              <span>{summaryErrorMessage}</span>
+            </Alert>
+          </div>
+        ) : null}
+      </div>
     </>
   );
 
