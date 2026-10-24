@@ -16,6 +16,8 @@ const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 // Keep the delayed request just beyond one refresh interval to exercise overlap
 // protection without adding an unnecessary fixed wait to every viewport.
 const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS + 250;
+// The dense render proof only needs an in-flight request; cross-refresh overlap is covered above.
+const DENSE_TRAVERSAL_DELAY_MS = 250;
 const REVISION_INTERVAL_MS = 1_000;
 const MINIMUM_LIVE_EVENTS = Math.max(
   10,
@@ -602,7 +604,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
         if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
         diagnostics.nextTraversalDelayMs = delayMs;
-      }, DELAYED_TRAVERSAL_MS);
+      }, DENSE_TRAVERSAL_DELAY_MS);
       const beforeRefresh = await page.evaluate(() => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;

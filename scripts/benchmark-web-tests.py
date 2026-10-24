@@ -155,7 +155,9 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     text = re.sub(
         r"\n// Keep the delayed request just beyond one refresh interval to exercise overlap\n"
         r"// protection without adding an unnecessary fixed wait to every viewport\.\n"
-        r"const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS \+ 250;\n",
+        r"const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS \+ 250;\n"
+        r"// The dense render proof only needs an in-flight request; cross-refresh overlap is covered above\.\n"
+        r"const DENSE_TRAVERSAL_DELAY_MS = 250;\n",
         "\n",
         text,
     )
@@ -168,6 +170,7 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
         "diagnostics.nextTraversalDelayMs = 20_000;",
     )
     text = text.replace("    }, DELAYED_TRAVERSAL_MS);", "    });")
+    text = text.replace("    }, DENSE_TRAVERSAL_DELAY_MS);", "    });")
     text = re.sub(
         r"\n    await new Promise<void>\(\(resolve\) => \{\n"
         r"      setTimeout\(resolve, 16_000\);\n"
