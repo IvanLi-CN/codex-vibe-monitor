@@ -2378,7 +2378,7 @@ async fn run_managed_task_worker(
         && let Some(duration_ms) = execution_duration_ms
         && let Some(details) = details.as_mut()
     {
-        crate::maintenance::retention::finalize_retention_owner_details(details, duration_ms);
+        crate::maintenance::finalize_retention_owner_details(details, duration_ms);
     }
     let workload_reason = details
         .as_ref()
