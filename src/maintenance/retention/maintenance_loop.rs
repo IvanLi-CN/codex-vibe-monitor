@@ -453,6 +453,13 @@ async fn remaining_invocation_archive_rows(
     let Some(source_max_id) = source_max_id else {
         return Ok(0);
     };
+    #[cfg(test)]
+    if RETENTION_TEST_BACKLOG_OBSERVATION_FAILURE
+        .try_with(|_| ())
+        .is_ok()
+    {
+        return Err(anyhow!("injected retention backlog observation failure"));
+    }
     let remaining = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1 AND id <= ?2",
     )
@@ -2614,22 +2621,6 @@ mod owner_fact_tests {
         apply_retention_owner_success(&mut summary, 1_200, 866, 866, 2, 0, Some(true));
 
         assert_eq!(summary.completion, "complete");
-        assert_eq!(summary.has_more, Some(true));
-    }
-
-    #[test]
-    fn failed_backlog_observation_keeps_fully_committed_owner_complete() {
-        let mut summary = RetentionOwnerRunSummary::new(
-            "retention_archive",
-            "expired_invocations:retention_policy",
-            "invocation rows",
-        );
-
-        mark_retention_owner_backlog_unknown(&mut summary);
-        apply_retention_owner_success(&mut summary, 866, 866, 866, 1, 0, Some(true));
-
-        assert_eq!(summary.completion, "complete");
-        assert_eq!(summary.wait_reason.as_deref(), Some("backlog_unknown"));
         assert_eq!(summary.has_more, Some(true));
     }
 
