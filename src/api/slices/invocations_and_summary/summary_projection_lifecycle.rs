@@ -4042,7 +4042,12 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
         )
         .await;
         let (mut restored, source_target_fence) = restore_summary_source_change_tail(state).await?;
-        if !restored {
+        if !restored
+            && !state
+                .subscription_hub
+                .summary_source_compaction_gap_active()
+                .await
+        {
             restored = restore_legacy_summary_source_tail(state).await?;
         }
         #[cfg(test)]

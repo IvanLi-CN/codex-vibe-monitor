@@ -560,6 +560,14 @@ impl SubscriptionHub {
         state.summary_delta_journal.clear_source_compaction_gap();
     }
 
+    pub(crate) async fn summary_source_compaction_gap_active(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .summary_delta_journal
+            .source_compaction_gap
+    }
+
     pub(crate) async fn record_summary_terminal_sequence_gap(&self, sequence: u64) {
         let mut state = self.state.lock().await;
         state
