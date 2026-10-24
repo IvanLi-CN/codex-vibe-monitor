@@ -393,7 +393,15 @@ function DashboardNaturalDayTodaySummaryOverview({
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
 }) {
-  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "today";
+  const activeSummary = useScopedSummary("today", upstreamAccountId);
+  const snapshotActive =
+    upstreamAccountId == null &&
+    dashboardActivity?.range === "today" &&
+    dashboardActivity != null &&
+    !activeSummary.isLoading &&
+    activeSummary.error == null &&
+    activeSummary.errorCode == null &&
+    dashboardActivityError == null;
   if (snapshotActive && dashboardActivity != null) {
     return (
       <DashboardNaturalDayTodaySummaryOverviewSnapshotBacked
@@ -412,6 +420,7 @@ function DashboardNaturalDayTodaySummaryOverview({
       dashboardActivity={dashboardActivity}
       dashboardActivityLoading={dashboardActivityLoading}
       dashboardActivityError={dashboardActivityError}
+      activeSummary={activeSummary}
     />
   );
 }
@@ -486,6 +495,7 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
   dashboardActivity,
   dashboardActivityLoading = false,
   dashboardActivityError = null,
+  activeSummary,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
   closedNaturalDay: boolean;
@@ -493,13 +503,14 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  activeSummary: ReturnType<typeof useScopedSummary>;
 }) {
   const {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
     errorCode: summaryErrorCode,
-  } = useScopedSummary("today", upstreamAccountId);
+  } = activeSummary;
   const { summary: comparisonSummary } = useScopedSummary("yesterday", upstreamAccountId);
   const { summary: previous7dSummary } = useScopedSummary("previous7d", upstreamAccountId);
   const { data: comparisonTimeseries } = useTimeseries(
@@ -582,7 +593,15 @@ function DashboardNaturalDayYesterdaySummaryOverview({
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
 }) {
-  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "yesterday";
+  const activeSummary = useScopedSummary("yesterday", upstreamAccountId);
+  const snapshotActive =
+    upstreamAccountId == null &&
+    dashboardActivity?.range === "yesterday" &&
+    dashboardActivity != null &&
+    !activeSummary.isLoading &&
+    activeSummary.error == null &&
+    activeSummary.errorCode == null &&
+    dashboardActivityError == null;
   if (snapshotActive && dashboardActivity != null) {
     return (
       <DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked
@@ -601,6 +620,7 @@ function DashboardNaturalDayYesterdaySummaryOverview({
       dashboardActivity={dashboardActivity}
       dashboardActivityLoading={dashboardActivityLoading}
       dashboardActivityError={dashboardActivityError}
+      activeSummary={activeSummary}
     />
   );
 }
@@ -676,6 +696,7 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
   dashboardActivity,
   dashboardActivityLoading = false,
   dashboardActivityError = null,
+  activeSummary,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
   closedNaturalDay: boolean;
@@ -683,13 +704,14 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  activeSummary: ReturnType<typeof useScopedSummary>;
 }) {
   const {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
     errorCode: summaryErrorCode,
-  } = useScopedSummary("yesterday", upstreamAccountId);
+  } = activeSummary;
   const { summary: comparisonSummary } = useScopedSummary("previous1d", upstreamAccountId);
   const { summary: previous7dSummary } = useScopedSummary("previous7d", upstreamAccountId);
   const { data: comparisonTimeseries } = useTimeseries(
@@ -892,7 +914,14 @@ function Dashboard24HourRangePanel({
     false,
     false,
   );
-  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "1d";
+  const snapshotActive =
+    upstreamAccountId == null &&
+    dashboardActivity?.range === "1d" &&
+    dashboardActivity != null &&
+    !isLoading &&
+    error == null &&
+    errorCode == null &&
+    dashboardActivityError == null;
   const {
     data: networkData,
     isLoading: networkLoading,

@@ -100,6 +100,11 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   fail closed until the source proof is unambiguous; a mixed compaction gap and
   strict scoped gap remains generic unavailable rather than claiming this
   recovery can resolve it.
+- Dashboard natural-day panels do not treat an already loaded activity snapshot as exact while
+  the matching `today` or `yesterday` Summary is loading or returns a coded recovery error. The
+  UI waits for the exact Summary state and routes pending/failed results through the existing
+  localized unavailable surface, so a retained snapshot cannot mask recovery with stale or zero
+  metrics.
 - ADR 0010 separates the immutable Summary Coverage Fence from the bounded live
   tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
   AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy

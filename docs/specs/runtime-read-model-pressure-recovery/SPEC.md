@@ -235,6 +235,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 6. 每个 checkpoint 的 GitHub release 由累计 integration frontier 生成；主人部署确认后才开始相关 Ticket 的只读 900 秒观察。
 7. 当 source journal compaction proof 使旧 tail 不再完整时，Supervisor 创建或续跑 Dashboard compacted-source checkpoint；每一页只读取 canonical 必要列，在同一事务中写聚合、受 `list_limit_max` 限制的 record identity、游标和状态，完成后再以 generation fence 发布内存 snapshot。
 8. 当 broad compaction proof 已生效时，rolling refresh 不再同时走 legacy source-tail fallback；该范围由 compacted-source recovery worker 独占修复，避免同一 canonical rows 被重复登记为 strict scoped gap，遮蔽已经精确发布的 generation-fenced snapshot。
+9. Dashboard natural-day panel 在对应 `today` 或 `yesterday` Summary 仍在 loading、pending 或 failed 时，不得把已存在的 activity snapshot 当作 exact 成功；必须沿用 coded unavailable 状态，避免旧 snapshot 或零值遮蔽恢复进度。
 
 ### Edge cases / errors
 
