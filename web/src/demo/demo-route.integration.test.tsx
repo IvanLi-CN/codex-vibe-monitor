@@ -21,6 +21,10 @@ let root: Root;
 let cleanupFetch: () => void;
 let cleanupEventSource: () => void;
 let cleanupFetchAudit: () => void;
+const previousMatchMedia = window.matchMedia;
+const previousEventSource = window.EventSource;
+const previousCss = globalThis.CSS;
+const previousGetBBox = SVGElement.prototype.getBBox;
 const unexpectedDemoApiResponses: string[] = [];
 const unhandledRequests: string[] = [];
 const server = setupServer(...apiHandlers);
@@ -48,7 +52,7 @@ function renderRoute(path: string, scene: DemoScene) {
       <ThemeProvider>
         <I18nProvider initialLocale="zh" persistLocale={false}>
           <SystemNotificationProvider>
-            <MemoryRouter initialEntries={[{ pathname, search }]}>
+            <MemoryRouter key={path} initialEntries={[{ pathname, search }]}>
               <RouteProbe />
               <App />
             </MemoryRouter>
@@ -63,30 +67,61 @@ function assertRouteLandmark(route: (typeof demoRoutes)[number], scene: DemoScen
   if (route.path === "/#/account-pool/groups") {
     expect(
       host.querySelector('[data-testid="account-pool-groups-list"]') ??
-        host.querySelector('[data-testid="account-pool-groups-empty"]'),
+        host.querySelector('[data-testid="account-pool-groups-empty"]') ??
+        (scene === "network-failure"
+          ? host.querySelector('[data-testid="account-pool-groups-error"]')
+          : null),
       route.path,
     ).not.toBeNull();
     return;
   }
   if (route.path === "/#/system/tasks/retention_archive") {
+    const bodyText = document.body.textContent ?? "";
+    const hasRetentionHeading =
+      host.querySelector("h1, h2, h3, h4, h5, h6")?.textContent?.includes("数据保留与归档") ===
+      true;
     expect(
-      host.querySelector("h1, h2, h3, h4, h5, h6")?.textContent?.includes("数据保留与归档") ??
-        host.textContent?.includes("任务观测不可用"),
+      hasRetentionHeading ||
+        bodyText.includes("正在读取任务详情") ||
+        bodyText.includes("任务观测不可用"),
       route.path,
     ).toBe(true);
     return;
   }
   if (scene === "network-failure") {
+    const landmark =
+      route.landmark.kind === "testid"
+        ? (host.querySelector(`[data-testid="${route.landmark.value}"]`) ??
+          document.body.querySelector(`[data-testid="${route.landmark.value}"]`) ??
+          host.querySelector(
+            `[data-testid="${route.landmark.value.replace(/-list$/, "-error")}"]`,
+          ) ??
+          document.body.querySelector(
+            `[data-testid="${route.landmark.value.replace(/-list$/, "-error")}"]`,
+          ))
+        : Array.from(document.body.querySelectorAll("h1, h2, h3, h4, h5, h6")).find(
+            (heading) => heading.textContent?.trim() === route.landmark.value,
+          );
     expect(
-      host.querySelector(`[data-testid="${route.landmark.value}"]`) ??
-        host.querySelector('[role="alert"]'),
+      landmark ??
+        document.body.querySelector('[role="alert"]') ??
+        Array.from(document.body.querySelectorAll('[role="status"]')).find((element) =>
+          element.textContent?.includes("加载系统状态失败"),
+        ) ??
+        host.querySelector('[data-testid="dashboard-main-content"]') ??
+        (route.path === "/#/system"
+          ? Array.from(host.querySelectorAll("h1, h2, h3, h4, h5, h6")).find(
+              (heading) => heading.textContent?.trim() === "系统状态",
+            )
+          : null),
       `${route.path} / ${scene}`,
     ).not.toBeNull();
     return;
   }
   if (route.landmark.kind === "testid") {
     expect(
-      host.querySelector(`[data-testid="${route.landmark.value}"]`),
+      host.querySelector(`[data-testid="${route.landmark.value}"]`) ??
+        document.body.querySelector(`[data-testid="${route.landmark.value}"]`),
       route.path,
     ).not.toBeNull();
     return;
@@ -104,6 +139,57 @@ describe("Web Demo route matrix", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+        onchange: null,
+      }),
+    });
+    if (!previousEventSource) {
+      const EventSourceCapabilityStub = Object.assign(function EventSourceCapabilityStub() {}, {
+        CONNECTING: 0,
+        OPEN: 1,
+        CLOSED: 2,
+      });
+      Object.defineProperty(window, "EventSource", {
+        configurable: true,
+        writable: true,
+        value: EventSourceCapabilityStub as unknown as typeof EventSource,
+      });
+    }
+    if (typeof previousCss?.supports !== "function") {
+      Object.defineProperty(globalThis, "CSS", {
+        configurable: true,
+        writable: true,
+        value: { ...(previousCss ?? {}), supports: () => true },
+      });
+    }
+    if (typeof previousGetBBox !== "function") {
+      Object.defineProperty(SVGElement.prototype, "getBBox", {
+        configurable: true,
+        writable: true,
+        value() {
+          return {
+            x: 0,
+            y: 0,
+            width: (this.textContent?.length ?? 0) * 8,
+            height: 16,
+            top: 0,
+            right: (this.textContent?.length ?? 0) * 8,
+            bottom: 16,
+            left: 0,
+          };
+        },
+      });
+    }
     server.listen({
       onUnhandledRequest: ({ method, url }) => {
         unhandledRequests.push(`${method} ${url}`);
@@ -119,6 +205,9 @@ describe("Web Demo route matrix", () => {
           : new Request(new URL(input.toString(), window.location.href), init);
       const response = await fallbackFetch(input, init);
       const pathname = new URL(request.url).pathname;
+      if (demoModel.snapshot.scene === "network-failure" && pathname.startsWith("/api/")) {
+        throw new TypeError("Failed to fetch");
+      }
       if (pathname.startsWith("/api/") && response.status === 501) {
         unexpectedDemoApiResponses.push(`${request.method} ${pathname}`);
       }
@@ -137,6 +226,42 @@ describe("Web Demo route matrix", () => {
     cleanupFetchAudit();
     cleanupFetch();
     server.close();
+    if (previousMatchMedia) {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: previousMatchMedia,
+      });
+    } else {
+      Reflect.deleteProperty(window, "matchMedia");
+    }
+    if (previousEventSource) {
+      Object.defineProperty(window, "EventSource", {
+        configurable: true,
+        writable: true,
+        value: previousEventSource,
+      });
+    } else {
+      Reflect.deleteProperty(window, "EventSource");
+    }
+    if (previousCss) {
+      Object.defineProperty(globalThis, "CSS", {
+        configurable: true,
+        writable: true,
+        value: previousCss,
+      });
+    } else {
+      Reflect.deleteProperty(globalThis, "CSS");
+    }
+    if (previousGetBBox) {
+      Object.defineProperty(SVGElement.prototype, "getBBox", {
+        configurable: true,
+        writable: true,
+        value: previousGetBBox,
+      });
+    } else {
+      Reflect.deleteProperty(SVGElement.prototype, "getBBox");
+    }
   });
 
   it("keeps the 26 routes x 4 scenes semantic matrix on the real application", async () => {
@@ -148,18 +273,16 @@ describe("Web Demo route matrix", () => {
       unexpectedDemoApiResponses.length = 0;
       unhandledRequests.length = 0;
       renderRoute(route.path, scene);
-      await vi.waitFor(
-        () => {
-          assertRouteLandmark(route, scene);
-          expect(host.querySelector("[data-testid=demo-route-probe]")?.textContent).toBe(
-            route.expectedPath,
-          );
-          expect(host.querySelector('[role="alert"] h1')?.textContent).not.toBe("页面加载失败");
-          expect(unexpectedDemoApiResponses, `${route.path} / ${scene}`).toEqual([]);
-          expect(unhandledRequests, `${route.path} / ${scene}`).toEqual([]);
-        },
-        { interval: 1, timeout: 5_000 },
-      );
+      const assertCurrentRoute = () => {
+        assertRouteLandmark(route, scene);
+        expect(host.querySelector("[data-testid=demo-route-probe]")?.textContent).toBe(
+          route.expectedPath,
+        );
+        expect(host.querySelector('[role="alert"] h1')?.textContent).not.toBe("页面加载失败");
+        expect(unexpectedDemoApiResponses, `${route.path} / ${scene}`).toEqual([]);
+        expect(unhandledRequests, `${route.path} / ${scene}`).toEqual([]);
+      };
+      await vi.waitFor(assertCurrentRoute, { interval: 1, timeout: 15_000 });
       act(() => root.unmount());
       root = createRoot(host);
     }

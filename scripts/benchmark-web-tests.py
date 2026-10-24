@@ -211,8 +211,8 @@ def environment_snapshot(source: Path) -> dict[str, Any]:
 
 
 def retry_count(output: str) -> int:
-    matches = re.findall(r"(?:retry|retries)[^0-9]*(\d+)", output, flags=re.IGNORECASE)
-    matches.extend(re.findall(r"(\d+)\s+(?:retry|retries)\b", output, flags=re.IGNORECASE))
+    matches = re.findall(r"\b(\d+)\s+(?:retry|retries)\b", output, flags=re.IGNORECASE)
+    matches.extend(re.findall(r"\bretry\s*#\s*(\d+)\b", output, flags=re.IGNORECASE))
     return max((int(value) for value in matches), default=0)
 
 
@@ -480,7 +480,7 @@ def main() -> int:
     }
     metadata["environment_valid"] = all(
         snapshot.get("bun_valid")
-        and snapshot.get("expected_bun") == "1.3.14"
+        and snapshot.get("bun_expected") == "1.3.14"
         and not str(snapshot.get("playwright", "")).startswith("unavailable:")
         for snapshot in metadata["environment"].values()
     )

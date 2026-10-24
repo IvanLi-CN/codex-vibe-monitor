@@ -41,6 +41,8 @@ class BenchmarkAggregationTests(unittest.TestCase):
     def test_retry_count_is_read_from_output(self):
         self.assertEqual(MODULE.retry_count("1 retry, 2 retries"), 2)
         self.assertEqual(MODULE.retry_count("1 retry"), 1)
+        self.assertEqual(MODULE.retry_count("git fetch origin retry timeout after 429 seconds"), 0)
+        self.assertEqual(MODULE.retry_count("Retry #2"), 2)
         self.assertEqual(MODULE.retry_count("all tests passed"), 0)
 
     def test_frontend_acceptance_requires_the_full_improvement_gate(self):
