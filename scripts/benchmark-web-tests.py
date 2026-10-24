@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import importlib.util
 import json
@@ -21,7 +22,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-GROUP_SECONDS = 600
+GROUP_SECONDS = 180
+AB_TOTAL_SECONDS = 600
 WORKLOAD = ("unit", "pwa", "storybook-a11y", "docs-demo-pages", "e2e-pr", "e2e-main", "tooling-contracts")
 ROOT = Path(__file__).resolve().parents[1]
 LOCKFILES = (".bun-version", "bun.lock", "web/bun.lock", "docs-site/bun.lock")
@@ -67,11 +69,13 @@ def load_workflow(source: Path, profile: str) -> dict:
     return module.load_yaml(source / f".github/workflows/ci-{profile}.yml")
 
 
-def named_steps(source: Path, profile: str, job: str, names: tuple[str, ...]) -> str:
+def named_steps(source: Path, profile: str, job: str, names: tuple[str, ...], optional_names: tuple[str, ...] = ()) -> str:
     steps = load_workflow(source, profile)["jobs"][job]["steps"]
     selected = []
     for name in names:
         matches = [step for step in steps if step.get("name") == name]
+        if not matches and name in optional_names:
+            continue
         if len(matches) != 1 or not matches[0].get("run"):
             raise ValueError(f"{profile}/{job}: missing or ambiguous required step {name}")
         step = matches[0]
@@ -120,7 +124,13 @@ def phases(source: Path, reports: Path) -> list[Phase]:
         commands = named_steps(source, profile, job, (
             "Start Vite dev server", "Wait for Vite readiness",
             "Build production Web Demo for performance E2E", "Start production Web Demo server",
-            "Wait for Web Demo readiness", "Run records overlay and Web Demo Playwright regression",
+            "Wait for Web Demo readiness", "Start performance Web Demo server",
+            "Wait for performance Web Demo readiness", "Start timeline capacity Web Demo server",
+            "Wait for timeline capacity Web Demo readiness",
+            "Run records overlay and Web Demo Playwright regression",
+        ), optional_names=(
+            "Start performance Web Demo server", "Wait for performance Web Demo readiness",
+            "Start timeline capacity Web Demo server", "Wait for timeline capacity Web Demo readiness",
         ))
         directory = reports / profile
         directory.mkdir(parents=True, exist_ok=True)
@@ -201,7 +211,8 @@ def prepare(baseline: Path, candidate: Path, baseline_sha: str, candidate_sha: s
                 raise ValueError(f"Existing workflow timeouts changed: {name}")
     unimplemented = [name for name in SLOW_SUITES if "web/" + name not in changed]
     manifest = {
-        "schema": 1, "budget_seconds": GROUP_SECONDS, "identities": identities,
+        "schema": 2, "budget_seconds": GROUP_SECONDS, "ab_total_budget_seconds": AB_TOTAL_SECONDS,
+        "identities": identities,
         "workload": [phase["name"] for phase in plans["A"]], "plans": plans,
         "slow_suites": list(SLOW_SUITES), "e2e_specs": list(E2E_SPECS),
         "test_files": {"A": test_files(baseline), "B": test_files(candidate)},
@@ -221,6 +232,36 @@ def terminate_group(process: subprocess.Popen) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def isolate_phase_sources(source: Path, phases_to_run: list[Phase], root: Path) -> dict[str, Path]:
+    """Give concurrent CI jobs the independent checkout each hosted job would have."""
+    sources: dict[str, Path] = {}
+    root.mkdir(parents=True, exist_ok=True)
+    for phase in phases_to_run:
+        target = root / phase.name
+        subprocess.run(["git", "clone", "--local", str(source), str(target)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for relative in ("node_modules", "web/node_modules", "docs-site/node_modules"):
+            dependency = source / relative
+            link = target / relative
+            if dependency.is_dir() and not link.exists():
+                link.symlink_to(dependency, target_is_directory=True)
+        sources[phase.name] = target
+    return sources
+
+
+def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phase:
+    command = phase.command.replace(str(source), str(isolated))
+    if phase.name == "e2e-pr":
+        ports = {"60080": "60180", "60083": "60183", "60084": "60184", "60085": "60185"}
+    elif phase.name == "e2e-main":
+        ports = {"60080": "60280", "60083": "60283", "60084": "60284", "60085": "60285"}
+    else:
+        ports = {}
+    for old, new in ports.items():
+        command = command.replace(old, new)
+    return Phase(phase.name, command, phase.cwd)
 
 
 def execute_phase(phase: Phase, source: Path, directory: Path, deadline: float, env: dict) -> dict:
@@ -320,29 +361,50 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
     directory = output / group
     directory.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "CI": "1", "DOCS_BASE": f"/{os.environ['GITHUB_REPOSITORY'].split('/')[-1]}/",
-           "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": str(directory / "cache"),
-           "PLAYWRIGHT_BROWSERS_PATH": str(output / "browsers"), "STORYBOOK_DISABLE_TELEMETRY": "1"}
+           "PYTHONDONTWRITEBYTECODE": "1", "PLAYWRIGHT_BROWSERS_PATH": str(output / "browsers"),
+           "STORYBOOK_DISABLE_TELEMETRY": "1"}
     context = environment()
     descriptor = source / "web/node_modules/playwright-core/browsers.json"
     context["chromium_descriptor"] = json.loads(descriptor.read_text())["browsers"]
     if context["bun"] != "1.3.14" or command_output(["git", "rev-parse", "HEAD"], source) != manifest["identities"][group]["sha"]:
         raise ValueError("Group environment or source identity changed after preparation")
+    planned = [Phase(**raw) for raw in manifest["plans"][group]]
+    phase_sources = isolate_phase_sources(source, planned, directory / "isolated-sources")
+    executable = [rebase_phase(phase, source, phase_sources[phase.name], group) for phase in planned]
     started = time.monotonic()
     deadline = started + GROUP_SECONDS
     result = {"group": group, "sha": manifest["identities"][group]["sha"], "manifest_digest": manifest["digest"],
-              "status": "running", "score": 0, "budget_seconds": GROUP_SECONDS, "environment": context, "phases": []}
+              "status": "running", "score": 0, "budget_seconds": GROUP_SECONDS,
+              "execution_mode": "parallel-independent-ci-jobs", "environment": context, "phases": []}
     write_json(directory / "result.json", result)
-    for raw in manifest["plans"][group]:
-        phase = Phase(**raw)
-        print(f"::{group}:: {phase.name}", flush=True)
-        record = execute_phase(phase, source, directory, deadline, env)
-        result["phases"].append(record)
-        with (directory / "raw.jsonl").open("a") as stream:
+    print(f"::{group}:: launching {len(executable)} independent CI jobs", flush=True)
+    records: dict[str, dict] = {}
+    def run_one(phase: Phase) -> dict:
+        phase_env = {**env, "XDG_CACHE_HOME": str(directory / "cache" / phase.name)}
+        return execute_phase(phase, phase_sources[phase.name], directory, deadline, phase_env)
+    with ThreadPoolExecutor(max_workers=len(executable)) as executor:
+        futures = {executor.submit(run_one, phase): phase.name for phase in executable}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                records[name] = future.result()
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                records[name] = {"name": name, "status": "environment_failed", "returncode": 1,
+                                 "wall_seconds": 0.0, "cpu_seconds": 0.0,
+                                 "children_peak_rss_kb_cumulative": 0, "reason": str(error)}
+    result["phases"] = [records[phase.name] for phase in executable]
+    with (directory / "raw.jsonl").open("w") as stream:
+        for record in result["phases"]:
             stream.write(json.dumps(record) + "\n")
-        result["status"] = record["status"]
-        write_json(directory / "result.json", result)
-        if record["status"] != "passed":
-            break
+    statuses = {record["status"] for record in result["phases"]}
+    if "timeout" in statuses:
+        result["status"] = "timeout"
+    elif statuses == {"passed"}:
+        result["status"] = "passed"
+    else:
+        result["status"] = "failed"
+    result["phase_wall_seconds_sum"] = sum(record["wall_seconds"] for record in result["phases"])
+    result["execution_wall_seconds"] = time.monotonic() - started
     if result["status"] == "passed":
         try:
             result["reports"] = validate_reports(directory)
@@ -365,15 +427,19 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
     write_json(directory / "result.json", result)
     # Export diagnostics after timing; no test work or continuation is allowed here.
     for name in ("test-results", "playwright-report", "playwright-report-functional", "playwright-report-performance", "playwright-report-timeline-capacity"):
-        path = source / "web" / name
-        if path.is_dir():
-            shutil.copytree(path, directory / "diagnostics" / name, dirs_exist_ok=True)
+        for phase_source in phase_sources.values():
+            path = phase_source / "web" / name
+            if path.is_dir():
+                shutil.copytree(path, directory / "diagnostics" / name, dirs_exist_ok=True)
+    shutil.rmtree(directory / "isolated-sources", ignore_errors=True)
     return result
 
 
 def compare(a: dict, b: dict, manifest: dict) -> dict:
     result = {"passed": False, "reason": "candidate_failed", "delta_seconds": None, "delta_percent": None,
-              "delta_is_lower_bound": False, "unimplemented_slow_suites": manifest.get("unimplemented_slow_suites", [])}
+              "delta_is_lower_bound": False, "total_wall_seconds": None,
+              "ab_total_budget_seconds": AB_TOTAL_SECONDS,
+              "unimplemented_slow_suites": manifest.get("unimplemented_slow_suites", [])}
     if (a.get("manifest_digest") != manifest["digest"] or b.get("manifest_digest") != manifest["digest"]
             or a.get("group") != "A" or b.get("group") != "B"
             or a.get("sha") != manifest["identities"]["A"]["sha"] or b.get("sha") != manifest["identities"]["B"]["sha"]
@@ -385,6 +451,13 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
                 and isinstance(seconds, (int, float)) and math.isfinite(seconds) and 0 < seconds <= GROUP_SECONDS
                 and [phase.get("name") for phase in group.get("phases", [])] == list(WORKLOAD)
                 and all(phase.get("status") == "passed" for phase in group["phases"]))
+    if isinstance(a.get("wall_seconds"), (int, float)) and isinstance(b.get("wall_seconds"), (int, float)):
+        total = a["wall_seconds"] + b["wall_seconds"]
+        if math.isfinite(total):
+            result["total_wall_seconds"] = total
+            if total > AB_TOTAL_SECONDS:
+                result["reason"] = "ab_total_wall_budget_exceeded"
+                return result
     if not complete(b):
         return result
     if a.get("status") == "timeout":
@@ -419,7 +492,7 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
 def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
     lines = ["# Whole-PR frontend A/B", "", f"Verdict: **{'PASS' if verdict['passed'] else 'FAIL'}** — `{verdict['reason']}`.", "",
              f"A `{a.get('sha')}`; B `{b.get('sha')}`; workload `{manifest['digest']}`.", "",
-             "Each group has one shared 600-second budget. Added B-side coverage and repeated builds are included.", "",
+             f"Each group has one shared {GROUP_SECONDS}-second wall-clock budget; A+B measured wall clock must stay within {AB_TOTAL_SECONDS} seconds. Independent CI jobs run concurrently, with all builds and test reports included.", "",
              "| Phase | A seconds | B seconds | A − B seconds |", "|---|---:|---:|---:|"]
     for name in manifest["workload"]:
         left = next((p for p in a.get("phases", []) if p["name"] == name), None)
@@ -427,7 +500,8 @@ def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
         delta = f"{left['wall_seconds'] - right['wall_seconds']:.3f}" if left and right and left["status"] == right["status"] == "passed" else "—"
         lines.append(f"| {name} | {left['wall_seconds'] if left else 'not run'} | {right['wall_seconds'] if right else 'not run'} | {delta} |")
     lines += ["", f"A: {a.get('status')}, score {a.get('score', 0)}, elapsed {a.get('wall_seconds')} s.",
-              f"B: {b.get('status')}, score {b.get('score', 0)}, elapsed {b.get('wall_seconds')} s.", "",
+              f"B: {b.get('status')}, score {b.get('score', 0)}, elapsed {b.get('wall_seconds')} s.",
+              f"A+B measured wall clock: {verdict.get('total_wall_seconds')} s / {AB_TOTAL_SECONDS} s.", "",
               f"Saving {'lower bound' if verdict['delta_is_lower_bound'] else 'measured'}: {verdict['delta_seconds']} s / {verdict['delta_percent']}%.", "",
               "## Four target Vitest suites", "", "| Suite | A seconds | B seconds | Implementation |", "|---|---:|---:|---|"]
     for name in SLOW_SUITES:

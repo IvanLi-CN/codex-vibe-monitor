@@ -1470,16 +1470,20 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 "performance_status=0",
                 "CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
                 "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
-                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?",
-                "CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional &",
+                "functional_pid=$!",
+                "CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\",
                 "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
-                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance &",
+                "performance_pid=$!",
+                "wait \"$functional_pid\" || functional_status=$?",
+                "wait \"$performance_pid\" || performance_status=$?",
                 "exit $(( functional_status || performance_status ))",
             ]
         )
         require(
             e2e_run.strip() == expected_e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run the functional and performance batches serially and propagate each status",
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run the functional and performance batches concurrently and propagate each status",
         )
         require(
             "E2E_DEMO_BASE_URL=http://127.0.0.1:60083" in e2e_run,
@@ -1657,19 +1661,25 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             "timeline_capacity_status=0",
             "CI_PROFILE=main E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
             "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
-            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=2 --output=test-results/functional || functional_status=$?",
-            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=2 --output=test-results/functional &",
+            "functional_pid=$!",
+            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\",
             "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
-            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
-            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=60000 \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance &",
+            "performance_pid=$!",
+            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60085 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=60000 \\",
             "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-timeline-capacity \\",
-            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=timeline-capacity --workers=1 --output=test-results/timeline-capacity || timeline_capacity_status=$?",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=timeline-capacity --workers=1 --output=test-results/timeline-capacity &",
+            "timeline_capacity_pid=$!",
+            "wait \"$functional_pid\" || functional_status=$?",
+            "wait \"$performance_pid\" || performance_status=$?",
+            "wait \"$timeline_capacity_pid\" || timeline_capacity_status=$?",
             "exit $(( functional_status || performance_status || timeline_capacity_status ))",
         ]
     )
     require(
         e2e_run.strip() == expected_e2e_run,
-        "ci-main.yml.jobs.records-overlay-e2e must run functional, performance, and timeline batches serially and propagate each status",
+        "ci-main.yml.jobs.records-overlay-e2e must run functional, performance, and timeline batches concurrently and propagate each status",
     )
     require(
         all(project in e2e_run for project in ("fixtures-functional", "demo-functional", "performance", "timeline-capacity")),

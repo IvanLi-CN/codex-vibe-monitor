@@ -503,6 +503,12 @@ jobs:
           bun run demo:preview -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
           echo $! > /tmp/codex-vibe-monitor-demo.pid
 
+      - name: Start performance Web Demo server
+        working-directory: web
+        run: |
+          bun run demo:preview -- --host 127.0.0.1 --port 60084 > /tmp/codex-vibe-monitor-demo-performance.log 2>&1 &
+          echo $! > /tmp/codex-vibe-monitor-demo-performance.pid
+
       - name: Wait for Web Demo readiness
         run: |
           for _ in {1..60}; do
@@ -515,6 +521,18 @@ jobs:
           cat /tmp/codex-vibe-monitor-demo.log || true
           exit 1
 
+      - name: Wait for performance Web Demo readiness
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:60084/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Performance Web Demo server failed to start within 60 seconds."
+          cat /tmp/codex-vibe-monitor-demo-performance.log || true
+          exit 1
+
       - name: Run records overlay and Web Demo Playwright regression
         working-directory: web
         shell: bash
@@ -524,10 +542,14 @@ jobs:
           performance_status=0
           CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \
             PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?
-          CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 \
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional &
+          functional_pid=$!
+          CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \
             PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance &
+          performance_pid=$!
+          wait "$functional_pid" || functional_status=$?
+          wait "$performance_pid" || performance_status=$?
           exit $(( functional_status || performance_status ))
 
       - name: Upload Playwright diagnostics
@@ -549,6 +571,9 @@ jobs:
           fi
           if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
+          fi
+          if [ -f /tmp/codex-vibe-monitor-demo-performance.pid ]; then
+            kill "$(cat /tmp/codex-vibe-monitor-demo-performance.pid)" || true
           fi
 
   records-overlay-e2e:

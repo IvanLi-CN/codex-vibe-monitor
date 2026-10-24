@@ -35,8 +35,9 @@ def group(name, seconds=100, status="passed"):
 
 
 class AcceptanceTests(unittest.TestCase):
-    def test_budget_is_one_fixed_ten_minute_group(self):
-        self.assertEqual(MODULE.GROUP_SECONDS, 600)
+    def test_budget_is_one_fixed_three_minute_group_and_ten_minute_ab_total(self):
+        self.assertEqual(MODULE.GROUP_SECONDS, 180)
+        self.assertEqual(MODULE.AB_TOTAL_SECONDS, 600)
 
     def test_local_and_agent_vm_execution_are_rejected(self):
         for value in ("", "false"):
@@ -45,7 +46,7 @@ class AcceptanceTests(unittest.TestCase):
                     MODULE.actions_only()
 
     def test_old_timeout_new_complete_immediately_passes(self):
-        result = MODULE.compare(group("A", 600.01, "timeout"), group("B", 599.9), manifest())
+        result = MODULE.compare(group("A", 180.01, "timeout"), group("B", 179.9), manifest())
         self.assertTrue(result["passed"])
         self.assertTrue(result["delta_is_lower_bound"])
         self.assertEqual(result["reason"], "baseline_timeout_candidate_complete")
@@ -60,16 +61,21 @@ class AcceptanceTests(unittest.TestCase):
     def test_candidate_timeout_failure_or_incomplete_never_passes(self):
         for status in ("timeout", "failed", "environment_failed", "running"):
             with self.subTest(status=status):
-                self.assertFalse(MODULE.compare(group("A", 601, "timeout"), group("B", 50, status), manifest())["passed"])
-        for seconds in (0, -1, 600.001, float("nan"), float("inf")):
+                self.assertFalse(MODULE.compare(group("A", 181, "timeout"), group("B", 50, status), manifest())["passed"])
+        for seconds in (0, -1, 180.001, float("nan"), float("inf")):
             self.assertFalse(MODULE.compare(group("A"), group("B", seconds), manifest())["passed"])
         b = group("B", 50)
         b["phases"].pop()
         self.assertFalse(MODULE.compare(group("A"), b, manifest())["passed"])
 
     def test_infrastructure_failure_is_not_an_old_timeout(self):
-        self.assertEqual(MODULE.compare(group("A", 600, "environment_failed"), group("B", 50), manifest())["reason"], "baseline_failed_or_missing")
+        self.assertEqual(MODULE.compare(group("A", 180, "environment_failed"), group("B", 50), manifest())["reason"], "baseline_failed_or_missing")
         self.assertFalse(MODULE.compare(group("A", 1, "timeout"), group("B", 50), manifest())["passed"])
+
+    def test_a_plus_b_wall_budget_is_enforced(self):
+        result = MODULE.compare(group("A", 150), group("B", 451), manifest())
+        self.assertEqual(result["reason"], "ab_total_wall_budget_exceeded")
+        self.assertEqual(result["total_wall_seconds"], 601)
 
     def test_source_manifest_and_environment_must_match(self):
         for key, value in (("sha", "wrong"), ("group", "A"), ("manifest_digest", "different"), ("environment", {"runner": "different"})):

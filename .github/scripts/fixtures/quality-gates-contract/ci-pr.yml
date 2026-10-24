@@ -524,10 +524,14 @@ jobs:
           performance_status=0
           CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \
             PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?
-          CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 \
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional &
+          functional_pid=$!
+          CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \
             PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance &
+          performance_pid=$!
+          wait "$functional_pid" || functional_status=$?
+          wait "$performance_pid" || performance_status=$?
           exit $(( functional_status || performance_status ))
 
       - name: Upload Playwright diagnostics

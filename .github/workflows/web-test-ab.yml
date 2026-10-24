@@ -113,10 +113,10 @@ jobs:
           if-no-files-found: error
 
   measure:
-    name: Whole PR A/B (600 seconds per group)
+    name: Whole PR A/B (180 seconds per group, 600 seconds total)
     needs: prepare
     runs-on: ubuntu-24.04
-    # Two separate 600-second process-tree deadlines; the rest is checkout/artifact handling.
+    # Two separate 180-second process-tree deadlines; the rest is checkout/artifact handling.
     # This new orchestration watchdog does not change any existing CI timeout.
     timeout-minutes: 25
     steps:
