@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "658efa87 implementation candidate.",
+      "to_program_version": "53aed6b8 implementation candidate.",
       "direct_major_skips_supported": false
     }
   },
@@ -147,17 +147,17 @@
   },
   "pending_execution_evidence": [],
   "execution_evidence": {
-    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40085551281",
-    "candidate_head_sha": "658efa87973393dc31a1410a3c430ab91226edcc",
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40089397737",
+    "candidate_head_sha": "53aed6b8ed2f5f663868fdbb5888c12c35e115f3",
     "stateful_and_migration_profiles_passed": true
   },
   "delivery_context": {
-    "candidate_head_sha": "658efa87",
-    "candidate_validation_status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-passed-visual-pending-base-sync-blocked",
-    "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "candidate_head_sha": "53aed6b8",
+    "candidate_validation_status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-passed-visual-pending-base-synced",
+    "active_base_sha": "76beb053ac529bde47961dddb1e14b4d176700f8",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The candidate is based directly on the locked development baseline; no unrelated base merge is included.",
+    "base_sync_scope": "The candidate was rebased directly onto origin/main@76beb053; no merge commit or unrelated base merge is included.",
     "required_lanes_refresh": "PR CI and Tier 4 reviews must bind to the pushed th/summary-source-recovery-batch head; no older PR evidence is reused.",
     "release_compatibility": "The additive migration is minor and forward-repairable; public API additions are patch-level; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
