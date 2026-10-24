@@ -3,7 +3,7 @@
   "kind": "version-impact-record",
   "change": {
     "description": "Expose explicit degraded Summary data quality, serve eligible broad Source Journal compaction gaps with acknowledged overlays, fail closed for scoped source gaps and unproven current rank, repair pending invocation archive Summary rollups with fail-closed SHA identity, and add generation-fenced Dashboard compacted-source recovery with bounded background batches that resume from durable page state.",
-    "release_unit_description": "PR-B runtime Summary read-model recovery.",
+    "release_unit_description": "Dashboard Summary bounded source recovery.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -33,41 +33,28 @@
         "description": "The candidate adds only optional public recovery diagnostics and a coded unavailable body, plus additive durable checkpoint/staging tables and usage columns. Healthy response fields remain compatible, older readers can ignore the new tables/columns, and the recovery path narrows claims until exact publication rather than returning approximations."
       },
       "reasoning": "Healthy responses retain their previous fields, while the optional system-status recovery object and coded 503 body are additive. Supported earlier same-Minor readers can ignore the new recovery tables/columns. Dashboard day-window staging is generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication; the 10,000 journal retention bound is not used as a full-table admission gate.",
-      "reassessed_at": "2026-10-11T12:18:01Z",
+      "reassessed_at": "2026-10-24T03:10:21Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
-        "src/api/slices/summary_delta_gap.rs",
-        "src/api/slices/subscriptions/hub_projection.rs",
-        "src/api/slices/subscriptions/state.rs",
-        "src/api/slices/subscriptions/hub_lifecycle.rs",
-        "src/api/slices/subscriptions/topic_builders.rs",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+        "src/api/slices/invocations_and_summary/summary_recovery.rs",
+        "src/schema/summary_coverage.rs",
         "src/stats/mod.rs",
         "src/tests/stateful_sqlite/record_budget.rs",
-        "src/tests/archive_file_io/mod.rs",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs"
+        "src/tests/stateful_sqlite/statistics_recovery.rs",
+        "web/src/hooks/useStats.ts"
       ]
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "The candidate preserves healthy Summary response fields, adds only optional diagnostics plus stable coded 503 responses, installs the existing optimizer indexes idempotently, and adds additive Dashboard checkpoint/staging state. Named regressions cover the old archive repair behavior and the new 10,001-row bounded recovery, idempotent continuation, exact account/usage aggregation, coded API state, and schema idempotency.",
-      "verified_at": "2026-10-11T12:18:01Z",
+      "reasoning": "Impact classification is verified from the additive schema and API shape: healthy Summary fields remain compatible, coded 503 and system-status fields are optional, and the recovery tables/usage columns are forward-only. Functional stateful and representative-scale evidence remains a current-head CI gate because local macOS test execution is blocked by the sqlx_macros dylib toolchain failure.",
+      "verified_at": "2026-10-24T03:10:21Z",
       "evidence": [
-        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_rejects_source_gap_with_invalid_overlay_identity",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
-        "src/api/slices/subscriptions/tests/materialization.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-        "src/api/slices/subscriptions/hub_projection.rs",
-        "src/api/slices/subscriptions/state.rs",
-        "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
-        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
-        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing"
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+        "src/schema/summary_coverage.rs",
+        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
+        "web/src/hooks/useStats.integration.test.tsx::retries_a_pending_HTTP_recovery_summary_until_it_becomes_exact"
       ]
     }
   },
@@ -78,9 +65,9 @@
       "evidence": [
         "src/api/slices/settings_models_and_cache.rs::StatsResponse",
         "web/src/lib/api/core-foundation.ts::StatsDataQuality",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-        "src/api/slices/subscriptions/tests/materialization.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_sse_reconnect_revalidates_source_gap_against_cached_frame"
+        "src/stats/mod.rs::unavailable_with_code",
+        "src/api/slices/invocations_and_summary/summary_recovery.rs::summary_source_gap_unavailable_error",
+        "web/src/lib/api/core-foundation.ts::StatsDataQuality"
       ]
     },
     "persistent_state": {
@@ -88,22 +75,15 @@
       "state_description": "The main SQLite database gains the existing optimizer/repair state plus additive Dashboard compacted-source checkpoint, aggregate, usage, and bounded record-identity tables. Dashboard recovery stores fixed Shanghai day-window boundaries, a tuple cursor, processed rows, target generation-fence values, normalized aggregates, usage breakdowns, and list-limited identities; it does not copy payloads. NULL or blank replay-marker SHA values fail closed, stale markers re-enter repair, and a generation mismatch discards unpublishable staging. All new state is idempotent and forward-repairable; no allocator writeback, backup copy, destructive cleanup, or deployment state is introduced.",
       "source_program_compatibility_range": "Supported earlier same-Minor readers can ignore the additive Dashboard recovery tables/columns and continue using existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations.",
       "evidence": [
-        "src/schema.rs::idx_archive_batches_pending_summary_rollup_order",
-        "src/stats/mod.rs::backfill_missing_invocation_summary_archive_rollups",
-        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
-        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
+        "src/schema/summary_coverage.rs::ensure_column_with_definition",
+        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::stage_compacted_source_recovery_page"
       ]
     }
   },
   "release_unit": {
     "member_change_records": [
-      "PR-B",
+      "7ea3b6415c4d744623005a12ff434d1157c067a0",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "minor",
@@ -113,13 +93,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
-    "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-    "previous_review_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "candidate_head_sha": "7ea3b6415c4d744623005a12ff434d1157c067a0",
+    "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
+    "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "PR-B was rebased onto origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0; no unrelated base merge is included.",
-    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the pushed PR-B candidate head; prior PR #1097 and older-head CI/review are superseded.",
-    "release_compatibility": "Patch remains the maximum verified impact: dataQuality is optional, and candidate-written durable state remains readable by supported earlier same-Minor readers."
+    "base_sync_scope": "The candidate is based directly on the locked development baseline; no unrelated base merge is included.",
+    "required_lanes_refresh": "PR CI and Tier 4 reviews must bind to the pushed th/summary-source-recovery-batch head; no older PR evidence is reused.",
+    "release_compatibility": "Public API impact is patch and persistent-state impact is minor; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }

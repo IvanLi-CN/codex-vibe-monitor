@@ -3,7 +3,7 @@
   "kind": "persistent-state-migration-record",
   "migration": {
     "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then add the Dashboard compacted-source recovery checkpoint/staging set and repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
-    "release_unit_description": "PR-B runtime Summary read-model recovery.",
+    "release_unit_description": "Dashboard Summary bounded source recovery.",
     "version_impact": "minor"
   },
   "durable_state": {
@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR-B candidate.",
+      "to_program_version": "7ea3b6415c4d744623005a12ff434d1157c067a0 candidate.",
       "direct_major_skips_supported": false
     }
   },
@@ -143,14 +143,19 @@
       "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
     ]
   },
+  "pending_execution_evidence": [
+    "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
+    "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
+    "src/tests/lightweight/summary_fallback_contention.rs"
+  ],
   "delivery_context": {
-    "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
-    "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-    "previous_review_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "candidate_head_sha": "7ea3b6415c4d744623005a12ff434d1157c067a0",
+    "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
+    "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "PR-B was rebased onto origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0; no unrelated base merge is included.",
-    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the pushed PR-B candidate head; prior PR #1097 and older-head CI/review are superseded.",
-    "release_compatibility": "Index installation and bounded/full repair remain idempotent and forward-repairable; no old-version allocator writeback, deployment state, or deployment action is in scope."
+    "base_sync_scope": "The candidate is based directly on the locked development baseline; no unrelated base merge is included.",
+    "required_lanes_refresh": "PR CI and Tier 4 reviews must bind to the pushed th/summary-source-recovery-batch head; no older PR evidence is reused.",
+    "release_compatibility": "The additive migration is minor and forward-repairable; public API additions are patch-level; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }

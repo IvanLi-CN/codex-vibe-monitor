@@ -1,47 +1,103 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "current-head-required-ci-and-tier4-pending",
-  "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
-  "implementation_commit": "f34d3663c305de0f31db6cb997fbff90e0ab4167",
-  "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-  "base_ref": "main",
-  "pr_number": 1106,
-  "candidate_branch": "th/fix-summary-live-overlay",
+  "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
+  "candidate_head_sha": "7ea3b6415c4d744623005a12ff434d1157c067a0",
+  "implementation_commit": "7ea3b6415c4d744623005a12ff434d1157c067a0",
+  "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+  "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
+  "pr_number": null,
+  "candidate_branch": "th/summary-source-recovery-batch",
   "base_sync": {
-    "previous_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
-    "merge_commit_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-    "merge_strategy": "rebase-onto-origin/main",
+    "previous_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "merge_commit_sha": null,
+    "merge_strategy": "fixed-development-baseline",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "PR-B was rebased onto origin/main@98698a2; no unrelated base merge is included.",
+    "mainline_scope": "The candidate branch is based directly on the locked development baseline; no unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
   "affected_validation": {
-    "refresh_reason": "PR-B was rebased onto origin/main@98698a24 and adds eligible broad Source Journal degradation plus Summary HTTP/SSE cached-frame revalidation; all required CI and Tier4 review lanes must bind to the pushed candidate head.",
-    "contract_regressions": [
-      "summary_projection_rolling_localizes_late_historical_live_source_gap",
-      "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
-      "hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-      "summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
-      "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
-      "all_time_overlay_overflow_does_not_block_rolling_summary",
-      "stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-      "stats_rejects_source_gap_with_invalid_overlay_identity",
-      "stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow"
-    ],
-    "migration_and_compatibility_regressions": [
-      "ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-      "summary_rollup_repair_reopens_stale_archive_sha_markers",
-      "all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
-      "all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
-      "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
-      "summary_rollup_force_repair_pages_past_archive_batch_budget",
-      "summary_rollup_repair_treats_null_and_blank_replay_sha_as_unknown",
-      "summary_rollup_force_repair_deduplicates_source_ids_across_pages",
-      "summary_rollup_force_repair_clears_safe_buckets_before_later_pages",
-      "summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
-      "summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
+    "refresh_reason": "The candidate replaces the erroneous 10,000-row replay gate with bounded keyset recovery, adds additive durable staging and generation-fenced publication, and makes pending recovery observable and retryable in the Dashboard.",
+    "acceptance_items": [
+      {
+        "id": "A1",
+        "scope": "bounded range recovery",
+        "evidence": [
+          "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+          "src/tests/stateful_sqlite/statistics_recovery.rs"
+        ],
+        "status": "implemented; targeted Rust execution pending CI"
+      },
+      {
+        "id": "A2",
+        "scope": "atomic checkpoint and staging restart",
+        "evidence": [
+          "src/schema/summary_coverage.rs",
+          "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+          "src/tests/stateful_sqlite/statistics_recovery.rs"
+        ],
+        "status": "implemented; targeted Rust execution pending CI"
+      },
+      {
+        "id": "A3",
+        "scope": "exact Dashboard oracle",
+        "evidence": [
+          "scripts/summary-production-exact-oracle.py",
+          "src/tests/stateful_sqlite/statistics_recovery.rs"
+        ],
+        "status": "implemented; representative-scale execution pending CI"
+      },
+      {
+        "id": "A4",
+        "scope": "page, transaction, turn and contention budgets",
+        "evidence": [
+          "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+          "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
+        ],
+        "status": "implemented; pressure execution pending CI"
+      },
+      {
+        "id": "A5",
+        "scope": "coded API and system status contract",
+        "evidence": [
+          "src/stats/mod.rs",
+          "src/api/slices/invocations_and_summary.rs",
+          "src/api/slices/system_routes_and_tasks.rs",
+          "web/src/lib/api/core-foundation.ts"
+        ],
+        "status": "implemented; backend contract execution pending CI"
+      },
+      {
+        "id": "A6",
+        "scope": "Dashboard pending and failed states",
+        "evidence": [
+          "web/src/hooks/useStats.ts",
+          "web/src/hooks/useStats.integration.test.tsx",
+          "web/src/features/dashboard/DashboardActivityOverview.test.tsx",
+          "web/src/features/stats/StatsCards.tsx"
+        ],
+        "status": "targeted web test passed; visual evidence captured"
+      },
+      {
+        "id": "A7",
+        "scope": "additive idempotent durable migration",
+        "evidence": [
+          "src/schema/summary_coverage.rs",
+          "src/tests/stateful_sqlite/record_budget.rs",
+          "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json"
+        ],
+        "status": "implemented; targeted Rust execution pending CI"
+      },
+      {
+        "id": "A8",
+        "scope": "current-head delivery convergence",
+        "evidence": [
+          "git status --short --branch",
+          "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
+        ],
+        "status": "local branch ready for PR; CI and Tier 4 review pending"
+      }
     ]
   },
   "required_lanes": [
@@ -53,53 +109,53 @@
     "Docs & Web Demo Build",
     "Front-end Tests",
     "Lint & Format Check",
-    "Records Overlay E2E",
-    "Repository Tooling Checks",
     "Review Policy Gate",
     "Storybook Accessibility Tests",
-    "Validate PR labels"
+    "Validate PR labels",
+    "Tier 4 formal review"
   ],
   "release_compatibility": {
     "semver_record": "assets/version-impact-record.json",
     "persistent_state_record": "assets/persistent-state-migration-record.json",
     "public_api_impact": "patch",
-    "persistent_state_impact": "patch",
+    "persistent_state_impact": "minor",
     "same_minor_candidate_state_readable": true,
     "migration_idempotent_and_reentry_safe": true,
     "old_version_allocator_writeback": false,
     "deployment_scope": "none"
   },
   "deployment_surfaces": {
-    "github_release_and_ghcr": "Release and dual-platform GHCR publication remain release-workflow-owned and require successful CI Main plus release policy; this PR does not authorize publication.",
-    "docs_pages": "The Docs & Web Demo Build and docs-pages path remain a separate pipeline-owned surface; a passing build is not production deployment authorization.",
-    "production": "No production deployment, restart, observation, or mutable external write is authorized by this record."
+    "github_release_and_ghcr": "No release publication is authorized by this candidate; release workflow policy applies only after PR validation and merge.",
+    "docs_pages": "Docs and web builds are validation surfaces only and do not authorize production deployment.",
+    "production": "No production database copy, backup, deployment, restart, rollback, observation, or mutable external write is authorized by this record."
   },
-  "base_release_evidence": {
-    "source_main_ci_run_id": 37924263178,
-    "source_main_ci_head_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
-    "source_main_ci_conclusion": "success",
-    "source_release": "v4.3.1",
-    "source_release_url": "https://github.com/IvanLi-CN/codex-vibe-monitor/releases/tag/v4.3.1",
-    "source_ghcr_architectures": [
-      "linux/amd64",
-      "linux/arm64"
-    ],
-    "production_deployment": false,
-    "scope": "This is evidence for the already merged Proxy/base release only; it does not certify PR-B or authorize production deployment."
-  },
-  "local_validation_boundary": {
-    "required_local_checks": [
+  "local_validation": {
+    "passed": [
       "cargo fmt --all -- --check",
+      "cargo check --locked --all-targets --all-features",
+      "cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json",
       "git diff --check",
-      "jq empty docs/specs/runtime-read-model-pressure-recovery/assets/current-candidate-validation.json docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
-      "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json"
+      "bun run lint:web",
+      "bun run typecheck:web",
+      "cd web && bun run build",
+      "cd web && bunx vitest run --project=unit src/hooks/useStats.integration.test.tsx",
+      "cd web && bun run test-storybook"
     ],
-    "applicable_lightweight_contract_checks": [
-      "bash .github/scripts/test-backend-test-contract.sh",
-      "bash .github/scripts/test-representative-scale-contract.sh",
-      "bash .github/scripts/test-quality-gates-contract.sh"
+    "blocked": [
+      {
+        "command": "cargo test --locked ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows -- --nocapture",
+        "reason": "The local macOS Rust 1.96 test build emits a sqlx_macros dylib rejected by dyld with mis-aligned LINKEDIT string pool; CI/Linux must execute the stateful Rust tests."
+      },
+      {
+        "command": "cd web && bun run test",
+        "reason": "The full suite currently has two unrelated pre-existing failures in DashboardWorkingConversationsSection and TaskTimelineChart; the targeted recovery hook test passes."
+      }
     ],
-    "heavy_full_suite": "Full-target all-features check/clippy, complete backend profiles, and representative-scale execution are delegated to current-head Linux CI or a session VM; they are not repeated as local checks for this candidate.",
-    "visual_evidence": "Not applicable; this is a backend/API and repository-contract change."
-  }
+    "heavy_full_suite": "Backend resource profiles, representative-scale execution, contention pressure and current-head Tier 4 review are delegated to the PR CI/testbox path; no production data is copied."
+  },
+  "visual_evidence": [
+    "assets/dashboard-recovery-pending.png",
+    "assets/dashboard-recovery-failed.png"
+  ]
 }
