@@ -49,8 +49,9 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   ranges; a request in another reporting zone does not reinterpret the staged
   rows and remains generic unavailable until a matching range is prepared.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
-  the candidate query measures text byte lengths, including raw `payload`,
-  before loading source fields,
+  the candidate query measures only text byte lengths that the source-row
+  projection will load before materializing source fields; raw `payload` is
+  neither materialized nor charged against the page budget,
   then materializes only the selected rows. Candidate reads, source-row reads,
   page staging, and publication use dedicated SQLite connections whose native
   busy-timeout and progress handler share the remaining recovery deadline. The

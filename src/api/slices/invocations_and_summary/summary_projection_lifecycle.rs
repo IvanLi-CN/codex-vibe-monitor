@@ -1282,11 +1282,12 @@ async fn restore_compacted_summary_source_tail(state: &AppState) -> Result<bool>
 mod compacted_source_recovery_budget_tests {
     use super::*;
 
-    fn candidate(id: i64, payload_bytes: usize) -> CompactedSourceRecoveryCandidate {
+    fn candidate(id: i64, materialized_text_bytes: usize) -> CompactedSourceRecoveryCandidate {
         CompactedSourceRecoveryCandidate {
             id,
             occurred_at: "2026-10-22 12:00:00".to_string(),
-            estimated_bytes: i64::try_from(192 + payload_bytes).expect("test byte estimate"),
+            estimated_bytes: i64::try_from(192 + materialized_text_bytes)
+                .expect("test byte estimate"),
             error_message_bytes: 0,
         }
     }
@@ -1330,13 +1331,13 @@ mod compacted_source_recovery_budget_tests {
     }
 
     #[test]
-    fn oversized_non_error_source_row_fails_closed() {
+    fn oversized_materialized_source_row_fails_closed() {
         let page = vec![candidate(
             1,
             SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES + 1,
         )];
         let error = select_compacted_source_recovery_candidates(page)
-            .expect_err("oversized non-error source row should fail closed");
+            .expect_err("oversized materialized source row should fail closed");
         assert!(
             error
                 .to_string()
@@ -1969,7 +1970,6 @@ async fn load_compacted_source_recovery_candidates(
         "model",
         INVOCATION_RESPONSE_MODEL_SQL,
         INVOCATION_REASONING_EFFORT_SQL,
-        "payload",
         "status",
         "error_message",
         INVOCATION_FAILURE_KIND_SQL,
