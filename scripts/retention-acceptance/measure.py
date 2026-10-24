@@ -97,6 +97,135 @@ def cleanup_budget(started: float, reserve_seconds: float = 0) -> float:
     return left
 
 
+class OwnedContainerLedger:
+    def __init__(self) -> None:
+        self._records: dict[str, dict[str, Any]] = {}
+
+    def register(
+        self,
+        name: str,
+        kind: str,
+        root: Path,
+        recovery_path: Path,
+        mount_path: Path | None = None,
+    ) -> None:
+        if name in self._records:
+            raise AcceptanceError(f"owned container name was registered more than once: {name}")
+        self._records[name] = {
+            "container_name": name,
+            "container_id": None,
+            "kind": kind,
+            "status": "creation_unconfirmed",
+            "root_path": str(root),
+            "recovery_path": str(recovery_path),
+            "mount_path": str(mount_path) if mount_path is not None else None,
+            "cleanup_attempts": [],
+        }
+
+    def mark_started(self, name: str, container_id: str) -> None:
+        record = self._records[name]
+        record["container_id"] = container_id or None
+        record["status"] = "started"
+
+    def mark_failure(self, name: str, error: BaseException) -> None:
+        record = self._records[name]
+        detail = {"type": type(error).__name__, "message": str(error)}
+        record["status"] = "unconfirmed"
+        record["last_error"] = detail
+        record["cleanup_attempts"].append({"status": "unconfirmed", "error": detail})
+
+    def mark_cleanup(self, name: str, result: dict[str, str]) -> None:
+        record = self._records[name]
+        container_id = result.get("container_id")
+        if container_id:
+            if record["container_id"] and record["container_id"] != container_id:
+                raise AcceptanceError(f"owned container identity changed for {name}")
+            record["container_id"] = container_id
+        record["status"] = result["status"]
+        record.pop("last_error", None)
+        record["cleanup_attempts"].append({
+            "status": result["status"],
+            **({"container_id": container_id} if container_id else {}),
+        })
+
+    def names(self) -> set[str]:
+        return set(self._records)
+
+    def record(self, name: str) -> dict[str, Any]:
+        record = self._records[name]
+        return {**record, "cleanup_attempts": list(record["cleanup_attempts"])}
+
+    def records(self, names: set[str] | None = None) -> list[dict[str, Any]]:
+        selected = self._records if names is None else {name: self._records[name] for name in names if name in self._records}
+        return [self.record(name) for name in sorted(selected)]
+
+    def unresolved(self, names: set[str] | None = None) -> list[dict[str, Any]]:
+        return [record for record in self.records(names) if record["status"] not in {"removed", "already_absent"}]
+
+    def cleanup(
+        self,
+        name: str,
+        phase_started: float,
+        cleanup_reserve_seconds: float,
+        log_path: Path | None = None,
+    ) -> dict[str, str]:
+        record = self._records[name]
+        try:
+            if log_path is None:
+                result = cleanup_named_container(
+                    name,
+                    phase_started,
+                    cleanup_reserve_seconds,
+                    expected_container_id=record["container_id"],
+                )
+            else:
+                result = stop_container(
+                    name,
+                    log_path,
+                    phase_started,
+                    cleanup_reserve_seconds,
+                    expected_container_id=record["container_id"],
+                )
+        except BaseException as error:
+            self.mark_failure(name, error)
+            raise
+        self.mark_cleanup(name, result)
+        return result
+
+    def retry_unresolved(
+        self,
+        phase_started: float,
+        cleanup_reserve_seconds: float,
+        names: set[str] | None = None,
+    ) -> list[BaseException]:
+        errors: list[BaseException] = []
+        for record in self.unresolved(names):
+            try:
+                self.cleanup(record["container_name"], phase_started, cleanup_reserve_seconds)
+            except BaseException as error:
+                errors.append(error)
+        return errors
+
+    def recovery_payload(
+        self,
+        root: Path,
+        path: Path | None = None,
+        names: set[str] | None = None,
+    ) -> dict[str, Any]:
+        unresolved = self.unresolved(names)
+        preserved_paths = {str(root)}
+        if path is not None:
+            preserved_paths.add(str(path))
+        for record in unresolved:
+            preserved_paths.add(record["recovery_path"])
+            preserved_paths.add(record["root_path"])
+        return {
+            "root_path": str(root),
+            "preserved_paths": sorted(preserved_paths),
+            "unresolved_containers": unresolved,
+        }
+
+
 def docker_image_identity(tag: str, expected_sha: str, phase_started: float) -> dict[str, str]:
     image_id = run_command(["docker", "image", "inspect", "--format", "{{.Id}}", tag], 20, phase_started=phase_started).stdout.strip()
     labels = json.loads(run_command(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", tag], 20, phase_started=phase_started).stdout)
@@ -151,8 +280,19 @@ def app_environment() -> dict[str, str]:
     }
 
 
-def start_container(tag: str, data_dir: Path, name: str, phase_started: float) -> str:
+def start_container(
+    tag: str,
+    data_dir: Path,
+    name: str,
+    phase_started: float,
+    *,
+    owned: OwnedContainerLedger | None = None,
+    kind: str = "application",
+    root: Path | None = None,
+) -> str:
     data_dir.mkdir(parents=True, exist_ok=True)
+    if owned is not None:
+        owned.register(name, kind, root or data_dir.parent, data_dir, data_dir)
     command = [
         "docker", "run", "--detach", "--name", name,
         "--cpus", str(CPU_LIMIT),
@@ -164,7 +304,15 @@ def start_container(tag: str, data_dir: Path, name: str, phase_started: float) -
     for key, value in app_environment().items():
         command.extend(["--env", f"{key}={value}"])
     command.append(tag)
-    return run_command(command, 60, phase_started=phase_started).stdout.strip()
+    try:
+        container_id = run_command(command, 60, phase_started=phase_started).stdout.strip()
+    except BaseException as error:
+        if owned is not None:
+            owned.mark_failure(name, error)
+        raise
+    if owned is not None:
+        owned.mark_started(name, container_id)
+    return container_id
 
 
 def wait_healthy(container: str, started: float) -> None:
@@ -182,9 +330,15 @@ def wait_healthy(container: str, started: float) -> None:
     raise TimeoutError(f"production image {container} failed its health check")
 
 
-def cleanup_named_container(container: str, phase_started: float, cleanup_reserve_seconds: float) -> dict[str, str]:
+def cleanup_named_container(
+    container: str,
+    phase_started: float,
+    cleanup_reserve_seconds: float,
+    *,
+    expected_container_id: str | None = None,
+) -> dict[str, str]:
     inspected = run_command(
-        ["docker", "inspect", "--format", "{{.State.Running}}", container],
+        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}}", container],
         3,
         check=False,
         phase_started=phase_started,
@@ -192,28 +346,49 @@ def cleanup_named_container(container: str, phase_started: float, cleanup_reserv
         cleanup_reserve_seconds=cleanup_reserve_seconds,
     )
     if inspected.returncode != 0 and re.search(r"No such (?:object|container)", inspected.stderr, re.IGNORECASE):
-        return {"container_name": container, "status": "already_absent"}
+        return {
+            "container_name": container,
+            "status": "already_absent",
+            **({"container_id": expected_container_id} if expected_container_id else {}),
+        }
     if inspected.returncode != 0:
         raise RuntimeError(f"could not inspect named container {container}: {inspected.stderr.strip()[-1000:]}")
-    if inspected.stdout.strip() == "true":
-        run_command(
-            ["docker", "stop", "--time", "3", container],
+    identity = inspected.stdout.strip().split()
+    if len(identity) != 2 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or identity[1] not in {"true", "false"}:
+        raise RuntimeError(f"could not parse named container identity {container}: {inspected.stdout.strip()[-1000:]}")
+    container_id, running = identity
+    if expected_container_id and container_id != expected_container_id:
+        raise AcceptanceError(f"named container {container} resolved to an unexpected container ID")
+    command_errors: list[str] = []
+    if running == "true":
+        try:
+            result = run_command(
+                ["docker", "stop", "--time", "3", container_id],
+                5,
+                check=False,
+                phase_started=phase_started,
+                cleanup=True,
+                cleanup_reserve_seconds=cleanup_reserve_seconds,
+            )
+            if result.returncode != 0:
+                command_errors.append(result.stderr.strip()[-1000:] or "docker stop returned non-zero")
+        except BaseException as error:
+            command_errors.append(f"docker stop: {type(error).__name__}: {error}")
+    try:
+        result = run_command(
+            ["docker", "rm", "--force", container_id],
             5,
             check=False,
             phase_started=phase_started,
             cleanup=True,
             cleanup_reserve_seconds=cleanup_reserve_seconds,
         )
-    run_command(
-        ["docker", "rm", "--force", container],
-        5,
-        check=False,
-        phase_started=phase_started,
-        cleanup=True,
-        cleanup_reserve_seconds=cleanup_reserve_seconds,
-    )
+        if result.returncode != 0:
+            command_errors.append(result.stderr.strip()[-1000:] or "docker rm returned non-zero")
+    except BaseException as error:
+        command_errors.append(f"docker rm: {type(error).__name__}: {error}")
     remaining = run_command(
-        ["docker", "inspect", "--format", "{{.State.Running}}", container],
+        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}}", container],
         3,
         check=False,
         phase_started=phase_started,
@@ -221,25 +396,54 @@ def cleanup_named_container(container: str, phase_started: float, cleanup_reserv
         cleanup_reserve_seconds=cleanup_reserve_seconds,
     )
     if remaining.returncode == 0:
-        raise AcceptanceError(f"named container {container} remained after cleanup")
+        raise AcceptanceError(
+            f"named container {container} ({container_id}) remained after cleanup"
+            + (": " + "; ".join(command_errors) if command_errors else "")
+        )
     if not re.search(r"No such (?:object|container)", remaining.stderr, re.IGNORECASE):
-        raise RuntimeError(f"could not confirm named container {container} cleanup: {remaining.stderr.strip()[-1000:]}")
-    return {"container_name": container, "status": "removed"}
+        detail = remaining.stderr.strip()[-1000:]
+        if command_errors:
+            detail += "; " + "; ".join(command_errors)
+        raise RuntimeError(f"could not confirm named container {container} ({container_id}) cleanup: {detail}")
+    return {"container_name": container, "container_id": container_id, "status": "removed"}
 
 
-def stop_container(container: str, log_path: Path | None, phase_started: float, cleanup_reserve_seconds: float = 0) -> dict[str, str]:
-    logs = run_command(
-        ["docker", "logs", container],
-        5,
-        check=False,
-        phase_started=phase_started,
-        cleanup=True,
-        cleanup_reserve_seconds=cleanup_reserve_seconds,
-    )
+def stop_container(
+    container: str,
+    log_path: Path | None,
+    phase_started: float,
+    cleanup_reserve_seconds: float = 0,
+    *,
+    expected_container_id: str | None = None,
+) -> dict[str, str]:
+    log_error = None
+    try:
+        logs = run_command(
+            ["docker", "logs", container],
+            5,
+            check=False,
+            phase_started=phase_started,
+            cleanup=True,
+            cleanup_reserve_seconds=cleanup_reserve_seconds,
+        )
+    except BaseException as error:
+        logs = None
+        log_error = f"{type(error).__name__}: {error}"
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(logs.stdout + logs.stderr)
-    return cleanup_named_container(container, phase_started, cleanup_reserve_seconds)
+        if logs is not None:
+            log_path.write_text(logs.stdout + logs.stderr)
+        elif log_error is not None:
+            log_path.write_text(f"container log collection failed: {log_error}\n")
+    result = cleanup_named_container(
+        container,
+        phase_started,
+        cleanup_reserve_seconds,
+        expected_container_id=expected_container_id,
+    )
+    if log_error is not None:
+        result["log_error"] = log_error
+    return result
 
 
 def bounded_rmtree(path: Path, phase_started: float, cleanup_reserve_seconds: float) -> None:
@@ -252,6 +456,41 @@ def bounded_rmtree(path: Path, phase_started: float, cleanup_reserve_seconds: fl
         cleanup=True,
         cleanup_reserve_seconds=cleanup_reserve_seconds,
     )
+
+
+def cleanup_path_if_safe(
+    path: Path,
+    root: Path,
+    owned: OwnedContainerLedger,
+    phase_started: float,
+    cleanup_reserve_seconds: float,
+    names: set[str] | None = None,
+) -> tuple[dict[str, Any], list[BaseException]]:
+    errors = owned.retry_unresolved(phase_started, cleanup_reserve_seconds, names)
+    unresolved = owned.unresolved(names)
+    if unresolved:
+        return {
+            "removed": False,
+            "status": "preserved",
+            "reason": "owned container absence could not be confirmed",
+            "recovery": owned.recovery_payload(root, path, names),
+        }, errors
+    try:
+        bounded_rmtree(path, phase_started, cleanup_reserve_seconds)
+    except BaseException as error:
+        errors.append(error)
+        return {
+            "removed": False,
+            "status": "preserved",
+            "reason": "bounded directory cleanup did not complete",
+            "recovery": {
+                "root_path": str(root),
+                "preserved_paths": sorted({str(root), str(path)}),
+                "unresolved_containers": [],
+                "cleanup_error": {"type": type(error).__name__, "message": str(error)},
+            },
+        }, errors
+    return {"removed": True, "status": "removed"}, errors
 
 
 def bounded_copy(source: Path, destination: Path, phase_started: float) -> None:
@@ -282,15 +521,30 @@ def checkpoint_and_reset_history(main_db: Path, maintenance_db: Path, phase_star
         maintenance.close()
 
 
-def prepare_template(tag: str, version: str, root: Path, cutoff: str, started: float) -> tuple[Path, str]:
+def prepare_template(
+    tag: str,
+    version: str,
+    root: Path,
+    cutoff: str,
+    started: float,
+    owned: OwnedContainerLedger | None = None,
+) -> tuple[Path, str]:
     directory = root / f"template-{version}"
     directory.mkdir(parents=True)
     container = f"retention-{RUN_ID}-init-{version}"
     try:
-        start_container(tag, directory, container, started)
+        start_container(tag, directory, container, started, owned=owned, kind="init", root=root)
         wait_healthy(container, started)
     finally:
-        stop_container(container, root / "logs" / f"init-{version}.log", started, cleanup_reserve_seconds=25)
+        if owned is None:
+            stop_container(container, root / "logs" / f"init-{version}.log", started, cleanup_reserve_seconds=25)
+        else:
+            owned.cleanup(
+                container,
+                started,
+                cleanup_reserve_seconds=25,
+                log_path=root / "logs" / f"init-{version}.log",
+            )
     main_db = directory / "codex_vibe_monitor.db"
     maintenance_db = directory / "codex_vibe_monitor.maintenance.sqlite"
     if not main_db.is_file() or not maintenance_db.is_file():
@@ -364,12 +618,17 @@ def run_foreground(
     driver_image_id: str,
     started: float,
     cleanup_evidence: dict[str, Any],
+    owned: OwnedContainerLedger | None = None,
+    root: Path | None = None,
+    recovery_path: Path | None = None,
 ) -> dict[str, Any]:
     invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
     attempt_count = math.ceil(DATASETS["pool_upstream_attempts"]["arrival_rate"] * RUN_SECONDS)
     retries = attempt_count - invocation_count
     worker = Path(__file__).with_name("foreground.py").resolve()
     name = f"retention-{RUN_ID}-driver"
+    if owned is not None:
+        owned.register(name, "foreground", root or worker.parent, recovery_path or worker.parent, worker)
     try:
         result = run_command(
             [
@@ -392,11 +651,17 @@ def run_foreground(
         )
     finally:
         try:
-            cleanup_evidence.update(cleanup_named_container(name, started, cleanup_reserve_seconds=30))
+            if owned is None:
+                cleanup = cleanup_named_container(name, started, cleanup_reserve_seconds=30)
+            else:
+                cleanup = owned.cleanup(name, started, cleanup_reserve_seconds=30)
+            cleanup_evidence.update(cleanup)
         except BaseException as error:
             cleanup_evidence.update({
                 "container_name": name,
                 "status": "failed",
+                **({"container_id": owned.record(name)["container_id"]} if owned is not None and owned.record(name)["container_id"] else {}),
+                **({"recovery_path": owned.record(name)["recovery_path"]} if owned is not None else {}),
                 "error": {"type": type(error).__name__, "message": str(error)},
             })
             raise
@@ -649,6 +914,7 @@ def run_trial(
     cutoff: str,
     previous_end: str | None,
     phase_started: float,
+    owned: OwnedContainerLedger | None = None,
 ) -> tuple[dict[str, Any], str]:
     if shanghai_cutoff() != cutoff:
         raise AcceptanceError("Shanghai retention cutoff changed during the experiment")
@@ -669,6 +935,9 @@ def run_trial(
         budget_check=lambda: remaining_budget(phase_started),
     )
     container = f"retention-{RUN_ID}-{version}-{index}"
+    containers = owned or OwnedContainerLedger()
+    prior_container_names = containers.names()
+    trial_container_names: set[str] = set()
     container_id = ""
     trial_error: BaseException | None = None
     cleanup_errors: list[BaseException] = []
@@ -685,11 +954,27 @@ def run_trial(
     container_stopped = False
     wall_start = time.monotonic()
     try:
-        container_id = start_container(tag, trial_dir, container, phase_started)
+        container_id = start_container(
+            tag,
+            trial_dir,
+            container,
+            phase_started,
+            owned=containers,
+            kind="application",
+            root=root,
+        )
         wait_healthy(container, phase_started)
         pre_buckets, pre_text, pre_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": pre_time, "scope": "pre-input", "bucket_counts": pre_buckets})
-        foreground = run_foreground(container, driver_image_id, phase_started, driver_cleanup)
+        foreground = run_foreground(
+            container,
+            driver_image_id,
+            phase_started,
+            driver_cleanup,
+            owned=containers,
+            root=root,
+            recovery_path=trial_dir,
+        )
         input_start = foreground.get("input_started_at")
         input_end = foreground.get("input_finished_at")
         input_samples = foreground.get("latency_samples_ms", input_samples)
@@ -736,11 +1021,11 @@ def run_trial(
         (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
         (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
         (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
-        stop_container(
+        containers.cleanup(
             container,
-            evidence_dir / "logs" / f"{version}-{index}.log",
             phase_started,
             cleanup_reserve_seconds=15,
+            log_path=evidence_dir / "logs" / f"{version}-{index}.log",
         )
         container_stopped = True
         oracle = verify_trial(
@@ -755,44 +1040,62 @@ def run_trial(
         )
     except BaseException as error:
         trial_error = error
-        write_json(evidence_dir / "partial-trial.json", {
-            "version": version,
-            "trial_index": index,
-            "error": {"type": type(error).__name__, "message": str(error)},
-            "input_counts": {name: len(added[name]) for name in DATASETS},
-            "added_ids": added,
-            "attempt_states": attempt_states,
-            "foreground_driver_cleanup": driver_cleanup,
-            "latency_samples_ms": input_samples,
-            "foreground_workload": foreground_evidence,
-            "task_runs": task_evidence,
-            "write_hold_samples": write_scrapes,
-            "write_hold_buckets": write_buckets,
-        })
     finally:
-        if not container_stopped:
+        trial_container_names = containers.names() - prior_container_names
+        if container in trial_container_names and not container_stopped:
             try:
-                stop_container(
+                containers.cleanup(
                     container,
-                    evidence_dir / "logs" / f"{version}-{index}.log",
                     phase_started,
                     cleanup_reserve_seconds=12,
+                    log_path=evidence_dir / "logs" / f"{version}-{index}.log",
                 )
             except BaseException as error:
                 cleanup_errors.append(error)
         if input_end is None:
             input_end = utc_now()
-        if trial_dir.exists():
-            try:
-                bounded_rmtree(trial_dir, phase_started, cleanup_reserve_seconds=5)
-            except BaseException as error:
-                cleanup_errors.append(error)
+        trial_cleanup, retry_errors = cleanup_path_if_safe(
+            trial_dir,
+            root,
+            containers,
+            phase_started,
+            cleanup_reserve_seconds=5,
+        )
+        cleanup_errors.extend(retry_errors)
+        if not trial_cleanup["removed"]:
+            cleanup_errors.append(AcceptanceError(
+                "trial data was preserved because owned container cleanup was not confirmed"
+            ))
         cleanup_end = utc_now()
     if cleanup_errors:
         if trial_error is None:
             trial_error = cleanup_errors[0]
         elif hasattr(trial_error, "add_note"):
             trial_error.add_note("trial cleanup failed: " + "; ".join(str(error) for error in cleanup_errors))
+
+    if trial_error is not None:
+        partial = {
+            "version": version,
+            "trial_index": index,
+            "error": {"type": type(trial_error).__name__, "message": str(trial_error)},
+            "input_counts": {name: len(added[name]) for name in DATASETS},
+            "added_ids": added,
+            "attempt_states": attempt_states,
+            "foreground_driver_cleanup": driver_cleanup,
+            "owned_container_cleanup": containers.records(trial_container_names),
+            "latency_samples_ms": input_samples,
+            "foreground_workload": foreground_evidence,
+            "task_runs": task_evidence,
+            "write_hold_samples": write_scrapes,
+            "write_hold_buckets": write_buckets,
+        }
+        if not trial_cleanup["removed"]:
+            partial["cleanup_recovery"] = trial_cleanup["recovery"]
+        try:
+            write_json(evidence_dir / "partial-trial.json", partial)
+        except BaseException as error:
+            if hasattr(trial_error, "add_note"):
+                trial_error.add_note(f"could not persist partial trial evidence: {error}")
 
     if trial_error is not None:
         raise trial_error
@@ -811,6 +1114,11 @@ def run_trial(
         "input_fingerprint": fingerprint,
         "cutoff": cutoff,
         "container_id": container_id,
+        "application_container_cleanup": {
+            "container_name": container,
+            "container_id": containers.record(container)["container_id"],
+            "status": containers.record(container)["status"],
+        },
         "attempt_states": attempt_states,
         "foreground_driver_cleanup": driver_cleanup,
         "window": {
@@ -851,6 +1159,7 @@ def main() -> int:
     }
     root: Path | None = None
     failure: BaseException | None = None
+    owned = OwnedContainerLedger()
     try:
         candidate_sha = os.environ.get("CANDIDATE_SHA", "")
         if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
@@ -883,7 +1192,9 @@ def main() -> int:
         fingerprints: dict[str, str] = {}
         for version in ("baseline", "candidate"):
             remaining_budget(phase_started)
-            templates[version], fingerprints[version] = prepare_template(tags[version], version, root, cutoff, phase_started)
+            templates[version], fingerprints[version] = prepare_template(
+                tags[version], version, root, cutoff, phase_started, owned
+            )
         if fingerprints["baseline"] != fingerprints["candidate"]:
             raise AcceptanceError("baseline and candidate fixture fingerprints differ")
         fingerprint = fingerprints["baseline"]
@@ -917,6 +1228,7 @@ def main() -> int:
                 cutoff,
                 previous_end,
                 phase_started,
+                owned,
             )
             previous_end = end_at
             group["trials"].append(trial)
@@ -928,21 +1240,36 @@ def main() -> int:
             write_json(evidence_dir / "evidence.partial.json", evidence)
         if shanghai_cutoff() != cutoff:
             raise AcceptanceError("Shanghai retention cutoff changed before test-phase cleanup completed")
-        if root is not None:
-            bounded_rmtree(root, phase_started, cleanup_reserve_seconds=3)
-            root = None
     except BaseException as error:
         failure = error
         evidence["failure"] = {"message": str(error), "type": type(error).__name__}
         (evidence_dir / "failure.traceback.txt").write_text(traceback.format_exc())
     finally:
-        if root is not None and root.exists():
-            try:
-                bounded_rmtree(root, phase_started, cleanup_reserve_seconds=1)
-            except BaseException as error:
+        if root is not None:
+            root_cleanup, root_cleanup_errors = cleanup_path_if_safe(
+                root,
+                root,
+                owned,
+                phase_started,
+                cleanup_reserve_seconds=8,
+            )
+            if not root_cleanup["removed"]:
+                evidence["cleanup_recovery"] = root_cleanup["recovery"]
+                cleanup_error = AcceptanceError(
+                    "acceptance root was preserved because owned container cleanup was not confirmed"
+                )
                 if failure is None:
-                    failure = error
-                    evidence["failure"] = {"message": str(error), "type": type(error).__name__}
+                    failure = cleanup_error
+                elif hasattr(failure, "add_note"):
+                    failure.add_note(str(cleanup_error))
+            elif root_cleanup_errors and failure is None:
+                failure = root_cleanup_errors[0]
+        evidence["owned_container_cleanup"] = owned.records()
+        if failure is not None:
+            evidence["failure"] = {"message": str(failure), "type": type(failure).__name__}
+            (evidence_dir / "failure.traceback.txt").write_text(
+                "".join(traceback.format_exception(type(failure), failure, failure.__traceback__))
+            )
         phase_end_iso = utc_now()
         elapsed = time.monotonic() - phase_started
         evidence["test_phase"].update({"finished_at": phase_end_iso, "elapsed_seconds": elapsed})

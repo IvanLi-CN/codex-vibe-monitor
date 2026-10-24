@@ -153,6 +153,12 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         "input_counts": input_counts,
         "added_ids": identities,
         "attempt_states": attempt_states,
+        "container_id": "4" * 64,
+        "application_container_cleanup": {
+            "container_name": f"retention-123456abcdef-{version}-{index}",
+            "container_id": "4" * 64,
+            "status": "removed",
+        },
         "foreground_driver_cleanup": {
             "container_name": "retention-123456abcdef-driver",
             "status": "already_absent",
@@ -284,6 +290,19 @@ class ContractTests(unittest.TestCase):
         evidence = valid_evidence()
         evidence["versions"]["candidate"]["trials"][0]["foreground_driver_cleanup"]["status"] = "running"
         with self.assertRaisesRegex(AcceptanceError, "driver cleanup is incomplete"):
+            validate_evidence(evidence)
+
+    def test_application_container_cleanup_must_be_terminal_and_identity_bound(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["application_container_cleanup"]["status"] = "running"
+        with self.assertRaisesRegex(AcceptanceError, "application container cleanup is incomplete"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["application_container_cleanup"]["container_id"] = "5" * 64
+        with self.assertRaisesRegex(AcceptanceError, "application container cleanup is incomplete"):
             validate_evidence(evidence)
 
     def test_attempt_state_must_be_terminal_and_match_the_invocation_map(self) -> None:

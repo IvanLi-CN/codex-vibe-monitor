@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+import shutil
+import subprocess
 from subprocess import CompletedProcess
+import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
 from contract import CLEANUP_RESERVE_SECONDS
-from measure import cleanup_budget, cleanup_named_container, remaining_budget, run_command
+from measure import (
+    OwnedContainerLedger,
+    cleanup_budget,
+    cleanup_named_container,
+    cleanup_path_if_safe,
+    remaining_budget,
+    run_command,
+)
 
 
 class MeasurementBudgetTests(unittest.TestCase):
@@ -34,6 +46,126 @@ class MeasurementBudgetTests(unittest.TestCase):
         with patch("measure.run_command", return_value=unavailable):
             with self.assertRaisesRegex(RuntimeError, "could not inspect named container"):
                 cleanup_named_container("retention-test-driver", time.monotonic(), 30)
+
+    def test_daemon_failure_preserves_trial_and_root_across_outer_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            template = root / "template-baseline"
+            trial.mkdir(parents=True)
+            template.mkdir()
+            (trial / "database.sqlite").write_bytes(b"recovery data")
+            name = "retention-123456abcdef-baseline-1"
+            container_id = "a" * 64
+            owned = OwnedContainerLedger()
+            owned.register(name, "application", root, trial, trial)
+            owned.mark_started(name, container_id)
+            init_name = "retention-123456abcdef-init-baseline"
+            init_id = "d" * 64
+            owned.register(init_name, "init", root, template, template)
+            owned.mark_started(init_name, init_id)
+            entered = threading.Event()
+            release = threading.Event()
+            result: dict[str, object] = {}
+
+            def daemon_failure(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                entered.set()
+                release.wait(timeout=2)
+                return CompletedProcess(command, 1, "", "Cannot connect to the Docker daemon")
+
+            def cleanup_trial() -> None:
+                result["cleanup"] = cleanup_path_if_safe(
+                    trial, root, owned, time.monotonic(), cleanup_reserve_seconds=5
+                )
+
+            with patch("measure.run_command", side_effect=daemon_failure), patch("measure.bounded_rmtree") as remove:
+                worker = threading.Thread(target=cleanup_trial)
+                worker.start()
+                self.assertTrue(entered.wait(timeout=2), "fake Docker inspection did not reach its barrier")
+                self.assertTrue(root.is_dir())
+                self.assertTrue(trial.is_dir())
+                release.set()
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive(), "cleanup did not finish after the barrier was released")
+                root_result, root_errors = cleanup_path_if_safe(
+                    root, root, owned, time.monotonic(), cleanup_reserve_seconds=5
+                )
+
+            trial_result, trial_errors = result["cleanup"]
+            self.assertFalse(trial_result["removed"])
+            self.assertTrue(trial_errors)
+            self.assertFalse(root_result["removed"])
+            self.assertTrue(root_errors)
+            unresolved_ids = {
+                record["container_id"]
+                for record in root_result["recovery"]["unresolved_containers"]
+            }
+            self.assertEqual(unresolved_ids, {container_id, init_id})
+            self.assertEqual(
+                set(root_result["recovery"]["preserved_paths"]),
+                {str(root), str(trial), str(template)},
+            )
+            self.assertTrue(root.is_dir())
+            self.assertTrue(trial.is_dir())
+            remove.assert_not_called()
+
+    def test_inspect_timeout_preserves_the_recovery_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            root.mkdir()
+            (root / "database.sqlite").write_bytes(b"recovery data")
+            name = "retention-123456abcdef-driver"
+            owned = OwnedContainerLedger()
+            owned.register(name, "foreground", root, root, root / "foreground.py")
+            owned.mark_started(name, "b" * 64)
+            timeout = subprocess.TimeoutExpired(["docker", "inspect", name], 3)
+            with patch("measure.run_command", side_effect=timeout), patch("measure.bounded_rmtree") as remove:
+                cleanup, errors = cleanup_path_if_safe(
+                    root, root, owned, time.monotonic(), cleanup_reserve_seconds=5
+                )
+
+            self.assertFalse(cleanup["removed"])
+            self.assertTrue(errors)
+            self.assertEqual(cleanup["recovery"]["unresolved_containers"][0]["container_id"], "b" * 64)
+            self.assertTrue(root.is_dir())
+            remove.assert_not_called()
+
+    def test_confirmed_container_removal_allows_directory_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            (trial / "database.sqlite").write_bytes(b"temporary data")
+            name = "retention-123456abcdef-baseline-1"
+            container_id = "c" * 64
+            owned = OwnedContainerLedger()
+            owned.register(name, "application", root, trial, trial)
+            owned.mark_started(name, container_id)
+            commands: list[list[str]] = []
+
+            def docker_success(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                commands.append(command)
+                if command[:3] == ["docker", "inspect", "--format"]:
+                    if sum(row[:2] == ["docker", "inspect"] for row in commands) == 1:
+                        return CompletedProcess(command, 0, f"{container_id} true", "")
+                    return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
+                return CompletedProcess(command, 0, container_id, "")
+
+            def remove_directory(path: Path, *_: object) -> None:
+                shutil.rmtree(path)
+
+            with patch("measure.run_command", side_effect=docker_success), patch(
+                "measure.bounded_rmtree", side_effect=remove_directory
+            ):
+                cleanup, errors = cleanup_path_if_safe(
+                    trial, root, owned, time.monotonic(), cleanup_reserve_seconds=5
+                )
+
+            self.assertTrue(cleanup["removed"])
+            self.assertFalse(errors)
+            self.assertFalse(trial.exists())
+            self.assertEqual(owned.record(name)["status"], "removed")
+            self.assertEqual([command[1] for command in commands], ["inspect", "stop", "rm", "inspect"])
 
 
 if __name__ == "__main__":

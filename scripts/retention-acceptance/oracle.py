@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
+import os
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Callable
+import stat
+import tempfile
+from typing import Any, Callable, Iterator
 
 from contract import AcceptanceError, DATASETS, canonical_json, parse_time, sha256_json
 
@@ -35,14 +39,102 @@ def _row_digest(row: tuple[Any, ...]) -> str:
     return hashlib.sha256(canonical_json(values)).hexdigest()
 
 
-def _hash_file(path: Path, budget_check: Callable[[], float] | None = None) -> str:
+def _hash_handle(handle: Any, budget_check: Callable[[], float] | None = None) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for index, chunk in enumerate(iter(lambda: handle.read(1024 * 1024), b"")):
-            if budget_check is not None and index % 8 == 0:
-                budget_check()
-            digest.update(chunk)
+    handle.seek(0)
+    for index, chunk in enumerate(iter(lambda: handle.read(1024 * 1024), b"")):
+        if budget_check is not None and index % 8 == 0:
+            budget_check()
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+def _file_signature(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        metadata.st_nlink,
+    )
+
+
+def _path_signature(path: Path) -> tuple[int, int, int, int, int, int, int]:
+    return _file_signature(path.stat(follow_symlinks=False))
+
+
+def _assert_archive_unchanged(
+    path: Path,
+    source: Any,
+    initial_signature: tuple[int, int, int, int, int, int, int],
+    expected_sha: str,
+    dataset: str,
+    budget_check: Callable[[], float] | None,
+) -> None:
+    source_signature = _file_signature(os.fstat(source.fileno()))
+    try:
+        path_signature = _path_signature(path)
+    except OSError as error:
+        raise AcceptanceError(f"{dataset} archive path changed during verification") from error
+    if source_signature != initial_signature or path_signature != initial_signature:
+        raise AcceptanceError(f"{dataset} archive identity or metadata changed during verification")
+    if _hash_handle(source, budget_check) != expected_sha:
+        raise AcceptanceError(f"{dataset} archive bytes changed during verification")
+    if _file_signature(os.fstat(source.fileno())) != initial_signature:
+        raise AcceptanceError(f"{dataset} archive changed while its source checksum was rechecked")
+    try:
+        final_path_signature = _path_signature(path)
+    except OSError as error:
+        raise AcceptanceError(f"{dataset} archive path changed during verification") from error
+    if final_path_signature != initial_signature:
+        raise AcceptanceError(f"{dataset} archive path identity changed during verification")
+
+
+@contextmanager
+def _verified_archive_snapshot(
+    path: Path,
+    expected_sha: str,
+    scratch: Path,
+    dataset: str,
+    budget_check: Callable[[], float] | None = None,
+) -> Iterator[Any]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    source = os.fdopen(os.open(path, flags), "rb")
+    with source:
+        initial_metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(initial_metadata.st_mode):
+            raise AcceptanceError(f"{dataset} archive is not a regular file")
+        initial_signature = _file_signature(initial_metadata)
+        try:
+            if _path_signature(path) != initial_signature:
+                raise AcceptanceError(f"{dataset} archive path identity changed before verification")
+        except OSError as error:
+            raise AcceptanceError(f"{dataset} archive path changed before verification") from error
+
+        copied_digest = hashlib.sha256()
+        with tempfile.TemporaryFile(mode="w+b", dir=scratch) as snapshot:
+            for index, chunk in enumerate(iter(lambda: source.read(1024 * 1024), b"")):
+                if budget_check is not None and index % 8 == 0:
+                    budget_check()
+                snapshot.write(chunk)
+                copied_digest.update(chunk)
+            snapshot.flush()
+            if copied_digest.hexdigest() != expected_sha:
+                raise AcceptanceError(f"{dataset} archive checksum does not match its manifest")
+            _assert_archive_unchanged(path, source, initial_signature, expected_sha, dataset, budget_check)
+
+            snapshot_signature = _file_signature(os.fstat(snapshot.fileno()))
+            snapshot.seek(0)
+            try:
+                yield snapshot
+            finally:
+                if _file_signature(os.fstat(snapshot.fileno())) != snapshot_signature:
+                    raise AcceptanceError(f"{dataset} private archive snapshot changed while being read")
+                if _hash_handle(snapshot, budget_check) != expected_sha:
+                    raise AcceptanceError(f"{dataset} private archive snapshot checksum changed while being read")
+                _assert_archive_unchanged(path, source, initial_signature, expected_sha, dataset, budget_check)
 
 
 def _archive_path(database: Path, archive_root: Path, stored_path: str, dataset: str, month_key: str) -> Path:
@@ -202,14 +294,13 @@ def verify_dataset(
                     raise AcceptanceError("invocation archive manifest is not authoritative")
                 _verify_summary_proof(connection, manifest["id"], manifest["sha256"], manifest["file_path"])
             path = _archive_path(database, archive_root, manifest["file_path"], dataset, manifest["month_key"])
-            if _hash_file(path, budget_check) != manifest["sha256"]:
-                raise AcceptanceError(f"{dataset} archive checksum does not match its manifest")
             decompressed = scratch / f"{dataset}-{manifest['id']}.sqlite"
-            with gzip.open(path, "rb") as source, decompressed.open("wb") as target:
-                while chunk := source.read(1024 * 1024):
-                    if budget_check is not None:
-                        budget_check()
-                    target.write(chunk)
+            with _verified_archive_snapshot(path, manifest["sha256"], scratch, dataset, budget_check) as snapshot:
+                with gzip.GzipFile(fileobj=snapshot, mode="rb") as source, decompressed.open("wb") as target:
+                    while chunk := source.read(1024 * 1024):
+                        if budget_check is not None:
+                            budget_check()
+                        target.write(chunk)
             archive = sqlite3.connect(f"file:{decompressed}?mode=ro", uri=True)
             try:
                 archived_columns = _table_columns(archive, dataset)

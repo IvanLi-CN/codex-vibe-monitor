@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from contract import AcceptanceError, sha256_json
 from oracle import _verify_summary_proof, verify_dataset
@@ -242,6 +243,44 @@ class OracleTests(unittest.TestCase):
             handle.write(b"tampered")
         with self.assertRaisesRegex(AcceptanceError, "checksum"):
             self.verify({"seed-archived", "seed-live"})
+
+    def test_replaced_archive_with_equivalent_rows_and_different_gzip_is_rejected(self) -> None:
+        path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
+        self.add_manifest(path, 1)
+        original_bytes = path.read_bytes()
+        replacement_bytes = gzip.compress(gzip.decompress(original_bytes), mtime=1)
+        self.assertNotEqual(replacement_bytes, original_bytes)
+        self.assertEqual(gzip.decompress(replacement_bytes), gzip.decompress(original_bytes))
+        real_gzip_file = gzip.GzipFile
+
+        def replace_before_read(*args, **kwargs):
+            replacement = path.with_suffix(".replacement.gz")
+            replacement.write_bytes(replacement_bytes)
+            replacement.replace(path)
+            return real_gzip_file(*args, **kwargs)
+
+        with patch("oracle.gzip.GzipFile", side_effect=replace_before_read):
+            with self.assertRaisesRegex(AcceptanceError, "identity or metadata changed"):
+                self.verify({"seed-archived", "seed-live"})
+
+    def test_in_place_archive_change_during_read_is_rejected(self) -> None:
+        path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
+        self.add_manifest(path, 1)
+        original_bytes = path.read_bytes()
+        replacement_bytes = gzip.compress(gzip.decompress(original_bytes), mtime=1)
+        self.assertNotEqual(replacement_bytes, original_bytes)
+        real_gzip_file = gzip.GzipFile
+
+        def rewrite_before_read(*args, **kwargs):
+            with path.open("r+b") as handle:
+                handle.write(replacement_bytes)
+                handle.truncate()
+                handle.flush()
+            return real_gzip_file(*args, **kwargs)
+
+        with patch("oracle.gzip.GzipFile", side_effect=rewrite_before_read):
+            with self.assertRaisesRegex(AcceptanceError, "identity or metadata changed"):
+                self.verify({"seed-archived", "seed-live"})
 
     def test_missing_duplicate_and_unexpected_rows_fail_closed(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])

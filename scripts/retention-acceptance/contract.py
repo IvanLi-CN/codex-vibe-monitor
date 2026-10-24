@@ -311,6 +311,19 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             _require(trial.get("image_id") == image["image_id"], f"{version} trial image drift")
             _require(trial.get("input_fingerprint") == input_fingerprint, f"{version} input fingerprint drift")
             _require(trial.get("cutoff") == contract["cutoff"], f"{version} cutoff drift")
+            application_cleanup = trial.get("application_container_cleanup")
+            _require(
+                isinstance(application_cleanup, dict)
+                and re.fullmatch(
+                    rf"retention-[0-9a-f]{{12}}-{version}-{index}",
+                    str(application_cleanup.get("container_name", "")),
+                )
+                and isinstance(application_cleanup.get("container_id"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", application_cleanup["container_id"])
+                and application_cleanup.get("container_id") == trial.get("container_id")
+                and application_cleanup.get("status") in {"already_absent", "removed"},
+                "named application container cleanup is incomplete",
+            )
             driver_cleanup = trial.get("foreground_driver_cleanup")
             _require(
                 isinstance(driver_cleanup, dict)
