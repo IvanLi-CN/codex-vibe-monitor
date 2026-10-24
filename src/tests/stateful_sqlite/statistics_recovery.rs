@@ -469,6 +469,216 @@ async fn insert_compacted_source_recovery_rows(state: &Arc<AppState>, count: usi
     occurred_at
 }
 
+async fn insert_compacted_source_recovery_oracle_row(
+    state: &Arc<AppState>,
+    invoke_id: &str,
+    occurred_at: &str,
+    account_id: i64,
+    status: &str,
+    total_tokens: i64,
+    cost: f64,
+) {
+    let failure_kind = (status != "success").then_some("upstream_http_5xx");
+    sqlx::query(
+        "INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, model, payload, raw_response,
+            input_tokens, output_tokens, cache_input_tokens, total_tokens, cost,
+            cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+            failure_kind
+        ) VALUES (?1, ?2, 'proxy', ?3, 'gpt-oracle', ?4, '{}', 10, 1, 2, ?5, ?6,
+                   ?6, 0.0, 0.0, 0.0, 0.0, ?7)",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(format!(
+        r#"{{"upstreamAccountId":{account_id},"responseModel":"gpt-oracle","reasoningEffort":"high"}}"#
+    ))
+    .bind(total_tokens)
+    .bind(cost)
+    .bind(failure_kind)
+    .execute(&state.pool)
+    .await
+    .expect("insert compacted source recovery oracle row");
+}
+
+async fn assert_compacted_source_recovery_total(
+    state: &Arc<AppState>,
+    window_name: &str,
+    account_id: i64,
+    expected: (i64, i64, i64, i64, f64, f64, i64),
+) {
+    let actual = sqlx::query_as::<_, (i64, i64, i64, i64, f64, f64, i64)>(
+        "SELECT total_count, success_count, failure_count, total_tokens, total_cost,
+                non_success_cost, non_success_tokens
+           FROM summary_compacted_source_recovery_aggregate
+          WHERE scope = ?1 AND window_name = ?2 AND upstream_account_id = ?3",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .bind(window_name)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read compacted source recovery oracle total");
+    assert_eq!(
+        (actual.0, actual.1, actual.2, actual.3, actual.6),
+        (expected.0, expected.1, expected.2, expected.3, expected.6),
+        "recovered {window_name} account {account_id} counts/tokens"
+    );
+    assert!(
+        (actual.4 - expected.4).abs() < 1e-9,
+        "recovered {window_name} account {account_id} total cost"
+    );
+    assert!(
+        (actual.5 - expected.5).abs() < 1e-9,
+        "recovered {window_name} account {account_id} non-success cost"
+    );
+}
+
+#[tokio::test]
+async fn compacted_source_recovery_matches_window_and_account_oracle() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    insert_compacted_source_recovery_rows(&state, 10_001).await;
+    let now = Utc::now();
+    let today_start = crate::stats::resolve_range_window_at("today", Shanghai, now)
+        .expect("resolve today boundary")
+        .start;
+    let today_elapsed = now.signed_duration_since(today_start);
+    let today_row_at = if today_elapsed > ChronoDuration::milliseconds(100) {
+        now - ChronoDuration::milliseconds(100)
+    } else {
+        today_start
+    };
+    insert_compacted_source_recovery_oracle_row(
+        &state,
+        "compacted-oracle-today-success",
+        &db_occurred_at_lower_bound(today_row_at),
+        7,
+        "success",
+        11,
+        1.1,
+    )
+    .await;
+    insert_compacted_source_recovery_oracle_row(
+        &state,
+        "compacted-oracle-today-failure",
+        &db_occurred_at_lower_bound(today_row_at),
+        9,
+        "http_500",
+        13,
+        2.2,
+    )
+    .await;
+    insert_compacted_source_recovery_oracle_row(
+        &state,
+        "compacted-oracle-yesterday-success",
+        &db_occurred_at_lower_bound(today_start - ChronoDuration::hours(12)),
+        7,
+        "success",
+        17,
+        3.3,
+    )
+    .await;
+    insert_compacted_source_recovery_oracle_row(
+        &state,
+        "compacted-oracle-yesterday-failure",
+        &db_occurred_at_lower_bound(today_start - ChronoDuration::hours(11)),
+        9,
+        "http_500",
+        19,
+        4.4,
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO summary_source_change_compaction_proof (
+            first_cursor, last_cursor, retained_after_cursor, proof_kind, proof_json
+        ) VALUES (1, 10005, 10006, 'source_union', '{\"retainedAfterCursor\":10006}')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert compacted source oracle proof");
+
+    run_compacted_source_recovery_until_complete_for_test(state.as_ref())
+        .await
+        .expect("complete exact compacted source oracle recovery");
+
+    assert_compacted_source_recovery_total(&state, "today", 0, (2, 1, 1, 24, 3.3, 2.2, 13)).await;
+    assert_compacted_source_recovery_total(&state, "today", 7, (1, 1, 0, 11, 1.1, 0.0, 0)).await;
+    assert_compacted_source_recovery_total(&state, "today", 9, (1, 0, 1, 13, 2.2, 2.2, 13)).await;
+    assert_compacted_source_recovery_total(&state, "yesterday", 0, (2, 1, 1, 36, 7.7, 4.4, 19))
+        .await;
+    assert_compacted_source_recovery_total(
+        &state,
+        "previous7d",
+        0,
+        (10_003, 9_001, 1_002, 190_055, 15_009.2, 1_505.9, 19_038),
+    )
+    .await;
+    assert_compacted_source_recovery_total(
+        &state,
+        "previous7d",
+        7,
+        (5_002, 4_001, 1_001, 95_036, 7_504.8, 1_501.5, 19_019),
+    )
+    .await;
+    assert_compacted_source_recovery_total(
+        &state,
+        "previous7d",
+        9,
+        (5_001, 5_000, 1, 95_019, 7_504.4, 4.4, 19),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(2));
+    sqlx::query(
+        "INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, model, payload, raw_response,
+            total_tokens, cost, failure_kind
+        ) VALUES ('compacted-running-before-restart', ?1, 'proxy', 'running',
+                  'gpt-running', '{\"upstreamAccountId\":7}', '{}', 0, 0.0, NULL)",
+    )
+    .bind(&occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert running target row");
+
+    run_compacted_source_recovery_one_page_for_test(state.as_ref())
+        .await
+        .expect("complete the page that excludes the running row");
+    sqlx::query(
+        "UPDATE codex_invocations
+            SET status = 'success', total_tokens = 23, cost = 2.5
+          WHERE invoke_id = 'compacted-running-before-restart'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("transition target row to terminal after scan");
+
+    run_compacted_source_recovery_until_complete_for_test(state.as_ref())
+        .await
+        .expect("rescan target row after terminal transition");
+    let total = sqlx::query_scalar::<_, i64>(
+        "SELECT total_count
+           FROM summary_compacted_source_recovery_aggregate
+          WHERE scope = ?1 AND window_name = 'previous7d' AND upstream_account_id = 0",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read rescanned target total");
+    assert_eq!(total, 1);
+}
+
 #[tokio::test]
 async fn compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart() {
     let state = crate::tests::test_state_with_openai_base(

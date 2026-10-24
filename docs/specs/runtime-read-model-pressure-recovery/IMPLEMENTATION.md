@@ -47,7 +47,8 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   identity, cursor, fence, and state in SQLite without copying invocation
   payloads.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
-  the candidate query measures text byte lengths before loading source fields,
+  the candidate query measures text byte lengths, including raw `payload`,
+  before loading source fields,
   then materializes only the selected rows. The page byte budget is 8 MiB, the
   write-transaction budget is 250 ms including a bounded commit wait, and a
   worker turn is capped at 2 s. An oversized error message is represented by a
@@ -57,14 +58,26 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   materialization. Pressure or contention records `deferred`, a restart resumes
   the last committed page, a concurrent worker loses a durable cursor
   compare-and-swap without applying its page, and a changed coverage fence
-  clears unpublishable staging before rebuilding.
-  Transaction-body timeout cancellation awaits rollback before releasing the
-  background admission; a commit timeout drops the SQLx transaction so its
-  native rollback is queued on the pooled connection. Append-only live-tail
-  changes do not clear committed historical staging; completed staging is
+  clears unpublishable staging before rebuilding. Page staging uses a dedicated
+  SQLite connection with the same transaction budget as its busy timeout and
+  SQLite progress handler; cancellation rolls back and closes that connection
+  before the worker releases admission, so an interrupted transaction is never
+  returned to the pool. Append-only live-tail changes do not clear committed
+  historical staging; completed staging is
   published against its coverage fence and newer exact terminal deltas are
   overlaid at read time. Only completed staging that still matches the coverage
   fence is published into the in-memory Summary projection.
+- Publication holds `BEGIN IMMEDIATE` while it rereads the checkpoint and
+  coverage fence, verifies that canonical terminal row counts still equal
+  staged global totals for every window, loads staging, and stores the snapshot
+  before commit. A row that becomes terminal after the scan therefore forces a
+  bounded reset/rescan instead of publishing an incomplete snapshot. Stored
+  Shanghai window boundaries are revalidated at read time, so a snapshot from
+  the previous reporting day cannot be served as today's exact result.
+  Restart-ambiguous persisted replay identities at or below the target sequence
+  fail closed until the source proof is unambiguous; a mixed compaction gap and
+  strict scoped gap remains generic unavailable rather than claiming this
+  recovery can resolve it.
 - ADR 0010 separates the immutable Summary Coverage Fence from the bounded live
   tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
   AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy
@@ -183,7 +196,9 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - Dashboard recovery uses a separate additive checkpoint and staging set. It
   retains only normalized aggregates, `(occurred_at, id)` progress, generation
   fence values, and `list_limit_max`-bounded record identities, so a 10,001-row
-  source range remains recoverable without a production database copy.
+  source range remains recoverable without a production database copy. The
+  stateful oracle covers 10,001 historical rows plus today/yesterday rows
+  across two accounts and asserts exact global and account aggregates.
 - Archive maintenance exposes the normalized Snapshot page writer and cleanup
   proof gate in main SQLite. Snapshot proof includes manifest identity,
   coverage and payload SHA; a seek-paged legacy backfill can reuse the writer

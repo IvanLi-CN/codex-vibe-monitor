@@ -34037,6 +34037,21 @@ mod request_compression_query_tests {
             ),
             "a source proof must not be downgraded to a terminal-only gap"
         );
+        let mut compaction_gap = gap.clone();
+        compaction_gap.source_gap = true;
+        compaction_gap.compaction_gap = true;
+        let mut strict_scoped_gap = compaction_gap.clone();
+        strict_scoped_gap.compaction_gap = false;
+        strict_scoped_gap.upstream_account_id = Some(42);
+        let (pending, unavailable, recovery_applicable) = summary_source_gap_status(
+            projection.as_ref(),
+            &[compaction_gap, strict_scoped_gap],
+            &[],
+            &SummaryWindow::PreviousFullDays(7),
+            Shanghai,
+            None,
+        );
+        assert!(pending && unavailable && !recovery_applicable);
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),

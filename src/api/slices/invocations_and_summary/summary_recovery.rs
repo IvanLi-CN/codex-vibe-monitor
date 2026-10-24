@@ -62,6 +62,7 @@ pub(crate) struct SummaryDashboardRecoveryEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct SummaryDashboardRecoverySnapshot {
     pub(crate) time_zone: String,
+    pub(crate) window_ranges_json: String,
     pub(crate) generation_fence: SummaryProjectionGenerationFence,
     pub(crate) entries: HashMap<(String, Option<i64>), SummaryDashboardRecoveryEntry>,
     pub(crate) bounded_record_count: usize,
@@ -175,7 +176,12 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
     let Some(snapshot) = state.subscription_hub.summary_dashboard_recovery().await else {
         return Ok(None);
     };
+    let now = Utc::now();
     if snapshot.time_zone != SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE
+        || !super::summary_projection_lifecycle::compacted_source_recovery_window_ranges_match_at(
+            &snapshot.window_ranges_json,
+            now,
+        )?
         || !snapshot
             .generation_fence
             .coverage_sources_match(projection.generation_fence())
@@ -197,20 +203,15 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
                 models: Vec::new(),
             },
         });
-    let range = summary_window_range(window, reporting_tz, Utc::now())?;
-    let mut response = projection.response_for_dashboard_recovery(
-        window,
-        range,
-        Utc::now(),
-        &entry,
-        upstream_account_id,
-    );
+    let range = summary_window_range(window, reporting_tz, now)?;
+    let mut response =
+        projection.response_for_dashboard_recovery(window, range, now, &entry, upstream_account_id);
     let target_live_tail = snapshot.generation_fence.live_tail_cursor();
     let has_unfenced_replayed_delta = deltas.iter().any(|delta| {
-        delta.terminal_sequence == 0
-            && delta
-                .persisted_row_id
-                .is_some_and(|row_id| row_id <= target_live_tail.live_high_watermark_id)
+        delta
+            .persisted_row_id
+            .is_some_and(|row_id| row_id <= target_live_tail.live_high_watermark_id)
+            && delta.terminal_sequence <= target_live_tail.durable_terminal_sequence_watermark
             && upstream_account_id
                 .is_none_or(|account_id| delta.upstream_account_id == Some(account_id))
             && range.is_some_and(|(start, end)| {
@@ -219,9 +220,10 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
             })
     });
     if has_unfenced_replayed_delta {
-        // A restarted durable-tail replay may have no trustworthy process-local sequence. If its
-        // row id is inside the snapshot target, applying it could double count a row already
-        // reduced into the snapshot; withholding the snapshot preserves exact/unavailable.
+        // A restarted durable-tail replay may have a process-local sequence that is lower than
+        // the snapshot target. If its row id is inside the target, applying it could double count
+        // a row already reduced into the snapshot, while ignoring it could miss a late terminal
+        // transition; withholding the snapshot preserves exact/unavailable.
         return Ok(None);
     }
     let live_deltas = deltas
