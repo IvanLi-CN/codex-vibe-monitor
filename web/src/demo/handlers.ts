@@ -359,6 +359,9 @@ function publicModelRoutingRecord(record: ModelRoutingTimelineRecord) {
 }
 
 function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
+  if (demoModel.snapshot.scene === "empty") {
+    return { generatedAt: demoNow(), groups: [], records: [] };
+  }
   const model = query.model?.trim() || null;
   const state = query.state?.trim() || null;
   const windowMinutes =
@@ -2769,6 +2772,7 @@ export function resetDemoManagedTaskState(): void {
   managedTaskOverrides.clear();
   managedTaskRuns.clear();
   nextManagedTaskRunId = 100;
+  demoModel.setPromptCacheMaterializationEnabled(true);
 }
 
 function demoRetentionOwnerV2Fixture(taskKey: string) {
@@ -3184,7 +3188,10 @@ export function managedTasks() {
     ([taskKey, title, description, triggerMode, isManual]) => ({
       ...(() => {
         const override = managedTaskOverrides.get(taskKey);
-        const enabled = override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey);
+        const enabled =
+          taskKey === "prompt_cache_materialization"
+            ? demoModel.promptCacheMaterializationEnabled
+            : (override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey));
         const scheduleEditable = [
           "retention_archive",
           ...DEMO_RETENTION_OWNER_V2_TASK_KEYS,
@@ -3250,9 +3257,11 @@ export function managedTasks() {
           intervalSecs,
           cronExpr,
           nextTriggerAt:
-            override?.nextTriggerAt !== undefined
-              ? override.nextTriggerAt
-              : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
+            taskKey === "prompt_cache_materialization"
+              ? demoNextTriggerAt(enabled, intervalSecs, cronExpr)
+              : override?.nextTriggerAt !== undefined
+                ? override.nextTriggerAt
+                : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
           nextCatchupAt:
             (taskKey === "retention_archive" || DEMO_RETENTION_OWNER_V2_TASK_KEYS.has(taskKey)) &&
             enabled
@@ -4905,6 +4914,41 @@ function demoInvocationTimeline(url: URL) {
   };
 }
 
+function demoPromptCacheMaterializationStatus() {
+  const enabled = demoModel.promptCacheMaterializationEnabled;
+  return {
+    enabled,
+    phase: "stats_rebuild",
+    totalKeys: 418,
+    completedKeys: 312,
+    queuePending: 7,
+    progressPercent: 74.6,
+    estimatedRemainingMs: 126_000,
+    sourceMaxInvocationId: 9002,
+    updatedAt: demoNow(),
+    lastStartedAt: "2026-07-10T11:58:00.000Z",
+    lastFinishedAt: "2026-07-10T11:57:42.000Z",
+    lastStatus: enabled ? "running" : "disabled",
+    suspensionReason: enabled ? undefined : "manual_pause",
+    recentRuns: [
+      {
+        id: 901,
+        startedAt: "2026-07-10T11:58:00.000Z",
+        finishedAt: "2026-07-10T11:58:00.000Z",
+        phase: "stats_rebuild",
+        status: "running",
+        scanned: 106,
+        updated: 81,
+        batchCount: 4,
+        lastBatchSize: 25,
+        maxBatchSize: 32,
+        batchElapsedMs: 420,
+        durationMs: 3_600,
+      },
+    ],
+  };
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -5700,6 +5744,18 @@ export async function handleDemoRequest(request: Request) {
     return json(systemStatus());
   }
   if (pathname === "/api/system/storage") return json(systemStorage());
+  if (pathname === "/api/system/prompt-cache/materialization") {
+    if (request.method === "PATCH") {
+      const body = (await request.json().catch(() => ({}))) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") {
+        return json({ error: "enabled must be a boolean" }, { status: 400 });
+      }
+      demoModel.setPromptCacheMaterializationEnabled(body.enabled);
+    }
+    if (request.method === "GET" || request.method === "PATCH") {
+      return json(demoPromptCacheMaterializationStatus());
+    }
+  }
   if (pathname === "/api/system/tasks") {
     let items = systemTasks();
     const taskKind = url.searchParams.get("taskKind");
@@ -5755,10 +5811,13 @@ export async function handleDemoRequest(request: Request) {
     const detail = managedTaskDetail(taskKey);
     if (!detail) return json({ error: "not found" }, { status: 404 });
     const body = (await request.json().catch(() => ({}))) as {
-      enabled?: boolean;
+      enabled?: unknown;
       intervalSecs?: number | null;
       cronExpr?: string | null;
     };
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+      return json({ error: "enabled must be a boolean" }, { status: 400 });
+    }
     if (detail.task.isManual && (body.intervalSecs !== undefined || body.cronExpr !== undefined)) {
       return json({ error: "manual tasks do not have a schedule" }, { status: 400 });
     }
@@ -5799,6 +5858,9 @@ export async function handleDemoRequest(request: Request) {
         next.cronExpr = body.cronExpr;
         delete next.intervalSecs;
       }
+    }
+    if (taskKey === "prompt_cache_materialization" && body.enabled !== undefined) {
+      demoModel.setPromptCacheMaterializationEnabled(body.enabled);
     }
     const enabled = next.enabled ?? detail.task.enabled;
     const intervalSecs =

@@ -44,6 +44,28 @@ for workflow in ci-pr.yml ci-main.yml release.yml release-snapshot-pr.yml label-
 done
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
+
+ci_pr_trigger_repo="$tmp_dir/ci-pr-trigger-repo"
+copy_repo_snapshot "$baseline_repo" "$ci_pr_trigger_repo"
+python3 - <<'PY' "$ci_pr_trigger_repo/.github/workflows/ci-pr.yml"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "      - edited\n"
+if text.count(needle) != 1:
+    raise SystemExit("failed to locate CI PR edited trigger")
+path.write_text(text.replace(needle, needle + "      - labeled\n", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_pr_trigger_repo" --profile final >/dev/null 2>"$tmp_dir/ci-pr-trigger.log"; then
+  echo "expected CI PR labeled trigger fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.on.pull_request.types drifted" "$tmp_dir/ci-pr-trigger.log"
+
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
 retention_command_repo="$baseline_repo"
@@ -352,7 +374,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   echo "expected missing joint maintenance acceptance to fail" >&2
   exit 1
 fi
-grep -q "selectors must replay Summary, proxy and maintenance contention acceptance" "$tmp_dir/missing-joint-acceptance.log"
+grep -q "must replay the exact representative-scale profiles from the extracted archive" "$tmp_dir/missing-joint-acceptance.log"
 cp "$repo_root/.github/workflows/ci-pr.yml" "$continue_error_repo/.github/workflows/ci-pr.yml"
 
 expect_continue_on_error_rejected() {
@@ -872,7 +894,7 @@ needle = '''  backend-tests-lightweight:
     if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -936,8 +958,8 @@ import sys
 
 path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file \"$RUNNER_TEMP/backend-tests.tar.zst\""
-replacement = "run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file \"$RUNNER_TEMP/backend-tests.tar.zst\""
+needle = "run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-dir \"$RUNNER_TEMP/backend-test-extract\""
+replacement = "run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-dir \"$RUNNER_TEMP/backend-test-extract\""
 if needle not in text:
     raise SystemExit("failed to locate PR lightweight backend replay command")
 path.write_text(text.replace(needle, replacement, 1))
@@ -1038,6 +1060,7 @@ needle = '''      - name: Upload backend test archive
           name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-tests.tar.zst
           if-no-files-found: error
+          retention-days: 1
           overwrite: true
 '''
 replacement = needle.replace(
@@ -1055,7 +1078,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "artifact must be run-scoped and replace the prior attempt" "$tmp_dir/archive-name.log"
+grep -q "ci-pr.yml backend archive artifact must be run-scoped, uncompressed by upload, and replace the prior attempt" "$tmp_dir/archive-name.log"
 
 smoke_guard_repo="$tmp_dir/smoke-guard-repo"
 copy_repo_snapshot "$baseline_repo" "$smoke_guard_repo"
@@ -1170,10 +1193,19 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows" / sys.argv[2]
 text = path.read_text()
-needle = "            ~/.cargo/git\n"
+needle = "      - name: Restore Cargo registry\n"
 if needle not in text:
-    raise SystemExit("failed to locate lint cache paths")
-path.write_text(text.replace(needle, f"{needle}            target\n", 1))
+    raise SystemExit("failed to locate lint registry cache")
+legacy = """      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+"""
+path.write_text(text.replace(needle, legacy + needle, 1))
 PY
 
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$lint_target_repo" --profile final >/dev/null 2>"$tmp_dir/lint-target-${workflow_file%.yml}.log"; then
@@ -1181,7 +1213,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "legacy cache must not restore Cargo target artifacts" "$tmp_dir/lint-target-${workflow_file%.yml}.log"
+grep -q "step 'Restore legacy Cargo workspace cache' must be removed" "$tmp_dir/lint-target-${workflow_file%.yml}.log"
 done
 
 e2e_spec_repo="$tmp_dir/e2e-spec-repo"

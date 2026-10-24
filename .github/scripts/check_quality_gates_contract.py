@@ -37,7 +37,7 @@ class ContractModel:
     label_check_name: str
 
 
-CI_PULL_REQUEST_TYPES = {"opened", "reopened", "synchronize", "ready_for_review", "edited", "labeled"}
+CI_PULL_REQUEST_TYPES = {"opened", "reopened", "synchronize", "ready_for_review", "edited"}
 LABEL_GATE_PULL_REQUEST_TYPES = {
     "opened",
     "reopened",
@@ -56,6 +56,9 @@ TEST_CACHE_INPUT_HASH = "${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}"
 RUST_SOURCE_INPUT_HASH = "${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}"
 CARGO_TEST_CACHE_KEY = "${{ runner.os }}-cargo-test-v4-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
 CARGO_CLIPPY_CACHE_KEY = "${{ runner.os }}-cargo-clippy-v2-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
+BUN_DOWNLOAD_CACHE_KEY = "${{ runner.os }}-bun-download-v1-${{ hashFiles('.bun-version', 'bun.lock', 'web/bun.lock', 'docs-site/bun.lock') }}"
+PLAYWRIGHT_CACHE_KEY = "${{ runner.os }}-playwright-chromium-v1-${{ hashFiles('.bun-version', 'web/package.json', 'web/bun.lock') }}"
+CARGO_NEXTEST_VERSION = "0.9.138"
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,8 +100,8 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
         "stateful-sqlite",
         "--partition",
         partition,
-        "--archive-file",
-        "$RUNNER_TEMP/backend-tests.tar.zst",
+        "--archive-dir",
+        "$RUNNER_TEMP/backend-test-extract",
     ]
     try:
         actual_args = shlex.split(run)
@@ -554,6 +557,15 @@ def step_config(job: dict[str, Any], step_name: str, where: str) -> dict[str, An
     raise ContractError(f"{where}: missing step {step_name!r}")
 
 
+def require_step_absent(job: dict[str, Any], step_name: str, where: str) -> None:
+    steps = job.get("steps")
+    require(isinstance(steps, list), f"{where}.steps must be a list")
+    require(
+        not any(isinstance(step, dict) and step.get("name") == step_name for step in steps),
+        f"{where}: step {step_name!r} must be removed",
+    )
+
+
 def uses_step_config(job: dict[str, Any], step_name: str, expected_uses: str, where: str) -> dict[str, Any]:
     step = step_config(job, step_name, where)
     require(step.get("uses") == expected_uses, f"{where}.steps[{step_name!r}].uses must stay {expected_uses!r}")
@@ -626,6 +638,63 @@ def require_exact_if(mapping: dict[str, Any], expected: str, where: str) -> None
     require(mapping.get("if") == expected, f"{where}.if must stay {expected!r}")
 
 
+def require_bun_download_cache(job: dict[str, Any], where: str) -> None:
+    cache = uses_step_config(job, "Cache Bun downloads", "actions/cache@v5", where)
+    cache_with = require_mapping(cache.get("with"), f"{where}.steps['Cache Bun downloads'].with")
+    require(
+        cache_with.get("path") == "~/.bun/install/cache" and cache_with.get("key") == BUN_DOWNLOAD_CACHE_KEY,
+        f"{where} must cache Bun downloads with all lockfile and Bun-version inputs",
+    )
+
+
+def require_playwright_browser_cache(job: dict[str, Any], where: str) -> None:
+    cache = uses_step_config(job, "Cache Playwright Chromium", "actions/cache@v5", where)
+    cache_with = require_mapping(cache.get("with"), f"{where}.steps['Cache Playwright Chromium'].with")
+    require(
+        cache_with.get("path") == "~/.cache/ms-playwright" and cache_with.get("key") == PLAYWRIGHT_CACHE_KEY,
+        f"{where} must cache the version-matched Playwright browser",
+    )
+
+
+def require_bun_caches(workflow: dict[str, Any], workflow_path: str) -> None:
+    jobs = workflow_jobs(workflow, workflow_path)
+    for job_id, raw_job in jobs.items():
+        job = require_mapping(raw_job, f"{workflow_path}.jobs.{job_id}")
+        step_names = {step.get("name") for step in job.get("steps", []) if isinstance(step, dict)}
+        if "Set up Bun" in step_names:
+            require_bun_download_cache(job, f"{workflow_path}.jobs.{job_id}")
+        if "Install Playwright Chromium" in step_names or "Install Playwright Chromium for Storybook" in step_names:
+            require_playwright_browser_cache(job, f"{workflow_path}.jobs.{job_id}")
+
+
+def require_fixed_cargo_nextest_install(job: dict[str, Any], where: str) -> None:
+    install = uses_step_config(job, "Install cargo-nextest", "taiki-e/install-action@v2", where)
+    install_with = require_mapping(install.get("with"), f"{where}.steps['Install cargo-nextest'].with")
+    require(
+        install_with.get("tool") == f"cargo-nextest@{CARGO_NEXTEST_VERSION}",
+        f"{where} must install the fixed cargo-nextest runtime",
+    )
+
+
+def require_backend_archive_prepare(job: dict[str, Any], where: str) -> None:
+    prepare = step_config(job, "Prepare backend test archive", where)
+    run = str(prepare.get("run", ""))
+    required_fragments = (
+        'archive_dir="$RUNNER_TEMP/backend-test-extract"',
+        'test ! -e "$archive_dir"',
+        'mkdir "$archive_dir"',
+        'cargo-nextest nextest run \\',
+        '--archive-file "$RUNNER_TEMP/backend-tests.tar.zst" \\',
+        '--extract-to "$archive_dir" \\',
+        '--workspace-remap "$GITHUB_WORKSPACE" \\',
+        '--no-run',
+    )
+    require(
+        all(fragment in run for fragment in required_fragments),
+        f"{where} must extract the backend archive exactly once before replay",
+    )
+
+
 def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     require(mapping.get("continue-on-error") in (None, False), f"{where}.continue-on-error must not ignore failures")
 
@@ -653,6 +722,14 @@ def require_job_and_steps_fail_closed(
 def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, job_id: str) -> None:
     where = f"{workflow_name}.jobs.{job_id}"
     require_job_and_steps_fail_closed(job, where)
+    require_step_absent(job, "Install system dependencies", where)
+    require_step_absent(job, "Set up Rust toolchain", where)
+    require_fixed_cargo_nextest_install(job, where)
+    runtime = step_config(job, "Verify cargo-nextest runtime", where)
+    require(
+        runtime.get("run") == "cargo-nextest --version | grep -qE '^cargo-nextest 0\\.9\\.138( |$)'",
+        f"{where} must verify the fixed cargo-nextest runtime",
+    )
     producer_check = step_config(job, "Verify backend test archive producer", where)
     producer_env = require_mapping(producer_check.get("env"), f"{where} producer result environment")
     require(
@@ -670,6 +747,7 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
         download_with.get("path") == "${{ runner.temp }}",
         f"{where} must download the backend test archive to runner.temp",
     )
+    require_backend_archive_prepare(job, where)
 
     expected_profiles = {
         "backend-tests-lightweight": (
@@ -679,8 +757,8 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
                 ".github/scripts/run-backend-tests.sh",
                 "--profile",
                 "lightweight",
-                "--archive-file",
-                "$RUNNER_TEMP/backend-tests.tar.zst",
+                "--archive-dir",
+                "$RUNNER_TEMP/backend-test-extract",
             ],
         ),
         "backend-tests-archive-file-io": (
@@ -690,11 +768,35 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
                 ".github/scripts/run-backend-tests.sh",
                 "--profile",
                 "archive-file-io",
-                "--archive-file",
-                "$RUNNER_TEMP/backend-tests.tar.zst",
+                "--archive-dir",
+                "$RUNNER_TEMP/backend-test-extract",
             ],
         ),
     }
+    if job_id == "backend-tests-representative-scale":
+        replay = step_config(job, "Run deterministic representative-scale acceptance", where)
+        actual_commands = shell_commands(replay, where)
+        expected_commands = [
+            [
+                "bash", ".github/scripts/run-backend-tests.sh", "--profile", profile,
+                "--archive-dir", "$RUNNER_TEMP/backend-test-extract", "--test-filter", selector,
+            ]
+            for profile, selector in (
+                (
+                    "stateful-sqlite",
+                    "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)",
+                ),
+                (
+                    "archive-file-io",
+                    "test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)",
+                ),
+            )
+        ]
+        require(
+            actual_commands == expected_commands,
+            f"{where} must replay the exact representative-scale profiles from the extracted archive",
+        )
+        return
     expected_profile = expected_profiles.get(job_id)
     if expected_profile is not None:
         step_name, expected_args = expected_profile
@@ -1093,6 +1195,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
     require_storybook_browser_install(workflow, "ci-pr.yml")
     require_retention_migration_validation_contract(workflow, expected_jobs, auxiliary_jobs)
+    require_bun_caches(workflow, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -1115,12 +1218,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-pr.yml")
     require_no_if(lint_job, "ci-pr.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-pr.yml.jobs.lint")
-    legacy_lint_cache = step_config(lint_job, "Restore legacy Cargo workspace cache", "ci-pr.yml.jobs.lint")
-    legacy_lint_cache_paths = str(legacy_lint_cache.get("with", {}).get("path", ""))
-    require(
-        "target" not in legacy_lint_cache_paths.splitlines(),
-        "ci-pr.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
-    )
+    require_step_absent(lint_job, "Restore legacy Cargo workspace cache", "ci-pr.yml.jobs.lint")
     require_lint_cache_contract(lint_job, "ci-pr.yml")
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-pr.yml")
     require_no_if(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
@@ -1230,7 +1328,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         expected_commands = [
             [
                 "bash", ".github/scripts/run-backend-tests.sh", "--profile", profile,
-                "--archive-file", "$RUNNER_TEMP/backend-tests.tar.zst", "--test-filter", selector,
+                "--archive-dir", "$RUNNER_TEMP/backend-test-extract", "--test-filter", selector,
             ]
             for profile, selector in [
                 ("stateful-sqlite", "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)"),
@@ -1390,10 +1488,12 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "ci-pr.yml.jobs.backend-test-archive",
             best_effort_steps=("Save Cargo registry", "Save Cargo test artifacts"),
         )
+        require_fixed_cargo_nextest_install(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         require_cargo_test_cache_restore(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-pr.yml.jobs.backend-test-archive")
         require(
-            archive_build_step.get("id") == "build-backend-test-archive",
+            archive_build_step.get("id") == "build-backend-test-archive"
+            and "--zstd-level 0" in str(archive_build_step.get("run", "")),
             "ci-pr.yml.jobs.backend-test-archive: archive build step id drifted",
         )
         target_cache_save_step = step_config(archive_job, "Save Cargo test artifacts", "ci-pr.yml.jobs.backend-test-archive")
@@ -1427,8 +1527,9 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         archive_upload_with = require_mapping(archive_upload.get("with"), "ci-pr.yml backend archive upload")
         require(
             archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}"
-            and archive_upload_with.get("overwrite") is True,
-            "ci-pr.yml backend archive artifact must be run-scoped and replace the prior attempt",
+            and archive_upload_with.get("overwrite") is True
+            and archive_upload_with.get("compression-level") == 0,
+            "ci-pr.yml backend archive artifact must be run-scoped, uncompressed by upload, and replace the prior attempt",
         )
         require_exact_cargo_cache_reuse(
             archive_job,
@@ -1508,6 +1609,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     auxiliary_jobs = set(contract.expected_main_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
     require_storybook_browser_install(workflow, "ci-main.yml")
+    require_bun_caches(workflow, "ci-main.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
@@ -1526,12 +1628,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-main.yml")
     require_no_if(lint_job, "ci-main.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-main.yml.jobs.lint")
-    legacy_lint_cache = step_config(lint_job, "Restore legacy Cargo workspace cache", "ci-main.yml.jobs.lint")
-    legacy_lint_cache_paths = str(legacy_lint_cache.get("with", {}).get("path", ""))
-    require(
-        "target" not in legacy_lint_cache_paths.splitlines(),
-        "ci-main.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
-    )
+    require_step_absent(lint_job, "Restore legacy Cargo workspace cache", "ci-main.yml.jobs.lint")
     require_lint_cache_contract(lint_job, "ci-main.yml")
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-main.yml")
     require_no_if(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
@@ -1590,10 +1687,12 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             "ci-main.yml.jobs.backend-test-archive",
             best_effort_steps=("Save Cargo registry", "Save Cargo test artifacts"),
         )
+        require_fixed_cargo_nextest_install(archive_job, "ci-main.yml.jobs.backend-test-archive")
         require_cargo_test_cache_restore(archive_job, "ci-main.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-main.yml.jobs.backend-test-archive")
         require(
-            archive_build_step.get("id") == "build-backend-test-archive",
+            archive_build_step.get("id") == "build-backend-test-archive"
+            and "--zstd-level 0" in str(archive_build_step.get("run", "")),
             "ci-main.yml.jobs.backend-test-archive: archive build step id drifted",
         )
         target_cache_save_step = step_config(archive_job, "Save Cargo test artifacts", "ci-main.yml.jobs.backend-test-archive")
@@ -1627,8 +1726,9 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         archive_upload_with = require_mapping(archive_upload.get("with"), "ci-main.yml backend archive upload")
         require(
             archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}"
-            and archive_upload_with.get("overwrite") is True,
-            "ci-main.yml backend archive artifact must be run-scoped and replace the prior attempt",
+            and archive_upload_with.get("overwrite") is True
+            and archive_upload_with.get("compression-level") == 0,
+            "ci-main.yml backend archive artifact must be run-scoped, uncompressed by upload, and replace the prior attempt",
         )
         require_exact_cargo_cache_reuse(
             archive_job,
