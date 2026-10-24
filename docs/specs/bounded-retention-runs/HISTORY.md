@@ -1,5 +1,9 @@
 # 有预算、可恢复的 Retention：主题关系与兼容性
 
+## File-phase resource ownership
+
+ADR 0048 narrows heavy-file mutual exclusion to actual file operations while retaining the selected work unit, operation-level budgets and native-drain requirements from ADR 0045. Task execution rates exclude scheduler waiting, while sustained convergence still uses elapsed observation windows. The scheduling change and its validation remain pending; this accepted design does not certify production capacity.
+
 ## 2026-10-21 Work-unit boundary refresh
 
 生产 retention 不再使用固定总任务预算；每次调度拥有一个选定的有界逻辑工作单元，取消、真实压力/准入延期和操作级预算仍按既有安全边界停止。月度 Summary 页现在由 writer 单次写入、proof 阶段只校验，已发布 artifact 复用仅保留为崩溃/重启恢复证据。详见 [ADR 0045](../../adr/0045-retention-work-unit-operation-budgets.md)。

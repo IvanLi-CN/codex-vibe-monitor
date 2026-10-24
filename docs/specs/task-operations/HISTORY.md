@@ -10,6 +10,7 @@
 
 ## Replacements / Background
 
+- ADR 0048 records the accepted file-phase resource boundary. Scheduler waiting stays separate from task execution; internal waits remain part of execution. Browser-local timestamps, durable run identity and consistent service-rate presentation are accepted contract corrections whose implementation remains pending.
 - ADR 0024 records the accepted decision to separate actual execution observation from durable history and to centralize effective schedule policy in a capability catalog.
 - The diagnostic solution records the root cause: worker defaults were not present in the database projection, while the detail page rendered an empty override as a fixed interval.
 - The task-overview requirements extend this boundary with separately labelled queued requests and admission-deferred tasks, stable identity colors, and a compact execution timeline whose lanes follow overlap rather than task identity. The deferral row concerns task admission rather than general runtime health; independent worker policies remain independent.
