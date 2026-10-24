@@ -316,7 +316,10 @@ def run_sample(
     except subprocess.TimeoutExpired as error:
         timed_out = True
         if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         else:
             process.kill()
         output, _ = process.communicate()
