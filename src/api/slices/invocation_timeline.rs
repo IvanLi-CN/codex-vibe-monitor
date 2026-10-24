@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection};
+use sqlx::{Connection, FromRow, QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(test)]
 use std::sync::Arc;
@@ -34,6 +34,7 @@ const INVOCATION_TIMELINE_CLEANUP_MIN_SCAN_BATCH_SIZE: usize = 16;
 const INVOCATION_TIMELINE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT: usize = 1_024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
+const INVOCATION_TIMELINE_RUNTIME_CAPTURE_ATTEMPTS: usize = 4;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
 pub(crate) fn register_invocation_timeline_routes(
@@ -473,18 +474,28 @@ fn append_timeline_db_predicates(
     query.push("))");
     if let Some(upstream_account_id) = upstream_account_id {
         let payload_account_id_sql = timeline_payload_account_id_sql("codex_invocations");
+        let payload_account_id_is_valid_sql =
+            timeline_payload_account_id_is_valid_sql("codex_invocations");
         query
-            .push(" AND (")
+            .push(" AND ((")
+            .push(payload_account_id_is_valid_sql.as_str())
+            .push(" = 1 AND ")
             .push(payload_account_id_sql.as_str())
             .push(" = ")
             .push_bind(upstream_account_id)
-            .push(" OR EXISTS (SELECT 1 FROM pool_upstream_request_attempts AS attempt WHERE attempt.invoke_id = codex_invocations.invoke_id AND attempt.occurred_at = codex_invocations.occurred_at AND attempt.id > 0 AND attempt.id <= ")
+            .push(") OR (")
+            .push(payload_account_id_is_valid_sql.as_str())
+            .push(" = 0 AND EXISTS (SELECT 1 FROM pool_upstream_request_attempts AS attempt WHERE attempt.invoke_id = codex_invocations.invoke_id AND attempt.occurred_at = codex_invocations.occurred_at AND attempt.id > 0 AND attempt.id <= ")
             .push_bind(attempt_snapshot_id)
+            .push(" AND typeof(attempt.upstream_account_id) = 'integer' AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < ")
+            .push_bind(TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE)
             .push(" AND attempt.upstream_account_id = ")
             .push_bind(upstream_account_id)
-            .push(" AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < ")
+            .push(" AND NOT EXISTS (SELECT 1 FROM pool_upstream_request_attempts AS newer WHERE newer.invoke_id = attempt.invoke_id AND newer.occurred_at = attempt.occurred_at AND newer.id > 0 AND newer.id <= ")
+            .push_bind(attempt_snapshot_id)
+            .push(" AND typeof(newer.upstream_account_id) = 'integer' AND newer.upstream_account_id IS NOT NULL AND newer.upstream_account_id > 0 AND newer.upstream_account_id < ")
             .push_bind(TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE)
-            .push("))");
+            .push(" AND (newer.attempt_index > attempt.attempt_index OR (newer.attempt_index = attempt.attempt_index AND newer.id > attempt.id))))))");
     }
     if let Some(cursor) = cursor
         && let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id)
@@ -1509,6 +1520,10 @@ async fn hydrate_timeline_source_accounts_on_connection(
     )
     .await?;
     for record in records {
+        if record.payload_upstream_account_id_is_valid != 1 {
+            record.upstream_account_id = None;
+            record.upstream_account_name = None;
+        }
         if record.upstream_account_id.is_none()
             && let Some(upstream_account_id) =
                 fallback_accounts.get(&(record.invoke_id.clone(), record.occurred_at.clone()))
@@ -1544,104 +1559,98 @@ async fn materialize_timeline_snapshot(
     let mut materialized_sources = Vec::new();
     let mut materialized_row_count = 0;
     let mut materialized_byte_count = 0;
-    let mut scanned_source_rows = 0_usize;
     let mut runtime_records = runtime_records;
-    let mut cursor = None;
-    while let Some((page, has_more, next_cursor)) = {
-        let mut source_transaction = state.pool.begin().await?;
-        let mut query = build_timeline_source_select_query(attempt_snapshot_id);
-        append_timeline_db_predicates(
-            &mut query,
-            &persisted_filters,
-            source_scope,
-            snapshot_id,
-            attempt_snapshot_id,
-            upstream_account_id,
-            start_bound,
-            overlap_start_bound,
-            end_bound,
-            include_live,
-            cursor.as_ref(),
-        );
+    // Capture the bounded source projection and fallback accounts together, then release the
+    // read connection before chunk processing and durable snapshot publication.
+    let mut source_connection =
+        SqliteConnection::connect_with(state.pool.connect_options().as_ref()).await?;
+    let mut source_transaction = source_connection.begin().await?;
+    let mut query = build_timeline_source_select_query(attempt_snapshot_id);
+    append_timeline_db_predicates(
+        &mut query,
+        &persisted_filters,
+        source_scope,
+        snapshot_id,
+        attempt_snapshot_id,
+        upstream_account_id,
+        start_bound,
+        overlap_start_bound,
+        end_bound,
+        include_live,
+        None,
+    );
+    query
+        .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+        .push_bind(snapshot_id)
+        .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+        .push_bind((INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS + 1) as i64);
+    observation.source_pages = 1;
+    let source_query_started = Instant::now();
+    let source_query_result = observe_query(
+        StatsQuery::InvocationTimeline,
         query
-                .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
-                .push_bind(snapshot_id)
-                .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
-                .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
-        observation.source_pages = observation.source_pages.saturating_add(1);
-        let source_query_started = Instant::now();
-        let source_query_result = observe_query(
-            StatsQuery::InvocationTimeline,
-            query
-                .build_query_as::<TimelineSourceRow>()
-                .fetch_all(&mut *source_transaction),
-        )
-        .await;
-        observation.source_query_duration += source_query_started.elapsed();
-        let mut page = source_query_result?;
-        if page.is_empty() {
-            source_transaction.commit().await?;
-            None
-        } else {
-            scanned_source_rows = scanned_source_rows.saturating_add(page.len());
-            observation.scanned_source_rows = scanned_source_rows;
-            if scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
-                tracing::warn!(
-                    snapshot_token,
-                    scanned_source_rows,
-                    max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
-                    "invocation timeline source scan budget exhausted"
-                );
-                return Err(ApiError::unavailable(anyhow!(
-                    "invocation timeline source scan budget exhausted"
-                )));
-            }
-            let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
-            page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-            let next_cursor = page.last().cloned().map(|last| TimelineCursor {
-                as_of: snapshot_token.to_string(),
-                occurred_at: Some(last.occurred_at),
-                invoke_id: Some(last.invoke_id),
-            });
-            let account_resolution_started = Instant::now();
-            let account_resolution_result = hydrate_timeline_source_accounts_on_connection(
-                &mut source_transaction,
-                &mut page,
-                attempt_snapshot_id,
-            )
-            .await;
-            observation.account_resolution_duration += account_resolution_started.elapsed();
-            account_resolution_result?;
-            let mut materialized_page = Vec::new();
-            for record in page.iter().filter(|record| {
-                upstream_account_id.is_none() || record.upstream_account_id == upstream_account_id
-            }) {
-                let timeline_record = timeline_record_from_source(record);
-                reserve_timeline_snapshot_budget(
-                    &mut materialized_row_count,
-                    &mut materialized_byte_count,
-                    cache_row_base,
-                    cache_byte_base,
-                    &timeline_record,
-                    None,
-                )?;
-                materialized_page.push(timeline_record);
-            }
-            source_transaction.commit().await?;
-            next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
+            .build_query_as::<TimelineSourceRow>()
+            .fetch_all(&mut *source_transaction),
+    )
+    .await;
+    observation.source_query_duration += source_query_started.elapsed();
+    let mut source_records = source_query_result?;
+    let scanned_source_rows = source_records.len();
+    observation.scanned_source_rows = scanned_source_rows;
+    if scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
+        tracing::warn!(
+            snapshot_token,
+            scanned_source_rows,
+            max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
+            "invocation timeline source scan budget exhausted"
+        );
+        return Err(ApiError::unavailable(anyhow!(
+            "invocation timeline source scan budget exhausted"
+        )));
+    }
+    let account_resolution_started = Instant::now();
+    let account_resolution_result = hydrate_timeline_source_accounts_on_connection(
+        &mut source_transaction,
+        &mut source_records,
+        attempt_snapshot_id,
+    )
+    .await;
+    observation.account_resolution_duration += account_resolution_started.elapsed();
+    account_resolution_result?;
+    source_transaction.commit().await?;
+    source_connection.close().await?;
+
+    let source_page_count = source_records
+        .len()
+        .div_ceil(INVOCATION_TIMELINE_PAGE_SIZE as usize);
+    for (page_index, page) in source_records
+        .chunks(INVOCATION_TIMELINE_PAGE_SIZE as usize)
+        .enumerate()
+    {
+        if page_index > 0 {
+            observation.source_pages = observation.source_pages.saturating_add(1);
         }
-    } {
-        for timeline_record in page {
+        for record in page.iter().filter(|record| {
+            upstream_account_id.is_none() || record.upstream_account_id == upstream_account_id
+        }) {
+            let timeline_record = timeline_record_from_source(record);
+            reserve_timeline_snapshot_budget(
+                &mut materialized_row_count,
+                &mut materialized_byte_count,
+                cache_row_base,
+                cache_byte_base,
+                &timeline_record,
+                None,
+            )?;
             materialized_records.push(timeline_record);
             materialized_sources.push(false);
         }
         observation.materialized_rows = materialized_records.len();
-        if !has_more {
-            break;
+        if page_index + 1 < source_page_count {
+            pause_after_timeline_source_page().await;
         }
-        pause_after_timeline_source_page().await;
-        cursor = Some(next_cursor);
     }
+    drop(source_records);
 
     let mut runtime_filters = filters.clone();
     runtime_filters.upstream_account_id = None;
@@ -1778,6 +1787,27 @@ async fn materialize_timeline_snapshot(
     Ok(())
 }
 
+async fn capture_timeline_runtime_overlay_and_watermarks(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+) -> Result<(Vec<ApiInvocation>, u64, i64, i64), ApiError> {
+    for _ in 0..INVOCATION_TIMELINE_RUNTIME_CAPTURE_ATTEMPTS {
+        let generation_before = state.proxy_runtime_invocations.dashboard_generation();
+        let revision_before = current_dashboard_activity_live_revision();
+        let records = runtime_overlay_snapshot(state);
+        let (snapshot_id, attempt_snapshot_id) =
+            resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
+        let generation_after = state.proxy_runtime_invocations.dashboard_generation();
+        let revision_after = current_dashboard_activity_live_revision();
+        if generation_before == generation_after && revision_before == revision_after {
+            return Ok((records, revision_after, snapshot_id, attempt_snapshot_id));
+        }
+    }
+    Err(ApiError::unavailable(anyhow!(
+        "dashboard runtime projection changed during invocation timeline and watermark capture"
+    )))
+}
+
 pub(crate) async fn fetch_timeline(
     State(state): State<Arc<AppState>>,
     Query(params): Query<InvocationTimelineQuery>,
@@ -1907,15 +1937,19 @@ pub(crate) async fn fetch_timeline(
         let _materialization_guard = INVOCATION_TIMELINE_MATERIALIZATION_LOCK.lock().await;
         let lock_wait_ms = lock_wait_started.elapsed().as_millis() as u64;
         observation.lock_wait_ms = lock_wait_ms;
-        let runtime_records = if include_live {
-            runtime_overlay_snapshot(state.as_ref())
-        } else {
-            Vec::new()
-        };
-        let live_revision = current_dashboard_activity_live_revision();
         let source_scope = resolve_default_source_scope(&state.pool).await?;
-        let (snapshot_id, attempt_snapshot_id) =
-            resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
+        let (runtime_records, live_revision, snapshot_id, attempt_snapshot_id) = if include_live {
+            capture_timeline_runtime_overlay_and_watermarks(state.as_ref(), source_scope).await?
+        } else {
+            let (snapshot_id, attempt_snapshot_id) =
+                resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
+            (
+                Vec::new(),
+                current_dashboard_activity_live_revision(),
+                snapshot_id,
+                attempt_snapshot_id,
+            )
+        };
         let as_of = create_timeline_snapshot_for_scope_at_revision(
             snapshot_id,
             attempt_snapshot_id,
@@ -3829,8 +3863,9 @@ mod tests {
 
     #[tokio::test]
     async fn timeline_attempt_projection_respects_snapshot_watermark_across_pages() {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        let (state, temp_dir, _db_url) = crate::tests::file_backed_test_state_with_busy_timeout(
+            "timeline-attempt-watermark",
+            Duration::from_secs(2),
         )
         .await;
         let range_start = at(100_000);
@@ -3881,6 +3916,12 @@ mod tests {
         ));
         entered.notified().await;
         sqlx::query(
+            "UPDATE pool_upstream_request_attempts SET status = 'responding', phase = 'responding' WHERE invoke_id = 'watermark-phase' AND attempt_index = 1",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("update post-watermark attempt fixture");
+        sqlx::query(
             "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, phase, stream_latency_ms, first_byte_latency_ms, upstream_account_id) VALUES ('watermark-phase', ?1, '/v1/responses', 'pool', 2, 2, 1, 'responding', 'responding', 100, 0, 42)",
         )
         .bind(&special_occurred_at)
@@ -3907,6 +3948,7 @@ mod tests {
             .expect("watermark phase record is present");
         assert_eq!(special.live_phase.as_deref(), Some("requesting"));
         state.pool.close().await;
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[tokio::test]

@@ -857,6 +857,17 @@ test("keeps the old live window visible and commits it before catching up", asyn
           .toBeGreaterThan(Date.parse(firstResponseWindows[index]?.rangeEnd ?? "")),
       ),
     );
+    const diagnostics = await Promise.all(
+      pages.map((page) =>
+        page.evaluate(
+          () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
+        ),
+      ),
+    );
+    for (const diagnostic of diagnostics) {
+      expect(diagnostic?.timelineHttpFailures).toBe(0);
+      expect(diagnostic?.releaseFailures).toBe(0);
+    }
   } finally {
     if (revisionInterval != null) clearInterval(revisionInterval);
     await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
