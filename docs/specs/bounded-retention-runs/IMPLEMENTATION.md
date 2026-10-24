@@ -10,7 +10,7 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## Current Status
 
-执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；当前修复又让 owner 成功分类显式接收 `dry_run`，使任何有候选的预演记录 `complete`、`committed=0` 并单独保留等待诊断，无候选且存在等待原因时仍为 `deferred`，同时保留真实运行的 `partial`/`deferred` 边界。新增 stateful SQLite 回归通过真实 `model_route_expiry` owner 核对预演不变更和写准入延期；此前真实离线 CLI 的归档提交后 backlog 观测失败回归仍保留，核对源转换、归档文件及持久 `complete`/`backlog_unknown` 事实。Exact head `b943aa273d32652ec70dbbf91a8a069bdd2675fc` 的 source-quality policy 曾拒绝未登记的 `#[expect(clippy::too_many_arguments)]`，当前修复改用显式 owner facts 聚合且不新增 suppression。当前候选尚待发布、当前 head 的 GitHub Actions 编译与回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
+执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；当前修复又让 owner 成功分类显式接收 `dry_run`，使任何有候选的预演记录 `complete`、`committed=0` 并单独保留等待诊断，无候选且存在等待原因时仍为 `deferred`，同时保留真实运行的 `partial`/`deferred` 边界。新增 stateful SQLite 回归通过真实 `model_route_expiry` owner 核对预演不变更和写准入延期；此前真实离线 CLI 的归档提交后 backlog 观测失败回归仍保留，核对源转换、归档文件及持久 `complete`/`backlog_unknown` 事实。Exact head `b943aa273d32652ec70dbbf91a8a069bdd2675fc` 的 source-quality policy 曾拒绝未登记的 `#[expect(clippy::too_many_arguments)]`，source repair candidate `254e749e5bff4892c3146a4470687ce28c3d42b2` 改用显式 owner facts 聚合且不新增 suppression，本地 source-quality policy check 已通过。当前候选尚待发布、当前 head 的 GitHub Actions 编译与回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
 
 候选身份工具已区分普通进度文档同步与修改绑定证明记录的证据载体，前者绑定真实 checkout、GitHub SHA 和二进制，后者继续严格要求四份文件及直接实现父提交。临时 Git 历史回归和质量门禁合同检查通过，不表示归档迁移或持续性能验证通过。
 
