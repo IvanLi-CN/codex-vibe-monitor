@@ -394,11 +394,7 @@ fn retention_owner_success_completion(
             "no-work"
         }
     } else if dry_run {
-        if has_wait_reason {
-            "deferred"
-        } else {
-            "complete"
-        }
+        "complete"
     } else if committed < selected {
         if committed > 0 { "partial" } else { "deferred" }
     } else {
@@ -406,6 +402,10 @@ fn retention_owner_success_completion(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Owner completion facts keep each persisted metric explicit."
+)]
 fn apply_retention_owner_success(
     summary: &mut RetentionOwnerRunSummary,
     discovered: usize,
@@ -2679,6 +2679,22 @@ mod owner_fact_tests {
         assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
         assert_eq!(summary.completion, "complete");
         assert_eq!(summary.has_more, Some(true));
+    }
+
+    #[tokio::test]
+    async fn prior_wait_diagnostic_does_not_downgrade_selected_dry_run_preview() {
+        let (summary, defer_reason) = retention_test_with_recorded_defer_reason(async {
+            retention_record_defer("retention_batch", "sqlite_pressure");
+            let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+            apply_retention_owner_success(&mut summary, 866, 866, 0, 1, 0, Some(false), true);
+            summary
+        })
+        .await;
+
+        assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
+        assert_eq!(summary.completion, "complete");
+        assert_eq!(summary.committed, 0);
     }
 
     #[test]
