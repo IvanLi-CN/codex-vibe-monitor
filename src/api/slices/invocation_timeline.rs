@@ -740,6 +740,7 @@ struct TimelineMaterializationObservation {
     materialization_duration: Duration,
     publish_duration: Duration,
     publish_coordinator_wait_duration: Duration,
+    publish_pool_acquire_duration: Duration,
     publish_begin_duration: Duration,
     publish_sql_duration: Duration,
     source_query_started_at: Option<Instant>,
@@ -747,6 +748,7 @@ struct TimelineMaterializationObservation {
     materialization_started_at: Option<Instant>,
     publish_started_at: Option<Instant>,
     publish_coordinator_started_at: Option<Instant>,
+    publish_pool_acquire_started_at: Option<Instant>,
     publish_begin_started_at: Option<Instant>,
     publish_sql_started_at: Option<Instant>,
     source_pages: usize,
@@ -774,6 +776,7 @@ impl TimelineMaterializationObservation {
             materialization_duration: Duration::ZERO,
             publish_duration: Duration::ZERO,
             publish_coordinator_wait_duration: Duration::ZERO,
+            publish_pool_acquire_duration: Duration::ZERO,
             publish_begin_duration: Duration::ZERO,
             publish_sql_duration: Duration::ZERO,
             source_query_started_at: None,
@@ -781,6 +784,7 @@ impl TimelineMaterializationObservation {
             materialization_started_at: None,
             publish_started_at: None,
             publish_coordinator_started_at: None,
+            publish_pool_acquire_started_at: None,
             publish_begin_started_at: None,
             publish_sql_started_at: None,
             source_pages: 0,
@@ -847,6 +851,16 @@ impl TimelineMaterializationObservation {
         }
     }
 
+    fn begin_publish_pool_acquire(&mut self) {
+        self.publish_pool_acquire_started_at = Some(Instant::now());
+    }
+
+    fn finish_publish_pool_acquire(&mut self) {
+        if let Some(started_at) = self.publish_pool_acquire_started_at.take() {
+            self.publish_pool_acquire_duration += started_at.elapsed();
+        }
+    }
+
     fn begin_publish_begin(&mut self) {
         self.publish_begin_started_at = Some(Instant::now());
     }
@@ -875,6 +889,7 @@ impl Drop for TimelineMaterializationObservation {
         self.finish_materialization();
         self.finish_publish();
         self.finish_publish_coordinator_wait();
+        self.finish_publish_pool_acquire();
         self.finish_publish_begin();
         self.finish_publish_sql();
         let lock_wait_ms = if self.lock_acquired {
@@ -895,6 +910,7 @@ impl Drop for TimelineMaterializationObservation {
             materialization_ms = self.materialization_duration.as_millis() as u64,
             publish_ms = self.publish_duration.as_millis() as u64,
             publish_coordinator_wait_ms = self.publish_coordinator_wait_duration.as_millis() as u64,
+            publish_pool_acquire_ms = self.publish_pool_acquire_duration.as_millis() as u64,
             publish_begin_ms = self.publish_begin_duration.as_millis() as u64,
             publish_sql_ms = self.publish_sql_duration.as_millis() as u64,
             publish_batches = self.publish_batches,
@@ -1688,89 +1704,95 @@ async fn materialize_timeline_snapshot(
                 || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
             && runtime_record_matches_filters(record, &runtime_filters, source_scope)
     });
-    // Capture the bounded source projection and fallback accounts together, then release the
-    // read connection before runtime merge, chunk processing, and durable snapshot publication.
-    let mut source_connection =
-        SqliteConnection::connect_with(state.pool.connect_options().as_ref()).await?;
-    let mut source_transaction = source_connection.begin().await?;
-    let mut query = build_timeline_source_select_query(attempt_snapshot_id);
-    append_timeline_db_predicates(
-        &mut query,
-        &persisted_filters,
-        source_scope,
-        snapshot_id,
-        attempt_snapshot_id,
-        upstream_account_id,
-        start_bound,
-        overlap_start_bound,
-        end_bound,
-        include_live,
-        None,
-    );
-    query
-        .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
-        .push_bind(snapshot_id)
-        .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
-        .push_bind((INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS + 1) as i64);
-    observation.begin_source_query();
-    let source_query_result = observe_query(
-        StatsQuery::InvocationTimeline,
-        query
-            .build_query_as::<TimelineSourceRow>()
-            .fetch_all(&mut *source_transaction),
-    )
-    .await;
-    observation.finish_source_query();
-    let mut source_records = source_query_result?;
-    let scanned_source_rows = source_records.len();
-    observation.scanned_source_rows = scanned_source_rows;
-    if scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
-        tracing::warn!(
-            snapshot_token,
-            scanned_source_rows,
-            max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
-            "invocation timeline source scan budget exhausted"
-        );
-        return Err(ApiError::unavailable(anyhow!(
-            "invocation timeline source scan budget exhausted"
-        )));
-    }
-    observation.begin_account_resolution();
-    let account_resolution_result = hydrate_timeline_source_accounts_on_connection(
-        &mut source_transaction,
-        &mut source_records,
-        attempt_snapshot_id,
-    )
-    .await;
-    observation.finish_account_resolution();
-    account_resolution_result?;
-    if !runtime_records.is_empty() {
-        observation.begin_account_resolution();
-        let account_resolution_result = hydrate_timeline_accounts_on_connection(
-            &mut source_transaction,
-            &mut runtime_records,
+    let mut cursor: Option<TimelineCursor> = None;
+    let mut runtime_accounts_hydrated = runtime_records.is_empty();
+    loop {
+        let mut source_connection =
+            SqliteConnection::connect_with(state.pool.connect_options().as_ref()).await?;
+        let mut source_transaction = source_connection.begin().await?;
+        let mut query = build_timeline_source_select_query(attempt_snapshot_id);
+        append_timeline_db_predicates(
+            &mut query,
+            &persisted_filters,
             source_scope,
             snapshot_id,
             attempt_snapshot_id,
-            true,
+            upstream_account_id,
+            start_bound,
+            overlap_start_bound,
+            end_bound,
+            include_live,
+            cursor.as_ref(),
+        );
+        query
+            .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+            .push_bind(snapshot_id)
+            .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+            .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
+        observation.begin_source_query();
+        let source_query_result = observe_query(
+            StatsQuery::InvocationTimeline,
+            query
+                .build_query_as::<TimelineSourceRow>()
+                .fetch_all(&mut *source_transaction),
         )
         .await;
+        observation.finish_source_query();
+        let mut source_records = source_query_result?;
+        observation.scanned_source_rows = observation
+            .scanned_source_rows
+            .saturating_add(source_records.len());
+        if observation.scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
+            tracing::warn!(
+                snapshot_token,
+                scanned_source_rows = observation.scanned_source_rows,
+                max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
+                "invocation timeline source scan budget exhausted"
+            );
+            return Err(ApiError::unavailable(anyhow!(
+                "invocation timeline source scan budget exhausted"
+            )));
+        }
+        let has_more = source_records.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
+        source_records.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
+        let next_cursor = source_records.last().map(|record| TimelineCursor {
+            as_of: snapshot_token.to_string(),
+            occurred_at: Some(record.occurred_at.clone()),
+            invoke_id: Some(record.invoke_id.clone()),
+        });
+        observation.begin_account_resolution();
+        let account_resolution_result = hydrate_timeline_source_accounts_on_connection(
+            &mut source_transaction,
+            &mut source_records,
+            attempt_snapshot_id,
+        )
+        .await;
+        let runtime_resolution_result =
+            if account_resolution_result.is_ok() && !runtime_accounts_hydrated {
+                Some(
+                    hydrate_timeline_accounts_on_connection(
+                        &mut source_transaction,
+                        &mut runtime_records,
+                        source_scope,
+                        snapshot_id,
+                        attempt_snapshot_id,
+                        true,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
         observation.finish_account_resolution();
         account_resolution_result?;
-    }
-    source_transaction.commit().await?;
-    source_connection.close().await?;
+        if let Some(result) = runtime_resolution_result {
+            result?;
+            runtime_accounts_hydrated = true;
+        }
 
-    observation.begin_materialization();
-    let source_page_count = source_records
-        .len()
-        .div_ceil(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-    observation.source_pages = source_page_count;
-    for (page_index, page) in source_records
-        .chunks(INVOCATION_TIMELINE_PAGE_SIZE as usize)
-        .enumerate()
-    {
-        for record in page.iter().filter(|record| {
+        let source_page_row_count = source_records.len();
+        observation.begin_materialization();
+        for record in source_records.iter().filter(|record| {
             upstream_account_id.is_none() || record.upstream_account_id == upstream_account_id
         }) {
             let timeline_record = timeline_record_from_source(record);
@@ -1786,12 +1808,23 @@ async fn materialize_timeline_snapshot(
             materialized_sources.push(false);
         }
         observation.materialized_rows = materialized_records.len();
-        if page_index + 1 < source_page_count {
-            pause_after_timeline_source_page().await;
+        observation.finish_materialization();
+        if source_page_row_count > 0 {
+            observation.source_pages = observation.source_pages.saturating_add(1);
         }
-    }
-    drop(source_records);
+        source_transaction.commit().await?;
+        source_connection.close().await?;
 
+        if !has_more {
+            break;
+        }
+        cursor = Some(next_cursor.ok_or_else(|| {
+            ApiError::unavailable(anyhow!("invocation timeline source page is missing cursor"))
+        })?);
+        pause_after_timeline_source_page().await;
+    }
+
+    observation.begin_materialization();
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
     let mut record_indexes = materialized_records
         .iter()
@@ -1871,8 +1904,11 @@ async fn materialize_timeline_snapshot(
                     )
                     .await;
             observation.finish_publish_coordinator_wait();
+            observation.begin_publish_pool_acquire();
+            let mut publish_connection = state.pool.acquire().await?;
+            observation.finish_publish_pool_acquire();
             observation.begin_publish_begin();
-            let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let mut publish_transaction = publish_connection.begin_with("BEGIN IMMEDIATE").await?;
             observation.finish_publish_begin();
             observation.begin_publish_sql();
             insert_timeline_snapshot_records_on_connection(
@@ -2986,6 +3022,12 @@ mod tests {
                     .all(|detail| { !detail.contains("SCAN pool_upstream_request_attempts") }),
                 "timeline source plan must not scan pool attempts: {source_plan_details:?}"
             );
+            assert!(
+                source_plan_details.iter().any(|detail| {
+                    detail.contains("idx_pool_upstream_request_attempts_invoke_attempt")
+                }),
+                "timeline source latest-attempt expressions must use the invoke/attempt index: {source_plan_details:?}"
+            );
             if upstream_account_id.is_some() {
                 assert!(
                     source_plan_details.iter().any(|detail| {
@@ -3017,7 +3059,7 @@ mod tests {
             "duplicate",
         );
         let mut account_fallback_plan = QueryBuilder::<Sqlite>::new(
-            "EXPLAIN QUERY PLAN SELECT invoke_id, occurred_at, upstream_account_id FROM (SELECT invoke_id, occurred_at, upstream_account_id, ROW_NUMBER() OVER (PARTITION BY invoke_id, occurred_at ORDER BY attempt_index DESC, id DESC) AS timeline_row_number FROM pool_upstream_request_attempts WHERE id > 0 AND id <= ",
+            "EXPLAIN QUERY PLAN SELECT invoke_id, occurred_at, upstream_account_id FROM (SELECT invoke_id, occurred_at, upstream_account_id, ROW_NUMBER() OVER (PARTITION BY invoke_id, occurred_at ORDER BY attempt_index DESC, id DESC) AS timeline_row_number FROM pool_upstream_request_attempts INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt WHERE id > 0 AND id <= ",
         );
         account_fallback_plan
             .push_bind(attempt_snapshot_id)
@@ -4061,12 +4103,8 @@ mod tests {
             }),
         ));
         entered.notified().await;
-        sqlx::query(
-            "UPDATE pool_upstream_request_attempts SET status = 'responding', phase = 'responding' WHERE invoke_id = 'watermark-phase' AND attempt_index = 1",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("update post-watermark attempt fixture");
+        // The attempt watermark excludes rows inserted after capture; it does not provide
+        // historical MVCC for in-place updates to an existing attempt row.
         sqlx::query(
             "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, phase, stream_latency_ms, first_byte_latency_ms, upstream_account_id) VALUES ('watermark-phase', ?1, '/v1/responses', 'pool', 2, 2, 1, 'responding', 'responding', 100, 0, 42)",
         )

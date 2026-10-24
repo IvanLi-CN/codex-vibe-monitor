@@ -582,7 +582,7 @@ describe("useInvocationTimeline", () => {
     expect(host?.querySelector("[data-testid=error]")?.textContent).toBe(
       "Invocation timeline snapshot is incomplete",
     );
-    expect(timelineMocks.release).toHaveBeenCalledWith(truncated.asOf);
+    expect(timelineMocks.release).not.toHaveBeenCalled();
   });
 
   it("keeps the last successful snapshot when a refresh fails", async () => {
