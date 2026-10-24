@@ -34,7 +34,6 @@ const INVOCATION_TIMELINE_CLEANUP_MIN_SCAN_BATCH_SIZE: usize = 16;
 const INVOCATION_TIMELINE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT: usize = 1_024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
-const INVOCATION_TIMELINE_RUNTIME_CAPTURE_ATTEMPTS: usize = 4;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
 pub(crate) fn register_invocation_timeline_routes(
@@ -1735,17 +1734,6 @@ async fn hydrate_timeline_source_accounts_on_connection(
     Ok(())
 }
 
-fn timeline_source_fence_is_stable(
-    state: &AppState,
-    source_generation: u64,
-    live_revision: u64,
-    include_live: bool,
-) -> bool {
-    !include_live
-        || (state.proxy_runtime_invocations.dashboard_generation() == source_generation
-            && current_dashboard_activity_live_revision() == live_revision)
-}
-
 async fn materialize_timeline_snapshot(
     state: &AppState,
     snapshot_token: &str,
@@ -1759,8 +1747,6 @@ async fn materialize_timeline_snapshot(
     end_bound: &str,
     snapshot_id: i64,
     attempt_snapshot_id: i64,
-    source_generation: u64,
-    live_revision: u64,
     upstream_account_id: Option<i64>,
     include_live: bool,
     runtime_records: Vec<ApiInvocation>,
@@ -1792,11 +1778,6 @@ async fn materialize_timeline_snapshot(
     let mut cursor: Option<TimelineCursor> = None;
     let mut runtime_accounts_hydrated = runtime_records.is_empty();
     loop {
-        if !timeline_source_fence_is_stable(state, source_generation, live_revision, include_live) {
-            return Err(ApiError::unavailable(anyhow!(
-                "dashboard source changed during invocation timeline materialization"
-            )));
-        }
         observation.begin_source_connection();
         let source_connection_result =
             SqliteConnection::connect_with(state.pool.connect_options().as_ref()).await;
@@ -1914,12 +1895,6 @@ async fn materialize_timeline_snapshot(
         observation.finish_source_finalize();
         source_commit_result?;
         source_close_result?;
-        if !timeline_source_fence_is_stable(state, source_generation, live_revision, include_live) {
-            return Err(ApiError::unavailable(anyhow!(
-                "dashboard source changed during invocation timeline materialization"
-            )));
-        }
-
         if !has_more {
             break;
         }
@@ -1929,11 +1904,6 @@ async fn materialize_timeline_snapshot(
         pause_after_timeline_source_page().await;
     }
 
-    if !timeline_source_fence_is_stable(state, source_generation, live_revision, include_live) {
-        return Err(ApiError::unavailable(anyhow!(
-            "dashboard source changed during invocation timeline materialization"
-        )));
-    }
     observation.begin_materialization();
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
     let mut record_indexes = materialized_records
@@ -2037,11 +2007,6 @@ async fn materialize_timeline_snapshot(
         observation.publish_batches = observation.publish_batches.saturating_add(1);
         observation.published_rows = observation.published_rows.saturating_add(batch.len());
     }
-    if !timeline_source_fence_is_stable(state, source_generation, live_revision, include_live) {
-        return Err(ApiError::unavailable(anyhow!(
-            "dashboard source changed during invocation timeline materialization"
-        )));
-    }
     // The token is inserted into the in-memory snapshot registry before materialization, but it
     // is only returned to callers after every short insert transaction succeeds. Readers with an
     // `asOf` token must already have passed that registry check, so no durable publication UPDATE
@@ -2058,28 +2023,16 @@ async fn materialize_timeline_snapshot(
 async fn capture_timeline_runtime_overlay_and_watermarks(
     state: &AppState,
     source_scope: InvocationSourceScope,
-) -> Result<(Vec<ApiInvocation>, u64, u64, i64, i64), ApiError> {
-    for _ in 0..INVOCATION_TIMELINE_RUNTIME_CAPTURE_ATTEMPTS {
-        let generation_before = state.proxy_runtime_invocations.dashboard_generation();
-        let revision_before = current_dashboard_activity_live_revision();
-        let records = runtime_overlay_snapshot(state);
-        let (snapshot_id, attempt_snapshot_id) =
-            resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
-        let generation_after = state.proxy_runtime_invocations.dashboard_generation();
-        let revision_after = current_dashboard_activity_live_revision();
-        if generation_before == generation_after && revision_before == revision_after {
-            return Ok((
-                records,
-                revision_after,
-                generation_after,
-                snapshot_id,
-                attempt_snapshot_id,
-            ));
-        }
-    }
-    Err(ApiError::unavailable(anyhow!(
-        "dashboard runtime projection changed during invocation timeline and watermark capture"
-    )))
+) -> Result<(Vec<ApiInvocation>, u64, i64, i64), ApiError> {
+    let records = runtime_overlay_snapshot(state);
+    let (snapshot_id, attempt_snapshot_id) =
+        resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
+    Ok((
+        records,
+        current_dashboard_activity_live_revision(),
+        snapshot_id,
+        attempt_snapshot_id,
+    ))
 }
 
 pub(crate) async fn fetch_timeline(
@@ -2225,14 +2178,13 @@ pub(crate) async fn fetch_timeline(
                     (
                         Vec::new(),
                         current_dashboard_activity_live_revision(),
-                        state.proxy_runtime_invocations.dashboard_generation(),
                         snapshot_id,
                         attempt_snapshot_id,
                     )
                 })
         };
         observation.finish_capture();
-        let (runtime_records, live_revision, source_generation, snapshot_id, attempt_snapshot_id) =
+        let (runtime_records, live_revision, snapshot_id, attempt_snapshot_id) =
             match capture_result {
                 Ok(capture) => capture,
                 Err(error) => {
@@ -2272,8 +2224,6 @@ pub(crate) async fn fetch_timeline(
             &end_bound,
             snapshot_id,
             attempt_snapshot_id,
-            source_generation,
-            live_revision,
             params.upstream_account_id,
             include_live,
             runtime_records,
