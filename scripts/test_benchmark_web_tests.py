@@ -19,6 +19,9 @@ SPEC.loader.exec_module(MODULE)
 
 
 class BenchmarkAggregationTests(unittest.TestCase):
+    def test_sample_timeout_is_hard_capped_at_thirty_minutes(self):
+        self.assertEqual(MODULE.MAX_SAMPLE_SECONDS, 1_800)
+
     def test_main_rejects_non_github_actions_execution(self):
         with patch.dict(MODULE.os.environ, {"GITHUB_ACTIONS": "false"}, clear=False):
             with self.assertRaisesRegex(SystemExit, "must run in GitHub Actions"):

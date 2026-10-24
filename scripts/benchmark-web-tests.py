@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+MAX_SAMPLE_SECONDS = 30 * 60
+
+
 STAGES: dict[str, tuple[str, ...]] = {
     "demo": ("bun", "run", "test", "--", "--project=unit", "src/demo"),
     "unit": ("bun", "run", "test"),
@@ -296,18 +299,29 @@ def run_sample(
         )
     started = time.monotonic()
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
-    completed = subprocess.run(
-        timed_command,
-        cwd=source_web_dir(source),
-        env=run_env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            timed_command,
+            cwd=source_web_dir(source),
+            env=run_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=MAX_SAMPLE_SECONDS,
+        )
+        output = completed.stdout
+        returncode = completed.returncode
+    except subprocess.TimeoutExpired as error:
+        timed_out = True
+        output = error.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        output += f"\n__CVM_TIMEOUT_SECONDS={MAX_SAMPLE_SECONDS}\n"
+        returncode = 124
     ended = time.monotonic()
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    output = completed.stdout
     log_path.write_text(output, encoding="utf-8")
     retries = retry_count(output)
     return Sample(
@@ -324,9 +338,9 @@ def run_sample(
         cpu_seconds=measurement_value(output, "__CVM_USER", "__CVM_SYS")
         or (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime),
         peak_rss_bytes=(measurement_value(output, "__CVM_MAX_RSS_KB") or max(after.ru_maxrss, 0)) * 1024,
-        returncode=completed.returncode,
+        returncode=returncode,
         retry_count=retries,
-        valid=completed.returncode == 0 and retries == 0,
+        valid=not timed_out and returncode == 0 and retries == 0,
         log=str(log_path),
     )
 
