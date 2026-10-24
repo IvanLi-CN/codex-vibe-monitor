@@ -176,6 +176,17 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
         "        .toBeGreaterThan(beforeRefresh.releaseCount + 1);\n",
     )
     text = text.replace("const LIVE_REFRESH_TIMER_GUARD_MS = 50;\n", "")
+    text = text.replace("    await page.clock.install();\n", "")
+    text = text.replace(
+        "      await page.clock.fastForward(MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1);\n",
+        "",
+    )
+    text = text.replace(
+        """      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
+      // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
+""",
+        "",
+    )
     text = text.replace(
         """      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
       // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.

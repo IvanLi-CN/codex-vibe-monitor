@@ -578,6 +578,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
   ] as const) {
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
+    await page.clock.install();
     try {
       await startCapacityDashboard(page, viewport, true);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
@@ -661,13 +662,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
 
       // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
       // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
-      await page.evaluate(
-        (advanceByMs) => {
-          const now = Date.now();
-          Date.now = () => now + advanceByMs;
-        },
-        MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1,
-      );
+      await page.clock.fastForward(MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1);
       await expect
         .poll(
           () =>
