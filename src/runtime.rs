@@ -2124,16 +2124,7 @@ fn managed_task_requires_heavy_file_operation(task_key: &str) -> bool {
 }
 
 fn is_retention_owner_v2_task(task_key: &str) -> bool {
-    matches!(
-        task_key,
-        "retention_archive"
-            | "pool_upstream_attempt_archive"
-            | "forward_proxy_attempt_archive"
-            | "invocation_detail_prune"
-            | "quota_snapshot_compaction"
-            | "model_route_expiry"
-            | "task_run_history_cleanup"
-    )
+    crate::maintenance_store::is_retention_owner_v2_task(task_key)
 }
 
 fn managed_task_owner_v2_failure_details(
@@ -2373,13 +2364,11 @@ async fn run_managed_task_worker(
         }
     };
     // Freeze after the owner returns so its rates and persisted execution interval share one clock value.
-    let execution_duration_ms = observation.freeze_execution_duration_ms();
-    if is_retention_owner_v2_task(&task_key)
-        && let Some(duration_ms) = execution_duration_ms
-        && let Some(details) = details.as_mut()
-    {
-        crate::maintenance::finalize_retention_owner_details(details, duration_ms);
-    }
+    let execution_duration_ms = crate::maintenance::freeze_and_finalize_retention_owner_observation(
+        &task_key,
+        &observation,
+        details.as_mut(),
+    );
     let workload_reason = details
         .as_ref()
         .and_then(|details| details.get("waitReason"))
@@ -2406,7 +2395,7 @@ async fn run_managed_task_worker(
     state.observability.task_completed(
         task_dimension,
         task_outcome,
-        Duration::from_millis(execution_duration_ms.unwrap_or_default().max(0) as u64),
+        execution_duration_ms.map(|duration_ms| Duration::from_millis(duration_ms.max(0) as u64)),
     );
     let finish = ManagedTaskFinish {
         run_id,

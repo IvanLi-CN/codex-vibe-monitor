@@ -188,7 +188,7 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     )
 }
 
-fn is_retention_owner_v2_task(key: &str) -> bool {
+pub(crate) fn is_retention_owner_v2_task(key: &str) -> bool {
     RETENTION_OWNER_V2_TASKS.contains(&key)
 }
 
