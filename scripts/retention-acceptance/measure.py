@@ -23,6 +23,11 @@ from contract import (
     CLEANUP_RESERVE_SECONDS,
     COMPETITOR_FILE_COUNT,
     COMPETITOR_TASK,
+    CONTAINER_KIND_LABEL,
+    CONTAINER_OWNER_LABEL,
+    CONTAINER_RUN_ID_LABEL,
+    CONTAINER_TRIAL_LABEL,
+    CONTAINER_VERSION_LABEL,
     DATASETS,
     DRIVER_IMAGE_DIGEST,
     DRIVER_IMAGE_REF,
@@ -109,13 +114,35 @@ class OwnedContainerLedger:
         root: Path,
         recovery_path: Path,
         mount_path: Path | None = None,
+        *,
+        version: str,
+        trial_index: int | None,
     ) -> None:
         if name in self._records:
             raise AcceptanceError(f"owned container name was registered more than once: {name}")
+        if kind not in {"init", "application", "foreground"}:
+            raise AcceptanceError(f"unsupported owned container kind: {kind}")
+        if version not in {"baseline", "candidate"}:
+            raise AcceptanceError(f"unsupported owned container version: {version}")
+        if (kind == "init" and trial_index is not None) or (
+            kind != "init" and (not isinstance(trial_index, int) or not 1 <= trial_index <= TRIALS_PER_VERSION)
+        ):
+            raise AcceptanceError(f"owned container trial identity is invalid for {kind}")
+        if not re.fullmatch(r"[0-9a-f]{12}", RUN_ID):
+            raise AcceptanceError("retention run ID is malformed")
+        identity_labels = {
+            CONTAINER_RUN_ID_LABEL: RUN_ID,
+            CONTAINER_KIND_LABEL: kind,
+            CONTAINER_VERSION_LABEL: version,
+            CONTAINER_TRIAL_LABEL: "init" if trial_index is None else str(trial_index),
+            CONTAINER_OWNER_LABEL: uuid.uuid4().hex,
+        }
         self._records[name] = {
             "container_name": name,
             "container_id": None,
             "kind": kind,
+            "identity_labels": identity_labels,
+            "verified_identity_labels": None,
             "status": "creation_unconfirmed",
             "root_path": str(root),
             "recovery_path": str(recovery_path),
@@ -124,8 +151,10 @@ class OwnedContainerLedger:
         }
 
     def mark_started(self, name: str, container_id: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise AcceptanceError(f"owned container ID is malformed for {name}")
         record = self._records[name]
-        record["container_id"] = container_id or None
+        record["container_id"] = container_id
         record["status"] = "started"
 
     def mark_failure(self, name: str, error: BaseException) -> None:
@@ -143,10 +172,14 @@ class OwnedContainerLedger:
                 raise AcceptanceError(f"owned container identity changed for {name}")
             record["container_id"] = container_id
         record["status"] = result["status"]
+        labels = result.get("identity_labels")
+        if labels:
+            record["verified_identity_labels"] = dict(labels)
         record.pop("last_error", None)
         record["cleanup_attempts"].append({
             "status": result["status"],
             **({"container_id": container_id} if container_id else {}),
+            **({"identity_labels": dict(labels)} if labels else {}),
         })
 
     def names(self) -> set[str]:
@@ -154,7 +187,20 @@ class OwnedContainerLedger:
 
     def record(self, name: str) -> dict[str, Any]:
         record = self._records[name]
-        return {**record, "cleanup_attempts": list(record["cleanup_attempts"])}
+        return {
+            **record,
+            "identity_labels": dict(record["identity_labels"]),
+            "verified_identity_labels": (
+                dict(record["verified_identity_labels"])
+                if record["verified_identity_labels"] is not None
+                else None
+            ),
+            "cleanup_attempts": list(record["cleanup_attempts"]),
+        }
+
+    def docker_label_arguments(self, name: str) -> list[str]:
+        labels = self._records[name]["identity_labels"]
+        return [argument for key, value in sorted(labels.items()) for argument in ("--label", f"{key}={value}")]
 
     def records(self, names: set[str] | None = None) -> list[dict[str, Any]]:
         selected = self._records if names is None else {name: self._records[name] for name in names if name in self._records}
@@ -178,14 +224,16 @@ class OwnedContainerLedger:
                     phase_started,
                     cleanup_reserve_seconds,
                     expected_container_id=record["container_id"],
+                    expected_identity_labels=record["identity_labels"],
                 )
             else:
-                result = stop_container(
+                result = cleanup_named_container(
                     name,
-                    log_path,
                     phase_started,
                     cleanup_reserve_seconds,
                     expected_container_id=record["container_id"],
+                    expected_identity_labels=record["identity_labels"],
+                    log_path=log_path,
                 )
         except BaseException as error:
             self.mark_failure(name, error)
@@ -287,15 +335,25 @@ def start_container(
     name: str,
     phase_started: float,
     *,
-    owned: OwnedContainerLedger | None = None,
+    owned: OwnedContainerLedger,
+    version: str,
+    trial_index: int | None,
     kind: str = "application",
     root: Path | None = None,
 ) -> str:
     data_dir.mkdir(parents=True, exist_ok=True)
-    if owned is not None:
-        owned.register(name, kind, root or data_dir.parent, data_dir, data_dir)
+    owned.register(
+        name,
+        kind,
+        root or data_dir.parent,
+        data_dir,
+        data_dir,
+        version=version,
+        trial_index=trial_index,
+    )
     command = [
         "docker", "run", "--detach", "--name", name,
+        *owned.docker_label_arguments(name),
         "--cpus", str(CPU_LIMIT),
         "--memory", str(MEMORY_BYTES),
         "--memory-swap", str(MEMORY_BYTES),
@@ -307,12 +365,10 @@ def start_container(
     command.append(tag)
     try:
         container_id = run_command(command, 60, phase_started=phase_started).stdout.strip()
-    except BaseException as error:
-        if owned is not None:
-            owned.mark_failure(name, error)
-        raise
-    if owned is not None:
         owned.mark_started(name, container_id)
+    except BaseException as error:
+        owned.mark_failure(name, error)
+        raise
     return container_id
 
 
@@ -337,9 +393,11 @@ def cleanup_named_container(
     cleanup_reserve_seconds: float,
     *,
     expected_container_id: str | None = None,
+    expected_identity_labels: dict[str, str] | None = None,
+    log_path: Path | None = None,
 ) -> dict[str, str]:
     inspected = run_command(
-        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}}", container],
+        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}} {{json .Config.Labels}}", container],
         3,
         check=False,
         phase_started=phase_started,
@@ -354,12 +412,45 @@ def cleanup_named_container(
         }
     if inspected.returncode != 0:
         raise RuntimeError(f"could not inspect named container {container}: {inspected.stderr.strip()[-1000:]}")
-    identity = inspected.stdout.strip().split()
-    if len(identity) != 2 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or identity[1] not in {"true", "false"}:
+    identity = inspected.stdout.strip().split(maxsplit=2)
+    if len(identity) != 3 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or identity[1] not in {"true", "false"}:
         raise RuntimeError(f"could not parse named container identity {container}: {inspected.stdout.strip()[-1000:]}")
-    container_id, running = identity
+    try:
+        actual_labels = json.loads(identity[2])
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"could not parse named container labels {container}") from error
+    if not isinstance(actual_labels, dict):
+        actual_labels = {}
+    container_id, running = identity[:2]
     if expected_container_id and container_id != expected_container_id:
         raise AcceptanceError(f"named container {container} resolved to an unexpected container ID")
+    if expected_identity_labels is None:
+        if expected_container_id is None:
+            raise AcceptanceError(f"named container {container} has no confirmed owner; refusing cleanup by name")
+        expected_identity_labels = {}
+    if any(actual_labels.get(key) != value for key, value in expected_identity_labels.items()):
+        raise AcceptanceError(f"named container {container} has an unexpected run identity; refusing cleanup")
+    verified_labels = {key: actual_labels[key] for key in expected_identity_labels}
+    log_error = None
+    if log_path is not None:
+        try:
+            logs = run_command(
+                ["docker", "logs", container_id],
+                4,
+                check=False,
+                phase_started=phase_started,
+                cleanup=True,
+                cleanup_reserve_seconds=cleanup_reserve_seconds,
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(logs.stdout + logs.stderr)
+        except BaseException as error:
+            log_error = f"{type(error).__name__}: {error}"
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(f"container log collection failed: {log_error}\n")
+            except OSError:
+                pass
     command_errors: list[str] = []
     if running == "true":
         try:
@@ -389,7 +480,7 @@ def cleanup_named_container(
     except BaseException as error:
         command_errors.append(f"docker rm: {type(error).__name__}: {error}")
     remaining = run_command(
-        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}}", container],
+        ["docker", "inspect", "--format", "{{.Id}}", container_id],
         3,
         check=False,
         phase_started=phase_started,
@@ -398,53 +489,21 @@ def cleanup_named_container(
     )
     if remaining.returncode == 0:
         raise AcceptanceError(
-            f"named container {container} ({container_id}) remained after cleanup"
+            f"owned container {container} ({container_id}) remained after cleanup"
             + (": " + "; ".join(command_errors) if command_errors else "")
         )
     if not re.search(r"No such (?:object|container)", remaining.stderr, re.IGNORECASE):
         detail = remaining.stderr.strip()[-1000:]
         if command_errors:
             detail += "; " + "; ".join(command_errors)
-        raise RuntimeError(f"could not confirm named container {container} ({container_id}) cleanup: {detail}")
-    return {"container_name": container, "container_id": container_id, "status": "removed"}
-
-
-def stop_container(
-    container: str,
-    log_path: Path | None,
-    phase_started: float,
-    cleanup_reserve_seconds: float = 0,
-    *,
-    expected_container_id: str | None = None,
-) -> dict[str, str]:
-    log_error = None
-    try:
-        logs = run_command(
-            ["docker", "logs", container],
-            5,
-            check=False,
-            phase_started=phase_started,
-            cleanup=True,
-            cleanup_reserve_seconds=cleanup_reserve_seconds,
-        )
-    except BaseException as error:
-        logs = None
-        log_error = f"{type(error).__name__}: {error}"
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        if logs is not None:
-            log_path.write_text(logs.stdout + logs.stderr)
-        elif log_error is not None:
-            log_path.write_text(f"container log collection failed: {log_error}\n")
-    result = cleanup_named_container(
-        container,
-        phase_started,
-        cleanup_reserve_seconds,
-        expected_container_id=expected_container_id,
-    )
-    if log_error is not None:
-        result["log_error"] = log_error
-    return result
+        raise RuntimeError(f"could not confirm owned container {container} ({container_id}) cleanup: {detail}")
+    return {
+        "container_name": container,
+        "container_id": container_id,
+        "status": "removed",
+        "identity_labels": verified_labels,
+        **({"log_error": log_error} if log_error is not None else {}),
+    }
 
 
 def bounded_rmtree(path: Path, phase_started: float, cleanup_reserve_seconds: float) -> None:
@@ -530,22 +589,30 @@ def prepare_template(
     started: float,
     owned: OwnedContainerLedger | None = None,
 ) -> tuple[Path, str]:
+    owned = owned or OwnedContainerLedger()
     directory = root / f"template-{version}"
     directory.mkdir(parents=True)
     container = f"retention-{RUN_ID}-init-{version}"
     try:
-        start_container(tag, directory, container, started, owned=owned, kind="init", root=root)
+        start_container(
+            tag,
+            directory,
+            container,
+            started,
+            owned=owned,
+            kind="init",
+            root=root,
+            version=version,
+            trial_index=None,
+        )
         wait_healthy(container, started)
     finally:
-        if owned is None:
-            stop_container(container, root / "logs" / f"init-{version}.log", started, cleanup_reserve_seconds=25)
-        else:
-            owned.cleanup(
-                container,
-                started,
-                cleanup_reserve_seconds=25,
-                log_path=root / "logs" / f"init-{version}.log",
-            )
+        owned.cleanup(
+            container,
+            started,
+            cleanup_reserve_seconds=25,
+            log_path=root / "logs" / f"init-{version}.log",
+        )
     main_db = directory / "codex_vibe_monitor.db"
     maintenance_db = directory / "codex_vibe_monitor.maintenance.sqlite"
     if not main_db.is_file() or not maintenance_db.is_file():
@@ -621,7 +688,7 @@ def run_foreground(
     trial_version: str,
     trial_index: int,
     cleanup_evidence: dict[str, Any],
-    owned: OwnedContainerLedger | None = None,
+    owned: OwnedContainerLedger,
     root: Path | None = None,
     recovery_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -632,12 +699,20 @@ def run_foreground(
     retries = attempt_count - invocation_count
     worker = Path(__file__).with_name("foreground.py").resolve()
     name = f"retention-{RUN_ID}-{trial_version}-{trial_index}-driver"
-    if owned is not None:
-        owned.register(name, "foreground", root or worker.parent, recovery_path or worker.parent, worker)
+    owned.register(
+        name,
+        "foreground",
+        root or worker.parent,
+        recovery_path or worker.parent,
+        worker,
+        version=trial_version,
+        trial_index=trial_index,
+    )
     try:
         result = run_command(
             [
-                "docker", "run", "--rm", "--name", name,
+                "docker", "run", "--name", name,
+                *owned.docker_label_arguments(name),
                 "--network", f"container:{container}",
                 "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges",
@@ -656,17 +731,14 @@ def run_foreground(
         )
     finally:
         try:
-            if owned is None:
-                cleanup = cleanup_named_container(name, started, cleanup_reserve_seconds=30)
-            else:
-                cleanup = owned.cleanup(name, started, cleanup_reserve_seconds=30)
+            cleanup = owned.cleanup(name, started, cleanup_reserve_seconds=30)
             cleanup_evidence.update(cleanup)
         except BaseException as error:
             cleanup_evidence.update({
                 "container_name": name,
                 "status": "failed",
-                **({"container_id": owned.record(name)["container_id"]} if owned is not None and owned.record(name)["container_id"] else {}),
-                **({"recovery_path": owned.record(name)["recovery_path"]} if owned is not None else {}),
+                **({"container_id": owned.record(name)["container_id"]} if owned.record(name)["container_id"] else {}),
+                "recovery_path": owned.record(name)["recovery_path"],
                 "error": {"type": type(error).__name__, "message": str(error)},
             })
             raise
@@ -967,6 +1039,8 @@ def run_trial(
             owned=containers,
             kind="application",
             root=root,
+            version=version,
+            trial_index=index,
         )
         wait_healthy(container, phase_started)
         pre_buckets, pre_text, pre_time = scrape_metrics(container, phase_started)
@@ -1082,6 +1156,7 @@ def run_trial(
 
     if trial_error is not None:
         partial = {
+            "run_id": RUN_ID,
             "version": version,
             "trial_index": index,
             "error": {"type": type(trial_error).__name__, "message": str(trial_error)},
@@ -1125,6 +1200,7 @@ def run_trial(
             "container_name": container,
             "container_id": containers.record(container)["container_id"],
             "status": containers.record(container)["status"],
+            "identity_labels": containers.record(container)["verified_identity_labels"],
         },
         "attempt_states": attempt_states,
         "foreground_driver_cleanup": driver_cleanup,
@@ -1158,6 +1234,7 @@ def main() -> int:
     phase_started = time.monotonic() - preflight_elapsed
     evidence: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "run_id": RUN_ID,
         "test_phase": {"started_at": phase_start_iso},
         "comparison_window": {"started_at": phase_start_iso},
         "trial_execution_order": [],

@@ -40,7 +40,13 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
+CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
+CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
+CONTAINER_VERSION_LABEL = CONTAINER_LABEL_PREFIX + "version"
+CONTAINER_TRIAL_LABEL = CONTAINER_LABEL_PREFIX + "trial"
+CONTAINER_OWNER_LABEL = CONTAINER_LABEL_PREFIX + "owner"
 DRIVER_IMAGE_REF = "python:3.12-alpine@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d"
 DRIVER_IMAGE_DIGEST = "sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d"
 TRIAL_EXECUTION_ORDER = [
@@ -141,6 +147,35 @@ def _require(condition: bool, message: str) -> None:
         raise AcceptanceError(message)
 
 
+def _validate_container_identity_labels(
+    cleanup: dict[str, Any],
+    run_id: str,
+    kind: str,
+    version: str,
+    trial_index: int,
+    owner_tokens: set[str],
+) -> None:
+    labels = cleanup.get("identity_labels")
+    _require(isinstance(labels, dict), f"{kind} container identity labels are missing")
+    expected = {
+        CONTAINER_RUN_ID_LABEL: run_id,
+        CONTAINER_KIND_LABEL: kind,
+        CONTAINER_VERSION_LABEL: version,
+        CONTAINER_TRIAL_LABEL: str(trial_index),
+    }
+    _require(
+        all(labels.get(key) == value for key, value in expected.items()),
+        f"{kind} container identity labels do not match its trial",
+    )
+    owner_token = labels.get(CONTAINER_OWNER_LABEL)
+    _require(
+        isinstance(owner_token, str) and re.fullmatch(r"[0-9a-f]{32}", owner_token),
+        f"{kind} container ownership token is invalid",
+    )
+    _require(owner_token not in owner_tokens, "container ownership token was reused")
+    owner_tokens.add(owner_token)
+
+
 def _validate_samples(trial: dict[str, Any], input_start: datetime, input_end: datetime) -> None:
     samples = trial.get("latency_samples_ms")
     _require(isinstance(samples, dict), "raw foreground latency evidence is missing")
@@ -217,6 +252,8 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     """Validate identity, complete windows, source-oracle results, and performance gates."""
     _require(evidence.get("schema_version") == SCHEMA_VERSION, "unsupported evidence schema")
     _require(evidence.get("status") == "completed", "measurement evidence is not complete")
+    run_id = evidence.get("run_id")
+    _require(isinstance(run_id, str) and re.fullmatch(r"[0-9a-f]{12}", run_id), "measurement run ID is invalid")
     phase = evidence.get("test_phase")
     _require(isinstance(phase, dict), "test-phase clock evidence is missing")
     phase_start = parse_time(phase.get("started_at"))
@@ -269,6 +306,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     )
     host_identity = None
     resource_limits = None
+    owner_tokens: set[str] = set()
     trial_windows: dict[tuple[str, int], tuple[datetime, datetime, dict[str, Any]]] = {}
     competitor_workloads: dict[str, list[int]] = {"baseline": [], "candidate": []}
     for version, expected_sha in (("baseline", BASELINE_SHA), ("candidate", candidate_sha)):
@@ -314,25 +352,27 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             application_cleanup = trial.get("application_container_cleanup")
             _require(
                 isinstance(application_cleanup, dict)
-                and re.fullmatch(
-                    rf"retention-[0-9a-f]{{12}}-{version}-{index}",
-                    str(application_cleanup.get("container_name", "")),
-                )
+                and application_cleanup.get("container_name") == f"retention-{run_id}-{version}-{index}"
                 and isinstance(application_cleanup.get("container_id"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", application_cleanup["container_id"])
                 and application_cleanup.get("container_id") == trial.get("container_id")
                 and application_cleanup.get("status") in {"already_absent", "removed"},
                 "named application container cleanup is incomplete",
             )
+            _validate_container_identity_labels(
+                application_cleanup, run_id, "application", version, index, owner_tokens
+            )
             driver_cleanup = trial.get("foreground_driver_cleanup")
             _require(
                 isinstance(driver_cleanup, dict)
-                and re.fullmatch(
-                    rf"retention-[0-9a-f]{{12}}-{version}-{index}-driver",
-                    str(driver_cleanup.get("container_name", "")),
-                )
+                and driver_cleanup.get("container_name") == f"retention-{run_id}-{version}-{index}-driver"
+                and isinstance(driver_cleanup.get("container_id"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", driver_cleanup["container_id"])
                 and driver_cleanup.get("status") in {"already_absent", "removed"},
                 "named foreground driver cleanup is incomplete or belongs to another trial",
+            )
+            _validate_container_identity_labels(
+                driver_cleanup, run_id, "foreground", version, index, owner_tokens
             )
 
             window = trial.get("window")

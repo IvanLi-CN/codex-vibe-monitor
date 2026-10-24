@@ -8,6 +8,11 @@ import unittest
 from contract import (
     BASELINE_SHA,
     COMPETITOR_FILE_COUNT,
+    CONTAINER_KIND_LABEL,
+    CONTAINER_OWNER_LABEL,
+    CONTAINER_RUN_ID_LABEL,
+    CONTAINER_TRIAL_LABEL,
+    CONTAINER_VERSION_LABEL,
     DATASETS,
     DRIVER_IMAGE_DIGEST,
     DRIVER_IMAGE_REF,
@@ -17,6 +22,9 @@ from contract import (
     sha256_json,
     validate_evidence,
 )
+
+
+RUN_ID = "123456abcdef"
 
 
 def timestamp(value: datetime) -> str:
@@ -53,6 +61,17 @@ def oracle_result(name: str, additions: int) -> dict:
         "row_content_columns": 8,
         "row_content_rows_checked": definition["seed_rows"] + additions,
         "row_content_sha256": "c" * 64,
+    }
+
+
+def container_identity_labels(kind: str, version: str, trial_index: int) -> dict[str, str]:
+    token = hashlib.sha256(f"{kind}:{version}:{trial_index}".encode()).hexdigest()[:32]
+    return {
+        CONTAINER_RUN_ID_LABEL: RUN_ID,
+        CONTAINER_KIND_LABEL: kind,
+        CONTAINER_VERSION_LABEL: version,
+        CONTAINER_TRIAL_LABEL: str(trial_index),
+        CONTAINER_OWNER_LABEL: token,
     }
 
 
@@ -155,13 +174,16 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         "attempt_states": attempt_states,
         "container_id": "4" * 64,
         "application_container_cleanup": {
-            "container_name": f"retention-123456abcdef-{version}-{index}",
+            "container_name": f"retention-{RUN_ID}-{version}-{index}",
             "container_id": "4" * 64,
             "status": "removed",
+            "identity_labels": container_identity_labels("application", version, index),
         },
         "foreground_driver_cleanup": {
-            "container_name": f"retention-123456abcdef-{version}-{index}-driver",
+            "container_name": f"retention-{RUN_ID}-{version}-{index}-driver",
+            "container_id": ("5" if version == "baseline" else "6") * 64,
             "status": "already_absent",
+            "identity_labels": container_identity_labels("foreground", version, index),
         },
         "latency_samples_ms": {"read": reads, "write": writes},
         "foreground_workload": {
@@ -188,6 +210,7 @@ def valid_evidence() -> dict:
     phase_finish = phase_start + timedelta(seconds=800)
     evidence = {
         "schema_version": SCHEMA_VERSION,
+        "run_id": RUN_ID,
         "status": "completed",
         "test_phase": {
             "started_at": timestamp(phase_start),
@@ -298,6 +321,32 @@ class ContractTests(unittest.TestCase):
             "retention-123456abcdef-candidate-2-driver"
         )
         with self.assertRaisesRegex(AcceptanceError, "belongs to another trial"):
+            validate_evidence(evidence)
+
+    def test_container_cleanup_identities_must_match_one_run_across_trials(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][1]
+        trial["application_container_cleanup"]["container_name"] = "retention-fedcba987654-candidate-2"
+        trial["application_container_cleanup"]["identity_labels"][CONTAINER_RUN_ID_LABEL] = "fedcba987654"
+        trial["foreground_driver_cleanup"]["container_name"] = "retention-fedcba987654-candidate-2-driver"
+        trial["foreground_driver_cleanup"]["identity_labels"][CONTAINER_RUN_ID_LABEL] = "fedcba987654"
+        with self.assertRaisesRegex(AcceptanceError, "application container cleanup is incomplete"):
+            validate_evidence(evidence)
+
+    def test_driver_cleanup_run_id_must_match_its_application_trial(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["foreground_driver_cleanup"]["identity_labels"][CONTAINER_RUN_ID_LABEL] = "fedcba987654"
+        with self.assertRaisesRegex(AcceptanceError, "identity labels do not match its trial"):
+            validate_evidence(evidence)
+
+    def test_app_and_driver_must_have_distinct_generated_ownership_identities(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["foreground_driver_cleanup"]["identity_labels"][CONTAINER_OWNER_LABEL] = (
+            trial["application_container_cleanup"]["identity_labels"][CONTAINER_OWNER_LABEL]
+        )
+        with self.assertRaisesRegex(AcceptanceError, "ownership token was reused"):
             validate_evidence(evidence)
 
     def test_application_container_cleanup_must_be_terminal_and_identity_bound(self) -> None:
