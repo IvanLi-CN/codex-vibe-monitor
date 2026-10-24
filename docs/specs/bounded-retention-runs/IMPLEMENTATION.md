@@ -20,11 +20,19 @@ ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文�
 
 该短时受控门槛不替代既有 50 倍容量、百万级固定存量 24 小时清空或真实生产持续收敛目标，这些目标继续保持未签收。生产复核在主人合并并更新服务后只读开展，保留调度影响并独立报告。
 
+验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限及独立 GitHub-hosted runner，checkout 不持久化凭据。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，镜像和报告保留 14 天；测量 job 校验后在同一主机串行运行。`fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`foreground.py` 在共享应用隔离网络命名空间的 sidecar 中执行真实 HTTP，`oracle.py` 核对实际归档及源转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。schema v5 拒绝基线与候选 SHA 相同，绑定同一实验 run ID、固定 registry digest、实际 driver image ID 和试验顺序；三对试验顺序为基线／候选、候选／基线、基线／候选，各版本仍为三次 120 秒，输入和资源门槛不变。
+
+前台读延迟采自 `GET /api/pool/upstream-accounts`，写延迟采自 `POST /v1/responses`，不使用直接 SQLite 写入替代实际服务写入路径。每个 120 秒窗口发送 81 次 Responses 请求，合成上游分散返回 16 次可重试 503；测量驱动以响应 invocation ID 对照 97 条终态 attempt 的 `attempt_public_id`。归档 oracle 对照保留的源真值核验所有归档字段、精确时间、行指纹和 attempt→invocation 关联，不只比较 ID 与月份。压缩文件经同一已持有描述符复制到私有快照，核对实际消费字节的 manifest 摘要，并在读取前后复核源文件身份、元数据和内容，拒绝等价行不同压缩字节的替换及原位改写。每次基线与候选须完成同样的 512 文件竞争工作，且证据快照前确认 raw owner 空闲；基线可串行，只有候选要求执行区间重叠。初始化、应用及前台容器使用共享身份登记和明确清理事实；无法确认移除时保留试验目录及其祖先根目录，并记录恢复身份和路径。每个 driver 名称绑定 run ID、版本和轮次，六轮通过同一登记表执行仍保留独立清理历史。工作和清理使用同一 900 秒阶段期限，预留 45 秒清理预算，超限或缺少清理证据拒绝通过。
+
+测量 job 在候选 checkout 前写入绑定 run ID、运行次数、PR、基线／候选 SHA 和阶段起点的 `preflight.json`。始终执行的收尾只记录 checkout、两个镜像下载、镜像验证及测量的允许结果，不收集环境或凭据；这些前置步骤失败而未启动测量时仍有失败证据。上传缺少证据文件直接失败，保留既有只读权限、显式标签及最先开始的阶段时钟。
+
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 60 项合同/oracle/测量控制/preflight 回归通过，另通过工作流 actionlint、YAML 解析和差异检查。新增回归覆盖真实 gzip 替换及原位变更、容器无法确认清理时外层目录仍保留、已知容器 ID 改名与替换、创建超时后按 owner labels 找回及无法确认时保留数据、同一登记表六次真实前台注册／清理，以及 checkout／下载／镜像验证失败记录。早期源码的自动 CI 成功仅作历史事实；当前候选 `0b0f8a9f084260984927b60917ad348c174ad699` 尚未推送，当前 head 的 CI、正式审查、专用镜像构建和实际负载测量均尚未完成。通过的工具测试不证明候选吞吐、前台延迟、公平性或生产持续收敛。10 倍门槛留待效率任务和父 PR 在 Actions 取得完整证据；本地不运行性能实验。普通进度文档使用真实 checkout 身份，只有变更绑定证明记录才进入严格四文件载体校验，不把旧载体或旧审查当作当前验证。既有生产构建输入的可变性仅记录为重建来源观察，引用的工作流也未证明 ambient token 可读，不把建议写成已证实泄露或完整供应链固定保证。
+
 ### Historical implementation context
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
-当前候选绑定为 PR #1108；基线和当前 head 以 PR 当前提交及其 required CI 为准。旧候选日志、retained profile 和历史兼容卡仅作历史证据，不替代当前 head 证明。
+本轮当前候选由父 PR #1183 统合，子 PR #1184（验收工具）和 #1185（计量）分别绑定父分支 `f3f9288050e92202a42d1db52ef7f3b4b1716a2f`；旧候选日志、retained profile 和历史兼容卡仅作历史证据，不替代当前 head 证明。
 
 代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣仍需当前候选发布构建实证，尚未签收。主人明确以其他验证通过、推送后 GitHub Actions 必过检查通过及 PR 可合并作为本次交付条件，暂不在本地运行 stateful profile。性能试验只允许在 GitHub Actions 单独执行，不得在本机或 Agent VM 运行，也不得将不必要的性能试验加入通用 PR 必过测试集；历史容量卡不能冒充本次通过证据。
 

@@ -84,6 +84,26 @@ def test_bindings() -> None:
         assert generic["implementationCandidateSha"] == future, generic
         assert generic["documentationCarrierSha"] == future, generic
 
+        progress = commit(
+            root,
+            {
+                "docs/specs/retention-maintenance-task-ownership/IMPLEMENTATION.md": "future progress\n",
+                "docs/specs/task-operations/IMPLEMENTATION.md": "future task progress\n",
+                "docs/specs/bounded-retention-runs/IMPLEMENTATION.md": "future bounded progress\n",
+            },
+            "docs: synchronize future implementation",
+        )
+        progress_identity = identity(root, progress)
+        assert progress_identity["binding"] == "checkout", progress_identity
+        assert progress_identity["implementationCandidateSha"] == progress, progress_identity
+        assert progress_identity["documentationCarrierSha"] == progress, progress_identity
+        try:
+            identity(root, future)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("mismatched checkout and GitHub SHA was accepted")
+
         run(root, "git", "switch", "--detach", carrier)
         feature_one = commit(root, {"src/feature-one.rs": "one\n"}, "feat: first merge-group change")
         feature_two = commit(root, {"src/feature-two.rs": "two\n"}, "feat: second merge-group change")
@@ -112,6 +132,31 @@ def test_bindings() -> None:
             pass
         else:
             raise AssertionError("corrupted carrier was accepted")
+
+        run(root, "git", "switch", "--detach", code)
+        incomplete_files = carrier_files(code)
+        del incomplete_files["docs/specs/retention-maintenance-task-ownership/IMPLEMENTATION.md"]
+        incomplete = commit(root, incomplete_files, "docs: incomplete carrier")
+        try:
+            identity(root, incomplete)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("carrier missing its implementation document was accepted")
+
+        run(root, "git", "switch", "--detach", future)
+        wrong_parent_files = carrier_files(code)
+        wrong_parent_files["docs/specs/retention-maintenance-task-ownership/IMPLEMENTATION.md"] = "changed carrier\n"
+        wrong_parent_files["docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json"] = json.dumps({"codeCandidateSha": code, "status": "pending"}) + "\n"
+        wrong_parent_files["docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"] = "changed migration\n"
+        wrong_parent_files["docs/adr/assets/retention-maintenance-task-ownership/version-impact-record.json"] = "changed version\n"
+        wrong_parent = commit(root, wrong_parent_files, "docs: stale carrier parent")
+        try:
+            identity(root, wrong_parent)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("carrier with a stale implementation parent was accepted")
 
 
 if __name__ == "__main__":
