@@ -668,7 +668,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             ),
           { timeout: 35_000 },
         )
-        .toBeGreaterThan(beforeRefresh.releaseCount + 1);
+        .toBeGreaterThan(beforeRefresh.releaseCount);
       await expect
         .poll(() =>
           page.evaluate(

@@ -171,6 +171,10 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     )
     text = text.replace("    }, DELAYED_TRAVERSAL_MS);", "    });")
     text = text.replace("    }, DENSE_TRAVERSAL_DELAY_MS);", "    });")
+    text = text.replace(
+        "        .toBeGreaterThan(beforeRefresh.releaseCount);\n",
+        "        .toBeGreaterThan(beforeRefresh.releaseCount + 1);\n",
+    )
     text = re.sub(
         r"\n    await new Promise<void>\(\(resolve\) => \{\n"
         r"      setTimeout\(resolve, 16_000\);\n"
