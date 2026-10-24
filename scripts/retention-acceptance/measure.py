@@ -387,6 +387,65 @@ def wait_healthy(container: str, started: float) -> None:
     raise TimeoutError(f"production image {container} failed its health check")
 
 
+def inspect_container_identity(
+    reference: str,
+    phase_started: float,
+    cleanup_reserve_seconds: float,
+) -> tuple[str, str, dict[str, Any]] | None:
+    inspected = run_command(
+        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}} {{json .Config.Labels}}", reference],
+        3,
+        check=False,
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
+    if inspected.returncode != 0 and re.search(r"No such (?:object|container)", inspected.stderr, re.IGNORECASE):
+        return None
+    if inspected.returncode != 0:
+        raise RuntimeError(f"could not inspect named container {reference}: {inspected.stderr.strip()[-1000:]}")
+    identity = inspected.stdout.strip().split(maxsplit=2)
+    if len(identity) != 3 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or identity[1] not in {"true", "false"}:
+        raise RuntimeError(f"could not parse container identity {reference}: {inspected.stdout.strip()[-1000:]}")
+    try:
+        actual_labels = json.loads(identity[2])
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"could not parse container labels {reference}") from error
+    if not isinstance(actual_labels, dict):
+        actual_labels = {}
+    return identity[0], identity[1], actual_labels
+
+
+def find_container_by_identity_labels(
+    expected_identity_labels: dict[str, str],
+    phase_started: float,
+    cleanup_reserve_seconds: float,
+) -> tuple[str, str, dict[str, Any]] | None:
+    if not expected_identity_labels:
+        raise AcceptanceError("cannot search for an unconfirmed container without owner identity labels")
+    command = ["docker", "ps", "--all", "--quiet", "--no-trunc"]
+    for key, value in sorted(expected_identity_labels.items()):
+        command.extend(["--filter", f"label={key}={value}"])
+    listed = run_command(
+        command,
+        3,
+        check=False,
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
+    if listed.returncode != 0:
+        raise RuntimeError(f"could not search for owned containers: {listed.stderr.strip()[-1000:]}")
+    container_ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if any(not re.fullmatch(r"[0-9a-f]{64}", container_id) for container_id in container_ids):
+        raise RuntimeError("container identity search returned a malformed ID")
+    if len(container_ids) > 1:
+        raise AcceptanceError("multiple containers match the unconfirmed owner identity")
+    if not container_ids:
+        return None
+    return inspect_container_identity(container_ids[0], phase_started, cleanup_reserve_seconds)
+
+
 def cleanup_named_container(
     container: str,
     phase_started: float,
@@ -396,32 +455,39 @@ def cleanup_named_container(
     expected_identity_labels: dict[str, str] | None = None,
     log_path: Path | None = None,
 ) -> dict[str, str]:
-    inspected = run_command(
-        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}} {{json .Config.Labels}}", container],
-        3,
-        check=False,
-        phase_started=phase_started,
-        cleanup=True,
-        cleanup_reserve_seconds=cleanup_reserve_seconds,
-    )
-    if inspected.returncode != 0 and re.search(r"No such (?:object|container)", inspected.stderr, re.IGNORECASE):
-        return {
-            "container_name": container,
-            "status": "already_absent",
-            **({"container_id": expected_container_id} if expected_container_id else {}),
-        }
-    if inspected.returncode != 0:
-        raise RuntimeError(f"could not inspect named container {container}: {inspected.stderr.strip()[-1000:]}")
-    identity = inspected.stdout.strip().split(maxsplit=2)
-    if len(identity) != 3 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or identity[1] not in {"true", "false"}:
-        raise RuntimeError(f"could not parse named container identity {container}: {inspected.stdout.strip()[-1000:]}")
-    try:
-        actual_labels = json.loads(identity[2])
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"could not parse named container labels {container}") from error
-    if not isinstance(actual_labels, dict):
-        actual_labels = {}
-    container_id, running = identity[:2]
+    identity = inspect_container_identity(container, phase_started, cleanup_reserve_seconds)
+    if identity is None:
+        if expected_container_id is not None:
+            identity = inspect_container_identity(
+                expected_container_id,
+                phase_started,
+                cleanup_reserve_seconds,
+            )
+            if identity is None:
+                identity = inspect_container_identity(container, phase_started, cleanup_reserve_seconds)
+                if identity is None:
+                    return {
+                        "container_name": container,
+                        "container_id": expected_container_id,
+                        "status": "already_absent",
+                        **({"identity_labels": expected_identity_labels} if expected_identity_labels is not None else {}),
+                    }
+        elif expected_identity_labels is not None:
+            identity = find_container_by_identity_labels(
+                expected_identity_labels,
+                phase_started,
+                cleanup_reserve_seconds,
+            )
+            if identity is None:
+                identity = inspect_container_identity(container, phase_started, cleanup_reserve_seconds)
+                if identity is None:
+                    raise AcceptanceError(
+                        f"could not confirm unstarted container {container} is absent by owner identity"
+                    )
+        else:
+            return {"container_name": container, "status": "already_absent"}
+
+    container_id, running, actual_labels = identity
     if expected_container_id and container_id != expected_container_id:
         raise AcceptanceError(f"named container {container} resolved to an unexpected container ID")
     if expected_identity_labels is None:
@@ -497,6 +563,11 @@ def cleanup_named_container(
         if command_errors:
             detail += "; " + "; ".join(command_errors)
         raise RuntimeError(f"could not confirm owned container {container} ({container_id}) cleanup: {detail}")
+    replacement = inspect_container_identity(container, phase_started, cleanup_reserve_seconds)
+    if replacement is not None:
+        raise AcceptanceError(
+            f"container name {container} was reused by {replacement[0]} during cleanup; preserving mounted data"
+        )
     return {
         "container_name": container,
         "container_id": container_id,

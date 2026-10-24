@@ -267,15 +267,22 @@ class MeasurementBudgetTests(unittest.TestCase):
                     )
                     owned = OwnedContainerLedger()
                     commands: list[list[str]] = []
+                    removed = False
 
                     def docker_timeout(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                        nonlocal removed
                         commands.append(command)
                         if command[0:2] == ["docker", "run"]:
                             raise subprocess.TimeoutExpired(command, 60)
                         if command[0:2] == ["docker", "inspect"] and command[-1] == name:
+                            if removed:
+                                return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
                             labels = owned.record(name)["identity_labels"]
                             return CompletedProcess(command, 0, f"{container_id} true {json.dumps(labels)}", "")
-                        if command[0:2] in (["docker", "stop"], ["docker", "rm"]):
+                        if command[0:2] == ["docker", "stop"]:
+                            return CompletedProcess(command, 0, container_id, "")
+                        if command[0:2] == ["docker", "rm"]:
+                            removed = True
                             return CompletedProcess(command, 0, container_id, "")
                         if command[0:2] == ["docker", "inspect"]:
                             return CompletedProcess(command, 1, "", f"Error: No such object: {command[-1]}")
@@ -333,7 +340,7 @@ class MeasurementBudgetTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         [command[1] for command in commands],
-                        ["run", "inspect", "stop", "rm", "inspect"],
+                        ["run", "inspect", "stop", "rm", "inspect", "inspect"],
                     )
 
     def test_unconfirmed_foreground_cleanup_refuses_to_remove_trial_data(self) -> None:
@@ -515,14 +522,20 @@ class MeasurementBudgetTests(unittest.TestCase):
             owned.register(name, "application", root, trial, trial, version="baseline", trial_index=1)
             owned.mark_started(name, container_id)
             commands: list[list[str]] = []
+            removed = False
 
             def docker_success(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                nonlocal removed
                 commands.append(command)
                 if command[:3] == ["docker", "inspect", "--format"]:
                     if command[-1] == name:
+                        if removed:
+                            return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
                         labels = owned.record(name)["identity_labels"]
                         return CompletedProcess(command, 0, f"{container_id} true {json.dumps(labels)}", "")
                     return CompletedProcess(command, 1, "", f"Error: No such object: {command[-1]}")
+                if command[:2] == ["docker", "rm"]:
+                    removed = True
                 return CompletedProcess(command, 0, container_id, "")
 
             def remove_directory(path: Path, *_: object) -> None:
@@ -539,7 +552,345 @@ class MeasurementBudgetTests(unittest.TestCase):
             self.assertFalse(errors)
             self.assertFalse(trial.exists())
             self.assertEqual(owned.record(name)["status"], "removed")
-            self.assertEqual([command[1] for command in commands], ["inspect", "stop", "rm", "inspect"])
+            self.assertEqual([command[1] for command in commands], ["inspect", "stop", "rm", "inspect", "inspect"])
+
+    def test_renamed_owned_container_is_removed_by_its_confirmed_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            (trial / "database.sqlite").write_bytes(b"keep mounted until container removal")
+            name = "retention-123456abcdef-baseline-1"
+            container_id = "a" * 64
+            owned = OwnedContainerLedger()
+            owned.register(name, "application", root, trial, trial, version="baseline", trial_index=1)
+            owned.mark_started(name, container_id)
+            commands: list[list[str]] = []
+            removed = False
+
+            def docker_renamed(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                nonlocal removed
+                commands.append(command)
+                if command[:2] == ["docker", "inspect"]:
+                    target = command[-1]
+                    if target == name:
+                        return CompletedProcess(command, 1, "", f"Error: No such object: {target}")
+                    if target == container_id and not removed:
+                        labels = owned.record(name)["identity_labels"]
+                        return CompletedProcess(command, 0, f"{container_id} true {json.dumps(labels)}", "")
+                    if target == container_id:
+                        return CompletedProcess(command, 1, "", f"Error: No such object: {target}")
+                if command[:2] == ["docker", "stop"]:
+                    self.assertEqual(command[-1], container_id)
+                    return CompletedProcess(command, 0, container_id, "")
+                if command[:2] == ["docker", "rm"]:
+                    self.assertEqual(command[-1], container_id)
+                    removed = True
+                    return CompletedProcess(command, 0, container_id, "")
+                self.fail(f"unexpected fake Docker command: {command[1]}")
+
+            with patch("measure.run_command", side_effect=docker_renamed), patch(
+                "measure.bounded_rmtree", side_effect=lambda path, *_: shutil.rmtree(path)
+            ):
+                result, errors = cleanup_path_if_safe(
+                    trial,
+                    root,
+                    owned,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertTrue(result["removed"])
+            self.assertFalse(errors)
+            self.assertTrue(removed)
+            self.assertFalse(trial.exists())
+            self.assertEqual(owned.record(name)["container_id"], container_id)
+            self.assertEqual(owned.record(name)["status"], "removed")
+            self.assertEqual(
+                [command[-1] for command in commands if command[:2] == ["docker", "inspect"]],
+                [name, container_id, container_id, name],
+            )
+
+    def test_missing_name_is_confirmed_absent_by_the_known_container_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            (trial / "database.sqlite").write_bytes(b"remove only after ID absence is confirmed")
+            name = "retention-123456abcdef-baseline-1"
+            container_id = "b" * 64
+            owned = OwnedContainerLedger()
+            owned.register(name, "application", root, trial, trial, version="baseline", trial_index=1)
+            owned.mark_started(name, container_id)
+            commands: list[list[str]] = []
+
+            def docker_absent(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                commands.append(command)
+                target = command[-1]
+                return CompletedProcess(command, 1, "", f"Error: No such object: {target}")
+
+            with patch("measure.run_command", side_effect=docker_absent), patch(
+                "measure.bounded_rmtree", side_effect=lambda path, *_: shutil.rmtree(path)
+            ):
+                result, errors = cleanup_path_if_safe(
+                    trial,
+                    root,
+                    owned,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertTrue(result["removed"])
+            self.assertFalse(errors)
+            self.assertFalse(trial.exists())
+            self.assertEqual([command[-1] for command in commands], [name, container_id, name])
+            self.assertEqual(owned.record(name)["status"], "already_absent")
+            self.assertEqual(owned.record(name)["verified_identity_labels"], owned.record(name)["identity_labels"])
+
+    def test_replacement_same_name_preserves_data_and_never_removes_foreign_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            sentinel = trial / "database.sqlite"
+            sentinel.write_bytes(b"preserve while replacement ownership is unknown")
+            name = "retention-123456abcdef-baseline-1"
+            owned_id = "c" * 64
+            foreign_id = "d" * 64
+            owned = OwnedContainerLedger()
+            owned.register(name, "application", root, trial, trial, version="baseline", trial_index=1)
+            owned.mark_started(name, owned_id)
+            commands: list[list[str]] = []
+            name_inspections = 0
+
+            def docker_replacement(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                nonlocal name_inspections
+                commands.append(command)
+                if command[:2] == ["docker", "inspect"]:
+                    target = command[-1]
+                    if target == name:
+                        name_inspections += 1
+                        if name_inspections == 1:
+                            return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
+                        foreign_labels = {CONTAINER_OWNER_LABEL: "e" * 32}
+                        return CompletedProcess(command, 0, f"{foreign_id} true {json.dumps(foreign_labels)}", "")
+                    if target == owned_id:
+                        return CompletedProcess(command, 1, "", f"Error: No such object: {owned_id}")
+                    foreign_labels = {CONTAINER_OWNER_LABEL: "e" * 32}
+                    return CompletedProcess(command, 0, f"{foreign_id} true {json.dumps(foreign_labels)}", "")
+                self.fail(f"replacement container must not be stopped or removed: {command}")
+
+            with patch("measure.run_command", side_effect=docker_replacement), patch(
+                "measure.bounded_rmtree"
+            ) as remove:
+                result, errors = cleanup_path_if_safe(
+                    trial,
+                    root,
+                    owned,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertFalse(result["removed"])
+            self.assertTrue(errors)
+            self.assertTrue(sentinel.exists())
+            self.assertEqual([command[1] for command in commands], ["inspect", "inspect", "inspect"])
+            self.assertEqual([command[-1] for command in commands], [name, owned_id, name])
+            self.assertEqual(owned.record(name)["status"], "unconfirmed")
+            remove.assert_not_called()
+
+    def test_name_replaced_after_owned_removal_preserves_mounted_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            sentinel = trial / "database.sqlite"
+            sentinel.write_bytes(b"preserve if a replacement may mount this directory")
+            name = "retention-123456abcdef-baseline-1"
+            owned_id = "f" * 64
+            foreign_id = "e" * 64
+            owned = OwnedContainerLedger()
+            owned.register(name, "application", root, trial, trial, version="baseline", trial_index=1)
+            owned.mark_started(name, owned_id)
+            commands: list[list[str]] = []
+            removed = False
+
+            def docker_replaced_after_remove(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                nonlocal removed
+                commands.append(command)
+                if command[:2] == ["docker", "inspect"]:
+                    target = command[-1]
+                    if target == name and not removed:
+                        labels = owned.record(name)["identity_labels"]
+                        return CompletedProcess(command, 0, f"{owned_id} true {json.dumps(labels)}", "")
+                    if target == name:
+                        foreign_labels = {CONTAINER_OWNER_LABEL: "e" * 32}
+                        return CompletedProcess(command, 0, f"{foreign_id} true {json.dumps(foreign_labels)}", "")
+                    return CompletedProcess(command, 1, "", f"Error: No such object: {target}")
+                if command[:2] == ["docker", "stop"]:
+                    self.assertEqual(command[-1], owned_id)
+                    return CompletedProcess(command, 0, owned_id, "")
+                if command[:2] == ["docker", "rm"]:
+                    self.assertEqual(command[-1], owned_id)
+                    removed = True
+                    return CompletedProcess(command, 0, owned_id, "")
+                self.fail(f"replacement container must not be stopped or removed: {command}")
+
+            with patch("measure.run_command", side_effect=docker_replaced_after_remove), patch(
+                "measure.bounded_rmtree"
+            ) as remove_directory:
+                result, errors = cleanup_path_if_safe(
+                    trial,
+                    root,
+                    owned,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertTrue(removed)
+            self.assertFalse(result["removed"])
+            self.assertTrue(errors)
+            self.assertTrue(sentinel.exists())
+            self.assertEqual(
+                [command[1] for command in commands],
+                ["inspect", "stop", "rm", "inspect", "inspect"],
+            )
+            self.assertEqual(owned.record(name)["status"], "unconfirmed")
+            remove_directory.assert_not_called()
+
+    def test_creation_timeout_finds_renamed_container_by_owner_labels(self) -> None:
+        run_id = "123456abcdef"
+        container_id = "e" * 64
+        with tempfile.TemporaryDirectory() as temporary, patch("measure.RUN_ID", run_id):
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            (trial / "database.sqlite").write_bytes(b"recover until owner labels are confirmed")
+            name = f"retention-{run_id}-baseline-1"
+            owned = OwnedContainerLedger()
+            commands: list[list[str]] = []
+            removed = False
+
+            def docker_timeout_renamed(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                nonlocal removed
+                commands.append(command)
+                if command[:2] == ["docker", "run"]:
+                    raise subprocess.TimeoutExpired(command, 60)
+                if command[:2] == ["docker", "inspect"] and command[-1] == name:
+                    return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
+                if command[:2] == ["docker", "ps"]:
+                    self.assertEqual(command[1:5], ["ps", "--all", "--quiet", "--no-trunc"])
+                    expected = owned.record(name)["identity_labels"]
+                    filters: dict[str, str] = {}
+                    for index, argument in enumerate(command[:-1]):
+                        if argument == "--filter":
+                            key, value = command[index + 1].removeprefix("label=").split("=", 1)
+                            filters[key] = value
+                    self.assertEqual(filters, expected)
+                    return CompletedProcess(command, 0, container_id + "\n", "")
+                if command[:2] == ["docker", "inspect"] and command[-1] == container_id and not removed:
+                    labels = owned.record(name)["identity_labels"]
+                    return CompletedProcess(command, 0, f"{container_id} true {json.dumps(labels)}", "")
+                if command[:2] == ["docker", "inspect"] and command[-1] == container_id:
+                    return CompletedProcess(command, 1, "", f"Error: No such object: {container_id}")
+                if command[:2] == ["docker", "stop"]:
+                    self.assertEqual(command[-1], container_id)
+                    return CompletedProcess(command, 0, container_id, "")
+                if command[:2] == ["docker", "rm"]:
+                    self.assertEqual(command[-1], container_id)
+                    removed = True
+                    return CompletedProcess(command, 0, container_id, "")
+                self.fail(f"unexpected fake Docker command: {command[1]}")
+
+            with patch("measure.run_command", side_effect=docker_timeout_renamed), patch(
+                "measure.bounded_rmtree", side_effect=lambda path, *_: shutil.rmtree(path)
+            ):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    start_container(
+                        "test-image",
+                        trial,
+                        name,
+                        time.monotonic(),
+                        owned=owned,
+                        kind="application",
+                        root=root,
+                        version="baseline",
+                        trial_index=1,
+                    )
+                result, errors = cleanup_path_if_safe(
+                    trial,
+                    root,
+                    owned,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertTrue(result["removed"])
+            self.assertFalse(errors)
+            self.assertTrue(removed)
+            self.assertFalse(trial.exists())
+            self.assertEqual(owned.record(name)["container_id"], container_id)
+            self.assertEqual(owned.record(name)["status"], "removed")
+            self.assertEqual(
+                [command[1] for command in commands],
+                ["run", "inspect", "ps", "inspect", "stop", "rm", "inspect", "inspect"],
+            )
+
+    def test_unconfirmed_creation_timeout_without_owner_match_preserves_recovery_data(self) -> None:
+        run_id = "123456abcdef"
+        with tempfile.TemporaryDirectory() as temporary, patch("measure.RUN_ID", run_id):
+            root = Path(temporary) / "acceptance-root"
+            trial = root / "trial-baseline-1"
+            trial.mkdir(parents=True)
+            sentinel = trial / "database.sqlite"
+            sentinel.write_bytes(b"preserve while timed-out creation is unconfirmed")
+            name = f"retention-{run_id}-baseline-1"
+            owned = OwnedContainerLedger()
+            commands: list[list[str]] = []
+
+            def docker_timeout_without_match(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                commands.append(command)
+                if command[:2] == ["docker", "run"]:
+                    raise subprocess.TimeoutExpired(command, 60)
+                if command[:2] == ["docker", "inspect"] and command[-1] == name:
+                    return CompletedProcess(command, 1, "", f"Error: No such object: {name}")
+                if command[:2] == ["docker", "ps"]:
+                    return CompletedProcess(command, 0, "", "")
+                self.fail(f"unexpected fake Docker command: {command[1]}")
+
+            with patch("measure.run_command", side_effect=docker_timeout_without_match), patch(
+                "measure.bounded_rmtree"
+            ) as remove:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    start_container(
+                        "test-image",
+                        trial,
+                        name,
+                        time.monotonic(),
+                        owned=owned,
+                        kind="application",
+                        root=root,
+                        version="baseline",
+                        trial_index=1,
+                    )
+                result, errors = cleanup_path_if_safe(
+                    trial,
+                    root,
+                    owned,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertFalse(result["removed"])
+            self.assertEqual(result["status"], "preserved")
+            self.assertTrue(errors)
+            self.assertTrue(sentinel.exists())
+            self.assertEqual(
+                [record["status"] for record in result["recovery"]["unresolved_containers"]],
+                ["unconfirmed"],
+            )
+            self.assertEqual([command[1] for command in commands], ["run", "inspect", "ps", "inspect"])
+            remove.assert_not_called()
 
 
 if __name__ == "__main__":
