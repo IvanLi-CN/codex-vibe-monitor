@@ -385,12 +385,19 @@ fn retention_owner_success_completion(
     selected: usize,
     committed: usize,
     has_wait_reason: bool,
+    dry_run: bool,
 ) -> &'static str {
     if selected == 0 {
         if has_wait_reason {
             "deferred"
         } else {
             "no-work"
+        }
+    } else if dry_run {
+        if has_wait_reason {
+            "deferred"
+        } else {
+            "complete"
         }
     } else if committed < selected {
         if committed > 0 { "partial" } else { "deferred" }
@@ -407,6 +414,7 @@ fn apply_retention_owner_success(
     batches: usize,
     raw_files_removed: usize,
     has_more: Option<bool>,
+    dry_run: bool,
 ) {
     summary.workload_observed = true;
     summary.discovered = discovered;
@@ -422,6 +430,7 @@ fn apply_retention_owner_success(
         summary.selected,
         summary.committed,
         summary.wait_reason.is_some(),
+        dry_run,
     );
 }
 
@@ -601,6 +610,7 @@ async fn run_invocation_archive_owner_inner(
                 batches,
                 raw_files_removed,
                 has_more,
+                dry_run,
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -666,6 +676,7 @@ async fn run_timestamped_archive_owner(
                 batches,
                 raw_files_removed,
                 batch_plan::candidate_window_has_more(dataset),
+                dry_run,
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -714,6 +725,7 @@ async fn run_invocation_detail_prune_owner(
                 batches,
                 raw_files_removed,
                 batch_plan::candidate_window_has_more("codex_invocation_details"),
+                dry_run,
             );
             set_retention_owner_raw_file_facts(&mut summary, raw_files_removed, dry_run);
         }
@@ -747,6 +759,7 @@ async fn run_quota_snapshot_compaction_owner(
                 batches,
                 0,
                 batch_plan::candidate_window_has_more("codex_quota_snapshots"),
+                dry_run,
             );
         }
         Err(error) => {
@@ -780,6 +793,7 @@ async fn run_model_route_expiry_owner(
                 0,
                 0,
                 Some(has_more),
+                dry_run,
             ),
             Err(error) => apply_retention_owner_error(&mut summary, &error),
         }
@@ -799,7 +813,16 @@ async fn run_model_route_expiry_owner(
         summary.workload_observed = true;
         summary.discovered = discovered;
         let Some(admission) = acquire_retention_write_admission("model_route_purge").await else {
-            apply_retention_owner_success(&mut summary, discovered, 0, 0, 0, 0, Some(true));
+            apply_retention_owner_success(
+                &mut summary,
+                discovered,
+                0,
+                0,
+                0,
+                0,
+                Some(true),
+                dry_run,
+            );
             return Ok(summary.finish(started_at));
         };
         let execute_started = Instant::now();
@@ -854,6 +877,7 @@ async fn run_model_route_expiry_owner(
             0,
             0,
             Some(has_more),
+            dry_run,
         );
     }
     Ok(summary.finish(started_at))
@@ -929,6 +953,7 @@ async fn run_task_run_history_cleanup_owner(
             legacy_selected >= SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS
                 || managed_history.has_more,
         ),
+        dry_run,
     );
     if !dry_run && summary.completion == "complete" && committed != selected {
         summary.completion = if committed > 0 { "partial" } else { "deferred" };
@@ -2618,21 +2643,26 @@ mod owner_fact_tests {
             "invocation rows",
         );
 
-        apply_retention_owner_success(&mut summary, 1_200, 866, 866, 2, 0, Some(true));
+        apply_retention_owner_success(&mut summary, 1_200, 866, 866, 2, 0, Some(true), false);
 
         assert_eq!(summary.completion, "complete");
         assert_eq!(summary.has_more, Some(true));
     }
 
     #[test]
-    fn owner_completion_tracks_selected_commit_boundary_and_dry_run() {
+    fn owner_completion_preserves_real_boundaries_and_dry_run_preview() {
         let mut partial = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
-        apply_retention_owner_success(&mut partial, 866, 866, 12, 1, 0, Some(true));
+        apply_retention_owner_success(&mut partial, 866, 866, 12, 1, 0, Some(true), false);
         assert_eq!(partial.completion, "partial");
 
         let mut deferred = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
-        apply_retention_owner_success(&mut deferred, 866, 866, 0, 1, 0, Some(false));
+        apply_retention_owner_success(&mut deferred, 866, 866, 0, 1, 0, Some(false), false);
         assert_eq!(deferred.completion, "deferred");
+
+        let mut dry_run = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
+        apply_retention_owner_success(&mut dry_run, 866, 866, 0, 1, 0, Some(false), true);
+        assert_eq!(dry_run.committed, 0);
+        assert_eq!(dry_run.completion, "complete");
     }
 
     #[tokio::test]
@@ -2640,7 +2670,7 @@ mod owner_fact_tests {
         let (summary, defer_reason) = retention_test_with_recorded_defer_reason(async {
             retention_record_defer("retention_batch", "sqlite_pressure");
             let mut summary = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
-            apply_retention_owner_success(&mut summary, 866, 866, 866, 1, 0, Some(true));
+            apply_retention_owner_success(&mut summary, 866, 866, 866, 1, 0, Some(true), false);
             summary
         })
         .await;
@@ -2654,7 +2684,7 @@ mod owner_fact_tests {
     #[test]
     fn required_stage_incomplete_or_failed_does_not_report_complete() {
         let mut partial = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
-        apply_retention_owner_success(&mut partial, 866, 866, 12, 1, 0, Some(false));
+        apply_retention_owner_success(&mut partial, 866, 866, 12, 1, 0, Some(false), false);
         assert_eq!(partial.completion, "partial");
 
         let mut failed = RetentionOwnerRunSummary::new("retention_archive", "scope", "rows");
