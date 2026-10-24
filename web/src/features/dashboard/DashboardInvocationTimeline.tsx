@@ -749,6 +749,8 @@ export function DashboardInvocationTimeline({
               data-testid="dashboard-invocation-timeline-lanes"
               data-total-calls={renderedData?.total ?? 0}
               data-total-lanes={laneCount}
+              data-range-start={renderedData?.rangeStart ?? ""}
+              data-range-end={renderedData?.rangeEnd ?? ""}
               className="relative h-[21rem] overflow-hidden overscroll-contain desktop:h-80"
               style={{ height: `${chartHeightPx}px` }}
             >

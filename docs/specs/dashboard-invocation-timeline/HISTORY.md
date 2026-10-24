@@ -12,7 +12,7 @@
 
 ## Related Changes
 
-- None
+- The live refresh path now retains a completed self-consistent older-window snapshot while coalescing one follow-up for the latest viewport; persisted materialization uses a timeline-specific source projection and batched account fallback without changing the public endpoint or snapshot contract.
 
 ## References
 

@@ -667,6 +667,134 @@ describe("useInvocationTimeline", () => {
     expect(host?.querySelector("[data-testid=refreshing]")?.textContent).toBe("false");
   });
 
+  it("commits an in-flight initial window before following a moving live window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T10:30:00.000Z"));
+    const pending: Array<{
+      resolve: (value: InvocationTimelineResponse) => void;
+      options: { from?: string; to?: string; signal?: AbortSignal };
+    }> = [];
+    timelineMocks.fetch.mockImplementation(
+      (options: { from?: string; to?: string; signal?: AbortSignal }) =>
+        new Promise<InvocationTimelineResponse>((resolve) => pending.push({ resolve, options })),
+    );
+    const initialResponse = createTimeseries(
+      "2026-07-16T10:00:00.000Z",
+      "2026-07-16T10:30:00.000Z",
+    );
+    const advancedResponse = createTimeseries(
+      "2026-07-16T10:00:00.000Z",
+      "2026-07-16T10:31:00.000Z",
+    );
+
+    render(<Probe response={initialResponse} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+
+    act(() => {
+      root?.render(<Probe response={advancedResponse} liveRevision={2} />);
+    });
+    expect(pending[0]?.options.signal?.aborted).toBe(false);
+
+    pending[0]?.resolve(
+      createTimeline("initial-window", "2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("initial-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:00:00.000Z|2026-07-16T10:30:00.000Z",
+    );
+
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(2);
+    expect(pending[1]?.options).toMatchObject({
+      from: "2026-07-16T10:01:00.000Z",
+      to: "2026-07-16T10:31:00.000Z",
+    });
+    pending[1]?.resolve(
+      createTimeline("advanced-window", "2026-07-16T10:01:00.000Z", "2026-07-16T10:31:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("advanced-window");
+  });
+
+  it("commits a completed old-window refresh and follows the latest live window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T10:30:00.000Z"));
+    const pending: Array<{
+      resolve: (value: InvocationTimelineResponse) => void;
+      options: { from?: string; to?: string };
+    }> = [];
+    timelineMocks.fetch.mockImplementation(
+      (options: { from?: string; to?: string }) =>
+        new Promise<InvocationTimelineResponse>((resolve) => pending.push({ resolve, options })),
+    );
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const secondResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+    const thirdResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:32:00.000Z");
+
+    render(<Probe response={firstResponse} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+    pending[0]?.resolve(createTimeline("committed-window"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      root?.render(<Probe response={secondResponse} liveRevision={2} />);
+    });
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(2);
+    expect(pending[1]?.options).toMatchObject({
+      from: "2026-07-16T10:01:00.000Z",
+      to: "2026-07-16T10:31:00.000Z",
+    });
+
+    act(() => {
+      root?.render(<Probe response={thirdResponse} liveRevision={3} />);
+    });
+    pending[1]?.resolve(
+      createTimeline(
+        "completed-old-window",
+        "2026-07-16T10:01:00.000Z",
+        "2026-07-16T10:31:00.000Z",
+      ),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe(
+      "completed-old-window",
+    );
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:01:00.000Z|2026-07-16T10:31:00.000Z",
+    );
+
+    await advanceTime(15_050);
+    expect(pending).toHaveLength(3);
+    expect(pending[2]?.options).toMatchObject({
+      from: "2026-07-16T10:02:00.000Z",
+      to: "2026-07-16T10:32:00.000Z",
+    });
+    pending[2]?.resolve(
+      createTimeline("latest-window", "2026-07-16T10:02:00.000Z", "2026-07-16T10:32:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("latest-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:02:00.000Z|2026-07-16T10:32:00.000Z",
+    );
+  });
+
   it("keeps the committed live window visible and stale when its replacement fails", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T10:30:00.000Z"));

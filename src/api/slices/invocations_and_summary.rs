@@ -498,11 +498,22 @@ fn invocation_resolved_failure_class_sql_for(invocation_ref: &str) -> String {
 }
 
 pub(crate) fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
+    latest_pool_attempt_phase_sql_at_snapshot(invocation_ref, None)
+}
+
+pub(crate) fn latest_pool_attempt_phase_sql_at_snapshot(
+    invocation_ref: &str,
+    attempt_snapshot_id: Option<i64>,
+) -> String {
+    let attempt_snapshot_predicate = attempt_snapshot_id
+        .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
+        .unwrap_or_default();
     format!(
         "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
             FROM pool_upstream_request_attempts attempt \
            WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
              AND attempt.occurred_at = {invocation_ref}.occurred_at \
+             {attempt_snapshot_predicate} \
            ORDER BY attempt.attempt_index DESC, attempt.id DESC \
            LIMIT 1)"
     )
@@ -530,6 +541,14 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
 }
 
 pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &str) -> String {
+    final_pool_invocation_timing_sql_at_snapshot(invocation_ref, column, None)
+}
+
+pub(crate) fn final_pool_invocation_timing_sql_at_snapshot(
+    invocation_ref: &str,
+    column: &str,
+    attempt_snapshot_id: Option<i64>,
+) -> String {
     let timing_sql = match column {
         "first_token_ms" => sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.{column}")),
         "t_upstream_stream_ms" => sqlite_positive_timing_sql(&format!("{invocation_ref}.{column}")),
@@ -537,17 +556,22 @@ pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &st
     };
     let final_attempt_evidence_sql =
         final_pool_attempt_timing_evidence_sql("final_attempt", invocation_ref, column);
+    let attempt_snapshot_predicate = attempt_snapshot_id
+        .map(|snapshot_id| format!(" AND final_attempt.id <= {snapshot_id}"))
+        .unwrap_or_default();
     format!(
         "CASE WHEN NOT EXISTS (SELECT 1 \
            FROM pool_upstream_request_attempts AS final_attempt \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
-            AND final_attempt.occurred_at = {invocation_ref}.occurred_at) \
+            AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
+            {attempt_snapshot_predicate}) \
            OR COALESCE((SELECT CASE \
              WHEN ({final_attempt_evidence_sql}) THEN 1 \
              ELSE 0 END \
            FROM pool_upstream_request_attempts AS final_attempt \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
+            {attempt_snapshot_predicate} \
             AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
            ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
            LIMIT 1), 0) = 1 \
@@ -611,7 +635,20 @@ fn invocation_live_phase_sql_with_first_token_predicate(
     invocation_ref: &str,
     first_token_measured_sql: &str,
 ) -> String {
-    let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
+    invocation_live_phase_sql_with_first_token_predicate_at_snapshot(
+        invocation_ref,
+        first_token_measured_sql,
+        None,
+    )
+}
+
+fn invocation_live_phase_sql_with_first_token_predicate_at_snapshot(
+    invocation_ref: &str,
+    first_token_measured_sql: &str,
+    attempt_snapshot_id: Option<i64>,
+) -> String {
+    let attempt_phase_sql =
+        latest_pool_attempt_phase_sql_at_snapshot(invocation_ref, attempt_snapshot_id);
     let upstream_account_id_sql = format!(
         "CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END"
     );
@@ -646,9 +683,25 @@ pub(crate) fn invocation_live_phase_sql_with_timing_sql(
     invocation_ref: &str,
     first_token_timing_sql: &str,
 ) -> String {
+    invocation_live_phase_sql_with_timing_sql_at_snapshot(
+        invocation_ref,
+        first_token_timing_sql,
+        None,
+    )
+}
+
+pub(crate) fn invocation_live_phase_sql_with_timing_sql_at_snapshot(
+    invocation_ref: &str,
+    first_token_timing_sql: &str,
+    attempt_snapshot_id: Option<i64>,
+) -> String {
     let first_token_measured_sql =
         sqlite_nonnegative_timing_sql(&format!("({first_token_timing_sql})"));
-    invocation_live_phase_sql_with_first_token_predicate(invocation_ref, &first_token_measured_sql)
+    invocation_live_phase_sql_with_first_token_predicate_at_snapshot(
+        invocation_ref,
+        &first_token_measured_sql,
+        attempt_snapshot_id,
+    )
 }
 
 fn has_positive_timing(values: &[Option<f64>]) -> bool {
