@@ -2,7 +2,9 @@
 
 ## Current Status
 
-- 独立持续负载验收入口为 `.github/workflows/ci-retention-acceptance.yml`，夹具、测量驱动和归档计数 oracle 位于 `scripts/retention-acceptance/`。夹具为两个归档 owner 准备同源快照，每次基线和候选均须完成相同的 512 文件 raw orphan-sweep 工作量；基线允许整轮许可导致串行执行，候选必须观测到竞争任务与归档 owner 的执行区间重叠。前台负载通过真实 HTTP 读取上游账户并写入 Responses 请求，按响应 invocation ID 核对实际 `attempt_public_id`，不把重试 attempt 当成不同 invocation。oracle 对照实际归档文件、manifest、必要证明和剩余源行，拒绝重复、丢失、错误月份及仅发布文件但未完成源转换的假成果。纯 Python 合同回归已通过 24 项；生产 dispatcher 的竞争观测、当前候选 Actions 与正式审查尚未签收，不据此认定文件阶段互斥或持续收敛已经通过。
+- 独立持续负载验收入口为 `.github/workflows/ci-retention-acceptance.yml`，夹具、测量驱动和归档计数 oracle 位于 `scripts/retention-acceptance/`。两个归档 owner 使用同源快照，每次基线和候选均须完成相同的 512 文件 raw orphan-sweep 工作量；基线允许串行，候选必须观测到竞争任务重叠，且证据快照前确认竞争 owner 已停止。三对试验按基线／候选、候选／基线、基线／候选顺序串行执行，schema v3 拒绝基线与候选 SHA 相同。前台负载经过真实 HTTP，按响应 invocation ID 核对终态 attempt，并校验完整归档源字段、精确时间和 attempt→invocation 关系，拒绝只有 ID 守恒但内容错误的假证明。驱动镜像固定 registry digest，实际执行绑定 image ID；超时清理命名容器，所有工作和清理共享 900 秒期限并预留 45 秒清理预算。35 项纯 Python 回归通过，源码候选自动 CI 为 17 项成功、3 项 opt-in 跳过；实际负载测量未运行，正式审查及文档头验证仍待刷新，不据此认定文件阶段互斥或持续收敛已经通过。
+
+- 普通 `IMPLEMENTATION.md` 同步以真实 checkout、GitHub SHA 与二进制绑定，不再误判为历史四文件证据载体；修改绑定证明记录的真正载体仍须完整四文件及直接实现父提交。该工具修复不复用旧迁移证据。隔离 GitHub-hosted runner 运行同仓候选代码属于既定验收边界，保持显式标签、只读权限和不持久化 checkout 凭据，不新增生产或共享 runner 权限。
 
 - Pending contract corrections: a fully committed selected work unit is still classified as partial when `hasMore` is true, and the detail view mixes scheduler waiting with execution-only rate metrics. The approved behavior marks a selected work unit complete only after all selected work and required stages finish, while retaining independent backlog and catch-up facts. Browser-local trigger times, execution identity, consistent execution timing, and removal of the formula hint remain to be implemented and verified. The file-permit boundary is accepted in ADR 0048; application changes and scheduling validation remain outstanding.
 

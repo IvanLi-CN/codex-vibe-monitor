@@ -20,11 +20,11 @@ ADR 0048 已接受按实际文件操作阶段互斥。整项任务占用重文�
 
 该短时受控门槛不替代既有 50 倍容量、百万级固定存量 24 小时清空或真实生产持续收敛目标，这些目标继续保持未签收。生产复核在主人合并并更新服务后只读开展，保留调度影响并独立报告。
 
-验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，测量 job 校验后在同一主机串行运行；原始报告与失败诊断作为独立 Actions artifact 保存。`scripts/retention-acceptance/fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`foreground.py` 在共享应用隔离网络命名空间的 sidecar 中执行真实 HTTP 请求，`oracle.py` 读取实际文件及源行核对不同记录的转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。证据 schema v2 保存 driver 的不可变镜像 ID。
+验收实现入口为 `.github/workflows/ci-retention-acceptance.yml`，以同仓 PR 的 `run:retention-acceptance` 标签显式启动，默认只读权限及独立 GitHub-hosted runner，checkout 不持久化凭据。构建 job 分别导出基线与候选生产镜像及 SHA/镜像摘要，镜像和报告保留 14 天；测量 job 校验后在同一主机串行运行。`fixture.py` 生成固定输入，`measure.py` 驱动生产调度与完整窗口，`foreground.py` 在共享应用隔离网络命名空间的 sidecar 中执行真实 HTTP，`oracle.py` 核对实际归档及源转换，`contract.py` 对身份、计数、窗口、资源及延迟实施拒绝式判定。schema v3 拒绝基线与候选 SHA 相同，保存固定 registry digest、实际 driver image ID 和试验顺序；三对试验顺序为基线／候选、候选／基线、基线／候选，各版本仍为三次 120 秒，输入和资源门槛不变。
 
-前台读延迟采自 `GET /api/pool/upstream-accounts`，写延迟采自 `POST /v1/responses`，不使用直接 SQLite 写入替代实际服务写入路径。每个 120 秒窗口发送 81 次 Responses 请求，合成上游分散返回 16 次可重试 503；测量驱动以真实响应的 invocation ID 对照 97 条持久 upstream attempt 的 `attempt_public_id`，归档 oracle 按各数据集的真实身份计数。每次基线与候选须完成同样的 512 文件竞争工作；基线可串行，只有候选要求执行区间重叠，避免把旧基线尚未具备的新互斥能力当成对照试验前置条件。
+前台读延迟采自 `GET /api/pool/upstream-accounts`，写延迟采自 `POST /v1/responses`，不使用直接 SQLite 写入替代实际服务写入路径。每个 120 秒窗口发送 81 次 Responses 请求，合成上游分散返回 16 次可重试 503；测量驱动以响应 invocation ID 对照 97 条终态 attempt 的 `attempt_public_id`。归档 oracle 对照保留的源真值核验所有归档字段、精确时间、行指纹和 attempt→invocation 关联，不只比较 ID 与月份。每次基线与候选须完成同样的 512 文件竞争工作，且证据快照前确认 raw owner 空闲；基线可串行，只有候选要求执行区间重叠。命名 driver 在成功或超时路径均显式清理；工作和清理使用同一 900 秒阶段期限，预留 45 秒清理预算，超限或缺少清理证据拒绝通过。
 
-`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 24 项合同/oracle 回归通过；该结果只证明已覆盖反例的工具判定，不证明候选吞吐、前台优先级或生产持续收敛。基线与候选的生产调度运行、完整证据链、900 秒上限、前台负载代表性及最终 10 倍门槛仍须当前候选的 Actions 和正式审查验证；本地不运行性能实验。
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/retention-acceptance -p 'test_*.py' -q` 的 35 项合同/oracle/测量控制回归通过，源码候选自动 CI 为 17 项成功、3 项专用验收跳过。专用镜像构建和实际负载测量尚未运行；通过的工具测试不证明候选吞吐、前台延迟、公平性或生产持续收敛。最终文档头 CI 与正式审查仍需刷新，10 倍门槛留待效率任务和父 PR 在 Actions 取得完整证据；本地不运行性能实验。普通进度文档使用真实 checkout 身份，只有变更绑定证明记录才进入严格四文件载体校验，不把旧载体或旧审查当作当前验证。
 
 ### Historical implementation context
 
