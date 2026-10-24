@@ -144,7 +144,7 @@ def require_playwright_ci_config(workflow_path: Path, workflow_name: str) -> Non
 def require_observability_performance_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
     performance_job = job_config(workflow, "observability-performance", workflow_path)
     image_job = job_config(workflow, "observability-performance-image", workflow_path)
-    opt_in_if = "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
+    opt_in_if = "(github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
     require(performance_job.get("name") == "Observability Acceptance (serial bundle)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 60 and image_job.get("timeout-minutes") == 15,
             "the image job must finish within 15 minutes and the serial bundle within 60 minutes")
@@ -336,7 +336,7 @@ def validate_observability_performance(path: Path) -> None:
     require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
     require_exact_named_jobs(
         workflow,
-        {"Observability Performance Image", "Observability Acceptance (serial bundle)", "Observability Performance Budget", "Observability CPU Diagnosis"},
+        {"Observability Performance Image", "Observability Acceptance (serial bundle)", "Observability Performance Budget", "Observability CPU Diagnosis", "Frontend Test A/B dispatcher"},
         workflow_path,
     )
     on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
@@ -346,6 +346,14 @@ def validate_observability_performance(path: Path) -> None:
     candidate_input = require_mapping(dispatch_inputs.get("candidate_sha"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_sha")
     require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
             f"{workflow_path} manual acceptance must require a string candidate_sha")
+    web_input = require_mapping(dispatch_inputs.get("web_test_baseline_sha"), "frontend A/B baseline input")
+    require(web_input.get("required") is False and web_input.get("type") == "string" and web_input.get("default") == "",
+            "frontend A/B dispatcher must remain an optional manual input")
+    web = job_config(workflow, "frontend-test-ab", workflow_path)
+    require(web.get("if") == "github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha != ''"
+            and web.get("uses") == "./.github/workflows/web-test-ab.yml"
+            and web.get("with") == {"baseline_sha": "${{ inputs.web_test_baseline_sha }}", "candidate_sha": "${{ inputs.candidate_sha }}"},
+            "frontend A/B must exclusively dispatch the exact manual SHA pair")
     assert_event_types(event_config(workflow, "pull_request_target", workflow_path), {"labeled"}, f"{workflow_path}.on.pull_request_target")
     permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
     require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")

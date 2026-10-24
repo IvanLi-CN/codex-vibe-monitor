@@ -10,19 +10,32 @@ on:
         description: Full 40-character commit SHA to measure after the candidate is trusted
         required: true
         type: string
+      web_test_baseline_sha:
+        description: Optional old frontend SHA; routes this manual invocation exclusively to frontend A/B
+        required: false
+        default: ''
+        type: string
 
 concurrency:
-  group: observability-performance-${{ github.event.pull_request.number || inputs.candidate_sha || github.run_id }}
+  group: ${{ inputs.web_test_baseline_sha && 'frontend-test-ab-dispatch' || 'observability-performance' }}-${{ github.event.pull_request.number || inputs.candidate_sha || github.run_id }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  frontend-test-ab:
+    name: Frontend Test A/B dispatcher
+    if: github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha != ''
+    uses: ./.github/workflows/web-test-ab.yml
+    with:
+      baseline_sha: ${{ inputs.web_test_baseline_sha }}
+      candidate_sha: ${{ inputs.candidate_sha }}
+
   observability-performance-image:
     name: Observability Performance Image
     # Build once; test jobs consume this immutable image without compiling.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
+    if: (github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -118,7 +131,7 @@ jobs:
     name: Observability Acceptance (serial bundle)
     needs: observability-performance-image
     # Add the run:observability-performance label to launch the one-shot hosted measurement.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
+    if: (github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
     # One fresh VM owns runtime and all three paired experiments for exact
     # hardware identity; no compiler or parallel suite shares it.
     runs-on: ubuntu-24.04

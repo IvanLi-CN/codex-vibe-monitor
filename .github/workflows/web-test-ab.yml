@@ -1,0 +1,191 @@
+name: Frontend Test A/B
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: Full immutable SHA of the old frontend test implementation (A)
+        required: true
+        type: string
+      candidate_sha:
+        description: Full immutable SHA of the complete PR implementation (B)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      baseline_sha:
+        required: true
+        type: string
+      candidate_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-test-ab-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare frontend A/B dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Validate immutable inputs
+        env:
+          BASELINE: ${{ inputs.baseline_sha }}
+          CANDIDATE: ${{ inputs.candidate_sha }}
+        run: |
+          [[ "$BASELINE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          test "$BASELINE" != "$CANDIDATE"
+
+      - name: Checkout measurement harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Checkout A
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          path: A
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout B
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: B
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up fixed Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Freeze full source workloads
+        env:
+          BASELINE: ${{ inputs.baseline_sha }}
+          CANDIDATE: ${{ inputs.candidate_sha }}
+        run: |
+          python3 harness/scripts/benchmark-web-tests.py prepare \
+            --baseline-src "$PWD/A" --candidate-src "$PWD/B" \
+            --baseline-sha "$BASELINE" --candidate-sha "$CANDIDATE" \
+            --output "$RUNNER_TEMP/web-test-ab"
+
+      - name: Install identical dependency surface without building or testing
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/web-test-ab/browsers
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          for source in A B; do
+            bun install --cwd "$source" --frozen-lockfile
+            bun install --cwd "$source/web" --frozen-lockfile
+            bun install --cwd "$source/docs-site" --frozen-lockfile
+          done
+          cd B/web
+          bunx --no-install playwright install chromium
+          cd ../..
+          tar -cf "$RUNNER_TEMP/web-test-ab-deps.tar" \
+            A/node_modules A/web/node_modules A/docs-site/node_modules \
+            B/node_modules B/web/node_modules B/docs-site/node_modules
+          printf '{"install_seconds":%s}\n' "$(( $(date +%s) - started ))" > "$RUNNER_TEMP/web-test-ab/preparation.json"
+
+      - name: Upload run-bound dependencies
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-deps-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/web-test-ab-deps.tar
+            ${{ runner.temp }}/web-test-ab
+          retention-days: 1
+          if-no-files-found: error
+
+  measure:
+    name: Whole PR A/B (600 seconds per group)
+    needs: prepare
+    runs-on: ubuntu-24.04
+    # Two separate 600-second process-tree deadlines; the rest is checkout/artifact handling.
+    # This new orchestration watchdog does not change any existing CI timeout.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout measurement harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Checkout A
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          path: A
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout B
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: B
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up fixed Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Download run-bound dependencies
+        uses: actions/download-artifact@v7
+        with:
+          name: web-test-ab-deps-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab-inputs
+
+      - name: Restore isolated dependency directories
+        run: |
+          set -euo pipefail
+          tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-deps.tar" -C "$PWD"
+          mv "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab" "$RUNNER_TEMP/web-test-ab"
+
+      - name: Run full A and B with independent hard deadlines
+        env:
+          BASELINE: ${{ inputs.baseline_sha }}
+          CANDIDATE: ${{ inputs.candidate_sha }}
+        run: |
+          python3 harness/scripts/benchmark-web-tests.py run \
+            --baseline-src "$PWD/A" --candidate-src "$PWD/B" \
+            --baseline-sha "$BASELINE" --candidate-sha "$CANDIDATE" \
+            --output "$RUNNER_TEMP/web-test-ab"
+
+      - name: Upload complete A/B evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/web-test-ab/manifest.json
+            ${{ runner.temp }}/web-test-ab/preparation.json
+            ${{ runner.temp }}/web-test-ab/summary.json
+            ${{ runner.temp }}/web-test-ab/summary.md
+            ${{ runner.temp }}/web-test-ab/A/result.json
+            ${{ runner.temp }}/web-test-ab/A/raw.jsonl
+            ${{ runner.temp }}/web-test-ab/A/*.log
+            ${{ runner.temp }}/web-test-ab/A/reports
+            ${{ runner.temp }}/web-test-ab/A/diagnostics
+            ${{ runner.temp }}/web-test-ab/B/result.json
+            ${{ runner.temp }}/web-test-ab/B/raw.jsonl
+            ${{ runner.temp }}/web-test-ab/B/*.log
+            ${{ runner.temp }}/web-test-ab/B/reports
+            ${{ runner.temp }}/web-test-ab/B/diagnostics
+          retention-days: 1
+          if-no-files-found: error

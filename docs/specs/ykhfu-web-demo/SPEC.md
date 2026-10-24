@@ -105,7 +105,7 @@
 ### Quality checks
 
 - `bun run lint`, `bun run test`, `bun run test-storybook`, demo build, Storybook build and Pages assembly smoke.
-- Test-runtime changes must be measured with `scripts/benchmark-web-tests.py` on the fixed Bun/Chromium environment. Each report keeps JSONL samples, median/MAD summaries, failed samples, source SHAs, and cache policy; only successful zero-retry paired samples can satisfy an acceptance comparison.
+- Performance A/B validation runs only in GitHub Actions through the manual whole-PR `web-test-ab.yml` entry; local and Agent VM A/B execution is forbidden. Each group has one total 600-second deadline, with no sharding, continuation or timeout changes. Timeout scores 0; an old workload timeout and complete successful new workload within 600 seconds immediately passes the performance gate. When both complete, require at least 10% and 5 seconds saved. Keep raw JSONL, commands, reports, SHAs, environment and cache policy, export results and clean the run/artifacts afterward. Follow `docs/solutions/performance/frontend-test-runtime-feedback-loop.md` for the full workload, pre-merge manual entry and cleanup contract; performance acceptance alone does not certify semantic coverage equivalence.
 
 ## Visual Evidence
 
