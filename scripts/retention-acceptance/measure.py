@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -21,12 +20,17 @@ from typing import Any
 
 from contract import (
     BASELINE_SHA,
+    CLEANUP_RESERVE_SECONDS,
     COMPETITOR_FILE_COUNT,
+    COMPETITOR_TASK,
     DATASETS,
+    DRIVER_IMAGE_DIGEST,
+    DRIVER_IMAGE_REF,
     MAX_TEST_PHASE_SECONDS,
     RUN_SECONDS,
     SCHEMA_VERSION,
     SEED,
+    TRIAL_EXECUTION_ORDER,
     AcceptanceError,
     parse_time,
     sha256_bytes,
@@ -44,14 +48,27 @@ METRICS_NAME = "cvm_retention_phase_duration_seconds_bucket"
 WRITE_HOLD_OPERATIONS = ("invocation_archive", "timestamped_archive")
 WRITE_HOLD_PHASE = "write_hold"
 RUN_ID = uuid.uuid4().hex[:12]
-WORKER_IMAGE = "python:3.12-alpine"
+WORKER_IMAGE = DRIVER_IMAGE_REF
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def run_command(command: list[str], timeout: float, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: list[str],
+    timeout: float,
+    check: bool = True,
+    *,
+    phase_started: float | None = None,
+    cleanup: bool = False,
+    cleanup_reserve_seconds: float = 0,
+) -> subprocess.CompletedProcess[str]:
+    if phase_started is not None:
+        available = cleanup_budget(phase_started, cleanup_reserve_seconds) if cleanup else remaining_budget(phase_started)
+        timeout = min(timeout, available)
+    if timeout <= 0:
+        raise TimeoutError(f"no time remains to run {command[0]}")
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     if check and result.returncode != 0:
         message = result.stderr.strip()[-3000:] or result.stdout.strip()[-3000:]
@@ -67,15 +84,22 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def remaining_budget(started: float) -> float:
-    left = MAX_TEST_PHASE_SECONDS - (time.monotonic() - started)
+    left = MAX_TEST_PHASE_SECONDS - (time.monotonic() - started) - CLEANUP_RESERVE_SECONDS
     if left <= 0:
-        raise TimeoutError("retention acceptance exceeded its 900-second test-phase budget")
+        raise TimeoutError("retention acceptance reached its work cutoff before the 900-second cleanup deadline")
     return left
 
 
-def docker_image_identity(tag: str, expected_sha: str) -> dict[str, str]:
-    image_id = run_command(["docker", "image", "inspect", "--format", "{{.Id}}", tag], 20).stdout.strip()
-    labels = json.loads(run_command(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", tag], 20).stdout)
+def cleanup_budget(started: float, reserve_seconds: float = 0) -> float:
+    left = MAX_TEST_PHASE_SECONDS - (time.monotonic() - started) - reserve_seconds
+    if left <= 0:
+        raise TimeoutError("retention acceptance exceeded its 900-second test-phase cleanup budget")
+    return left
+
+
+def docker_image_identity(tag: str, expected_sha: str, phase_started: float) -> dict[str, str]:
+    image_id = run_command(["docker", "image", "inspect", "--format", "{{.Id}}", tag], 20, phase_started=phase_started).stdout.strip()
+    labels = json.loads(run_command(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", tag], 20, phase_started=phase_started).stdout)
     if labels.get("org.opencontainers.image.revision") != expected_sha:
         raise AcceptanceError(f"loaded image {tag} does not identify source {expected_sha}")
     if not image_id.startswith("sha256:"):
@@ -83,7 +107,7 @@ def docker_image_identity(tag: str, expected_sha: str) -> dict[str, str]:
     return {"source_sha": expected_sha, "image_id": image_id}
 
 
-def host_identity() -> dict[str, Any]:
+def host_identity(phase_started: float) -> dict[str, Any]:
     cpu_model = "unknown"
     try:
         for line in Path("/proc/cpuinfo").read_text().splitlines():
@@ -108,7 +132,7 @@ def host_identity() -> dict[str, Any]:
         "cpu_count": os.cpu_count(),
         "memory_kib": memory_kib,
         "python": platform.python_version(),
-        "docker_server": run_command(["docker", "version", "--format", "{{.Server.Version}}"], 20).stdout.strip(),
+        "docker_server": run_command(["docker", "version", "--format", "{{.Server.Version}}"], 20, phase_started=phase_started).stdout.strip(),
     }
 
 
@@ -127,7 +151,7 @@ def app_environment() -> dict[str, str]:
     }
 
 
-def start_container(tag: str, data_dir: Path, name: str) -> str:
+def start_container(tag: str, data_dir: Path, name: str, phase_started: float) -> str:
     data_dir.mkdir(parents=True, exist_ok=True)
     command = [
         "docker", "run", "--detach", "--name", name,
@@ -140,35 +164,111 @@ def start_container(tag: str, data_dir: Path, name: str) -> str:
     for key, value in app_environment().items():
         command.extend(["--env", f"{key}={value}"])
     command.append(tag)
-    return run_command(command, 60).stdout.strip()
+    return run_command(command, 60, phase_started=phase_started).stdout.strip()
 
 
 def wait_healthy(container: str, started: float) -> None:
     deadline = time.monotonic() + min(60, remaining_budget(started))
     while time.monotonic() < deadline:
-        check = run_command(["docker", "exec", container, "curl", "-fsS", "-m", "1", "http://127.0.0.1:8080/health"], 5, check=False)
+        check = run_command(
+            ["docker", "exec", container, "curl", "-fsS", "-m", "1", "http://127.0.0.1:8080/health"],
+            5,
+            check=False,
+            phase_started=started,
+        )
         if check.returncode == 0 and "ok" in check.stdout.lower():
             return
         time.sleep(0.3)
     raise TimeoutError(f"production image {container} failed its health check")
 
 
-def stop_container(container: str, log_path: Path | None = None) -> None:
-    logs = run_command(["docker", "logs", container], 15, check=False)
+def cleanup_named_container(container: str, phase_started: float, cleanup_reserve_seconds: float) -> dict[str, str]:
+    inspected = run_command(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container],
+        3,
+        check=False,
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
+    if inspected.returncode != 0 and re.search(r"No such (?:object|container)", inspected.stderr, re.IGNORECASE):
+        return {"container_name": container, "status": "already_absent"}
+    if inspected.returncode != 0:
+        raise RuntimeError(f"could not inspect named container {container}: {inspected.stderr.strip()[-1000:]}")
+    if inspected.stdout.strip() == "true":
+        run_command(
+            ["docker", "stop", "--time", "3", container],
+            5,
+            check=False,
+            phase_started=phase_started,
+            cleanup=True,
+            cleanup_reserve_seconds=cleanup_reserve_seconds,
+        )
+    run_command(
+        ["docker", "rm", "--force", container],
+        5,
+        check=False,
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
+    remaining = run_command(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container],
+        3,
+        check=False,
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
+    if remaining.returncode == 0:
+        raise AcceptanceError(f"named container {container} remained after cleanup")
+    if not re.search(r"No such (?:object|container)", remaining.stderr, re.IGNORECASE):
+        raise RuntimeError(f"could not confirm named container {container} cleanup: {remaining.stderr.strip()[-1000:]}")
+    return {"container_name": container, "status": "removed"}
+
+
+def stop_container(container: str, log_path: Path | None, phase_started: float, cleanup_reserve_seconds: float = 0) -> dict[str, str]:
+    logs = run_command(
+        ["docker", "logs", container],
+        5,
+        check=False,
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(logs.stdout + logs.stderr)
-    run_command(["docker", "stop", "--time", "5", container], 10, check=False)
-    run_command(["docker", "rm", "--force", container], 10, check=False)
+    return cleanup_named_container(container, phase_started, cleanup_reserve_seconds)
 
 
-def checkpoint_and_reset_history(main_db: Path, maintenance_db: Path) -> None:
-    main = sqlite3.connect(main_db, timeout=30)
+def bounded_rmtree(path: Path, phase_started: float, cleanup_reserve_seconds: float) -> None:
+    if not path.exists():
+        return
+    run_command(
+        [sys.executable, "-c", "import shutil,sys;shutil.rmtree(sys.argv[1])", str(path)],
+        cleanup_budget(phase_started, cleanup_reserve_seconds),
+        phase_started=phase_started,
+        cleanup=True,
+        cleanup_reserve_seconds=cleanup_reserve_seconds,
+    )
+
+
+def bounded_copy(source: Path, destination: Path, phase_started: float) -> None:
+    run_command(
+        [sys.executable, "-c", "import shutil,sys;shutil.copyfile(sys.argv[1],sys.argv[2])", str(source), str(destination)],
+        min(60, remaining_budget(phase_started)),
+        phase_started=phase_started,
+    )
+
+
+def checkpoint_and_reset_history(main_db: Path, maintenance_db: Path, phase_started: float) -> None:
+    main = sqlite3.connect(main_db, timeout=min(30, remaining_budget(phase_started)))
     try:
         main.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         main.close()
-    maintenance = sqlite3.connect(maintenance_db, timeout=30)
+    maintenance = sqlite3.connect(maintenance_db, timeout=min(30, remaining_budget(phase_started)))
     try:
         maintenance.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         names = {row[0] for row in maintenance.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -187,16 +287,16 @@ def prepare_template(tag: str, version: str, root: Path, cutoff: str, started: f
     directory.mkdir(parents=True)
     container = f"retention-{RUN_ID}-init-{version}"
     try:
-        start_container(tag, directory, container)
+        start_container(tag, directory, container, started)
         wait_healthy(container, started)
     finally:
-        stop_container(container, root / "logs" / f"init-{version}.log")
+        stop_container(container, root / "logs" / f"init-{version}.log", started, cleanup_reserve_seconds=25)
     main_db = directory / "codex_vibe_monitor.db"
     maintenance_db = directory / "codex_vibe_monitor.maintenance.sqlite"
     if not main_db.is_file() or not maintenance_db.is_file():
         raise AcceptanceError(f"{version} production startup did not create both SQLite databases")
-    fingerprint = populate_template(main_db, cutoff)
-    checkpoint_and_reset_history(main_db, maintenance_db)
+    fingerprint = populate_template(main_db, cutoff, budget_check=lambda: remaining_budget(started))
+    checkpoint_and_reset_history(main_db, maintenance_db, started)
     return directory, fingerprint
 
 
@@ -223,8 +323,12 @@ def parse_metrics(text: str) -> dict[str, dict[str, int]]:
     return result
 
 
-def scrape_metrics(container: str) -> tuple[dict[str, dict[str, int]], str, str]:
-    result = run_command(["docker", "exec", container, "curl", "-fsS", "-m", "5", "http://127.0.0.1:9091/metrics"], 10)
+def scrape_metrics(container: str, phase_started: float) -> tuple[dict[str, dict[str, int]], str, str]:
+    result = run_command(
+        ["docker", "exec", container, "curl", "-fsS", "-m", "5", "http://127.0.0.1:9091/metrics"],
+        10,
+        phase_started=phase_started,
+    )
     return parse_metrics(result.stdout), result.stdout, utc_now()
 
 
@@ -243,38 +347,59 @@ def histogram_delta(before: dict[str, dict[str, int]], after: dict[str, dict[str
     return combined
 
 
-def worker_image_identity(started: float) -> str:
-    run_command(["docker", "pull", WORKER_IMAGE], min(120, remaining_budget(started)))
-    image_id = run_command(["docker", "image", "inspect", "--format", "{{.Id}}", WORKER_IMAGE], 20).stdout.strip()
+def worker_image_identity(started: float) -> dict[str, str]:
+    run_command(["docker", "pull", WORKER_IMAGE], min(120, remaining_budget(started)), phase_started=started)
+    image_id = run_command(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", WORKER_IMAGE],
+        20,
+        phase_started=started,
+    ).stdout.strip()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         raise AcceptanceError("foreground HTTP driver image has no immutable image ID")
-    return image_id
+    return {"image_ref": WORKER_IMAGE, "digest": DRIVER_IMAGE_DIGEST, "image_id": image_id}
 
 
-def run_foreground(container: str, driver_image_id: str, started: float) -> dict[str, Any]:
+def run_foreground(
+    container: str,
+    driver_image_id: str,
+    started: float,
+    cleanup_evidence: dict[str, Any],
+) -> dict[str, Any]:
     invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
     attempt_count = math.ceil(DATASETS["pool_upstream_attempts"]["arrival_rate"] * RUN_SECONDS)
     retries = attempt_count - invocation_count
     worker = Path(__file__).with_name("foreground.py").resolve()
     name = f"retention-{RUN_ID}-driver"
-    result = run_command(
-        [
-            "docker", "run", "--rm", "--name", name,
-            "--network", f"container:{container}",
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges",
-            "--read-only",
-            "--pull=never",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
-            "--mount", f"type=bind,source={worker},target=/foreground.py,readonly",
-            "--env", "PYTHONDONTWRITEBYTECODE=1",
-            driver_image_id,
-            "python3", "/foreground.py",
-            "--run-seconds", str(RUN_SECONDS),
-            "--retry-count", str(retries),
-        ],
-        timeout=min(RUN_SECONDS + 90, remaining_budget(started)),
-    )
+    try:
+        result = run_command(
+            [
+                "docker", "run", "--rm", "--name", name,
+                "--network", f"container:{container}",
+                "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--read-only",
+                "--pull=never",
+                "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+                "--mount", f"type=bind,source={worker},target=/foreground.py,readonly",
+                "--env", "PYTHONDONTWRITEBYTECODE=1",
+                driver_image_id,
+                "python3", "/foreground.py",
+                "--run-seconds", str(RUN_SECONDS),
+                "--retry-count", str(retries),
+            ],
+            timeout=min(RUN_SECONDS + 90, remaining_budget(started)),
+            phase_started=started,
+        )
+    finally:
+        try:
+            cleanup_evidence.update(cleanup_named_container(name, started, cleanup_reserve_seconds=30))
+        except BaseException as error:
+            cleanup_evidence.update({
+                "container_name": name,
+                "status": "failed",
+                "error": {"type": type(error).__name__, "message": str(error)},
+            })
+            raise
     try:
         evidence = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -284,47 +409,85 @@ def run_foreground(container: str, driver_image_id: str, started: float) -> dict
     return evidence
 
 
-def observed_attempt_ids(
+def observed_attempt_states(
     database: Path,
     invocations: list[dict[str, Any]],
     retry_count: int,
     started: float,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     invoke_ids = [row["invoke_id"] for row in invocations]
     retry_sequences = {
         math.floor(index * len(invocations) / retry_count)
         for index in range(retry_count)
     } if retry_count else set()
-    expected_counts = {
-        row["invoke_id"]: (2 if row["sequence"] in retry_sequences else 1)
+    expected_statuses = {
+        row["invoke_id"]: (["http_failure", "success"] if row["sequence"] in retry_sequences else ["success"])
         for row in invocations
     }
+    expected_counts = {invoke_id: len(statuses) for invoke_id, statuses in expected_statuses.items()}
     placeholders = ",".join("?" for _ in invoke_ids)
     deadline = time.monotonic() + min(30, remaining_budget(started))
-    latest_ids: list[str] = []
+    latest_states: list[dict[str, Any]] = []
     latest_counts: dict[str, int] = {}
     while time.monotonic() < deadline:
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=0.5)
         try:
             connection.execute("PRAGMA busy_timeout=500")
             rows = connection.execute(
-                f"SELECT attempt_public_id,invoke_id FROM pool_upstream_request_attempts WHERE invoke_id IN ({placeholders}) ORDER BY id",
+                f"SELECT attempt_public_id,invoke_id,attempt_index,status,finished_at FROM pool_upstream_request_attempts WHERE invoke_id IN ({placeholders}) ORDER BY id",
                 invoke_ids,
             ).fetchall()
         finally:
             connection.close()
-        latest_ids = [row[0] for row in rows if isinstance(row[0], str) and row[0]]
+        latest_states = [
+            {
+                "attempt_public_id": row[0],
+                "invoke_id": row[1],
+                "attempt_index": row[2],
+                "status": row[3],
+                "finished_at": row[4],
+            }
+            for row in rows
+        ]
         latest_counts = {}
         for _, invoke_id in rows:
             latest_counts[invoke_id] = latest_counts.get(invoke_id, 0) + 1
-        if len(latest_ids) == len(rows) and len(set(latest_ids)) == len(latest_ids) and latest_counts == expected_counts:
-            return latest_ids
+        ids = [row["attempt_public_id"] for row in latest_states]
+        terminal = all(
+            isinstance(row["attempt_public_id"], str)
+            and row["attempt_public_id"]
+            and isinstance(row["finished_at"], str)
+            and row["status"] in {"success", "http_failure"}
+            for row in latest_states
+        )
+        statuses_by_invoke: dict[str, list[dict[str, Any]]] = {}
+        for row in latest_states:
+            statuses_by_invoke.setdefault(row["invoke_id"], []).append(row)
+        states_match = all(
+            [row["status"] for row in sorted(
+                statuses_by_invoke.get(invoke_id, []),
+                key=lambda row: row["attempt_index"] if isinstance(row["attempt_index"], int) else 0,
+            )] == expected
+            and [row["attempt_index"] for row in sorted(
+                statuses_by_invoke.get(invoke_id, []),
+                key=lambda row: row["attempt_index"] if isinstance(row["attempt_index"], int) else 0,
+            )] == list(range(1, len(expected) + 1))
+            for invoke_id, expected in expected_statuses.items()
+        )
+        if (
+            len(ids) == len(rows)
+            and len(set(ids)) == len(ids)
+            and latest_counts == expected_counts
+            and terminal
+            and states_match
+        ):
+            return latest_states
         if len(rows) > sum(expected_counts.values()):
             raise AcceptanceError("production HTTP workload produced unexpected upstream attempt rows")
         time.sleep(0.25)
     raise AcceptanceError(
         "production HTTP attempt IDs did not settle to the expected per-invocation counts "
-        f"(rows={len(latest_ids)}, expected={sum(expected_counts.values())}, invocations={len(latest_counts)})"
+        f"(rows={len(latest_states)}, expected={sum(expected_counts.values())}, invocations={len(latest_counts)})"
     )
 
 
@@ -362,7 +525,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
 def task_owners_idle(maintenance_db: Path) -> bool:
     connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
     try:
-        keys = tuple(DATASETS[name]["task_key"] for name in DATASETS)
+        keys = tuple(DATASETS[name]["task_key"] for name in DATASETS) + (COMPETITOR_TASK,)
         placeholders = ",".join("?" for _ in keys)
         pending = connection.execute(
             f"SELECT COUNT(*) FROM managed_task_runs WHERE task_key IN ({placeholders}) AND status IN ('running','requested','queued')",
@@ -493,16 +656,26 @@ def run_trial(
     trial_dir = root / f"trial-{version}-{index}"
     trial_dir.mkdir()
     for name in ("codex_vibe_monitor.db", "codex_vibe_monitor.maintenance.sqlite"):
-        shutil.copyfile(template / name, trial_dir / name)
+        bounded_copy(template / name, trial_dir / name, phase_started)
     main_db = trial_dir / "codex_vibe_monitor.db"
     maintenance_db = trial_dir / "codex_vibe_monitor.maintenance.sqlite"
     raw_dir = trial_dir / "proxy_raw_payloads"
-    prepare_competitor(main_db, maintenance_db, raw_dir, RAW_CONTAINER)
+    remaining_budget(phase_started)
+    prepare_competitor(
+        main_db,
+        maintenance_db,
+        raw_dir,
+        RAW_CONTAINER,
+        budget_check=lambda: remaining_budget(phase_started),
+    )
     container = f"retention-{RUN_ID}-{version}-{index}"
     container_id = ""
     trial_error: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
     input_samples: dict[str, list[dict[str, Any]]] = {"read": [], "write": []}
     added: dict[str, list[str]] = {name: [] for name in DATASETS}
+    attempt_states: list[dict[str, Any]] = []
+    driver_cleanup: dict[str, Any] = {}
     foreground_evidence: dict[str, Any] = {}
     task_evidence: list[dict[str, Any]] = []
     write_scrapes: list[dict[str, Any]] = []
@@ -512,11 +685,11 @@ def run_trial(
     container_stopped = False
     wall_start = time.monotonic()
     try:
-        container_id = start_container(tag, trial_dir, container)
+        container_id = start_container(tag, trial_dir, container, phase_started)
         wait_healthy(container, phase_started)
-        pre_buckets, pre_text, pre_time = scrape_metrics(container)
+        pre_buckets, pre_text, pre_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": pre_time, "scope": "pre-input", "bucket_counts": pre_buckets})
-        foreground = run_foreground(container, driver_image_id, phase_started)
+        foreground = run_foreground(container, driver_image_id, phase_started, driver_cleanup)
         input_start = foreground.get("input_started_at")
         input_end = foreground.get("input_finished_at")
         input_samples = foreground.get("latency_samples_ms", input_samples)
@@ -541,12 +714,13 @@ def run_trial(
         if len(added["invocations"]) != expected_counts["invocations"]:
             raise AcceptanceError("production proxy request count did not match the configured invocation rate")
         retry_count = expected_counts["pool_upstream_attempts"] - expected_counts["invocations"]
-        added["pool_upstream_attempts"] = observed_attempt_ids(
+        attempt_states = observed_attempt_states(
             main_db,
             invocation_records,
             retry_count,
             phase_started,
         )
+        added["pool_upstream_attempts"] = [row["attempt_public_id"] for row in attempt_states]
         if len(added["pool_upstream_attempts"]) != expected_counts["pool_upstream_attempts"]:
             raise AcceptanceError("production upstream attempt count did not match the configured rate")
         task_evidence = wait_for_task_evidence(
@@ -556,15 +730,29 @@ def run_trial(
             {name: len(added[name]) for name in DATASETS},
             phase_started,
         )
-        post_buckets, post_text, post_time = scrape_metrics(container)
+        post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
         write_buckets = histogram_delta(pre_buckets, post_buckets)
         (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
         (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
         (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
-        stop_container(container, evidence_dir / "logs" / f"{version}-{index}.log")
+        stop_container(
+            container,
+            evidence_dir / "logs" / f"{version}-{index}.log",
+            phase_started,
+            cleanup_reserve_seconds=15,
+        )
         container_stopped = True
-        oracle = verify_trial(main_db, trial_dir / "archives", added, root / f"oracle-{version}-{index}")
+        oracle = verify_trial(
+            main_db,
+            trial_dir / "archives",
+            added,
+            attempt_states,
+            template / "codex_vibe_monitor.db",
+            cutoff,
+            root / f"oracle-{version}-{index}",
+            budget_check=lambda: remaining_budget(phase_started),
+        )
     except BaseException as error:
         trial_error = error
         write_json(evidence_dir / "partial-trial.json", {
@@ -573,6 +761,8 @@ def run_trial(
             "error": {"type": type(error).__name__, "message": str(error)},
             "input_counts": {name: len(added[name]) for name in DATASETS},
             "added_ids": added,
+            "attempt_states": attempt_states,
+            "foreground_driver_cleanup": driver_cleanup,
             "latency_samples_ms": input_samples,
             "foreground_workload": foreground_evidence,
             "task_runs": task_evidence,
@@ -580,13 +770,29 @@ def run_trial(
             "write_hold_buckets": write_buckets,
         })
     finally:
-        if container_id and not container_stopped:
-            stop_container(container, evidence_dir / "logs" / f"{version}-{index}.log")
+        if not container_stopped:
+            try:
+                stop_container(
+                    container,
+                    evidence_dir / "logs" / f"{version}-{index}.log",
+                    phase_started,
+                    cleanup_reserve_seconds=12,
+                )
+            except BaseException as error:
+                cleanup_errors.append(error)
         if input_end is None:
             input_end = utc_now()
         if trial_dir.exists():
-            shutil.rmtree(trial_dir)
+            try:
+                bounded_rmtree(trial_dir, phase_started, cleanup_reserve_seconds=5)
+            except BaseException as error:
+                cleanup_errors.append(error)
         cleanup_end = utc_now()
+    if cleanup_errors:
+        if trial_error is None:
+            trial_error = cleanup_errors[0]
+        elif hasattr(trial_error, "add_note"):
+            trial_error.add_note("trial cleanup failed: " + "; ".join(str(error) for error in cleanup_errors))
 
     if trial_error is not None:
         raise trial_error
@@ -605,6 +811,8 @@ def run_trial(
         "input_fingerprint": fingerprint,
         "cutoff": cutoff,
         "container_id": container_id,
+        "attempt_states": attempt_states,
+        "foreground_driver_cleanup": driver_cleanup,
         "window": {
             "setup_started_at": trial_start,
             "input_started_at": input_start,
@@ -637,6 +845,7 @@ def main() -> int:
         "schema_version": SCHEMA_VERSION,
         "test_phase": {"started_at": phase_start_iso},
         "comparison_window": {"started_at": phase_start_iso},
+        "trial_execution_order": [],
         "contract": {},
         "versions": {},
     }
@@ -646,18 +855,22 @@ def main() -> int:
         candidate_sha = os.environ.get("CANDIDATE_SHA", "")
         if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
             raise AcceptanceError("CANDIDATE_SHA must be the exact 40-character lowercase commit SHA")
+        if candidate_sha == BASELINE_SHA:
+            raise AcceptanceError("candidate SHA must differ from the baseline SHA")
         cutoff = shanghai_cutoff()
         tags = {"baseline": f"retention-acceptance:{BASELINE_SHA}", "candidate": f"retention-acceptance:{candidate_sha}"}
         images = {
-            "baseline": docker_image_identity(tags["baseline"], BASELINE_SHA),
-            "candidate": docker_image_identity(tags["candidate"], candidate_sha),
+            "baseline": docker_image_identity(tags["baseline"], BASELINE_SHA, phase_started),
+            "candidate": docker_image_identity(tags["candidate"], candidate_sha, phase_started),
         }
-        driver_image_id = worker_image_identity(phase_started)
-        host = host_identity()
+        driver_image = worker_image_identity(phase_started)
+        host = host_identity(phase_started)
         evidence["contract"] = {
             "baseline_sha": BASELINE_SHA,
             "candidate_sha": candidate_sha,
-            "driver_image_id": driver_image_id,
+            "driver_image_id": driver_image["image_id"],
+            "driver_image_ref": driver_image["image_ref"],
+            "driver_image_digest": driver_image["digest"],
             "seed": SEED,
             "retention_days": 1,
             "cutoff": cutoff,
@@ -675,43 +888,48 @@ def main() -> int:
             raise AcceptanceError("baseline and candidate fixture fingerprints differ")
         fingerprint = fingerprints["baseline"]
         evidence["contract"]["input_fingerprint"] = fingerprint
-        previous_end: str | None = None
         for version in ("baseline", "candidate"):
-            group_start = utc_now()
-            group: dict[str, Any] = {
+            evidence["versions"][version] = {
                 "image": images[version],
                 "host": host,
                 "resource_limits": {"cpus": CPU_LIMIT, "memory_bytes": MEMORY_BYTES},
-                "comparison_window": {"started_at": group_start},
+                "trial_span": {},
                 "trials": [],
             }
-            evidence["versions"][version] = group
-            for index in range(1, 4):
-                remaining_budget(phase_started)
-                trial, end_at = run_trial(
-                    version,
-                    index,
-                    tags[version],
-                    images[version],
-                    driver_image_id,
-                    templates[version],
-                    fingerprint,
-                    root,
-                    evidence_dir,
-                    cutoff,
-                    previous_end,
-                    phase_started,
-                )
-                previous_end = end_at
-                group["trials"].append(trial)
-                write_json(evidence_dir / "evidence.partial.json", evidence)
-            group_end = utc_now()
-            group["comparison_window"]["finished_at"] = group_end
-            group["comparison_window"]["elapsed_seconds"] = (parse_time(group_end) - parse_time(group_start)).total_seconds()
+        previous_end: str | None = None
+        for step in TRIAL_EXECUTION_ORDER:
+            version = step["version"]
+            index = step["trial_index"]
+            group = evidence["versions"][version]
+            if not group["trial_span"]:
+                group["trial_span"]["started_at"] = utc_now()
+            remaining_budget(phase_started)
+            trial, end_at = run_trial(
+                version,
+                index,
+                tags[version],
+                images[version],
+                driver_image["image_id"],
+                templates[version],
+                fingerprint,
+                root,
+                evidence_dir,
+                cutoff,
+                previous_end,
+                phase_started,
+            )
+            previous_end = end_at
+            group["trials"].append(trial)
+            group["trial_span"]["finished_at"] = end_at
+            group["trial_span"]["elapsed_seconds"] = (
+                parse_time(end_at) - parse_time(group["trial_span"]["started_at"])
+            ).total_seconds()
+            evidence["trial_execution_order"].append(step)
+            write_json(evidence_dir / "evidence.partial.json", evidence)
         if shanghai_cutoff() != cutoff:
             raise AcceptanceError("Shanghai retention cutoff changed before test-phase cleanup completed")
         if root is not None:
-            shutil.rmtree(root)
+            bounded_rmtree(root, phase_started, cleanup_reserve_seconds=3)
             root = None
     except BaseException as error:
         failure = error
@@ -720,8 +938,8 @@ def main() -> int:
     finally:
         if root is not None and root.exists():
             try:
-                shutil.rmtree(root)
-            except OSError as error:
+                bounded_rmtree(root, phase_started, cleanup_reserve_seconds=1)
+            except BaseException as error:
                 if failure is None:
                     failure = error
                     evidence["failure"] = {"message": str(error), "type": type(error).__name__}

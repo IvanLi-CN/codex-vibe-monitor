@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from contract import COMPETITOR_FILE_COUNT, DATASETS, RETENTION_DAYS, SEED, canonical_json
 
@@ -118,16 +118,19 @@ def _filter_record(connection: sqlite3.Connection, table: str, record: dict[str,
     return selected
 
 
-def populate_template(database: Path, cutoff: str) -> str:
+def populate_template(database: Path, cutoff: str, budget_check: Callable[[], float] | None = None) -> str:
     hasher = hashlib.sha256()
-    connection = sqlite3.connect(database, timeout=30)
-    connection.execute("PRAGMA busy_timeout=30000")
+    timeout = min(30.0, budget_check()) if budget_check is not None else 30.0
+    connection = sqlite3.connect(database, timeout=timeout)
+    connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
     try:
         connection.execute("BEGIN IMMEDIATE")
         for name, table in (("invocations", "codex_invocations"), ("pool_upstream_attempts", "pool_upstream_request_attempts")):
             count = DATASETS[name]["seed_rows"]
             columns = _existing_columns(connection, table)
             for start in range(1, count + 1, 500):
+                if budget_check is not None:
+                    budget_check()
                 rows = []
                 for index in range(start, min(count + 1, start + 500)):
                     identity = f"retention-seed-{name}-{index:06d}"
@@ -146,14 +149,24 @@ def populate_template(database: Path, cutoff: str) -> str:
     return hasher.hexdigest()
 
 
-def prepare_competitor(main_database: Path, maintenance_database: Path, raw_directory: Path, container_raw_directory: str, count: int = COMPETITOR_FILE_COUNT) -> None:
+def prepare_competitor(
+    main_database: Path,
+    maintenance_database: Path,
+    raw_directory: Path,
+    container_raw_directory: str,
+    count: int = COMPETITOR_FILE_COUNT,
+    budget_check: Callable[[], float] | None = None,
+) -> None:
     raw_directory.mkdir(parents=True, exist_ok=True)
-    main = sqlite3.connect(main_database, timeout=30)
-    maintenance = sqlite3.connect(maintenance_database, timeout=30)
+    timeout = min(30.0, budget_check()) if budget_check is not None else 30.0
+    main = sqlite3.connect(main_database, timeout=timeout)
+    maintenance = sqlite3.connect(maintenance_database, timeout=timeout)
     try:
         if "retention_raw_reconciliation" not in {row[0] for row in main.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
             raise RuntimeError("production raw-orphan reconciliation table is missing")
         for index in range(count):
+            if budget_check is not None and index % 32 == 0:
+                budget_check()
             name = f"retention-orphan-{index:04d}.bin"
             path = raw_directory / name
             path.write_bytes(hashlib.sha256(name.encode()).digest() * 8)

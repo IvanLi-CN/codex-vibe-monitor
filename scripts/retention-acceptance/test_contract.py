@@ -5,7 +5,18 @@ import hashlib
 import math
 import unittest
 
-from contract import BASELINE_SHA, COMPETITOR_FILE_COUNT, DATASETS, AcceptanceError, validate_evidence
+from contract import (
+    BASELINE_SHA,
+    COMPETITOR_FILE_COUNT,
+    DATASETS,
+    DRIVER_IMAGE_DIGEST,
+    DRIVER_IMAGE_REF,
+    SCHEMA_VERSION,
+    TRIAL_EXECUTION_ORDER,
+    AcceptanceError,
+    sha256_json,
+    validate_evidence,
+)
 
 
 def timestamp(value: datetime) -> str:
@@ -39,6 +50,9 @@ def oracle_result(name: str, additions: int) -> dict:
         "lost_rows": 0,
         "duplicate_rows": 0,
         "added_ids_sha256": hashlib.sha256("\n".join(identities).encode()).hexdigest(),
+        "row_content_columns": 8,
+        "row_content_rows_checked": definition["seed_rows"] + additions,
+        "row_content_sha256": "c" * 64,
     }
 
 
@@ -98,6 +112,29 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
     reads = sample_rows(input_start, input_end, 24, 10.0, "/api/pool/upstream-accounts")
     writes = sample_rows(input_start, input_end, input_counts["invocations"], 5.0, "/v1/responses")
     retry_count = input_counts["pool_upstream_attempts"] - input_counts["invocations"]
+    retry_sequences = {
+        math.floor(retry * input_counts["invocations"] / retry_count)
+        for retry in range(retry_count)
+    } if retry_count else set()
+    attempt_states = []
+    attempt_cursor = 0
+    for sequence, invoke_id in enumerate(identities["invocations"]):
+        statuses = ["http_failure", "success"] if sequence in retry_sequences else ["success"]
+        for attempt_index, status in enumerate(statuses, start=1):
+            attempt_states.append({
+                "attempt_public_id": identities["pool_upstream_attempts"][attempt_cursor],
+                "invoke_id": invoke_id,
+                "attempt_index": attempt_index,
+                "status": status,
+                "finished_at": timestamp(input_start + timedelta(seconds=sequence + 1)),
+            })
+            attempt_cursor += 1
+    attempt_map_digest = sha256_json(sorted(
+        [row["attempt_public_id"], row["invoke_id"]]
+        for row in attempt_states
+    ))
+    oracle_datasets = {name: oracle_result(name, input_counts[name]) for name in DATASETS}
+    oracle_datasets["pool_upstream_attempts"]["attempt_invocation_map_sha256"] = attempt_map_digest
     return {
         "trial_index": index,
         "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
@@ -115,6 +152,11 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         },
         "input_counts": input_counts,
         "added_ids": identities,
+        "attempt_states": attempt_states,
+        "foreground_driver_cleanup": {
+            "container_name": "retention-123456abcdef-driver",
+            "status": "already_absent",
+        },
         "latency_samples_ms": {"read": reads, "write": writes},
         "foreground_workload": {
             "invocation_requests": input_counts["invocations"],
@@ -130,7 +172,7 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         "write_hold_buckets": write_buckets,
         "oracle": {
             "verified": True,
-            "datasets": {name: oracle_result(name, input_counts[name]) for name in DATASETS},
+            "datasets": oracle_datasets,
         },
     }, cleanup
 
@@ -139,7 +181,7 @@ def valid_evidence() -> dict:
     phase_start = datetime(2026, 10, 24, tzinfo=timezone.utc)
     phase_finish = phase_start + timedelta(seconds=800)
     evidence = {
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "status": "completed",
         "test_phase": {
             "started_at": timestamp(phase_start),
@@ -155,6 +197,8 @@ def valid_evidence() -> dict:
             "baseline_sha": BASELINE_SHA,
             "candidate_sha": "a" * 40,
             "driver_image_id": "sha256:" + "3" * 64,
+            "driver_image_ref": DRIVER_IMAGE_REF,
+            "driver_image_digest": DRIVER_IMAGE_DIGEST,
             "seed": 20261024,
             "retention_days": 1,
             "cutoff": "2026-10-23 00:00:00",
@@ -162,18 +206,12 @@ def valid_evidence() -> dict:
             "input_fingerprint": "b" * 64,
             "input_rates_rows_per_second": {name: definition["arrival_rate"] for name, definition in DATASETS.items()},
         },
+        "trial_execution_order": list(TRIAL_EXECUTION_ORDER),
         "versions": {},
     }
     previous_end = None
     cursor = phase_start
     for version in ("baseline", "candidate"):
-        trials = []
-        group_start = cursor
-        for index in range(1, 4):
-            if previous_end is not None:
-                cursor = previous_end + timedelta(seconds=5)
-            trial, previous_end = trial_evidence(version, index, cursor, previous_end)
-            trials.append(trial)
         evidence["versions"][version] = {
             "image": {
                 "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
@@ -181,13 +219,23 @@ def valid_evidence() -> dict:
             },
             "host": {"runner_image": "ubuntu-24.04", "cpu_model": "test host"},
             "resource_limits": {"cpus": 2, "memory_bytes": 4_294_967_296},
-            "comparison_window": {
-                "started_at": timestamp(group_start),
-                "finished_at": timestamp(previous_end),
-                "elapsed_seconds": (previous_end - group_start).total_seconds(),
-            },
-            "trials": trials,
+            "trial_span": {},
+            "trials": [],
         }
+    for step in TRIAL_EXECUTION_ORDER:
+        version = step["version"]
+        index = step["trial_index"]
+        group = evidence["versions"][version]
+        if previous_end is not None:
+            cursor = previous_end + timedelta(seconds=5)
+        if not group["trial_span"]:
+            group["trial_span"]["started_at"] = timestamp(cursor)
+        trial, previous_end = trial_evidence(version, index, cursor, previous_end)
+        group["trials"].append(trial)
+        group["trial_span"]["finished_at"] = timestamp(previous_end)
+        group["trial_span"]["elapsed_seconds"] = (
+            previous_end - datetime.fromisoformat(group["trial_span"]["started_at"].replace("Z", "+00:00"))
+        ).total_seconds()
     return evidence
 
 
@@ -206,6 +254,49 @@ class ContractTests(unittest.TestCase):
         evidence = valid_evidence()
         evidence["versions"]["candidate"]["trials"][0]["source_sha"] = "c" * 40
         with self.assertRaisesRegex(AcceptanceError, "trial SHA drift"):
+            validate_evidence(evidence)
+
+    def test_candidate_cannot_reuse_the_baseline_sha(self) -> None:
+        evidence = valid_evidence()
+        evidence["contract"]["candidate_sha"] = BASELINE_SHA
+        evidence["versions"]["candidate"]["image"]["source_sha"] = BASELINE_SHA
+        for trial in evidence["versions"]["candidate"]["trials"]:
+            trial["source_sha"] = BASELINE_SHA
+        with self.assertRaisesRegex(AcceptanceError, "must differ from the baseline SHA"):
+            validate_evidence(evidence)
+
+    def test_driver_image_digest_is_bound_to_the_pinned_reference(self) -> None:
+        evidence = valid_evidence()
+        evidence["contract"]["driver_image_digest"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(AcceptanceError, "image digest drift"):
+            validate_evidence(evidence)
+
+    def test_trial_order_is_balanced_and_contract_bound(self) -> None:
+        evidence = valid_evidence()
+        evidence["trial_execution_order"][1], evidence["trial_execution_order"][2] = (
+            evidence["trial_execution_order"][2],
+            evidence["trial_execution_order"][1],
+        )
+        with self.assertRaisesRegex(AcceptanceError, "execution order drift"):
+            validate_evidence(evidence)
+
+    def test_foreground_driver_cleanup_must_be_terminal(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["candidate"]["trials"][0]["foreground_driver_cleanup"]["status"] = "running"
+        with self.assertRaisesRegex(AcceptanceError, "driver cleanup is incomplete"):
+            validate_evidence(evidence)
+
+    def test_attempt_state_must_be_terminal_and_match_the_invocation_map(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["attempt_states"][0]["status"] = "pending"
+        with self.assertRaisesRegex(AcceptanceError, "did not reach a terminal state"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        trial["attempt_states"][0]["invoke_id"] = "unexpected-invocation"
+        with self.assertRaisesRegex(AcceptanceError, "invocation is unexpected"):
             validate_evidence(evidence)
 
     def test_runner_and_resource_drift_are_rejected(self) -> None:

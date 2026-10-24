@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from contract import AcceptanceError
+from contract import AcceptanceError, sha256_json
 from oracle import _verify_summary_proof, verify_dataset
 
 
@@ -20,38 +20,36 @@ class OracleTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.database = self.root / "codex_vibe_monitor.db"
+        self.template_database = self.root / "template.db"
         self.archive_root = self.root / "archives"
         self.scratch = self.root / "scratch"
         self.archive_dir = self.archive_root / DATASET / "2026"
         self.archive_dir.mkdir(parents=True)
-        connection = sqlite3.connect(self.database)
-        connection.executescript(
-            """
-            CREATE TABLE archive_batches (
-                id INTEGER PRIMARY KEY,
-                dataset TEXT NOT NULL,
-                month_key TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                row_count INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                cleanup_state TEXT NOT NULL,
-                superseded_by INTEGER,
-                summary_source_kind TEXT NOT NULL
-            );
-            CREATE TABLE pool_upstream_request_attempts (
-                attempt_public_id TEXT NOT NULL,
-                invoke_id TEXT NOT NULL,
-                occurred_at TEXT NOT NULL
-            );
-            """
-        )
-        connection.execute(
-            "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?)",
-            ("seed-live", "seed-invocation", "2026-09-01T00:00:00Z"),
-        )
-        connection.commit()
-        connection.close()
+        for path, with_manifest in ((self.database, True), (self.template_database, False)):
+            connection = sqlite3.connect(path)
+            if with_manifest:
+                connection.executescript(
+                    """
+                    CREATE TABLE archive_batches (
+                        id INTEGER PRIMARY KEY,
+                        dataset TEXT NOT NULL,
+                        month_key TEXT NOT NULL,
+                        file_path TEXT NOT NULL,
+                        sha256 TEXT NOT NULL,
+                        row_count INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        cleanup_state TEXT NOT NULL,
+                        superseded_by INTEGER,
+                        summary_source_kind TEXT NOT NULL
+                    );
+                    """
+                )
+            connection.execute(
+                "CREATE TABLE pool_upstream_request_attempts(id INTEGER,attempt_public_id TEXT NOT NULL,invoke_id TEXT NOT NULL,occurred_at TEXT NOT NULL,status TEXT NOT NULL,request_summary_json TEXT NOT NULL)"
+            )
+            connection.commit()
+            connection.close()
+        self.add_seed("seed-live", "2026-09-01T00:00:00Z", source=True)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -61,17 +59,31 @@ class OracleTests(unittest.TestCase):
         rows: list[tuple[str, str]],
         month_key: str = MONTH,
         stored_path: Path | None = None,
+        row_overrides: dict[str, dict[str, object]] | None = None,
     ) -> Path:
         filename = f"{DATASET}-{month_key}.sqlite.gz"
         path = stored_path or self.archive_root / DATASET / month_key[:4] / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         sqlite_path = self.root / "archive.sqlite"
         archive = sqlite3.connect(sqlite_path)
-        archive.execute("CREATE TABLE pool_upstream_request_attempts(attempt_public_id TEXT, invoke_id TEXT, occurred_at TEXT)")
-        archive.executemany(
-            "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?)",
-            [(identity, f"invoke-{identity}", occurred_at) for identity, occurred_at in rows],
+        archive.execute(
+            "CREATE TABLE pool_upstream_request_attempts(id INTEGER,attempt_public_id TEXT,invoke_id TEXT,occurred_at TEXT,status TEXT,request_summary_json TEXT)"
         )
+        archive_rows = []
+        for identity, occurred_at in rows:
+            self.add_seed(identity, occurred_at)
+            template = sqlite3.connect(self.template_database)
+            template.row_factory = sqlite3.Row
+            row = dict(template.execute(
+                "SELECT * FROM pool_upstream_request_attempts WHERE attempt_public_id=?",
+                (identity,),
+            ).fetchone())
+            template.close()
+            row.update((row_overrides or {}).get(identity, {}))
+            archive_rows.append(tuple(row[column] for column in (
+                "id", "attempt_public_id", "invoke_id", "occurred_at", "status", "request_summary_json"
+            )))
+        archive.executemany("INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)", archive_rows)
         archive.commit()
         archive.close()
         with sqlite_path.open("rb") as source, gzip.open(path, "wb") as target:
@@ -97,7 +109,39 @@ class OracleTests(unittest.TestCase):
         connection.commit()
         connection.close()
 
-    def verify(self, expected: set[str], seed_count: int = 2, added_count: int = 0) -> dict:
+    def add_seed(self, identity: str, occurred_at: str, source: bool = False) -> None:
+        template = sqlite3.connect(self.template_database)
+        existing = template.execute(
+            "SELECT 1 FROM pool_upstream_request_attempts WHERE attempt_public_id=?",
+            (identity,),
+        ).fetchone()
+        if existing is None:
+            template.execute(
+                "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)",
+                (identity, identity, f"invoke-{identity}", occurred_at, "success", f'{{"identity":"{identity}"}}'),
+            )
+        template.commit()
+        template.close()
+        if source:
+            database = sqlite3.connect(self.database)
+            database.execute(
+                "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)",
+                (identity, identity, f"invoke-{identity}", occurred_at, "success", f'{{"identity":"{identity}"}}'),
+            )
+            database.commit()
+            database.close()
+
+    def verify(
+        self,
+        expected: set[str],
+        seed_count: int = 2,
+        added_count: int = 0,
+        attempt_invocations: dict[str, str] | None = None,
+    ) -> dict:
+        attempt_invocations = attempt_invocations or {}
+        seed_ids = expected - set(attempt_invocations)
+        for identity in seed_ids:
+            self.add_seed(identity, f"{MONTH}-01T00:00:00Z")
         return verify_dataset(
             self.database,
             self.archive_root,
@@ -106,7 +150,20 @@ class OracleTests(unittest.TestCase):
             seed_count,
             added_count,
             self.scratch,
+            template_database=self.template_database,
+            seed_ids=seed_ids,
+            added_attempt_invocations=attempt_invocations,
+            cutoff=f"{MONTH}-01 00:00:00",
         )
+
+    def add_live_attempt(self, identity: str, invoke_id: str, occurred_at: str) -> None:
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)",
+            (100, identity, invoke_id, occurred_at, "success", f'{{"identity":"{identity}"}}'),
+        )
+        connection.commit()
+        connection.close()
 
     def test_artifact_and_live_rows_reconcile(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
@@ -125,6 +182,42 @@ class OracleTests(unittest.TestCase):
         )
         result = self.verify({"seed-archived", "seed-live"})
         self.assertEqual(result["converted_rows"], 1)
+
+    def test_archive_full_row_content_must_match_the_pristine_source(self) -> None:
+        path = self.make_archive(
+            [("seed-archived", f"{MONTH}-12T12:00:00Z")],
+            row_overrides={"seed-archived": {"request_summary_json": "tampered"}},
+        )
+        self.add_manifest(path, 1)
+        with self.assertRaisesRegex(AcceptanceError, "changed full source row content"):
+            self.verify({"seed-archived", "seed-live"})
+
+    def test_live_attempt_invocation_association_must_match_observed_http_evidence(self) -> None:
+        path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
+        self.add_manifest(path, 1)
+        self.add_live_attempt("added-attempt", "wrong-invocation", "2026-08-12T12:00:00Z")
+        with self.assertRaisesRegex(AcceptanceError, "changed the measured attempt-to-invocation association"):
+            self.verify(
+                {"seed-live", "seed-archived", "added-attempt"},
+                seed_count=2,
+                added_count=1,
+                attempt_invocations={"added-attempt": "expected-invocation"},
+            )
+
+    def test_oracle_reports_the_observed_attempt_invocation_map(self) -> None:
+        path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
+        self.add_manifest(path, 1)
+        self.add_live_attempt("added-attempt", "expected-invocation", "2026-08-12T12:00:00Z")
+        result = self.verify(
+            {"seed-live", "seed-archived", "added-attempt"},
+            seed_count=2,
+            added_count=1,
+            attempt_invocations={"added-attempt": "expected-invocation"},
+        )
+        self.assertEqual(
+            result["attempt_invocation_map_sha256"],
+            sha256_json([["added-attempt", "expected-invocation"]]),
+        )
 
     def test_wrong_dataset_month_and_checksum_are_rejected(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
@@ -158,9 +251,10 @@ class OracleTests(unittest.TestCase):
 
         path.unlink()
         path = self.make_archive([
-            ("seed-live", f"{MONTH}-12T12:00:00Z"),
-            ("seed-live", f"{MONTH}-13T12:00:00Z"),
+            ("seed-archived", f"{MONTH}-12T12:00:00Z"),
+            ("seed-archived", f"{MONTH}-13T12:00:00Z"),
         ])
+        self.add_seed("seed-archived", f"{MONTH}-12T12:00:00Z", source=True)
         connection = sqlite3.connect(self.database)
         connection.execute("DELETE FROM archive_batches")
         connection.commit()

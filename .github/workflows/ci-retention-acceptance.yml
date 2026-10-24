@@ -113,7 +113,7 @@ jobs:
           name: retention-image-${{ github.run_id }}-${{ matrix.version }}
           path: ${{ runner.temp }}/retention-image/
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
 
   measurement:
     name: Serial baseline/candidate measurement

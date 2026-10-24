@@ -35,11 +35,22 @@ COMPETITOR_FILE_COUNT = 512
 RUN_SECONDS = 120
 TRIALS_PER_VERSION = 3
 MAX_TEST_PHASE_SECONDS = 900
+CLEANUP_RESERVE_SECONDS = 45
 MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+DRIVER_IMAGE_REF = "python:3.12-alpine@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d"
+DRIVER_IMAGE_DIGEST = "sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d"
+TRIAL_EXECUTION_ORDER = [
+    {"version": "baseline", "trial_index": 1},
+    {"version": "candidate", "trial_index": 1},
+    {"version": "candidate", "trial_index": 2},
+    {"version": "baseline", "trial_index": 2},
+    {"version": "baseline", "trial_index": 3},
+    {"version": "candidate", "trial_index": 3},
+]
 
 
 class AcceptanceError(ValueError):
@@ -220,6 +231,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     _require(contract.get("baseline_sha") == BASELINE_SHA, "baseline SHA drift")
     candidate_sha = contract.get("candidate_sha")
     _require(isinstance(candidate_sha, str) and len(candidate_sha) == 40 and all(c in "0123456789abcdef" for c in candidate_sha), "candidate SHA is invalid")
+    _require(candidate_sha != BASELINE_SHA, "candidate SHA must differ from the baseline SHA")
     _require(contract.get("seed") == SEED, "synthetic seed drift")
     _require(contract.get("retention_days") == RETENTION_DAYS, "retention cutoff policy drift")
     _require(
@@ -227,6 +239,8 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         and re.fullmatch(r"sha256:[0-9a-f]{64}", contract["driver_image_id"]),
         "foreground driver image identity is invalid",
     )
+    _require(contract.get("driver_image_ref") == DRIVER_IMAGE_REF, "foreground driver image reference drift")
+    _require(contract.get("driver_image_digest") == DRIVER_IMAGE_DIGEST, "foreground driver image digest drift")
     _require(
         contract.get("input_rates_rows_per_second") == {key: value["arrival_rate"] for key, value in DATASETS.items()},
         "foreground arrival-rate contract drift",
@@ -243,6 +257,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
 
     versions = evidence.get("versions")
     _require(isinstance(versions, dict) and set(versions) == {"baseline", "candidate"}, "baseline/candidate evidence is incomplete")
+    _require(evidence.get("trial_execution_order") == TRIAL_EXECUTION_ORDER, "baseline/candidate trial execution order drift")
     comparison = evidence.get("comparison_window")
     _require(isinstance(comparison, dict), "full baseline/candidate comparison window is missing")
     comparison_start = parse_time(comparison.get("started_at"))
@@ -254,7 +269,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     )
     host_identity = None
     resource_limits = None
-    previous_end: datetime | None = None
+    trial_windows: dict[tuple[str, int], tuple[datetime, datetime, dict[str, Any]]] = {}
     competitor_workloads: dict[str, list[int]] = {"baseline": [], "candidate": []}
     for version, expected_sha in (("baseline", BASELINE_SHA), ("candidate", candidate_sha)):
         group = versions[version]
@@ -296,6 +311,13 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             _require(trial.get("image_id") == image["image_id"], f"{version} trial image drift")
             _require(trial.get("input_fingerprint") == input_fingerprint, f"{version} input fingerprint drift")
             _require(trial.get("cutoff") == contract["cutoff"], f"{version} cutoff drift")
+            driver_cleanup = trial.get("foreground_driver_cleanup")
+            _require(
+                isinstance(driver_cleanup, dict)
+                and re.fullmatch(r"retention-[0-9a-f]{12}-driver", str(driver_cleanup.get("container_name", "")))
+                and driver_cleanup.get("status") in {"already_absent", "removed"},
+                "named foreground driver cleanup is incomplete",
+            )
 
             window = trial.get("window")
             _require(isinstance(window, dict), "trial window evidence is missing")
@@ -309,10 +331,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             _require(abs(_number(window.get("input_duration_seconds"), "input duration is invalid") - input_elapsed) <= 1.0, "recorded input duration is inconsistent")
             full_elapsed = (cleanup_end - setup_start).total_seconds()
             _require(abs(_number(window.get("full_duration_seconds"), "trial duration is invalid") - full_elapsed) <= 1.0, "trial full window omitted setup or cleanup")
-            gap_before = 0.0 if previous_end is None else (setup_start - previous_end).total_seconds()
-            _require(gap_before >= 0, "trial windows overlap or run order changed")
-            _require(abs(_number(window.get("gap_before_seconds"), "inter-run gap is invalid") - gap_before) <= 1.0, "inter-run gap was omitted or altered")
-            previous_end = cleanup_end
+            trial_windows[(version, index)] = (setup_start, cleanup_end, window)
 
             _validate_samples(trial, input_start, input_end)
             input_counts = trial.get("input_counts")
@@ -328,6 +347,47 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     and all(isinstance(identity, str) and identity for identity in identities)
                     and len(set(identities)) == expected_count,
                     f"{name} foreground source identities are incomplete",
+                )
+            attempt_ids = added_ids["pool_upstream_attempts"]
+            attempt_states = trial.get("attempt_states")
+            _require(
+                isinstance(attempt_states, list) and len(attempt_states) == len(attempt_ids),
+                "terminal upstream attempt-state evidence is incomplete",
+            )
+            expected_invocations = added_ids["invocations"]
+            retry_count = len(attempt_ids) - len(expected_invocations)
+            retry_sequences = {
+                math.floor(index * len(expected_invocations) / retry_count)
+                for index in range(retry_count)
+            } if retry_count else set()
+            expected_statuses = {
+                invoke_id: (["http_failure", "success"] if sequence in retry_sequences else ["success"])
+                for sequence, invoke_id in enumerate(expected_invocations)
+            }
+            observed_by_invocation: dict[str, list[dict[str, Any]]] = {}
+            observed_attempt_ids: set[str] = set()
+            for attempt in attempt_states:
+                _require(isinstance(attempt, dict), "upstream attempt-state row is malformed")
+                attempt_id = attempt.get("attempt_public_id")
+                invoke_id = attempt.get("invoke_id")
+                status = attempt.get("status")
+                finished_at = parse_time(attempt.get("finished_at"))
+                attempt_index = attempt.get("attempt_index")
+                _require(isinstance(attempt_id, str) and attempt_id and attempt_id in attempt_ids, "upstream attempt-state identity is unexpected")
+                _require(attempt_id not in observed_attempt_ids, "upstream attempt-state identity is duplicated")
+                observed_attempt_ids.add(attempt_id)
+                _require(isinstance(invoke_id, str) and invoke_id in expected_statuses, "upstream attempt-state invocation is unexpected")
+                _require(isinstance(status, str) and status not in {"", "pending", "running", "budget_exhausted_final", "interrupted"}, "upstream attempt did not reach a terminal state")
+                _require(isinstance(attempt_index, int) and not isinstance(attempt_index, bool) and attempt_index > 0, "upstream attempt index is invalid")
+                _require(setup_start <= finished_at <= cleanup_end, "upstream attempt finished outside the trial window")
+                observed_by_invocation.setdefault(invoke_id, []).append(attempt)
+            _require(observed_attempt_ids == set(attempt_ids), "upstream attempt-state IDs do not match measured source identities")
+            for invoke_id, expected in expected_statuses.items():
+                actual = sorted(observed_by_invocation.get(invoke_id, []), key=lambda row: row["attempt_index"])
+                _require(
+                    [row.get("status") for row in actual] == expected
+                    and [row.get("attempt_index") for row in actual] == list(range(1, len(expected) + 1)),
+                    f"upstream attempt states for {invoke_id} are incomplete or non-terminal",
                 )
             invocation_count = math.ceil(DATASETS["invocations"]["arrival_rate"] * RUN_SECONDS)
             attempt_count = math.ceil(DATASETS["pool_upstream_attempts"]["arrival_rate"] * RUN_SECONDS)
@@ -401,11 +461,35 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 _require(result["lost_rows"] == 0, f"oracle found lost {name} source rows")
                 _require(result["duplicate_rows"] == 0, f"oracle found duplicate {name} conversions")
                 _require(result["converted_rows"] == result["distinct_archived_rows"], f"reported {name} conversion count is not proof-backed")
+                _require(
+                    result.get("row_content_rows_checked") == result["seed_rows"] + result["actual_added_rows"],
+                    f"oracle {name} did not compare full source row content",
+                )
+                _require(
+                    isinstance(result.get("row_content_columns"), int)
+                    and not isinstance(result["row_content_columns"], bool)
+                    and result["row_content_columns"] >= 3,
+                    f"oracle {name} did not cover all source columns",
+                )
+                _require(
+                    isinstance(result.get("row_content_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", result["row_content_sha256"]),
+                    f"oracle {name} full-row content digest is invalid",
+                )
                 identities = trial["added_ids"][name]
                 _require(
                     result.get("added_ids_sha256") == sha256_bytes("\n".join(identities).encode()),
                     f"oracle {name} input identity digest does not match observed writes",
                 )
+                if name == "pool_upstream_attempts":
+                    mapping_digest = sha256_json(sorted(
+                        [row["attempt_public_id"], row["invoke_id"]]
+                        for row in attempt_states
+                    ))
+                    _require(
+                        result.get("attempt_invocation_map_sha256") == mapping_digest,
+                        "oracle upstream attempt-to-invocation association does not match observed attempts",
+                    )
                 _require(result["seed_rows"] + result["actual_added_rows"] == result["live_rows"] + result["converted_rows"], f"{name} source conservation does not balance")
                 if version == "candidate":
                     additions = result["actual_added_rows"]
@@ -417,17 +501,28 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             trial_read_metrics.append(latency_summary([float(item["elapsed_ms"]) for item in raw_samples["read"]]))
             trial_write_metrics.append(latency_summary([float(item["elapsed_ms"]) for item in raw_samples["write"]]))
 
-        group_window = group.get("comparison_window")
-        _require(isinstance(group_window, dict), "complete comparison window is missing")
-        group_start = parse_time(group_window.get("started_at"))
-        group_end = parse_time(group_window.get("finished_at"))
-        _require(group_start <= parse_time(trials[0]["window"]["setup_started_at"]), "comparison window omitted initial preparation")
-        _require(group_end >= parse_time(trials[-1]["window"]["cleanup_finished_at"]), "comparison window omitted final cleanup")
-        _require(abs(_number(group_window.get("elapsed_seconds"), "comparison duration is invalid") - (group_end - group_start).total_seconds()) <= 1.0, "comparison window duration is inconsistent")
+        trial_span = group.get("trial_span")
+        _require(isinstance(trial_span, dict), "version trial span is missing")
+        group_start = parse_time(trial_span.get("started_at"))
+        group_end = parse_time(trial_span.get("finished_at"))
+        _require(group_start <= parse_time(trials[0]["window"]["setup_started_at"]), "version span omitted initial preparation")
+        _require(group_end >= parse_time(trials[-1]["window"]["cleanup_finished_at"]), "version span omitted final cleanup")
+        _require(abs(_number(trial_span.get("elapsed_seconds"), "version span duration is invalid") - (group_end - group_start).total_seconds()) <= 1.0, "version span duration is inconsistent")
         group["latency_summary"] = {
             "read": {metric: median(row[metric] for row in trial_read_metrics) for metric in ("p95_ms", "p99_ms")},
             "write": {metric: median(row[metric] for row in trial_write_metrics) for metric in ("p95_ms", "p99_ms")},
         }
+
+    previous_end: datetime | None = None
+    for step in TRIAL_EXECUTION_ORDER:
+        setup_start, cleanup_end, window = trial_windows[(step["version"], step["trial_index"])]
+        gap_before = 0.0 if previous_end is None else (setup_start - previous_end).total_seconds()
+        _require(gap_before >= 0, "trial windows overlap or run order changed")
+        _require(
+            abs(_number(window.get("gap_before_seconds"), "inter-run gap is invalid") - gap_before) <= 1.0,
+            "inter-run gap was omitted or altered",
+        )
+        previous_end = cleanup_end
 
     _require(
         competitor_workloads["baseline"] == competitor_workloads["candidate"]
