@@ -177,14 +177,16 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     )
     text = text.replace("const LIVE_REFRESH_TIMER_GUARD_MS = 50;\n", "")
     text = text.replace(
-        """    await page.clock.install({
-      toFake: [\"Date\", \"setTimeout\", \"clearTimeout\", \"setInterval\", \"clearInterval\"],
-    });
+        """      await page.evaluate((minimumRefreshIntervalMs) => {
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = ((...args: Parameters<typeof window.setTimeout>) => {
+          const [handler, timeout, ...rest] = args;
+          const acceleratedTimeout =
+            typeof timeout === \"number\" && timeout >= minimumRefreshIntervalMs ? 0 : timeout;
+          return nativeSetTimeout(handler, acceleratedTimeout, ...rest);
+        }) as typeof window.setTimeout;
+      }, MINIMUM_REFRESH_INTERVAL_MS);
 """,
-        "",
-    )
-    text = text.replace(
-        "      await page.clock.fastForward(MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1);\n",
         "",
     )
     text = text.replace(

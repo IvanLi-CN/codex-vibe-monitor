@@ -18,7 +18,6 @@ const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS + 250;
 // The dense render proof only needs an in-flight request; cross-refresh overlap is covered above.
 const DENSE_TRAVERSAL_DELAY_MS = 250;
-const LIVE_REFRESH_TIMER_GUARD_MS = 50;
 const REVISION_INTERVAL_MS = 1_000;
 const MINIMUM_LIVE_EVENTS = Math.max(
   10,
@@ -578,9 +577,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
   ] as const) {
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
-    await page.clock.install({
-      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-    });
     try {
       await startCapacityDashboard(page, viewport, true);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
@@ -664,7 +660,15 @@ test("single-client dense timeline stays below the long-task budget on desktop a
 
       // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
       // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
-      await page.clock.fastForward(MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1);
+      await page.evaluate((minimumRefreshIntervalMs) => {
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = ((...args: Parameters<typeof window.setTimeout>) => {
+          const [handler, timeout, ...rest] = args;
+          const acceleratedTimeout =
+            typeof timeout === "number" && timeout >= minimumRefreshIntervalMs ? 0 : timeout;
+          return nativeSetTimeout(handler, acceleratedTimeout, ...rest);
+        }) as typeof window.setTimeout;
+      }, MINIMUM_REFRESH_INTERVAL_MS);
       await expect
         .poll(
           () =>
