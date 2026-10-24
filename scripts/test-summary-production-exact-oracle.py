@@ -30,6 +30,16 @@ class ExactOracleTimeTests(unittest.TestCase):
         self.assertEqual(ORACLE.expected(rows, "today", now)["totalCount"], 1)
         self.assertEqual(ORACLE.expected(rows, "yesterday", now)["totalCount"], 1)
 
+    def test_in_flight_rows_are_not_counted_in_summary_windows(self) -> None:
+        rows = [
+            {"id": 1, "occurred_at": "2026-01-02 00:01:00", "status": "success"},
+            {"id": 2, "occurred_at": "2026-01-02 00:02:00", "status": "running", "total_tokens": 99},
+        ]
+        now = dt.datetime(2026, 1, 2, 12, tzinfo=dt.timezone.utc)
+        result = ORACLE.expected(rows, "today", now)
+        self.assertEqual(result["totalCount"], 1)
+        self.assertEqual(result["totalTokens"], 0)
+
 
 class ExactOracleUsageTests(unittest.TestCase):
     def test_usage_groups_preserve_model_and_reasoning_case(self) -> None:

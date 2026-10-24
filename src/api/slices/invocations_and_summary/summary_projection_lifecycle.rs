@@ -1708,7 +1708,7 @@ async fn ensure_compacted_source_recovery(state: &AppState) -> Result<()> {
     let _ = ensure_compacted_source_recovery_with_force_bounded(
         state,
         false,
-        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
     )
     .await?;
     Ok(())
@@ -3123,16 +3123,17 @@ async fn publish_compacted_source_recovery_snapshot(
     budget: Duration,
 ) -> Result<bool> {
     let started = Instant::now();
+    let transaction_budget = budget.min(SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET);
     let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
         state,
-        budget,
+        transaction_budget,
         "open compacted source recovery publication connection",
     )
     .await?
     else {
         return Ok(false);
     };
-    let remaining = budget.saturating_sub(started.elapsed());
+    let remaining = transaction_budget.saturating_sub(started.elapsed());
     let result = if remaining.is_zero() {
         Ok(false)
     } else {
@@ -3209,7 +3210,8 @@ async fn publish_compacted_source_recovery_snapshot_in_transaction(
             let _ = ensure_compacted_source_recovery_with_force_bounded(
                 state,
                 false,
-                deadline.saturating_duration_since(Instant::now()),
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET
+                    .min(deadline.saturating_duration_since(Instant::now())),
             )
             .await?;
         }
@@ -3223,7 +3225,8 @@ async fn publish_compacted_source_recovery_snapshot_in_transaction(
             let _ = ensure_compacted_source_recovery_with_force_bounded(
                 state,
                 true,
-                deadline.saturating_duration_since(Instant::now()),
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET
+                    .min(deadline.saturating_duration_since(Instant::now())),
             )
             .await?;
         }

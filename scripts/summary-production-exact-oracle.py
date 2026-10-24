@@ -367,6 +367,10 @@ def is_success(row: dict[str, Any]) -> bool:
     return resolved_failure_class(row) == "none" and str(row.get("status") or "").strip().lower() not in {"running", "pending"}
 
 
+def is_in_flight(row: dict[str, Any]) -> bool:
+    return str(row.get("status") or "").strip().lower() in {"running", "pending"}
+
+
 def is_terminal_failure(row: dict[str, Any]) -> bool:
     status = str(row.get("status") or "").strip().lower()
     return status not in {"running", "pending"} and not is_success(row)
@@ -410,6 +414,7 @@ def expected(
             row for at, row in parsed
             if start is None or (start <= at < end)
         ]
+    selected = [row for row in selected if not is_in_flight(row)]
     total_count = len(selected)
     success_count = sum(1 for row in selected if is_success(row))
     failure_count = sum(1 for row in selected if is_terminal_failure(row))
