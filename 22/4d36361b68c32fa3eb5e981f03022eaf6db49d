@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.0",
+  "base_stable_version": "4.12.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-24T16:02:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "bf49cad6cd3e9aa18eedcbe1681c0d6bb2c5be43",
+  "pr_number": 1181,
+  "pr_title": "fix(summary): restore bounded dashboard recovery",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.0",
+  "target_sha": "224d36361b68c32fa3eb5e981f03022eaf6db49d",
+  "type_label": "type:minor"
+}
