@@ -725,7 +725,7 @@ fn build_timeline_attempt_account_query(
             .push(" AND occurred_at = ")
             .push_bind(occurred_at.clone())
             .push(" ORDER BY attempt_index DESC, id DESC LIMIT 1) AS timeline_fallback_");
-        query.push(&index.to_string());
+        query.push(index.to_string());
     }
     query
 }
@@ -1796,7 +1796,6 @@ async fn materialize_timeline_snapshot(
             .saturating_add(source_records.len());
         if observation.scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
             tracing::warn!(
-                snapshot_token,
                 scanned_source_rows = observation.scanned_source_rows,
                 max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
                 "invocation timeline source scan budget exhausted"

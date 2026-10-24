@@ -725,6 +725,7 @@ test("keeps the old live window visible and commits it before catching up", asyn
       pages.map(async (page, index) => {
         const lanes = page.getByTestId("dashboard-invocation-timeline-lanes");
         await expect(lanes).toBeVisible();
+        await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
         await expect(lanes).toHaveAttribute("data-range-end", baselines[index]!.rangeEnd);
         await expect
           .poll(
