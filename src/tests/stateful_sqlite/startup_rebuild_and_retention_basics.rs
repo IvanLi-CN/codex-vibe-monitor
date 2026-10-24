@@ -4724,7 +4724,6 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     let old_occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
     let old_failed_at = shanghai_local_days_ago(92, 11, 0, 0);
     let recent_at = shanghai_local_days_ago(5, 15, 0, 0);
-
     insert_retention_invocation(
         &pool,
         "archive-old-success",
