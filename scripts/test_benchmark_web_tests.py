@@ -202,6 +202,14 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual([step["with"]["path"] for step in checkouts], ["harness", "A", "B"])
             self.assertTrue(all(step["with"]["persist-credentials"] is False for step in checkouts))
             self.assertNotIn("continue-on-error", job)
+        prepare = workflow["jobs"]["prepare"]["steps"]
+        pack = next(step["run"] for step in prepare if step["name"] == "Install identical dependency surface without building or testing")
+        self.assertIn('tar -cf "$RUNNER_TEMP/web-test-ab-browsers.tar"', pack)
+        upload = next(step["with"] for step in prepare if step["name"] == "Upload run-bound dependencies")
+        self.assertIn("/web-test-ab-browsers.tar", upload["path"])
+        self.assertNotIn("/web-test-ab/browsers", upload["path"])
+        restore = next(step["run"] for step in workflow["jobs"]["measure"]["steps"] if step["name"] == "Restore isolated dependency directories")
+        self.assertIn('tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar"', restore)
 
 
 class CleanupTests(unittest.TestCase):

@@ -97,6 +97,7 @@ jobs:
           tar -cf "$RUNNER_TEMP/web-test-ab-deps.tar" \
             A/node_modules A/web/node_modules A/docs-site/node_modules \
             B/node_modules B/web/node_modules B/docs-site/node_modules
+          tar -cf "$RUNNER_TEMP/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab" browsers
           printf '{"install_seconds":%s}\n' "$(( $(date +%s) - started ))" > "$RUNNER_TEMP/web-test-ab/preparation.json"
 
       - name: Upload run-bound dependencies
@@ -105,7 +106,9 @@ jobs:
           name: web-test-ab-deps-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/web-test-ab-deps.tar
-            ${{ runner.temp }}/web-test-ab
+            ${{ runner.temp }}/web-test-ab-browsers.tar
+            ${{ runner.temp }}/web-test-ab/manifest.json
+            ${{ runner.temp }}/web-test-ab/preparation.json
           retention-days: 1
           if-no-files-found: error
 
@@ -156,6 +159,7 @@ jobs:
           set -euo pipefail
           tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-deps.tar" -C "$PWD"
           mv "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab" "$RUNNER_TEMP/web-test-ab"
+          tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab"
 
       - name: Run full A and B with independent hard deadlines
         env:
