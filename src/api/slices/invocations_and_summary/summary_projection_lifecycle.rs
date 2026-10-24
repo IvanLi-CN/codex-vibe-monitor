@@ -2880,16 +2880,13 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
     .await
     .context("count compacted source recovery record identities")?
     .max(0) as usize;
-    state
-        .subscription_hub
-        .store_summary_dashboard_recovery(SummaryDashboardRecoverySnapshot {
-            time_zone: SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE.to_string(),
-            window_ranges_json: checkpoint.window_ranges_json.clone(),
-            generation_fence: expected_fence,
-            entries,
-            bounded_record_count,
-        })
-        .await;
+    let snapshot = SummaryDashboardRecoverySnapshot {
+        time_zone: SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE.to_string(),
+        window_ranges_json: checkpoint.window_ranges_json.clone(),
+        generation_fence: expected_fence,
+        entries,
+        bounded_record_count,
+    };
     match transaction.commit().await {
         Ok(()) => {}
         Err(error) => {
@@ -2900,6 +2897,10 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
             return Err(anyhow!(error).context("commit compacted source recovery publication"));
         }
     }
+    state
+        .subscription_hub
+        .store_summary_dashboard_recovery(snapshot)
+        .await;
     state
         .subscription_hub
         .set_summary_compacted_source_recovery_state(SummaryCompactedSourceRecoveryState::Completed)
@@ -2914,7 +2915,28 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
 async fn run_compacted_source_recovery_turn(
     state: &AppState,
 ) -> Result<Option<SummaryCoverageRecoveryTurn>> {
-    let Some(checkpoint) = load_compacted_source_recovery_checkpoint(&state.pool).await? else {
+    let started = Instant::now();
+    let checkpoint = match tokio::time::timeout(
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
+        load_compacted_source_recovery_checkpoint(&state.pool),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(Some(SummaryCoverageRecoveryTurn {
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                reservation: None,
+            }));
+        }
+    };
+    let Some(checkpoint) = checkpoint else {
         return Ok(None);
     };
     let checkpoint_state = SummaryCompactedSourceRecoveryState::from_storage(&checkpoint.state);
@@ -2925,10 +2947,65 @@ async fn run_compacted_source_recovery_turn(
     match checkpoint_state {
         SummaryCompactedSourceRecoveryState::Failed => return Ok(None),
         SummaryCompactedSourceRecoveryState::Completed => {
-            if publish_compacted_source_recovery_snapshot(state).await? {
+            let remaining =
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(Some(SummaryCoverageRecoveryTurn {
+                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                    reservation: None,
+                }));
+            }
+            let published = match tokio::time::timeout(
+                remaining,
+                publish_compacted_source_recovery_snapshot(state),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    state
+                        .subscription_hub
+                        .set_summary_compacted_source_recovery_state(
+                            SummaryCompactedSourceRecoveryState::Deferred,
+                        )
+                        .await;
+                    return Ok(Some(SummaryCoverageRecoveryTurn {
+                        next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                        reservation: None,
+                    }));
+                }
+            };
+            if published {
                 return Ok(None);
             }
-            let refreshed = load_compacted_source_recovery_checkpoint(&state.pool).await?;
+            let remaining =
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
+            let refreshed = match tokio::time::timeout(
+                remaining,
+                load_compacted_source_recovery_checkpoint(&state.pool),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    state
+                        .subscription_hub
+                        .set_summary_compacted_source_recovery_state(
+                            SummaryCompactedSourceRecoveryState::Deferred,
+                        )
+                        .await;
+                    return Ok(Some(SummaryCoverageRecoveryTurn {
+                        next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                        reservation: None,
+                    }));
+                }
+            };
             if refreshed.as_ref().is_some_and(|row| {
                 row.state == SummaryCompactedSourceRecoveryState::Pending.as_str()
             }) {
@@ -2945,13 +3022,13 @@ async fn run_compacted_source_recovery_turn(
         | SummaryCompactedSourceRecoveryState::Running
         | SummaryCompactedSourceRecoveryState::Deferred => {}
     }
-    let started = Instant::now();
+    let remaining = SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
     if !update_compacted_source_recovery_state_bounded(
         state,
         SummaryCompactedSourceRecoveryState::Running,
         None,
         None,
-        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
+        remaining,
     )
     .await?
     {
@@ -2967,7 +3044,45 @@ async fn run_compacted_source_recovery_turn(
         }));
     }
     loop {
-        let Some(checkpoint) = load_compacted_source_recovery_checkpoint(&state.pool).await? else {
+        let remaining =
+            SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            return Ok(Some(SummaryCoverageRecoveryTurn {
+                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                reservation: Some(
+                    crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
+                ),
+            }));
+        }
+        let checkpoint = match tokio::time::timeout(
+            remaining,
+            load_compacted_source_recovery_checkpoint(&state.pool),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                state
+                    .subscription_hub
+                    .set_summary_compacted_source_recovery_state(
+                        SummaryCompactedSourceRecoveryState::Deferred,
+                    )
+                    .await;
+                return Ok(Some(SummaryCoverageRecoveryTurn {
+                    next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                    reservation: Some(
+                        crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
+                    ),
+                }));
+            }
+        };
+        let Some(checkpoint) = checkpoint else {
             return Ok(None);
         };
         let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
@@ -3095,7 +3210,26 @@ async fn run_compacted_source_recovery_turn(
             Ok(outcome) => outcome,
         };
         if outcome == CompactedSourceRecoveryPageOutcome::Reset {
-            ensure_compacted_source_recovery(state).await?;
+            let remaining =
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
+            match tokio::time::timeout(remaining, ensure_compacted_source_recovery(state)).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    state
+                        .subscription_hub
+                        .set_summary_compacted_source_recovery_state(
+                            SummaryCompactedSourceRecoveryState::Deferred,
+                        )
+                        .await;
+                    return Ok(Some(SummaryCoverageRecoveryTurn {
+                        next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                        reservation: Some(
+                            crate::db_pressure::global_db_pressure_gate()
+                                .reserve_priority_background(),
+                        ),
+                    }));
+                }
+            }
             return Ok(Some(SummaryCoverageRecoveryTurn {
                 next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
                 reservation: Some(
@@ -3117,7 +3251,32 @@ async fn run_compacted_source_recovery_turn(
             unreachable!("compacted source recovery reset is handled above")
         };
         if completed {
-            if publish_compacted_source_recovery_snapshot(state).await? {
+            let remaining =
+                SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
+            let published = match tokio::time::timeout(
+                remaining,
+                publish_compacted_source_recovery_snapshot(state),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    state
+                        .subscription_hub
+                        .set_summary_compacted_source_recovery_state(
+                            SummaryCompactedSourceRecoveryState::Deferred,
+                        )
+                        .await;
+                    return Ok(Some(SummaryCoverageRecoveryTurn {
+                        next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                        reservation: Some(
+                            crate::db_pressure::global_db_pressure_gate()
+                                .reserve_priority_background(),
+                        ),
+                    }));
+                }
+            };
+            if published {
                 return Ok(None);
             }
             return Ok(Some(SummaryCoverageRecoveryTurn {

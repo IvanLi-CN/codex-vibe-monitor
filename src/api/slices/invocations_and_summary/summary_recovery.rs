@@ -166,6 +166,7 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
     reporting_tz: Tz,
     upstream_account_id: Option<i64>,
     deltas: &[DashboardActivityTerminalDelta],
+    recovery_pending: bool,
 ) -> Result<Option<StatsResponse>, ApiError> {
     let Some(window_name) = summary_dashboard_recovery_window_name(window) else {
         return Ok(None);
@@ -174,7 +175,11 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
         return Ok(None);
     }
     let Some(snapshot) = state.subscription_hub.summary_dashboard_recovery().await else {
-        return Ok(None);
+        return if recovery_pending {
+            Err(dashboard_recovery_pending_error(state, window, reporting_tz).await)
+        } else {
+            Ok(None)
+        };
     };
     let now = Utc::now();
     if snapshot.time_zone != SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE
@@ -186,7 +191,11 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
             .generation_fence
             .coverage_sources_match(projection.generation_fence())
     {
-        return Ok(None);
+        return if recovery_pending {
+            Err(dashboard_recovery_pending_error(state, window, reporting_tz).await)
+        } else {
+            Ok(None)
+        };
     }
     let entry = snapshot
         .entries
@@ -224,7 +233,11 @@ pub(crate) async fn dashboard_recovery_response_if_ready(
         // the snapshot target. If its row id is inside the target, applying it could double count
         // a row already reduced into the snapshot, while ignoring it could miss a late terminal
         // transition; withholding the snapshot preserves exact/unavailable.
-        return Ok(None);
+        return if recovery_pending {
+            Err(dashboard_recovery_pending_error(state, window, reporting_tz).await)
+        } else {
+            Ok(None)
+        };
     }
     let live_deltas = deltas
         .iter()
@@ -275,4 +288,19 @@ pub(crate) async fn summary_source_gap_unavailable_error(
     } else {
         ApiError::unavailable(anyhow!(message))
     }
+}
+
+async fn dashboard_recovery_pending_error(
+    state: &AppState,
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+) -> ApiError {
+    summary_source_gap_unavailable_error(
+        state,
+        window,
+        reporting_tz,
+        true,
+        "dashboard summary recovery has not published an exact snapshot",
+    )
+    .await
 }

@@ -30446,6 +30446,7 @@ async fn fetch_summary_inner(
             reporting_tz,
             account_id,
             &deltas,
+            source_gap_pending && source_gap_recovery_applicable,
         )
         .await?
     {
