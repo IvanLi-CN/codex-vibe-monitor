@@ -30415,31 +30415,6 @@ async fn fetch_summary_inner(
             reporting_tz,
             account_id,
         );
-    if source_gap_unavailable
-        && source_gap_recovery_applicable
-        && let Some(response) = dashboard_recovery_response_if_ready(
-            state.as_ref(),
-            projection.as_ref(),
-            &window,
-            reporting_tz,
-            account_id,
-            &deltas,
-            true,
-        )
-        .await?
-    {
-        return Ok(Json(response));
-    }
-    if source_gap_unavailable {
-        return Err(summary_source_gap_unavailable_error(
-            state.as_ref(),
-            &window,
-            reporting_tz,
-            source_gap_recovery_applicable,
-            "summary source journal has an unproven change for the requested selection",
-        )
-        .await);
-    }
     let delta_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
@@ -30466,6 +30441,16 @@ async fn fetch_summary_inner(
         .await?
     {
         return Ok(Json(response));
+    }
+    if source_gap_unavailable {
+        return Err(summary_source_gap_unavailable_error(
+            state.as_ref(),
+            &window,
+            reporting_tz,
+            source_gap_recovery_applicable,
+            "summary source journal has an unproven change for the requested selection",
+        )
+        .await);
     }
     let delta_overlay_affects_selection = summary_delta_affects_selection(
         projection.as_ref(),
