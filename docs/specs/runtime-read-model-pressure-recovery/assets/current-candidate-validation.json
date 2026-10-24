@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
-  "candidate_head_sha": "58ab5cd5",
-  "implementation_commit": "58ab5cd5",
+  "candidate_head_sha": "9d3dcfe5",
+  "implementation_commit": "9d3dcfe5",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -18,7 +18,7 @@
     "supersedes_previous_review_base": true
   },
   "affected_validation": {
-    "refresh_reason": "The candidate replaces the erroneous 10,000-row replay gate with bounded keyset recovery, adds additive durable staging and generation-fenced publication, and makes pending recovery observable and retryable in the Dashboard.",
+    "refresh_reason": "The candidate replaces the erroneous 10,000-row replay gate with bounded keyset recovery, adds additive durable staging and generation-fenced publication, bounds the complete recovery turn, and makes pending recovery observable and retryable in the Dashboard without exposing a degraded overlay as exact.",
     "acceptance_items": [
       {
         "id": "A1",
@@ -67,7 +67,7 @@
           "src/api/slices/system_routes_and_tasks.rs",
           "web/src/lib/api/core-foundation.ts"
         ],
-        "status": "implemented; backend contract execution pending CI"
+        "status": "implemented; backend contract execution pending CI; an eligible overlay remains coded pending until exact generation-fenced publication"
       },
       {
         "id": "A6",
@@ -97,7 +97,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 pushed at implementation head 58ab5cd5; CI and Tier 4 review pending"
+        "status": "PR #1181 implementation head 9d3dcfe5 is committed locally; docs refresh and push are pending before CI and Tier 4 review"
       }
     ]
   },

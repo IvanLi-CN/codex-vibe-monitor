@@ -32,12 +32,14 @@
         "detected": false,
         "description": "The candidate adds only optional public recovery diagnostics and a coded unavailable body, plus additive durable checkpoint/staging tables and usage columns. Healthy response fields remain compatible, older readers can ignore the new tables/columns, and the recovery path narrows claims until exact publication rather than returning approximations."
       },
-      "reasoning": "Healthy responses retain their previous fields, while the optional system-status recovery object and coded 503 body are additive. Supported earlier same-Minor readers can ignore the new recovery tables/columns. Dashboard day-window staging is generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication; the 10,000 journal retention bound is not used as a full-table admission gate.",
-      "reassessed_at": "2026-10-24T04:52:40Z",
+      "reasoning": "Healthy responses retain their previous fields, while the optional system-status recovery object and coded 503 body are additive. Supported earlier same-Minor readers can ignore the new recovery tables/columns. Dashboard day-window staging is generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication; the 10,000 journal retention bound is not used as a full-table admission gate. A complete recovery turn covers its durable reads, bounded state writes, and publication deadline, and the in-memory snapshot is exposed only after the publication commit.",
+      "reassessed_at": "2026-10-24T05:36:19Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
         "src/api/slices/invocations_and_summary/summary_recovery.rs",
+        "src/api/slices/invocations_and_summary/summary_recovery.rs::dashboard_recovery_response_if_ready",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
         "src/schema/summary_coverage.rs",
         "src/stats/mod.rs",
         "src/tests/stateful_sqlite/record_budget.rs",
@@ -52,9 +54,10 @@
     "verified": {
       "impact": "minor",
       "reasoning": "Impact classification is verified from the additive schema and API shape: healthy Summary fields remain compatible, coded 503 and system-status fields are optional, and the recovery tables/usage columns are forward-only. Functional stateful and representative-scale evidence remains a current-head CI gate because local macOS test execution is blocked by the sqlx_macros dylib toolchain failure.",
-      "verified_at": "2026-10-24T04:52:40Z",
+      "verified_at": "2026-10-24T05:36:19Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
         "src/schema/summary_coverage.rs",
         "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
         "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
@@ -89,7 +92,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "58ab5cd5",
+      "9d3dcfe5",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "minor",
@@ -99,7 +102,7 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "58ab5cd5",
+    "candidate_head_sha": "9d3dcfe5",
     "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",

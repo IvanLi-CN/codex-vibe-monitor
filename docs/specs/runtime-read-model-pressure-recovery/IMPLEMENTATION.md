@@ -68,15 +68,17 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   historical staging; completed staging is
   published against its coverage fence and newer exact terminal deltas are
   overlaid at read time. Only completed staging that still matches the coverage
-  fence is published into the in-memory Summary projection. Recovery state
+  fence is published into the in-memory Summary projection, and the hub snapshot
+  becomes visible only after the publication transaction commits. Recovery state
   transitions use the same dedicated connection, SQLite progress handler, and
   remaining turn deadline; if a state write cannot fit its budget, the hub
   reports `deferred` and the next turn retries it instead of allowing status
   bookkeeping to consume the recovery worker's 2-second turn.
 - Publication holds `BEGIN IMMEDIATE` while it rereads the checkpoint and
   coverage fence, verifies that canonical terminal row counts still equal
-  staged global totals for every window, loads staging, and stores the snapshot
-  before commit. A row that becomes terminal after the scan therefore forces a
+  staged global totals for every window, and loads staging; it stores the
+  in-memory snapshot only after the transaction commits. A row that becomes
+  terminal after the scan therefore forces a
   bounded reset/rescan instead of publishing an incomplete snapshot. Stored
   Shanghai window boundaries are revalidated at read time, so a snapshot from
   the previous reporting day cannot be served as today's exact result.
@@ -177,6 +179,10 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   retries, then continues polling at the 30-second cap until the response is
   exact or failed, so completion is observed without waiting for remount or
   day rollover.
+- A valid temporary terminal overlay does not authorize a Dashboard day-window
+  response while the generation-fenced compacted snapshot is pending. The
+  request path returns the coded unavailable contract until exact recovery
+  publication, so degraded totals cannot be mistaken for exact totals.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
