@@ -69,6 +69,10 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   SQLite progress handler; cancellation rolls back and closes that connection
   within the remaining transaction deadline, and drops it when that deadline is
   exhausted, so an interrupted transaction is never returned to the pool.
+  Checkpoint initialization and generation-fence reset use the same dedicated
+  connection, deadline-aligned busy timeout, progress handler, bounded
+  rollback, and bounded close path; reset cleanup cannot fall back to the
+  shared pool or extend the recovery turn under SQLite contention.
   Append-only live-tail changes do not clear committed
   historical staging; completed staging is
   published against its coverage fence and newer exact terminal deltas are
