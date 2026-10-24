@@ -51,7 +51,10 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
   the candidate query measures text byte lengths, including raw `payload`,
   before loading source fields,
-  then materializes only the selected rows. The page byte budget is 8 MiB, the
+  then materializes only the selected rows. Candidate reads, source-row reads,
+  page staging, and publication use dedicated SQLite connections whose native
+  busy-timeout and progress handler share the remaining recovery deadline. The
+  page byte budget is 8 MiB, the
   write-transaction budget is 250 ms including a bounded commit wait, and a
   worker turn is capped at 2 s. An oversized error message is represented by a
   stable classification sentinel after canonical SQL has resolved its failure
@@ -74,7 +77,8 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   remaining turn deadline; if a state write cannot fit its budget, the hub
   reports `deferred` and the next turn retries it instead of allowing status
   bookkeeping to consume the recovery worker's 2-second turn.
-- Publication holds `BEGIN IMMEDIATE` while it rereads the checkpoint and
+- Publication uses a dedicated deadline-bounded connection and holds
+  `BEGIN IMMEDIATE` while it rereads the checkpoint and
   coverage fence, verifies that canonical terminal row counts still equal
   staged global totals for every window, and loads staging; it stores the
   in-memory snapshot only after the transaction commits. A row that becomes
@@ -183,6 +187,10 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   response while the generation-fenced compacted snapshot is pending. The
   request path returns the coded unavailable contract until exact recovery
   publication, so degraded totals cannot be mistaken for exact totals.
+- The independent exactness oracle interprets naive canonical `occurred_at`
+  values as `Asia/Shanghai`, matching SQLite storage, before reducing
+  `today`, `yesterday`, and `previous7d`; a focused regression covers local
+  midnight boundaries.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 

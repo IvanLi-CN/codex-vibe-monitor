@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
-  "candidate_head_sha": "9d3dcfe5",
-  "implementation_commit": "9d3dcfe5",
+  "candidate_head_sha": "099033e5",
+  "implementation_commit": "099033e5",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -45,9 +45,10 @@
         "scope": "exact Dashboard oracle",
         "evidence": [
           "scripts/summary-production-exact-oracle.py",
+          "scripts/test-summary-production-exact-oracle.py::ExactOracleTimeTests",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle"
         ],
-        "status": "implemented; representative-scale execution pending CI"
+        "status": "implemented; naive-Shanghai boundary oracle unit tests passed; representative-scale execution pending CI"
       },
       {
         "id": "A4",
@@ -56,7 +57,7 @@
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "implemented; local static validation passed, pressure execution pending CI"
+        "status": "implemented; local static validation passed with deadline-bounded SQLite reads/publication, pressure execution pending CI"
       },
       {
         "id": "A5",
@@ -97,7 +98,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head 9d3dcfe5 is committed locally; docs refresh and push are pending before CI and Tier 4 review"
+        "status": "PR #1181 implementation head 099033e5; CI and Tier 4 review pending"
       }
     ]
   },
@@ -141,7 +142,8 @@
       "bun run typecheck:web",
       "cd web && bun run build",
       "cd web && bunx vitest run --project=unit src/hooks/useStats.integration.test.tsx",
-      "cd web && bun run test-storybook"
+      "cd web && bun run test-storybook",
+      "python3 scripts/test-summary-production-exact-oracle.py"
     ],
     "blocked": [
       {
