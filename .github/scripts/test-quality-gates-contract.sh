@@ -292,8 +292,7 @@ PY
 expect_build_merge_group_condition_rejected
 
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
-mkdir -p "$observability_artifact_repo"
-cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
+copy_repo_snapshot "$repo_root" "$observability_artifact_repo"
 python3 - "$observability_artifact_repo/.github/workflows/ci-observability-performance.yml" <<'PY'
 from pathlib import Path
 import sys
@@ -324,8 +323,7 @@ fi
 grep -q "observability performance image artifact must be run-scoped and replace the prior attempt" "$tmp_dir/observability-artifact.log"
 
 smoke_artifact_repo="$tmp_dir/smoke-artifact-repo"
-mkdir -p "$smoke_artifact_repo"
-cp -R "$repo_root/.github" "$smoke_artifact_repo/.github"
+copy_repo_snapshot "$repo_root" "$smoke_artifact_repo"
 python3 - "$smoke_artifact_repo/.github/workflows/ci-pr.yml" <<'PY'
 from pathlib import Path
 import sys
@@ -1236,7 +1234,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run all required Playwright regression projects" "$tmp_dir/e2e-spec.log"
+grep -q "must run the functional and performance batches serially" "$tmp_dir/e2e-spec.log"
 
 e2e_config_spec_repo="$tmp_dir/e2e-config-spec-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_config_spec_repo"

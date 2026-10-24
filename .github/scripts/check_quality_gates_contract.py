@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -125,7 +126,11 @@ def require_playwright_ci_config(workflow_path: Path, workflow_name: str) -> Non
         "dashboard-render-performance",
         "dashboard-timeline-capacity",
     )
-    missing_specs = [spec for spec in required_specs if spec not in config]
+    missing_specs = [
+        spec
+        for spec in required_specs
+        if not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(spec)}(?![A-Za-z0-9_-])", config)
+    ]
     require(
         not missing_specs,
         f"{workflow_name} web/playwright.ci.config.ts is missing required specs: {', '.join(missing_specs)}",
