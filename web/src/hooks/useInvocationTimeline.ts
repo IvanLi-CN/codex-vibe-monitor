@@ -80,6 +80,17 @@ function preferTimelineRecord(
   return next.id >= current.id ? next : current;
 }
 
+async function releaseTimelineSnapshotBestEffort(asOf: string) {
+  try {
+    await releaseInvocationTimelineSnapshot(asOf);
+  } catch (error: unknown) {
+    console.debug(
+      "Invocation timeline snapshot release failed; the server TTL will reclaim it",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 async function fetchInvocationTimelineSnapshot(options: {
   scopeStart: string;
   scopeEnd: string;
@@ -94,57 +105,57 @@ async function fetchInvocationTimelineSnapshot(options: {
   let firstPage: InvocationTimelineResponse | null = null;
   const records = new Map<string, InvocationTimelineResponse["records"][number]>();
 
-  for (let pageIndex = 0; pageIndex < INVOCATION_TIMELINE_MAX_PAGES; pageIndex += 1) {
-    const page = await fetchInvocationTimeline({
-      ...options,
-      limit: INVOCATION_TIMELINE_PAGE_SIZE,
-      cursor,
-      asOf,
-    });
-    firstPage ??= page;
-    if (asOf == null) asOf = page.asOf;
-    if (page.asOf !== asOf) {
-      throw new Error("Invocation timeline snapshot changed while paging");
+  try {
+    for (let pageIndex = 0; pageIndex < INVOCATION_TIMELINE_MAX_PAGES; pageIndex += 1) {
+      const page = await fetchInvocationTimeline({
+        ...options,
+        limit: INVOCATION_TIMELINE_PAGE_SIZE,
+        cursor,
+        asOf,
+      });
+      firstPage ??= page;
+      if (asOf == null) asOf = page.asOf;
+      if (page.asOf !== asOf) {
+        throw new Error("Invocation timeline snapshot changed while paging");
+      }
+      for (const record of page.records) {
+        const key = timelineRecordKey(record);
+        const current = records.get(key);
+        records.set(key, current ? preferTimelineRecord(current, record) : record);
+      }
+      if (!page.hasMore) break;
+      if (!page.nextCursor) throw new Error("Invocation timeline page is missing nextCursor");
+      cursor = page.nextCursor;
+      if (pageIndex === INVOCATION_TIMELINE_MAX_PAGES - 1) {
+        throw new Error("Invocation timeline has too many pages");
+      }
     }
-    for (const record of page.records) {
-      const key = timelineRecordKey(record);
-      const current = records.get(key);
-      records.set(key, current ? preferTimelineRecord(current, record) : record);
-    }
-    if (!page.hasMore) break;
-    if (!page.nextCursor) throw new Error("Invocation timeline page is missing nextCursor");
-    cursor = page.nextCursor;
-    if (pageIndex === INVOCATION_TIMELINE_MAX_PAGES - 1) {
-      throw new Error("Invocation timeline has too many pages");
-    }
-  }
 
-  if (!firstPage || !asOf) throw new Error("Invocation timeline returned no snapshot");
-  if (!Number.isSafeInteger(firstPage.total) || firstPage.total < 0) {
-    throw new Error("Invocation timeline returned an invalid total");
-  }
-  const mergedRecords = [...records.values()].sort(
-    (left, right) =>
-      Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.id - right.id,
-  );
-  if (mergedRecords.length !== firstPage.total) {
-    throw new Error("Invocation timeline snapshot is incomplete");
-  }
-  void releaseInvocationTimelineSnapshot(asOf).catch((error: unknown) => {
-    console.debug(
-      "Invocation timeline snapshot release failed; the server TTL will reclaim it",
-      error instanceof Error ? error.message : String(error),
+    if (!firstPage || !asOf) throw new Error("Invocation timeline returned no snapshot");
+    if (!Number.isSafeInteger(firstPage.total) || firstPage.total < 0) {
+      throw new Error("Invocation timeline returned an invalid total");
+    }
+    const mergedRecords = [...records.values()].sort(
+      (left, right) =>
+        Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.id - right.id,
     );
-  });
-  return {
-    ...firstPage,
-    asOf,
-    snapshotAtMs: Date.now(),
-    total: firstPage.total,
-    hasMore: false,
-    nextCursor: null,
-    records: mergedRecords,
-  } satisfies InvocationTimelineResponse;
+    if (mergedRecords.length !== firstPage.total) {
+      throw new Error("Invocation timeline snapshot is incomplete");
+    }
+    void releaseTimelineSnapshotBestEffort(asOf);
+    return {
+      ...firstPage,
+      asOf,
+      snapshotAtMs: Date.now(),
+      total: firstPage.total,
+      hasMore: false,
+      nextCursor: null,
+      records: mergedRecords,
+    } satisfies InvocationTimelineResponse;
+  } catch (error) {
+    if (asOf) await releaseTimelineSnapshotBestEffort(asOf);
+    throw error;
+  }
 }
 
 export function useInvocationTimeline({
@@ -161,7 +172,7 @@ export function useInvocationTimeline({
     return startMs != null && endMs != null && endMs > startMs ? { startMs, endMs } : null;
   }, [response?.rangeEnd, response?.rangeStart]);
   const boundsContextKey = bounds
-    ? `${closedNaturalDay}:${upstreamAccountId ?? "all"}:${localCalendarDayKey(bounds.endMs)}`
+    ? `${closedNaturalDay}:${upstreamAccountId ?? "all"}:${closedNaturalDay ? localCalendarDayKey(bounds.endMs) : "live"}`
     : "empty";
   const [requestedWindow, setRequestedWindow] = useState<InvocationTimelineWindow | null>(() =>
     resolveInitialWindow(response, closedNaturalDay),
