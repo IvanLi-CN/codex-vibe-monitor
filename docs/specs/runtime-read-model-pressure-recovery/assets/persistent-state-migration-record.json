@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "189fa10de34dc57c7334f55fe3137fd05e76fcfe candidate.",
+      "to_program_version": "58ab5cd5 implementation candidate.",
       "direct_major_skips_supported": false
     }
   },
@@ -86,7 +86,7 @@
       "A 10,001-row compacted canonical source range is accepted without a global COUNT(*) or LIMIT 10001 gate and converges through 512-row occurred_at,id pages",
       "A committed Dashboard page resumes after restart without duplicate aggregate or usage contributions; a concurrent stale page is discarded by cursor compare-and-swap; a coverage-fence change leaves the old staging unpublished while live-tail changes preserve it",
       "Publication rejects staging whose canonical terminal counts changed after scanning and forces a bounded rescan; stored Shanghai window ranges expire at the next reporting day",
-      "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract"
+      "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract; recovery state transitions are themselves bounded by the worker turn budget and defer when the state write cannot complete"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",
@@ -153,7 +153,7 @@
     "src/tests/lightweight/summary_fallback_contention.rs"
   ],
   "delivery_context": {
-    "candidate_head_sha": "189fa10de34dc57c7334f55fe3137fd05e76fcfe",
+    "candidate_head_sha": "58ab5cd5",
     "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",

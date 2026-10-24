@@ -41,11 +41,13 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - Dashboard compacted-source recovery no longer treats the journal retention
   bound as a full-table replay limit. When a compaction proof intersects the
   Dashboard day windows, the `SummaryCoverageRecoverySupervisor` creates an
-  additive checkpoint for fixed Shanghai `today`, `yesterday`, and
+  additive checkpoint for fixed `Asia/Shanghai` `today`, `yesterday`, and
   `previous7d` ranges. It pages canonical terminal rows by `(occurred_at, id)`
   with a maximum of 512 rows and records aggregate, usage, bounded record
   identity, cursor, fence, and state in SQLite without copying invocation
-  payloads.
+  payloads. This checkpoint intentionally owns only those Shanghai reporting
+  ranges; a request in another reporting zone does not reinterpret the staged
+  rows and remains generic unavailable until a matching range is prepared.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
   the candidate query measures text byte lengths, including raw `payload`,
   before loading source fields,
@@ -66,7 +68,11 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   historical staging; completed staging is
   published against its coverage fence and newer exact terminal deltas are
   overlaid at read time. Only completed staging that still matches the coverage
-  fence is published into the in-memory Summary projection.
+  fence is published into the in-memory Summary projection. Recovery state
+  transitions use the same dedicated connection, SQLite progress handler, and
+  remaining turn deadline; if a state write cannot fit its budget, the hub
+  reports `deferred` and the next turn retries it instead of allowing status
+  bookkeeping to consume the recovery worker's 2-second turn.
 - Publication holds `BEGIN IMMEDIATE` while it rereads the checkpoint and
   coverage fence, verifies that canonical terminal row counts still equal
   staged global totals for every window, loads staging, and stores the snapshot
@@ -168,8 +174,9 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   processed-row count, and an optional error code; the web client renders the
   coded pending/failed state rather than indefinite loading or zero-valued
   success. A pending coded response schedules bounded 1s/2s/5s/10s/30s HTTP
-  retries, so completion is observed without waiting for remount or day
-  rollover.
+  retries, then continues polling at the 30-second cap until the response is
+  exact or failed, so completion is observed without waiting for remount or
+  day rollover.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
@@ -178,7 +185,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - The invocation-range recovery component has separate [API/version impact](assets/invocation-range-version-impact.json) and [durable reservation/re-entry](assets/invocation-range-persistent-state.json) records. They preserve the deployed v4.8 reservation representation and explicitly leave final integrated verification pending.
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-source-recovery-batch`, based directly on the locked development baseline `207e6d6341240dd722d15a9e853485bed5e441a9`. Current required-lane evidence and the local validation boundary are tracked there; CI and Tier 4 review must bind to the pushed branch head.
+- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-source-recovery-batch`, based directly on the locked development baseline `207e6d6341240dd722d15a9e853485bed5e441a9`. The recorded candidate SHA is the implementation-code head; evidence-only documentation commits may follow it, while CI and Tier 4 review must bind to the pushed branch head.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary

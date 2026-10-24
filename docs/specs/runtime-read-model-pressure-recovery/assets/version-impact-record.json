@@ -33,7 +33,7 @@
         "description": "The candidate adds only optional public recovery diagnostics and a coded unavailable body, plus additive durable checkpoint/staging tables and usage columns. Healthy response fields remain compatible, older readers can ignore the new tables/columns, and the recovery path narrows claims until exact publication rather than returning approximations."
       },
       "reasoning": "Healthy responses retain their previous fields, while the optional system-status recovery object and coded 503 body are additive. Supported earlier same-Minor readers can ignore the new recovery tables/columns. Dashboard day-window staging is generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication; the 10,000 journal retention bound is not used as a full-table admission gate.",
-      "reassessed_at": "2026-10-24T04:22:38Z",
+      "reassessed_at": "2026-10-24T04:52:40Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
@@ -44,13 +44,15 @@
         "src/tests/stateful_sqlite/statistics_recovery.rs",
         "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle",
         "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan",
-        "web/src/hooks/useStats.ts"
+        "web/src/hooks/useStats.ts",
+        "web/src/hooks/useStats.integration.test.tsx::keeps polling pending recovery at the capped delay",
+        "src/tests/lightweight/summary_fallback_contention.rs::summary_projection_compaction_stays_pending_until_staged_recovery_publishes"
       ]
     },
     "verified": {
       "impact": "minor",
       "reasoning": "Impact classification is verified from the additive schema and API shape: healthy Summary fields remain compatible, coded 503 and system-status fields are optional, and the recovery tables/usage columns are forward-only. Functional stateful and representative-scale evidence remains a current-head CI gate because local macOS test execution is blocked by the sqlx_macros dylib toolchain failure.",
-      "verified_at": "2026-10-24T04:22:38Z",
+      "verified_at": "2026-10-24T04:52:40Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
         "src/schema/summary_coverage.rs",
@@ -76,7 +78,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "The main SQLite database gains the existing optimizer/repair state plus additive Dashboard compacted-source checkpoint, aggregate, usage, and bounded record-identity tables. Dashboard recovery stores fixed Shanghai day-window boundaries, a tuple cursor, processed rows, target generation-fence values, normalized aggregates, usage breakdowns, and list-limited identities; it does not copy payloads. A durable cursor compare-and-swap prevents concurrent page double counting, coverage-fence changes discard unpublishable staging, and append-only live-tail changes are served through exact bounded deltas. NULL or blank replay-marker SHA values fail closed, stale markers re-enter repair, and non-error source text over the materialization budget fails closed. All new state is idempotent and forward-repairable; no allocator writeback, backup copy, destructive cleanup, or deployment state is introduced.",
+      "state_description": "The main SQLite database gains the existing optimizer/repair state plus additive Dashboard compacted-source checkpoint, aggregate, usage, and bounded record-identity tables. Dashboard recovery stores fixed Shanghai day-window boundaries, a tuple cursor, processed rows, target generation-fence values, normalized aggregates, usage breakdowns, and list-limited identities; it does not copy payloads. A durable cursor compare-and-swap prevents concurrent page double counting, coverage-fence changes discard unpublishable staging, and append-only live-tail changes are served through exact bounded deltas. Recovery state transitions use a bounded connection and remaining worker-turn deadline, so contention defers rather than extending the recovery turn. NULL or blank replay-marker SHA values fail closed, stale markers re-enter repair, and non-error source text over the materialization budget fails closed. All new state is idempotent and forward-repairable; no allocator writeback, backup copy, destructive cleanup, or deployment state is introduced.",
       "source_program_compatibility_range": "Supported earlier same-Minor readers can ignore the additive Dashboard recovery tables/columns and continue using existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations.",
       "evidence": [
         "src/schema/summary_coverage.rs::ensure_column_with_definition",
@@ -87,7 +89,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "189fa10de34dc57c7334f55fe3137fd05e76fcfe",
+      "58ab5cd5",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "minor",
@@ -97,7 +99,7 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "189fa10de34dc57c7334f55fe3137fd05e76fcfe",
+    "candidate_head_sha": "58ab5cd5",
     "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
