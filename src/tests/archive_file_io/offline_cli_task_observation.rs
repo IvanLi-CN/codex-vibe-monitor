@@ -13,6 +13,16 @@ struct PersistedTaskObservation {
     sample: serde_json::Value,
 }
 
+type PersistedTaskRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    String,
+    Option<String>,
+);
+
 async fn seed_offline_cli_retention_fixture(pool: &SqlitePool, config: &AppConfig) {
     let expired_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     let recent_at = shanghai_local_days_ago(0, 0, 0, 0);
@@ -61,15 +71,7 @@ async fn load_persisted_task_observation(pool: &SqlitePool) -> PersistedTaskObse
         actual_duration_ms,
         status,
         details,
-    ): (
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        String,
-        Option<String>,
-    ) = sqlx::query_as(
+    ): PersistedTaskRow = sqlx::query_as(
         "SELECT id,execution_uid,actual_started_at,actual_finished_at,actual_duration_ms,status,details
          FROM managed_task_runs
          WHERE task_key=?1
