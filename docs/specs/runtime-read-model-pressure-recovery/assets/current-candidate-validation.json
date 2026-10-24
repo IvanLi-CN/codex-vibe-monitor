@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
-  "candidate_head_sha": "6a58adf8c516fd6e4f81521e17f7608ec2c9e38b",
-  "implementation_commit": "6a58adf8c516fd6e4f81521e17f7608ec2c9e38b",
+  "candidate_head_sha": "189fa10de34dc57c7334f55fe3137fd05e76fcfe",
+  "implementation_commit": "189fa10de34dc57c7334f55fe3137fd05e76fcfe",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -25,7 +25,8 @@
         "scope": "bounded range recovery",
         "evidence": [
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
-          "src/tests/stateful_sqlite/statistics_recovery.rs"
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle"
         ],
         "status": "implemented; targeted Rust execution pending CI"
       },
@@ -35,7 +36,7 @@
         "evidence": [
           "src/schema/summary_coverage.rs",
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
-          "src/tests/stateful_sqlite/statistics_recovery.rs"
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
         ],
         "status": "implemented; targeted Rust execution pending CI"
       },
@@ -44,7 +45,7 @@
         "scope": "exact Dashboard oracle",
         "evidence": [
           "scripts/summary-production-exact-oracle.py",
-          "src/tests/stateful_sqlite/statistics_recovery.rs"
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle"
         ],
         "status": "implemented; representative-scale execution pending CI"
       },
@@ -148,8 +149,8 @@
         "reason": "The local macOS Rust 1.96 test build emits a sqlx_macros dylib rejected by dyld with mis-aligned LINKEDIT string pool; CI/Linux must execute the stateful Rust tests."
       },
       {
-        "command": "cargo test --locked compacted_source_recovery_budget_tests -- --nocapture",
-        "reason": "The local macOS Rust 1.96 test build is blocked before test execution by the same malformed sqlx_macros dylib (mis-aligned LINKEDIT string pool); CI/Linux must execute the recovery budget tests."
+        "command": "cargo test --locked compacted_source_recovery -- --nocapture",
+        "reason": "The local macOS Rust 1.96 test build is blocked before test execution by a malformed sqlx_macros dylib (mis-aligned LINKEDIT string pool); CI/Linux must execute the recovery budget, exact-oracle, restart, and publication-rescan tests."
       },
       {
         "command": "cd web && bun run test",
