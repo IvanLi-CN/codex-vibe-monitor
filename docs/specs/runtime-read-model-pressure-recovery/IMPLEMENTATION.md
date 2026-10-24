@@ -193,6 +193,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   retries, then continues polling at the 30-second cap until the response is
   exact or failed, so completion is observed without waiting for remount or
   day rollover.
+- When an eligible compaction gap has a generation-fenced Dashboard snapshot, the HTTP path validates and serves that exact snapshot before applying the generic source-gap failure branch. The generic unavailable response remains the fallback for pending, failed, stale, or out-of-scope recovery and for gaps that the Dashboard worker cannot prove.
 - A valid temporary terminal overlay does not authorize a Dashboard day-window
   response while the generation-fenced compacted snapshot is pending. The
   request path returns the coded unavailable contract until exact recovery
