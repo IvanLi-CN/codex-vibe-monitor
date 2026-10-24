@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "be398682 implementation candidate.",
+      "to_program_version": "d4dfa88b implementation candidate.",
       "direct_major_skips_supported": false
     }
   },
@@ -56,7 +56,7 @@
       },
       {
         "id": "backfill-dashboard-compacted-source-recovery",
-        "description": "When a source compaction proof intersects the Dashboard day windows, create or resume the fixed-Shanghai today/yesterday/previous7d checkpoint. Read canonical terminal rows by occurred_at,id keyset pages of at most 512 rows, and commit aggregate, usage, bounded record identities, tuple cursor, target generation fence, processed-row count, and state atomically. Checkpoint initialization and generation-fence reset use the same dedicated SQLite connection, deadline-aligned busy timeout, progress handler, bounded rollback, and bounded close path as page staging and publication; reset never falls back to the shared pool under contention. Candidate and source-row reads, page staging, and publication use dedicated SQLite connections with deadline-aligned busy timeouts, progress handlers, and bounded close paths; rollback and close cleanup also stop at the remaining transaction deadline and drop the dedicated connection when the budget is exhausted. A concurrent page must match the durable cursor and target before applying aggregate deltas; coverage-fence changes discard unpublishable staging, while append-only live-tail changes preserve progress and are overlaid by exact bounded deltas. Candidate byte preflight covers only text loaded into the source-row projection; raw invocation payload is not materialized, staged, or charged against the page budget. Yield at 8 MiB, 250 ms transaction including bounded commit wait, 2 s turn covering checkpoint/status/publication work, pressure, contention, cancellation, or shutdown; restart resumes the last committed page. Publication holds its writer fence while it verifies canonical terminal counts and rechecks the coverage window identity, then exposes the hub snapshot only after the durable publication commit; a late terminal transition resets staging for a bounded rescan. Non-error text over the materialization budget fails closed before loading. No request-path SQL, production copy, destructive cleanup, or payload staging is allowed.",
+        "description": "When a source compaction proof intersects the Dashboard day windows, create or resume the fixed-Shanghai today/yesterday/previous7d checkpoint. Read canonical terminal rows by occurred_at,id keyset pages of at most 512 rows, and commit aggregate, usage, bounded record identities, tuple cursor, target generation fence, processed-row count, and state atomically. Checkpoint initialization and generation-fence reset use the same dedicated SQLite connection, deadline-aligned busy timeout, progress handler, bounded rollback, and bounded close path as page staging and publication; reset never falls back to the shared pool under contention and its write transaction is capped at 250 ms. Candidate and source-row reads, page staging, and publication use dedicated SQLite connections with deadline-aligned busy timeouts, progress handlers, and bounded close paths; rollback and close cleanup also stop at the remaining transaction deadline and drop the dedicated connection when the budget is exhausted. A concurrent page must match the durable cursor and target before applying aggregate deltas; coverage-fence changes discard unpublishable staging, while append-only live-tail changes preserve progress and are overlaid by exact bounded deltas. Candidate byte preflight covers only text loaded into the source-row projection; raw invocation payload is not materialized, staged, or charged against the page budget. Yield at 8 MiB, 250 ms transaction including bounded commit wait, 2 s turn covering checkpoint/status/publication work, pressure, contention, cancellation, or shutdown; restart resumes the last committed page. Publication holds its writer fence while it verifies canonical terminal counts and rechecks the coverage window identity, then exposes the hub snapshot only after the durable publication commit; its transaction is also capped at 250 ms, and a late terminal transition resets staging for a bounded rescan. Non-error text over the materialization budget fails closed before loading. No request-path SQL, production copy, destructive cleanup, or payload staging is allowed.",
         "order": 5,
         "depends_on": [
           "ddl-dashboard-compacted-source-recovery"
@@ -154,7 +154,7 @@
     "src/tests/lightweight/summary_fallback_contention.rs"
   ],
   "delivery_context": {
-    "candidate_head_sha": "be398682",
+    "candidate_head_sha": "d4dfa88b",
     "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",

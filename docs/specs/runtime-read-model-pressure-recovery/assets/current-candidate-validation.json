@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
-  "candidate_head_sha": "be398682",
-  "implementation_commit": "be398682",
+  "candidate_head_sha": "d4dfa88b",
+  "implementation_commit": "d4dfa88b",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -58,7 +58,7 @@
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "implemented; local static validation passed with deadline-bounded reset, SQLite reads, rollback/close cleanup, and publication; pressure execution pending CI"
+        "status": "implemented; local static validation passed with 250 ms reset/publication transactions, deadline-bounded SQLite reads, rollback/close cleanup, and publication; pressure execution pending CI"
       },
       {
         "id": "A5",
@@ -99,7 +99,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head be398682; CI, Tier 4 review, and visual confirmation pending"
+        "status": "PR #1181 implementation head d4dfa88b; CI, Tier 4 review, and visual confirmation pending"
       }
     ]
   },

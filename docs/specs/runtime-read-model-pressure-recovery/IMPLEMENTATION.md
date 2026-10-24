@@ -72,7 +72,8 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   Checkpoint initialization and generation-fence reset use the same dedicated
   connection, deadline-aligned busy timeout, progress handler, bounded
   rollback, and bounded close path; reset cleanup cannot fall back to the
-  shared pool or extend the recovery turn under SQLite contention.
+  shared pool or extend the recovery turn under SQLite contention, and its
+  write transaction is capped at the same 250 ms budget as page staging.
   Append-only live-tail changes do not clear committed
   historical staging; completed staging is
   published against its coverage fence and newer exact terminal deltas are
