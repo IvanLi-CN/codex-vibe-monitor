@@ -31,7 +31,9 @@ def parse_time(value: str) -> dt.datetime:
         normalized = normalized[:-1] + "+00:00"
     parsed = dt.datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        # SQLite stores occurred_at as a naive Asia/Shanghai timestamp; keep the canonical
+        # interpretation before comparing it with reporting-window UTC boundaries.
+        parsed = parsed.replace(tzinfo=SHANGHAI)
     return parsed.astimezone(UTC)
 
 

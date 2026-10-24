@@ -1906,11 +1906,62 @@ fn push_compacted_source_recovery_text_length(
         .push(", '') AS BLOB))");
 }
 
+async fn open_compacted_source_recovery_connection(
+    state: &AppState,
+    budget: Duration,
+    context: &'static str,
+) -> Result<Option<(SqliteConnection, Arc<AtomicBool>, Instant)>> {
+    if budget.is_zero() {
+        return Ok(None);
+    }
+    let deadline = Instant::now() + budget;
+    let options = state
+        .pool
+        .connect_options()
+        .as_ref()
+        .clone()
+        .busy_timeout(budget);
+    let mut connection =
+        match tokio::time::timeout(budget, SqliteConnection::connect_with(&options)).await {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(error)) => {
+                let error = anyhow!(error).context(context);
+                if is_sqlite_contention(&error) {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+            Err(_) => return Ok(None),
+        };
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = interrupted.clone();
+        let mut handle = connection
+            .lock_handle()
+            .await
+            .context("acquire compacted source recovery progress handle")?;
+        handle.set_progress_handler(1_000, move || {
+            let keep_running = Instant::now() < deadline;
+            if !keep_running {
+                interrupted.store(true, Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    if Instant::now() >= deadline {
+        close_compacted_source_recovery_connection(connection).await?;
+        return Ok(None);
+    }
+    Ok(Some((connection, interrupted, deadline)))
+}
+
 async fn load_compacted_source_recovery_candidates(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
     windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
-) -> Result<Vec<CompactedSourceRecoveryCandidate>> {
+    budget: Duration,
+) -> Result<Option<Vec<CompactedSourceRecoveryCandidate>>> {
+    let started = Instant::now();
     let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT id, occurred_at, (192");
     for expression in [
         "invoke_id",
@@ -1934,21 +1985,57 @@ async fn load_compacted_source_recovery_candidates(
     query
         .push(" ORDER BY occurred_at ASC, id ASC LIMIT ")
         .push_bind(i64::try_from(SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE).unwrap_or(512));
-    query
-        .build_query_as::<CompactedSourceRecoveryCandidate>()
-        .fetch_all(&state.pool)
-        .await
-        .context("load bounded compacted source recovery candidates")
+    let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
+        state,
+        budget.saturating_sub(started.elapsed()),
+        "open compacted source recovery candidate connection",
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let remaining = budget.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        return Ok(None);
+    }
+    let result = tokio::time::timeout(
+        remaining,
+        query
+            .build_query_as::<CompactedSourceRecoveryCandidate>()
+            .fetch_all(&mut connection),
+    )
+    .await;
+    if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
+        return Ok(None);
+    }
+    match result {
+        Ok(Ok(rows)) => Ok(Some(rows)),
+        Ok(Err(error)) => {
+            let error = anyhow!(error).context("load bounded compacted source recovery candidates");
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error)
+            {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 async fn load_compacted_source_recovery_source_rows(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
     candidates: &[CompactedSourceRecoveryCandidate],
-) -> Result<Vec<CompactedSourceRecoverySourceRow>> {
+    budget: Duration,
+) -> Result<Option<Vec<CompactedSourceRecoverySourceRow>>> {
     if candidates.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
+    let started = Instant::now();
     let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
     push_compacted_source_recovery_source_columns(&mut query);
     query.push("id IN (");
@@ -1963,11 +2050,44 @@ async fn load_compacted_source_recovery_source_rows(
         .push(" AND id <= ")
         .push_bind(checkpoint.target_live_high_watermark_id)
         .push(" ORDER BY occurred_at ASC, id ASC");
-    let rows = query
-        .build_query_as::<CompactedSourceRecoverySourceRow>()
-        .fetch_all(&state.pool)
-        .await
-        .context("load selected compacted source recovery rows")?;
+    let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
+        state,
+        budget.saturating_sub(started.elapsed()),
+        "open compacted source recovery source connection",
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let remaining = budget.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        return Ok(None);
+    }
+    let result = tokio::time::timeout(
+        remaining,
+        query
+            .build_query_as::<CompactedSourceRecoverySourceRow>()
+            .fetch_all(&mut connection),
+    )
+    .await;
+    if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
+        return Ok(None);
+    }
+    let rows = match result {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(error)) => {
+            let error = anyhow!(error).context("load selected compacted source recovery rows");
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error)
+            {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        Err(_) => return Ok(None),
+    };
     if rows.len() != candidates.len() {
         bail!(
             "selected compacted source recovery rows changed before staging: expected {}, found {}",
@@ -1975,7 +2095,7 @@ async fn load_compacted_source_recovery_source_rows(
             rows.len()
         );
     }
-    Ok(rows)
+    Ok(Some(rows))
 }
 
 fn add_compacted_source_row_contributions(
@@ -2349,6 +2469,29 @@ async fn close_compacted_source_recovery_connection(
     Ok(())
 }
 
+async fn close_compacted_source_recovery_connection_bounded(
+    connection: SqliteConnection,
+    deadline: Instant,
+) -> Result<bool> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        drop(connection);
+        return Ok(false);
+    }
+    match tokio::time::timeout(
+        remaining,
+        close_compacted_source_recovery_connection(connection),
+    )
+    .await
+    {
+        Ok(result) => {
+            result?;
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
 async fn stage_compacted_source_recovery_page_in_transaction(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
@@ -2657,7 +2800,7 @@ async fn update_compacted_source_recovery_state_bounded(
             Err(_) => Ok(false),
         }
     };
-    close_compacted_source_recovery_connection(connection).await?;
+    let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
     state
         .subscription_hub
         .set_summary_compacted_source_recovery_state(recovery_state)
@@ -2710,39 +2853,102 @@ async fn compacted_source_recovery_staged_totals_match_source(
     Ok(true)
 }
 
-async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<bool> {
-    let mut transaction = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("begin compacted source recovery publication")?;
-    let Some(checkpoint) =
-        load_compacted_source_recovery_checkpoint_tx(transaction.as_mut()).await?
+async fn publish_compacted_source_recovery_snapshot(
+    state: &AppState,
+    budget: Duration,
+) -> Result<bool> {
+    let started = Instant::now();
+    let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
+        state,
+        budget,
+        "open compacted source recovery publication connection",
+    )
+    .await?
     else {
-        transaction.rollback().await.ok();
+        return Ok(false);
+    };
+    let remaining = budget.saturating_sub(started.elapsed());
+    let result = if remaining.is_zero() {
+        Ok(false)
+    } else {
+        match tokio::time::timeout(
+            remaining,
+            publish_compacted_source_recovery_snapshot_in_transaction(
+                state,
+                &mut connection,
+                interrupted.as_ref(),
+                deadline,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Ok(false),
+        }
+    };
+    let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+    match result {
+        Ok(published) => Ok(published),
+        Err(error)
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn publish_compacted_source_recovery_snapshot_in_transaction(
+    state: &AppState,
+    connection: &mut SqliteConnection,
+    interrupted: &AtomicBool,
+    deadline: Instant,
+) -> Result<bool> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    match tokio::time::timeout(
+        remaining,
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *connection),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let error = anyhow!(error);
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error)
+            {
+                return Ok(false);
+            }
+            return Err(error.context("begin compacted source recovery publication"));
+        }
+        Err(_) => return Ok(false),
+    }
+    let Some(checkpoint) = load_compacted_source_recovery_checkpoint_tx(connection).await? else {
+        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
         return Ok(false);
     };
     if checkpoint.state != SummaryCompactedSourceRecoveryState::Completed.as_str() {
-        transaction.rollback().await.ok();
+        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
         return Ok(false);
     }
     let expected_fence = compacted_source_recovery_fence(&checkpoint);
-    let current_fence =
-        load_summary_projection_generation_fence_tx(state, transaction.as_mut()).await?;
+    let current_fence = load_summary_projection_generation_fence_tx(state, connection).await?;
     if !current_fence.coverage_sources_match(expected_fence) {
-        transaction.rollback().await.ok();
+        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
         ensure_compacted_source_recovery(state).await?;
         return Ok(false);
     }
     let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
-    if !compacted_source_recovery_staged_totals_match_source(
-        transaction.as_mut(),
-        &checkpoint,
-        &windows,
-    )
-    .await?
+    if !compacted_source_recovery_staged_totals_match_source(connection, &checkpoint, &windows)
+        .await?
     {
-        transaction.rollback().await.ok();
+        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
         force_reset_compacted_source_recovery(state).await?;
         return Ok(false);
     }
@@ -2753,7 +2959,7 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
            FROM summary_compacted_source_recovery_aggregate WHERE scope = ?1",
     )
     .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-    .fetch_all(transaction.as_mut())
+    .fetch_all(&mut *connection)
     .await
     .context("load compacted source recovery aggregates")?;
     for (
@@ -2815,7 +3021,7 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
            FROM summary_compacted_source_recovery_usage WHERE scope = ?1",
     )
     .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-    .fetch_all(transaction.as_mut())
+    .fetch_all(&mut *connection)
     .await
     .context("load compacted source recovery usage")?;
     let mut usage_accumulators = HashMap::<(String, Option<i64>), UsageBreakdownAccumulator>::new();
@@ -2876,7 +3082,7 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
         "SELECT COUNT(*) FROM summary_compacted_source_recovery_record WHERE scope = ?1",
     )
     .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-    .fetch_one(transaction.as_mut())
+    .fetch_one(&mut *connection)
     .await
     .context("count compacted source recovery record identities")?
     .max(0) as usize;
@@ -2887,15 +3093,28 @@ async fn publish_compacted_source_recovery_snapshot(state: &AppState) -> Result<
         entries,
         bounded_record_count,
     };
-    match transaction.commit().await {
-        Ok(()) => {}
-        Err(error) => {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        sqlx::query("ROLLBACK").execute(&mut *connection).await.ok();
+        return Ok(false);
+    }
+    match tokio::time::timeout(remaining, sqlx::query("COMMIT").execute(&mut *connection)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let error = anyhow!(error);
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error)
+            {
+                return Ok(false);
+            }
             state
                 .subscription_hub
                 .clear_summary_dashboard_recovery()
                 .await;
-            return Err(anyhow!(error).context("commit compacted source recovery publication"));
+            return Err(error.context("commit compacted source recovery publication"));
         }
+        Err(_) => return Ok(false),
     }
     state
         .subscription_hub
@@ -2963,7 +3182,7 @@ async fn run_compacted_source_recovery_turn(
             }
             let published = match tokio::time::timeout(
                 remaining,
-                publish_compacted_source_recovery_snapshot(state),
+                publish_compacted_source_recovery_snapshot(state, remaining),
             )
             .await
             {
@@ -3102,14 +3321,16 @@ async fn run_compacted_source_recovery_turn(
         }
         let remaining =
             SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
-        let candidates = match tokio::time::timeout(
+        let candidates = match load_compacted_source_recovery_candidates(
+            state,
+            &checkpoint,
+            &windows,
             remaining,
-            load_compacted_source_recovery_candidates(state, &checkpoint, &windows),
         )
-        .await
+        .await?
         {
-            Ok(result) => result,
-            Err(_) => {
+            Some(candidates) => candidates,
+            None => {
                 let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
@@ -3125,7 +3346,7 @@ async fn run_compacted_source_recovery_turn(
                     ),
                 }));
             }
-        }?;
+        };
         let (selected_candidates, completed) =
             match select_compacted_source_recovery_candidates(candidates) {
                 Ok(selection) => selection,
@@ -3145,14 +3366,16 @@ async fn run_compacted_source_recovery_turn(
             };
         let remaining =
             SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
-        let selected_rows = match tokio::time::timeout(
+        let selected_rows = match load_compacted_source_recovery_source_rows(
+            state,
+            &checkpoint,
+            &selected_candidates,
             remaining,
-            load_compacted_source_recovery_source_rows(state, &checkpoint, &selected_candidates),
         )
-        .await
+        .await?
         {
-            Ok(result) => result?,
-            Err(_) => {
+            Some(rows) => rows,
+            None => {
                 let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
@@ -3255,7 +3478,7 @@ async fn run_compacted_source_recovery_turn(
                 SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
             let published = match tokio::time::timeout(
                 remaining,
-                publish_compacted_source_recovery_snapshot(state),
+                publish_compacted_source_recovery_snapshot(state, remaining),
             )
             .await
             {
@@ -3321,12 +3544,23 @@ pub(crate) async fn run_compacted_source_recovery_one_page_for_test(
         .await?
         .ok_or_else(|| anyhow!("test recovery checkpoint was not initialized"))?;
     let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
-    let candidates =
-        load_compacted_source_recovery_candidates(state, &checkpoint, &windows).await?;
+    let candidates = load_compacted_source_recovery_candidates(
+        state,
+        &checkpoint,
+        &windows,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
+    )
+    .await?
+    .ok_or_else(|| anyhow!("test recovery candidate read exceeded its budget"))?;
     let (selected_candidates, completed) = select_compacted_source_recovery_candidates(candidates)?;
-    let selected_rows =
-        load_compacted_source_recovery_source_rows(state, &checkpoint, &selected_candidates)
-            .await?;
+    let selected_rows = load_compacted_source_recovery_source_rows(
+        state,
+        &checkpoint,
+        &selected_candidates,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
+    )
+    .await?
+    .ok_or_else(|| anyhow!("test recovery source read exceeded its budget"))?;
     match stage_compacted_source_recovery_page(
         state,
         &checkpoint,
