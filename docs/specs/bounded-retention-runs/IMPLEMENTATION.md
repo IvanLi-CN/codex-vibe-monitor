@@ -10,7 +10,7 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 ## Current Status
 
-执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；补修与新增真实离线 CLI 回归尚待当前候选的 GitHub Actions 编译、回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
+执行计量的 runtime 集成调用已改用 maintenance 公开重导出，修复 CI 发现的私有模块访问编译错误，前一候选随后通过 GitHub Actions。正式审查发现的离线 owner 计时缺失和未知耗时被写成零值直方图问题已修复；源候选 `00336b6b96387ad52c84096fa543c9fd1a1820cc` 又补充了真实离线 CLI 的归档提交后 backlog 观测失败回归，核对源转换、归档文件及持久 `complete`/`backlog_unknown` 事实。该候选尚待发布、当前 head 的 GitHub Actions 编译与回归及重新正式审查。旧候选通过结果不代替补修后的验证，旧编译失败后的依赖任务失败也不作为独立迁移或性能结论。
 
 候选身份工具已区分普通进度文档同步与修改绑定证明记录的证据载体，前者绑定真实 checkout、GitHub SHA 和二进制，后者继续严格要求四份文件及直接实现父提交。临时 Git 历史回归和质量门禁合同检查通过，不表示归档迁移或持续性能验证通过。
 

@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Runtime integration uses the public `crate::maintenance::finalize_retention_owner_details` re-export. Automatic CI previously rejected the private module path with rustc E0603; the corrected candidate has passed only local formatting and diff checks, and requires fresh GitHub Actions feedback before runtime or review readiness can be claimed. Downstream jobs blocked by that compile failure are not separate validation results.
+- Runtime integration uses the public `crate::maintenance::finalize_retention_owner_details` re-export. Automatic CI previously rejected the private module path with rustc E0603; source candidate `00336b6b96387ad52c84096fa543c9fd1a1820cc` also adds a real archive/file-I/O owner-return regression for post-commit backlog observation failure. It has passed only local formatting and diff checks so far and requires publication, current-head GitHub Actions feedback, and fresh formal review before runtime or review readiness can be claimed. Downstream jobs blocked by that compile failure are not separate validation results.
 
 - Candidate identity tooling distinguishes ordinary progress-document updates from edits to bound evidence records. Ordinary updates bind the actual checkout, GitHub SHA and binary; a claimed evidence carrier still requires its exact four files and direct implementation parent. Focused synthetic Git-history and quality-gate contract checks pass; migration replay still needs fresh Actions evidence.
 
