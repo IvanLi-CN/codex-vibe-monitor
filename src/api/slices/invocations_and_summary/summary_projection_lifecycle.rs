@@ -1281,38 +1281,19 @@ async fn restore_compacted_summary_source_tail(state: &AppState) -> Result<bool>
 mod compacted_source_recovery_budget_tests {
     use super::*;
 
-    fn source_row(id: i64, payload_bytes: usize) -> CompactedSourceRecoverySourceRow {
-        CompactedSourceRecoverySourceRow {
+    fn candidate(id: i64, payload_bytes: usize) -> CompactedSourceRecoveryCandidate {
+        CompactedSourceRecoveryCandidate {
             id,
-            invoke_id: format!("recovery-{id}"),
             occurred_at: "2026-10-22 12:00:00".to_string(),
-            upstream_account_id: None,
-            model: Some("test-model".to_string()),
-            response_model: None,
-            reasoning_effort: None,
-            input_tokens: Some(1),
-            output_tokens: Some(1),
-            cache_input_tokens: Some(0),
-            total_tokens: Some(2),
-            cost: Some(0.1),
-            cost_input: Some(0.1),
-            cost_cache_write: Some(0.0),
-            cost_cache_read: Some(0.0),
-            cost_output: Some(0.0),
-            cost_reasoning: Some(0.0),
-            status: Some("success".to_string()),
-            error_message: Some("x".repeat(payload_bytes)),
-            failure_kind: None,
-            failure_class: None,
-            is_actionable: Some(0),
+            estimated_bytes: i64::try_from(192 + payload_bytes).expect("test byte estimate"),
         }
     }
 
     #[test]
     fn page_selection_is_capped_at_512_rows() {
-        let page = (1..=513).map(|id| source_row(id, 0)).collect();
-        let (selected, completed) =
-            select_compacted_source_recovery_page(page).expect("select bounded recovery page");
+        let page = (1..=513).map(|id| candidate(id, 0)).collect();
+        let (selected, completed) = select_compacted_source_recovery_candidates(page)
+            .expect("select bounded recovery candidates");
         assert_eq!(selected.len(), SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE);
         assert!(!completed);
     }
@@ -1320,10 +1301,23 @@ mod compacted_source_recovery_budget_tests {
     #[test]
     fn page_selection_yields_before_the_8_mib_byte_budget() {
         let row_bytes = SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES / 2;
-        let page = vec![source_row(1, row_bytes), source_row(2, row_bytes)];
-        let (selected, completed) =
-            select_compacted_source_recovery_page(page).expect("select byte-bounded recovery page");
+        let page = vec![candidate(1, row_bytes), candidate(2, row_bytes)];
+        let (selected, completed) = select_compacted_source_recovery_candidates(page)
+            .expect("select byte-bounded recovery candidates");
         assert_eq!(selected.len(), 1);
+        assert!(!completed);
+    }
+
+    #[test]
+    fn oversized_source_row_is_admitted_as_a_singleton() {
+        let page = vec![
+            candidate(1, SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES + 1),
+            candidate(2, 1),
+        ];
+        let (selected, completed) = select_compacted_source_recovery_candidates(page)
+            .expect("select oversized source singleton");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, 1);
         assert!(!completed);
     }
 
@@ -1401,19 +1395,11 @@ struct CompactedSourceRecoverySourceRow {
     is_actionable: Option<i64>,
 }
 
-impl CompactedSourceRecoverySourceRow {
-    fn estimated_bytes(&self) -> usize {
-        self.invoke_id.len()
-            + self.occurred_at.len()
-            + self.model.as_ref().map_or(0, String::len)
-            + self.response_model.as_ref().map_or(0, String::len)
-            + self.reasoning_effort.as_ref().map_or(0, String::len)
-            + self.status.as_ref().map_or(0, String::len)
-            + self.error_message.as_ref().map_or(0, String::len)
-            + self.failure_kind.as_ref().map_or(0, String::len)
-            + self.failure_class.as_ref().map_or(0, String::len)
-            + 192
-    }
+#[derive(Debug, Clone, FromRow)]
+struct CompactedSourceRecoveryCandidate {
+    id: i64,
+    occurred_at: String,
+    estimated_bytes: i64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -1705,13 +1691,9 @@ async fn ensure_compacted_source_recovery(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-async fn load_compacted_source_recovery_source_page(
-    state: &AppState,
-    checkpoint: &CompactedSourceRecoveryCheckpoint,
-    windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
-) -> Result<Vec<CompactedSourceRecoverySourceRow>> {
-    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+fn push_compacted_source_recovery_source_columns(query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>) {
     query
+        .push("SELECT id, invoke_id, occurred_at, ")
         .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
         .push(" AS upstream_account_id, model, ")
         .push(INVOCATION_RESPONSE_MODEL_SQL)
@@ -1721,7 +1703,13 @@ async fn load_compacted_source_recovery_source_page(
             " AS reasoning_effort, input_tokens, output_tokens, cache_input_tokens, \
                 total_tokens, cost, \
                 cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \
-                status, error_message, ",
+                status, CASE WHEN length(CAST(COALESCE(error_message, '') AS BLOB)) > ",
+        )
+        .push_bind(
+            i64::try_from(SUMMARY_COMPACTED_SOURCE_RECOVERY_ERROR_MESSAGE_BYTES).unwrap_or(65_536),
+        )
+        .push(
+            " THEN '__summary_recovery_oversized_error__' ELSE error_message END AS error_message, ",
         )
         .push(INVOCATION_FAILURE_KIND_SQL)
         .push(" AS failure_kind, ")
@@ -1731,7 +1719,15 @@ async fn load_compacted_source_recovery_source_page(
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable \
                 FROM codex_invocations WHERE ",
-        )
+        );
+}
+
+fn push_compacted_source_recovery_filter(
+    query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>,
+    checkpoint: &CompactedSourceRecoveryCheckpoint,
+    windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
+) {
+    query
         .push(INVOCATION_STATUS_NORMALIZED_SQL)
         .push(" NOT IN ('running', 'pending') AND id <= ")
         .push_bind(checkpoint.target_live_high_watermark_id)
@@ -1760,14 +1756,84 @@ async fn load_compacted_source_recovery_source_page(
     } else if checkpoint.cursor_id > 0 {
         query.push(" AND id > ").push_bind(checkpoint.cursor_id);
     }
+}
+
+fn push_compacted_source_recovery_text_length(
+    query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>,
+    expression: &str,
+) {
+    query
+        .push(" + length(CAST(COALESCE(")
+        .push(expression)
+        .push(", '') AS BLOB))");
+}
+
+async fn load_compacted_source_recovery_candidates(
+    state: &AppState,
+    checkpoint: &CompactedSourceRecoveryCheckpoint,
+    windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
+) -> Result<Vec<CompactedSourceRecoveryCandidate>> {
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT id, occurred_at, (192");
+    for expression in [
+        "invoke_id",
+        "occurred_at",
+        "model",
+        INVOCATION_RESPONSE_MODEL_SQL,
+        INVOCATION_REASONING_EFFORT_SQL,
+        "status",
+        "error_message",
+        INVOCATION_FAILURE_KIND_SQL,
+        INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    ] {
+        push_compacted_source_recovery_text_length(&mut query, expression);
+    }
+    query.push(") AS estimated_bytes FROM codex_invocations WHERE ");
+    push_compacted_source_recovery_filter(&mut query, checkpoint, windows);
     query
         .push(" ORDER BY occurred_at ASC, id ASC LIMIT ")
         .push_bind(i64::try_from(SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE).unwrap_or(512));
     query
+        .build_query_as::<CompactedSourceRecoveryCandidate>()
+        .fetch_all(&state.pool)
+        .await
+        .context("load bounded compacted source recovery candidates")
+}
+
+async fn load_compacted_source_recovery_source_rows(
+    state: &AppState,
+    checkpoint: &CompactedSourceRecoveryCheckpoint,
+    candidates: &[CompactedSourceRecoveryCandidate],
+) -> Result<Vec<CompactedSourceRecoverySourceRow>> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+    push_compacted_source_recovery_source_columns(&mut query);
+    query.push("id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for candidate in candidates {
+            separated.push_bind(candidate.id);
+        }
+        separated.push_unseparated(")");
+    }
+    query
+        .push(" AND id <= ")
+        .push_bind(checkpoint.target_live_high_watermark_id)
+        .push(" ORDER BY occurred_at ASC, id ASC");
+    let rows = query
         .build_query_as::<CompactedSourceRecoverySourceRow>()
         .fetch_all(&state.pool)
         .await
-        .context("load bounded compacted source recovery page")
+        .context("load selected compacted source recovery rows")?;
+    if rows.len() != candidates.len() {
+        bail!(
+            "selected compacted source recovery rows changed before staging: expected {}, found {}",
+            candidates.len(),
+            rows.len()
+        );
+    }
+    Ok(rows)
 }
 
 fn add_compacted_source_row_contributions(
@@ -1902,16 +1968,21 @@ fn add_compacted_source_row_contributions(
     Ok(())
 }
 
-fn select_compacted_source_recovery_page(
-    page: Vec<CompactedSourceRecoverySourceRow>,
-) -> Result<(Vec<CompactedSourceRecoverySourceRow>, bool)> {
+fn select_compacted_source_recovery_candidates(
+    page: Vec<CompactedSourceRecoveryCandidate>,
+) -> Result<(Vec<CompactedSourceRecoveryCandidate>, bool)> {
     let fetched_count = page.len();
     let mut selected_bytes = 0usize;
     let mut selected_rows = Vec::with_capacity(page.len());
     for row in page {
-        let row_bytes = row.estimated_bytes();
+        let row_bytes = usize::try_from(row.estimated_bytes)
+            .context("compacted source recovery byte estimate overflow")?;
         if selected_rows.is_empty() && row_bytes > SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES {
-            bail!("canonical row {} exceeds recovery page byte budget", row.id);
+            // Admit an oversized source row as a singleton. The candidate query measured it
+            // before loading any text into Rust, so one pathological row cannot materialize a
+            // 512-row page or permanently strand the cursor behind a hard failure.
+            selected_rows.push(row);
+            break;
         }
         if !selected_rows.is_empty()
             && selected_bytes.saturating_add(row_bytes)
@@ -1933,21 +2004,87 @@ async fn stage_compacted_source_recovery_page(
     rows: &[CompactedSourceRecoverySourceRow],
     windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
     completed: bool,
+    transaction_budget: Duration,
+) -> Result<CompactedSourceRecoveryPageOutcome> {
+    let transaction_started = Instant::now();
+    let mut transaction =
+        match tokio::time::timeout(transaction_budget, state.pool.begin_with("BEGIN IMMEDIATE"))
+            .await
+        {
+            Ok(result) => result.context("begin compacted source recovery page transaction")?,
+            Err(_) => {
+                return Ok(CompactedSourceRecoveryPageOutcome::Progress {
+                    completed: false,
+                    deferred: true,
+                });
+            }
+        };
+    let remaining_budget = transaction_budget.saturating_sub(transaction_started.elapsed());
+    if remaining_budget.is_zero() {
+        transaction.rollback().await.ok();
+        return Ok(CompactedSourceRecoveryPageOutcome::Progress {
+            completed: false,
+            deferred: true,
+        });
+    }
+    let result = tokio::time::timeout(
+        remaining_budget,
+        stage_compacted_source_recovery_page_in_transaction(
+            state,
+            checkpoint,
+            rows,
+            windows,
+            completed,
+            transaction_started,
+            &mut transaction,
+        ),
+    )
+    .await;
+    match result {
+        Ok(Ok(CompactedSourceRecoveryPageOutcome::Reset)) => {
+            transaction.rollback().await.ok();
+            Ok(CompactedSourceRecoveryPageOutcome::Reset)
+        }
+        Ok(Ok(outcome)) => {
+            transaction
+                .commit()
+                .await
+                .context("commit compacted source recovery page")?;
+            Ok(outcome)
+        }
+        Ok(Err(error)) => {
+            transaction.rollback().await.ok();
+            Err(error)
+        }
+        Err(_) => {
+            transaction
+                .rollback()
+                .await
+                .context("rollback timed-out compacted source recovery page")?;
+            Ok(CompactedSourceRecoveryPageOutcome::Progress {
+                completed: false,
+                deferred: true,
+            })
+        }
+    }
+}
+
+async fn stage_compacted_source_recovery_page_in_transaction(
+    state: &AppState,
+    checkpoint: &CompactedSourceRecoveryCheckpoint,
+    rows: &[CompactedSourceRecoverySourceRow],
+    windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
+    completed: bool,
+    transaction_started: Instant,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
 ) -> Result<CompactedSourceRecoveryPageOutcome> {
     let mut contributions = CompactedSourceRecoveryContributions::default();
     for row in rows {
         add_compacted_source_row_contributions(&mut contributions, row, windows)?;
     }
-    let transaction_started = Instant::now();
-    let mut transaction = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("begin compacted source recovery page transaction")?;
     let current_fence =
         load_summary_projection_generation_fence_tx(state, transaction.as_mut()).await?;
     if current_fence != compacted_source_recovery_fence(checkpoint) {
-        transaction.rollback().await.ok();
         return Ok(CompactedSourceRecoveryPageOutcome::Reset);
     }
 
@@ -1986,7 +2123,7 @@ async fn stage_compacted_source_recovery_page(
         );
         query
             .build()
-            .execute(&mut *transaction)
+            .execute(transaction.as_mut())
             .await
             .context("stage compacted source recovery aggregates")?;
     }
@@ -2034,7 +2171,7 @@ async fn stage_compacted_source_recovery_page(
         );
         query
             .build()
-            .execute(&mut *transaction)
+            .execute(transaction.as_mut())
             .await
             .context("stage compacted source recovery usage")?;
     }
@@ -2058,7 +2195,7 @@ async fn stage_compacted_source_recovery_page(
         );
         query
             .build()
-            .execute(&mut *transaction)
+            .execute(transaction.as_mut())
             .await
             .context("stage compacted source recovery record identities")?;
     }
@@ -2076,7 +2213,7 @@ async fn stage_compacted_source_recovery_page(
         .bind(window)
         .bind(*account)
         .bind(checkpoint.list_limit_max.max(1))
-        .execute(&mut *transaction)
+        .execute(transaction.as_mut())
         .await
         .context("prune compacted source recovery record identities")?;
     }
@@ -2102,13 +2239,9 @@ async fn stage_compacted_source_recovery_page(
     .bind(i64::try_from(rows.len()).context("compacted source recovery row count overflow")?)
     .bind(next_state)
     .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
-    .execute(&mut *transaction)
+    .execute(transaction.as_mut())
     .await
     .context("advance compacted source recovery checkpoint")?;
-    transaction
-        .commit()
-        .await
-        .context("commit compacted source recovery page")?;
     Ok(CompactedSourceRecoveryPageOutcome::Progress {
         completed,
         deferred: next_state == "deferred",
@@ -2386,9 +2519,9 @@ async fn run_compacted_source_recovery_turn(
         }
         let remaining =
             SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
-        let page = match tokio::time::timeout(
+        let candidates = match tokio::time::timeout(
             remaining,
-            load_compacted_source_recovery_source_page(state, &checkpoint, &windows),
+            load_compacted_source_recovery_candidates(state, &checkpoint, &windows),
         )
         .await
         {
@@ -2409,34 +2542,30 @@ async fn run_compacted_source_recovery_turn(
                 }));
             }
         }?;
-        let (selected_rows, completed) = match select_compacted_source_recovery_page(page) {
-            Ok(selection) => selection,
-            Err(error) => {
-                let message = error.to_string();
-                update_compacted_source_recovery_state(
-                    state,
-                    SummaryCompactedSourceRecoveryState::Failed,
-                    Some(SUMMARY_RECOVERY_FAILED_CODE),
-                    Some(&message),
-                )
-                .await?;
-                return Ok(None);
-            }
-        };
-        let transaction_budget = SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET
-            .min(SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()));
-        let outcome = match tokio::time::timeout(
-            transaction_budget,
-            stage_compacted_source_recovery_page(
-                state,
-                &checkpoint,
-                &selected_rows,
-                &windows,
-                completed,
-            ),
+        let (selected_candidates, completed) =
+            match select_compacted_source_recovery_candidates(candidates) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    let message = error.to_string();
+                    update_compacted_source_recovery_state(
+                        state,
+                        SummaryCompactedSourceRecoveryState::Failed,
+                        Some(SUMMARY_RECOVERY_FAILED_CODE),
+                        Some(&message),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+            };
+        let remaining =
+            SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
+        let selected_rows = match tokio::time::timeout(
+            remaining,
+            load_compacted_source_recovery_source_rows(state, &checkpoint, &selected_candidates),
         )
         .await
         {
+            Ok(result) => result?,
             Err(_) => {
                 update_compacted_source_recovery_state(
                     state,
@@ -2446,11 +2575,26 @@ async fn run_compacted_source_recovery_turn(
                 )
                 .await?;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
-                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
-                    reservation: None,
+                    next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                    reservation: Some(
+                        crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
+                    ),
                 }));
             }
-            Ok(Err(error)) if is_sqlite_contention(&error) => {
+        };
+        let transaction_budget = SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET
+            .min(SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed()));
+        let outcome = match stage_compacted_source_recovery_page(
+            state,
+            &checkpoint,
+            &selected_rows,
+            &windows,
+            completed,
+            transaction_budget,
+        )
+        .await
+        {
+            Err(error) if is_sqlite_contention(&error) => {
                 update_compacted_source_recovery_state(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
@@ -2463,7 +2607,7 @@ async fn run_compacted_source_recovery_turn(
                     reservation: None,
                 }));
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 warn!(error = ?error, "compacted source recovery page failed");
                 update_compacted_source_recovery_state(
                     state,
@@ -2474,7 +2618,7 @@ async fn run_compacted_source_recovery_turn(
                 .await?;
                 return Ok(None);
             }
-            Ok(Ok(outcome)) => outcome,
+            Ok(outcome) => outcome,
         };
         if outcome == CompactedSourceRecoveryPageOutcome::Reset {
             ensure_compacted_source_recovery(state).await?;
@@ -2537,14 +2681,19 @@ pub(crate) async fn run_compacted_source_recovery_one_page_for_test(
         .await?
         .ok_or_else(|| anyhow!("test recovery checkpoint was not initialized"))?;
     let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
-    let page = load_compacted_source_recovery_source_page(state, &checkpoint, &windows).await?;
-    let (selected_rows, completed) = select_compacted_source_recovery_page(page)?;
+    let candidates =
+        load_compacted_source_recovery_candidates(state, &checkpoint, &windows).await?;
+    let (selected_candidates, completed) = select_compacted_source_recovery_candidates(candidates)?;
+    let selected_rows =
+        load_compacted_source_recovery_source_rows(state, &checkpoint, &selected_candidates)
+            .await?;
     match stage_compacted_source_recovery_page(
         state,
         &checkpoint,
         &selected_rows,
         &windows,
         completed,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
     )
     .await?
     {

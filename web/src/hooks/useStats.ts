@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiInvocation, StatsResponse } from "../lib/api";
 import { ApiRequestError, fetchSummary } from "../lib/api";
 import { buildTopicDescriptor } from "../lib/sse";
@@ -35,6 +35,9 @@ export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000;
 export const CURRENT_SUMMARY_RETRY_DELAY_MS = 2_000;
 export const CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS = 3;
 export const SUMMARY_REMOUNT_CACHE_TTL_MS = 30_000;
+export const SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS = [
+  1_000, 2_000, 5_000, 10_000, 30_000,
+] as const;
 
 export interface UnsupportedRefreshGate {
   inFlight: boolean;
@@ -299,8 +302,15 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   );
   const [httpError, setHttpError] = useState<string | null>(null);
   const [httpErrorCode, setHttpErrorCode] = useState<string | null>(null);
+  const pendingRecoveryRetryAttempt = useRef(0);
+  const pendingRecoveryRetryRequestKey = useRef<string | null>(null);
 
   const loadHttpSummary = useCallback(async () => {
+    const requestKey = [window, options?.limit ?? "", options?.upstreamAccountId ?? ""].join("\0");
+    if (pendingRecoveryRetryRequestKey.current !== requestKey) {
+      pendingRecoveryRetryRequestKey.current = requestKey;
+      pendingRecoveryRetryAttempt.current = 0;
+    }
     setHttpLoading(true);
     setHttpError(null);
     setHttpErrorCode(null);
@@ -319,9 +329,14 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       );
       setHttpError(null);
       setHttpErrorCode(null);
+      pendingRecoveryRetryAttempt.current = 0;
     } catch (error) {
       setHttpError(error instanceof Error ? error.message : String(error));
-      setHttpErrorCode(error instanceof ApiRequestError ? (error.code ?? null) : null);
+      const code = error instanceof ApiRequestError ? (error.code ?? null) : null;
+      setHttpErrorCode(code);
+      if (code !== "summary_recovery_pending") {
+        pendingRecoveryRetryAttempt.current = 0;
+      }
     } finally {
       setHttpLoading(false);
     }
@@ -332,6 +347,22 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       void loadHttpSummary();
     }
   }, [loadHttpSummary, supportsPureSse]);
+
+  useEffect(() => {
+    if (supportsPureSse || httpErrorCode !== "summary_recovery_pending") {
+      return undefined;
+    }
+    const attempt = pendingRecoveryRetryAttempt.current;
+    const delayMs = SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS[attempt];
+    if (delayMs == null) {
+      return undefined;
+    }
+    const timerId = globalThis.setTimeout(() => {
+      pendingRecoveryRetryAttempt.current += 1;
+      void loadHttpSummary();
+    }, delayMs);
+    return () => globalThis.clearTimeout(timerId);
+  }, [httpErrorCode, loadHttpSummary, supportsPureSse]);
 
   useEffect(() => {
     if (supportsPureSse) {

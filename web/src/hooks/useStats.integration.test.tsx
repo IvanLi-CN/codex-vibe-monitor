@@ -161,6 +161,39 @@ describe("useSummary", () => {
     expect(text("total")).toBe("0");
   });
 
+  it("retries a pending HTTP recovery summary until it becomes exact", async () => {
+    vi.useFakeTimers();
+    apiMocks.fetchSummary
+      .mockRejectedValueOnce(
+        new ApiRequestError(503, "Request failed: 503", {
+          code: "summary_recovery_pending",
+        }),
+      )
+      .mockResolvedValueOnce({
+        totalCount: 9,
+        successCount: 8,
+        failureCount: 1,
+        totalCost: 0.9,
+        totalTokens: 900,
+      } as StatsResponse);
+
+    try {
+      render(<Probe window="yesterday" />);
+      await flushAsync();
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
+      expect(text("error-code")).toBe("summary_recovery_pending");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(2);
+      expect(text("total")).toBe("9");
+      expect(text("error-code")).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses HTTP for previous7d summaries", async () => {
     apiMocks.fetchSummary.mockResolvedValue({
       totalCount: 17,

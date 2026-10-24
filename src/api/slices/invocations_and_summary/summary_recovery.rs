@@ -4,6 +4,7 @@ pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE: &str = "dashboard";
 pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE: &str = "Asia/Shanghai";
 pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE: usize = 512;
 pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_ERROR_MESSAGE_BYTES: usize = 64 * 1024;
 pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET: Duration =
     Duration::from_millis(250);
 pub(crate) const SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET: Duration = Duration::from_secs(2);

@@ -47,11 +47,17 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   identity, cursor, fence, and state in SQLite without copying invocation
   payloads.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
-  the page byte budget is 8 MiB, the write-transaction budget is 250 ms, and a
-  worker turn is capped at 2 s. Pressure or contention records `deferred`, a
-  restart resumes the last committed page, and a changed generation fence
-  clears unpublishable staging before rebuilding. Only completed staging that
-  still matches the fence is published into the in-memory Summary projection.
+  the candidate query measures text byte lengths before loading source fields,
+  then materializes only the selected rows. The page byte budget is 8 MiB, the
+  write-transaction budget is 250 ms, and a worker turn is capped at 2 s. An
+  oversized error message is represented by a stable classification sentinel
+  after canonical SQL has resolved its failure class, so one pathological row
+  advances as a singleton instead of permanently failing recovery. Pressure or
+  contention records `deferred`, a restart resumes the last committed page, and
+  a changed generation fence clears unpublishable staging before rebuilding.
+  Transaction timeout cancellation awaits rollback before releasing the
+  background admission. Only completed staging that still matches the fence is
+  published into the in-memory Summary projection.
 - ADR 0010 separates the immutable Summary Coverage Fence from the bounded live
   tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
   AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy
@@ -141,7 +147,9 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   retaining the human-readable message. System status exposes only state,
   processed-row count, and an optional error code; the web client renders the
   coded pending/failed state rather than indefinite loading or zero-valued
-  success.
+  success. A pending coded response schedules bounded 1s/2s/5s/10s/30s HTTP
+  retries, so completion is observed without waiting for remount or day
+  rollover.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
