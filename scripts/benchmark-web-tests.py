@@ -179,6 +179,19 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     text = text.replace(
         """      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
       // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
+      await page.evaluate(
+        (advanceByMs) => {
+          const now = Date.now();
+          Date.now = () => now + advanceByMs;
+        },
+        MINIMUM_REFRESH_INTERVAL_MS + LIVE_REFRESH_TIMER_GUARD_MS + 1,
+      );
+""",
+        "",
+    )
+    text = text.replace(
+        """      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
+      // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
       await page.evaluate((advanceByMs) => {
         const now = Date.now();
         Date.now = () => now + advanceByMs;
