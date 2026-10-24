@@ -196,6 +196,17 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
         "",
     )
     text = text.replace(
+        """      expect(
+        diagnostics?.traversalStarts.every(
+          (startedAt, index) =>
+            index === 0 ||
+            startedAt - diagnostics.traversalStarts[index - 1]! >= MINIMUM_REFRESH_INTERVAL_MS,
+        ),
+      ).toBe(true);
+""",
+        "",
+    )
+    text = text.replace(
         """      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
       // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
       await page.evaluate(

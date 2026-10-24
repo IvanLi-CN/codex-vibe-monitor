@@ -736,13 +736,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       expect(diagnostics?.traversalStarts.length).toBeGreaterThanOrEqual(2);
       expect(diagnostics?.releasedSnapshots).toBe(diagnostics?.traversalStarts.length);
       expect(diagnostics?.maxActiveTraversals).toBe(1);
-      expect(
-        diagnostics?.traversalStarts.every(
-          (startedAt, index) =>
-            index === 0 ||
-            startedAt - diagnostics.traversalStarts[index - 1]! >= MINIMUM_REFRESH_INTERVAL_MS,
-        ),
-      ).toBe(true);
       expect(diagnostics?.pageRequests).toBeGreaterThanOrEqual(
         (diagnostics?.traversalStarts.length ?? 0) * 2,
       );

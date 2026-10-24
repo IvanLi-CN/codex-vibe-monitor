@@ -172,6 +172,13 @@ class ExecutionContractTests(unittest.TestCase):
             MODULE.normalize_approved_e2e_performance_change(path, altered),
         )
 
+    def test_timeline_cadence_proof_remains_in_two_client_test(self):
+        candidate = (MODULE.ROOT / "web/tests/e2e/dashboard-timeline-capacity.spec.ts").read_text()
+        self.assertIn(
+            "startedAt - diagnostics.traversalStarts[index - 1]! >= MINIMUM_REFRESH_INTERVAL_MS",
+            candidate,
+        )
+
     def test_matrix_phase_paths_are_rebased_to_the_hosted_job(self):
         manifest = {"source_roots": {"A": "/old/A"}, "output_root": "/old/output"}
         phase = MODULE.materialize_phase(
