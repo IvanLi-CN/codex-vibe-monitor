@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
-  "candidate_head_sha": "148e5d63",
-  "implementation_commit": "148e5d63",
+  "status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
+  "candidate_head_sha": "93c1973e",
+  "implementation_commit": "93c1973e",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": 1181,
@@ -80,7 +80,7 @@
           "web/src/features/dashboard/DashboardActivityOverview.test.tsx",
           "web/src/features/stats/StatsCards.tsx"
         ],
-        "status": "targeted pending/failed web tests passed; visual evidence captured"
+        "status": "targeted pending/failed web tests passed; visual evidence displayed and awaiting owner confirmation"
       },
       {
         "id": "A7",
@@ -99,7 +99,7 @@
           "git status --short --branch",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1181 implementation head 148e5d63; CI and Tier 4 review pending"
+        "status": "PR #1181 implementation head 93c1973e; CI, Tier 4 review, and visual confirmation pending"
       }
     ]
   },
@@ -165,5 +165,6 @@
   "visual_evidence": [
     "assets/dashboard-recovery-pending.png",
     "assets/dashboard-recovery-failed.png"
-  ]
+  ],
+  "visual_evidence_owner_confirmation": "pending"
 }

@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "148e5d63 implementation candidate.",
+      "to_program_version": "93c1973e implementation candidate.",
       "direct_major_skips_supported": false
     }
   },
@@ -154,8 +154,8 @@
     "src/tests/lightweight/summary_fallback_contention.rs"
   ],
   "delivery_context": {
-    "candidate_head_sha": "148e5d63",
-    "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
+    "candidate_head_sha": "93c1973e",
+    "candidate_validation_status": "current-head-static-validation-complete-rust-tests-blocked-pr-tier4-and-visual-pending",
     "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
     "candidate_validation_record": "assets/current-candidate-validation.json",
