@@ -4658,11 +4658,11 @@ export async function handleDemoRequest(request: Request) {
     });
   }
   if (pathname === "/api/stats/timeseries") return json(timeseries(url.searchParams.get("range")));
-  if (pathname === "/api/stats/invocation-timeline") {
-    return json(demoInvocationTimeline(url));
-  }
   if (request.method === "DELETE" && pathname.startsWith("/api/stats/invocation-timeline/")) {
     return new HttpResponse(null, { status: 204 });
+  }
+  if (pathname === "/api/stats/invocation-timeline") {
+    return json(demoInvocationTimeline(url));
   }
   if (pathname === "/api/stats/parallel-work")
     return json(parallelWork(), { headers: { ETag: "demo-parallel-work" } });

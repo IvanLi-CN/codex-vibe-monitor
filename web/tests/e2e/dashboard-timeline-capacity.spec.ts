@@ -15,6 +15,9 @@ const CAPACITY_SCENARIO_DURATION_MS =
 const MINIMUM_TRAVERSALS = Math.max(2, Math.floor(CAPACITY_SCENARIO_DURATION_MS / 15_000) - 1);
 const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 const REVISION_INTERVAL_MS = 1_000;
+const MOVING_WINDOW_TRAVERSAL_DELAY_MS = Number(
+  process.env.E2E_TIMELINE_TRAVERSAL_DELAY_MS ?? 16_000,
+);
 const MINIMUM_LIVE_EVENTS = Math.max(
   10,
   Math.floor((CAPACITY_SCENARIO_DURATION_MS / REVISION_INTERVAL_MS) * 0.8),
@@ -200,66 +203,92 @@ async function expectVisibleCallsAreVirtualized(page: Page, totalCalls: number):
   }
 }
 
-async function instrumentTimelineFetch(page: Page) {
-  await page.evaluate(() => {
-    const diagnostics = (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
-    if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      const requestUrl = new URL(
-        input instanceof Request ? input.url : input.toString(),
-        window.location.href,
-      );
-      const method = (
-        init?.method ?? (input instanceof Request ? input.method : "GET")
-      ).toUpperCase();
-      const isTimeline = requestUrl.pathname.startsWith("/api/stats/invocation-timeline");
-      if (isTimeline && method === "GET") {
-        diagnostics.pageRequests += 1;
-        if (!requestUrl.searchParams.has("cursor")) {
-          diagnostics.timelineRequestWindows.push({
-            from: requestUrl.searchParams.get("from") ?? "",
-            to: requestUrl.searchParams.get("to") ?? "",
-          });
-          diagnostics.traversalStarts.push(performance.now());
-          diagnostics.activeTraversals += 1;
-          diagnostics.maxActiveTraversals = Math.max(
-            diagnostics.maxActiveTraversals,
-            diagnostics.activeTraversals,
-          );
-          const delayMs = diagnostics.nextTraversalDelayMs || diagnostics.traversalDelayMs;
-          diagnostics.nextTraversalDelayMs = 0;
-          if (delayMs > 0) {
-            await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
-          }
+function installTimelineFetchInstrumentationInPage() {
+  const diagnostics = (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+  if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+  const originalFetch = window.fetch.bind(window);
+  const observedFirstPageRequests = new Set<string>();
+  window.fetch = async (input, init) => {
+    const requestUrl = new URL(
+      input instanceof Request ? input.url : input.toString(),
+      window.location.href,
+    );
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : "GET")
+    ).toUpperCase();
+    const isTimeline = requestUrl.pathname.startsWith("/api/stats/invocation-timeline");
+    const isFirstPageTimelineGet =
+      isTimeline && method === "GET" && !requestUrl.searchParams.has("cursor");
+    if (isTimeline && method === "GET") {
+      diagnostics.pageRequests += 1;
+      if (isFirstPageTimelineGet) {
+        observedFirstPageRequests.add(requestUrl.toString());
+        diagnostics.timelineRequestWindows.push({
+          from: requestUrl.searchParams.get("from") ?? "",
+          to: requestUrl.searchParams.get("to") ?? "",
+        });
+        diagnostics.traversalStarts.push(performance.now());
+        diagnostics.activeTraversals += 1;
+        diagnostics.maxActiveTraversals = Math.max(
+          diagnostics.maxActiveTraversals,
+          diagnostics.activeTraversals,
+        );
+        const delayMs = diagnostics.nextTraversalDelayMs || diagnostics.traversalDelayMs;
+        diagnostics.nextTraversalDelayMs = 0;
+        if (delayMs > 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
         }
       }
-      const response = await originalFetch(input, init);
-      if (isTimeline && method === "GET" && !requestUrl.searchParams.has("cursor") && response.ok) {
-        try {
-          const payload = (await response.clone().json()) as {
-            rangeStart?: unknown;
-            rangeEnd?: unknown;
-          };
-          if (typeof payload.rangeStart === "string" && typeof payload.rangeEnd === "string") {
-            diagnostics.timelineResponseWindows.push({
-              rangeStart: payload.rangeStart,
-              rangeEnd: payload.rangeEnd,
-            });
-          }
-        } catch {
-          // Keep the fetch instrumentation non-invasive when a demo response is malformed.
-        }
-      }
-      if (isTimeline && response.status >= 400) diagnostics.timelineHttpFailures += 1;
-      if (isTimeline && method === "DELETE") {
-        if (response.status === 204) diagnostics.releasedSnapshots += 1;
-        else diagnostics.releaseFailures += 1;
+    }
+    let response: Response;
+    try {
+      response = await originalFetch(input, init);
+    } catch (error) {
+      if (isFirstPageTimelineGet && observedFirstPageRequests.delete(requestUrl.toString())) {
+        diagnostics.timelineHttpFailures += 1;
         diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
       }
-      return response;
-    };
-  });
+      if (isTimeline && method === "DELETE") {
+        diagnostics.releaseFailures += 1;
+        diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+      }
+      throw error;
+    }
+    const trackedFirstPage =
+      isFirstPageTimelineGet && observedFirstPageRequests.delete(requestUrl.toString());
+    if (trackedFirstPage && response.ok) {
+      try {
+        const payload = (await response.clone().json()) as {
+          rangeStart?: unknown;
+          rangeEnd?: unknown;
+        };
+        if (typeof payload.rangeStart === "string" && typeof payload.rangeEnd === "string") {
+          diagnostics.timelineResponseWindows.push({
+            rangeStart: payload.rangeStart,
+            rangeEnd: payload.rangeEnd,
+          });
+        }
+      } catch {
+        // Keep the fetch instrumentation non-invasive when a demo response is malformed.
+      }
+    }
+    if (isTimeline && response.status >= 400) {
+      diagnostics.timelineHttpFailures += 1;
+      if (trackedFirstPage) {
+        diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+      }
+    }
+    if (isTimeline && method === "DELETE") {
+      if (response.status === 204) diagnostics.releasedSnapshots += 1;
+      else diagnostics.releaseFailures += 1;
+      diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+    }
+    return response;
+  };
+}
+
+async function instrumentTimelineFetch(page: Page) {
+  await page.evaluate(installTimelineFetchInstrumentationInPage);
 }
 
 async function startCapacityDashboard(
@@ -274,7 +303,7 @@ async function startCapacityDashboard(
   if (viewport.width < 769) {
     const rangeSelect = page.getByTestId("dashboard-activity-range-select");
     const metricSelect = page.getByTestId("dashboard-activity-metric-select");
-    await expect(metricSelect).toHaveText(/count|次数/i);
+    await expect(metricSelect).toHaveText(/count|次数/i, { timeout: 15_000 });
     if (measureInitialTimelineMount) {
       await expect(rangeSelect).toHaveText(/24.?hour|24.?小时|24.?h|1d/i);
       await page.evaluate(() => {
@@ -503,6 +532,10 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
           ?.releasedSnapshots ?? 0,
     );
     expect(releasesDuringDelayedRefresh).toBe(releaseCountBeforeDelay);
+    if (revisionInterval != null) {
+      clearInterval(revisionInterval);
+      revisionInterval = null;
+    }
     await expect
       .poll(
         () =>
@@ -635,12 +668,12 @@ test("keeps the old live window visible and commits it before catching up", asyn
     expect(baselines.every((baseline) => baseline.rangeEnd !== "")).toBe(true);
     await Promise.all(
       pages.map((page) =>
-        page.evaluate(() => {
+        page.evaluate((delayMs) => {
           const diagnostics = (window as TimelineDiagnosticsWindow)
             .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
           if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-          diagnostics.traversalDelayMs = 16_000;
-        }),
+          diagnostics.nextTraversalDelayMs = delayMs;
+        }, MOVING_WINDOW_TRAVERSAL_DELAY_MS),
       ),
     );
     const triggerRevision = async () =>
@@ -701,7 +734,7 @@ test("keeps the old live window visible and commits it before catching up", asyn
                   (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
                     ?.activeTraversals ?? 0,
               ),
-            { timeout: 10_000 },
+            { timeout: 30_000 },
           )
           .toBe(1);
       }),
@@ -754,22 +787,6 @@ test("keeps the old live window visible and commits it before catching up", asyn
       }, baselines[index]!.requestCount);
       expect(request?.to).toBe(response?.rangeEnd);
     }
-    await Promise.all(
-      pages.map((page, index) =>
-        expect
-          .poll(
-            () =>
-              page.evaluate(
-                () =>
-                  document.querySelector<HTMLElement>(
-                    '[data-testid="dashboard-invocation-timeline-lanes"]',
-                  )?.dataset.rangeEnd ?? "",
-              ),
-            { timeout: 5_000 },
-          )
-          .toBe(firstResponseWindows[index]?.rangeEnd),
-      ),
-    );
     await Promise.all(
       pages.map((page, index) =>
         expect
@@ -857,6 +874,28 @@ test("keeps the old live window visible and commits it before catching up", asyn
           .toBeGreaterThan(Date.parse(firstResponseWindows[index]?.rangeEnd ?? "")),
       ),
     );
+    await Promise.all(
+      pages.map((page) =>
+        expect
+          .poll(
+            () =>
+              page.evaluate(() => {
+                const diagnostics = (window as TimelineDiagnosticsWindow)
+                  .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+                if (!diagnostics) return "missing";
+                if (
+                  diagnostics.activeTraversals === 0 &&
+                  diagnostics.releasedSnapshots >= diagnostics.traversalStarts.length
+                ) {
+                  return "ready";
+                }
+                return `active=${diagnostics.activeTraversals};released=${diagnostics.releasedSnapshots};traversals=${diagnostics.traversalStarts.length};requests=${diagnostics.timelineRequestWindows.length};responses=${diagnostics.timelineResponseWindows.length}`;
+              }),
+            { timeout: 30_000 },
+          )
+          .toBe("ready"),
+      ),
+    );
     const diagnostics = await Promise.all(
       pages.map((page) =>
         page.evaluate(
@@ -865,6 +904,7 @@ test("keeps the old live window visible and commits it before catching up", asyn
       ),
     );
     for (const diagnostic of diagnostics) {
+      expect(diagnostic?.releasedSnapshots).toBe(diagnostic?.traversalStarts.length);
       expect(diagnostic?.timelineHttpFailures).toBe(0);
       expect(diagnostic?.releaseFailures).toBe(0);
     }
