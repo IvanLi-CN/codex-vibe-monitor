@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-static-validation-complete-rust-tests-blocked-pr-and-tier4-pending",
-  "candidate_head_sha": "7ea3b6415c4d744623005a12ff434d1157c067a0",
-  "implementation_commit": "7ea3b6415c4d744623005a12ff434d1157c067a0",
+  "candidate_head_sha": "6a58adf8c516fd6e4f81521e17f7608ec2c9e38b",
+  "implementation_commit": "6a58adf8c516fd6e4f81521e17f7608ec2c9e38b",
   "active_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "base_ref": "207e6d6341240dd722d15a9e853485bed5e441a9",
   "pr_number": null,
@@ -146,6 +146,10 @@
       {
         "command": "cargo test --locked ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows -- --nocapture",
         "reason": "The local macOS Rust 1.96 test build emits a sqlx_macros dylib rejected by dyld with mis-aligned LINKEDIT string pool; CI/Linux must execute the stateful Rust tests."
+      },
+      {
+        "command": "cargo test --locked compacted_source_recovery_budget_tests -- --nocapture",
+        "reason": "The local macOS Rust 1.96 test build is blocked before test execution by the same malformed sqlx_macros dylib (mis-aligned LINKEDIT string pool); CI/Linux must execute the recovery budget tests."
       },
       {
         "command": "cd web && bun run test",
