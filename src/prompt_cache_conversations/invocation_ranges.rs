@@ -343,6 +343,57 @@ impl InvocationRangeManager {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn test_prepare_keyed_range(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        key: &str,
+    ) -> Result<()> {
+        self.pool.get_or_init(|| pool.clone());
+        let owner = Owner::Conversation(key.to_owned());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        if let Some(generation) = self.admit(pool, &owner, deadline).await? {
+            let manager = self.clone();
+            let pool = pool.clone();
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                manager
+                    .initialize(&pool, owner, generation, None, false)
+                    .await;
+            });
+        }
+        let notify = self
+            .memory
+            .lock()
+            .expect("invocation range memory")
+            .entries
+            .get(&owner)
+            .ok_or_else(|| anyhow::anyhow!("fixture owner was not admitted: {key}"))?
+            .notify
+            .clone();
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let memory = self.memory.lock().expect("invocation range memory");
+                let entry = memory
+                    .entries
+                    .get(&owner)
+                    .ok_or_else(|| anyhow::anyhow!("fixture owner was removed: {key}"))?;
+                if let Some(failure) = &entry.failure {
+                    bail!("fixture range initialization failed for {key}: {failure}");
+                }
+                if !entry.operation && entry.prefix.is_some() && entry.current.remaining() > 0 {
+                    return Ok(());
+                }
+            }
+            tokio::time::timeout_at(deadline, notified)
+                .await
+                .with_context(|| format!("fixture owner did not initialize within 5s: {key}"))?;
+        }
+    }
+
     pub(crate) fn occupancy(&self) -> usize {
         self.memory
             .lock()
