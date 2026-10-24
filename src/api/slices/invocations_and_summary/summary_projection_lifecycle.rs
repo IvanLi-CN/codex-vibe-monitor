@@ -1708,7 +1708,7 @@ async fn ensure_compacted_source_recovery(state: &AppState) -> Result<()> {
     let _ = ensure_compacted_source_recovery_with_force_bounded(
         state,
         false,
-        SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
     )
     .await?;
     Ok(())
@@ -1854,6 +1854,34 @@ async fn ensure_compacted_source_recovery_with_force_bounded(
         return Ok(true);
     }
 
+    let read_connection_closed =
+        close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+    if !read_connection_closed {
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(
+                SummaryCompactedSourceRecoveryState::Deferred,
+            )
+            .await;
+        return Ok(false);
+    }
+    let reset_budget = SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET
+        .min(deadline.saturating_duration_since(Instant::now()));
+    let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
+        state,
+        reset_budget,
+        "open compacted source recovery reset transaction connection",
+    )
+    .await?
+    else {
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(
+                SummaryCompactedSourceRecoveryState::Deferred,
+            )
+            .await;
+        return Ok(false);
+    };
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
