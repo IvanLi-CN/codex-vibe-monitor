@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
+    "candidate_head_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
     "candidate_validation_status": "current-head-validation-blocked",
     "active_base_sha": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
     "base_sync_scope": "The implementation candidate is linearly rebased onto current main dff0b88d; the topic adds no merge commit or unrelated base change.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base 9c8c8aeac7a40728a36b4159a51c8416465b4a64 onto current main dff0b88dc00681720acfaa9103c8ddbba84d3325, producing implementation commit f1d13534a4d6f96999110c4443eeb43e780b93e0 and current PR head 3002aa5958e1b34f72e35f13fbb2a9818f4c920a. Refresh CI run 40207761057 is pending; performance run 40202278852 is stale and blocked by unavailable hardware comparability evidence, and fresh Tier 4 review remains unrecorded before Step 5C.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base 9c8c8aeac7a40728a36b4159a51c8416465b4a64 onto current main dff0b88dc00681720acfaa9103c8ddbba84d3325, producing implementation commit f1d13534a4d6f96999110c4443eeb43e780b93e0. Current-head PR checks are required after the rebase; performance run 40202278852 is stale and blocked by unavailable hardware comparability evidence, and fresh Tier 4 review remains unrecorded before Step 5C.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }
