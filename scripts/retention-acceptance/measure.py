@@ -22,6 +22,7 @@ from contract import (
     BASELINE_SHA,
     CLEANUP_RESERVE_SECONDS,
     COMPETITOR_FILE_COUNT,
+    COMPETITOR_FILE_BYTES,
     COMPETITOR_TASK,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
@@ -928,6 +929,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
             except (TypeError, json.JSONDecodeError):
                 detail = {}
             released = detail.get("filesReleased", 0) if isinstance(detail, dict) else 0
+            released_bytes = detail.get("bytesReleased", 0) if isinstance(detail, dict) else 0
             result.append({
                 "task_key": row["task_key"],
                 "trigger_kind": row["trigger_kind"],
@@ -937,6 +939,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "processed_count": row["processed_count"],
                 "updated_count": row["updated_count"],
                 "committed_work": released if row["task_key"] == "raw_orphan_sweep" else (row["processed_count"] or row["updated_count"] or 0),
+                "committed_bytes": released_bytes if row["task_key"] == "raw_orphan_sweep" else 0,
                 "details": detail,
                 "error_detail": row["error_detail"],
                 "completion": row["completion"],
@@ -1034,6 +1037,24 @@ def task_owners_idle(maintenance_db: Path) -> bool:
         connection.close()
 
 
+def competitor_file_oracle(raw_dir: Path) -> dict[str, Any]:
+    """Verify the fixed fixture cohort, excluding unrelated raw files."""
+    remaining = [
+        path
+        for path in sorted(raw_dir.glob("retention-orphan-*.bin"))
+        if path.exists() or path.is_symlink()
+    ]
+    remaining_files = [path for path in remaining if path.is_file()]
+    remaining_bytes = sum(path.stat().st_size for path in remaining_files)
+    return {
+        "expected_count": COMPETITOR_FILE_COUNT,
+        "expected_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+        "remaining_count": len(remaining),
+        "remaining_bytes": remaining_bytes,
+        "verified_empty": not remaining,
+    }
+
+
 def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
@@ -1089,6 +1110,7 @@ def wait_for_task_evidence(
     added_counts: dict[str, int],
     started: float,
     timeout_seconds: float | None = None,
+    competitor_raw_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     available = remaining_budget(started)
     deadline = time.monotonic() + (
@@ -1100,9 +1122,16 @@ def wait_for_task_evidence(
         latest = task_runs(maintenance_db)
         try:
             validate_task_snapshot(latest)
-            if task_owners_idle(maintenance_db) and archive_proofs_ready(main_db, cutoff, added_counts):
+            raw_oracle = competitor_file_oracle(competitor_raw_dir) if competitor_raw_dir is not None else None
+            if (
+                task_owners_idle(maintenance_db)
+                and archive_proofs_ready(main_db, cutoff, added_counts)
+                and (raw_oracle is None or raw_oracle["verified_empty"])
+            ):
                 return latest
-            last_error = AcceptanceError("retention owners, archive proofs, or 10x source conversion are still draining")
+            last_error = AcceptanceError(
+                "retention owners, archive proofs, 10x source conversion, or fixed competitor files are still draining"
+            )
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
@@ -1190,6 +1219,7 @@ def run_trial(
     write_scrapes: list[dict[str, Any]] = []
     write_buckets: dict[str, int] | None = None
     oracle: dict[str, Any] | None = None
+    competitor_oracle: dict[str, Any] | None = None
     input_start = input_end = cleanup_end = None
     container_stopped = False
     scheduler_snapshot: dict[str, Any] | None = None
@@ -1259,7 +1289,9 @@ def run_trial(
             cutoff,
             {name: len(added[name]) for name in DATASETS},
             phase_started,
+            competitor_raw_dir=raw_dir,
         )
+        competitor_oracle = competitor_file_oracle(raw_dir)
         post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
         write_buckets = histogram_delta(pre_buckets, post_buckets)
@@ -1336,6 +1368,7 @@ def run_trial(
             "task_state_snapshot": scheduler_snapshot or {"error": "scheduler snapshot was not captured"},
             "write_hold_samples": write_scrapes,
             "write_hold_buckets": write_buckets,
+            "competitor_file_oracle": competitor_oracle,
         }
         if not trial_cleanup["removed"]:
             partial["cleanup_recovery"] = trial_cleanup["recovery"]
@@ -1385,6 +1418,7 @@ def run_trial(
         "latency_samples_ms": input_samples,
         "foreground_workload": foreground_evidence,
         "task_runs": task_evidence,
+        "competitor_file_oracle": competitor_oracle,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
         "oracle": oracle,

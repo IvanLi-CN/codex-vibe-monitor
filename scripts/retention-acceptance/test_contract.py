@@ -8,6 +8,7 @@ import unittest
 from contract import (
     BASELINE_SHA,
     COMPETITOR_FILE_COUNT,
+    COMPETITOR_FILE_BYTES,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
     CONTAINER_RUN_ID_LABEL,
@@ -92,6 +93,7 @@ def task_runs(start: datetime) -> list[dict]:
             "actual_finished_at": timestamp(first_end),
             "status": "success",
             "committed_work": COMPETITOR_FILE_COUNT if key == "raw_orphan_sweep" else 100,
+            "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES if key == "raw_orphan_sweep" else 0,
         })
         if key != "raw_orphan_sweep":
             rows.append({
@@ -204,6 +206,13 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
             "verified": True,
             "datasets": oracle_datasets,
         },
+        "competitor_file_oracle": {
+            "expected_count": COMPETITOR_FILE_COUNT,
+            "expected_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+            "remaining_count": 0,
+            "remaining_bytes": 0,
+            "verified_empty": True,
+        },
     }, cleanup
 
 
@@ -289,7 +298,7 @@ class ContractTests(unittest.TestCase):
         row["details"]["selectedScope"]["committed"] = 999
         self.assertFalse(task_run_is_accepted_terminal(row))
 
-    def test_competitor_partial_chunk_requires_positive_failure_free_release(self) -> None:
+    def test_competitor_partial_chunk_requires_positive_release(self) -> None:
         row = {
             "status": "skipped",
             "completion": "partial",
@@ -298,6 +307,8 @@ class ContractTests(unittest.TestCase):
         }
         self.assertTrue(task_run_is_accepted_competitor_chunk(row))
         row["details"]["failures"] = 1
+        self.assertTrue(task_run_is_accepted_competitor_chunk(row))
+        row["details"]["filesReleased"] = 0
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
 
     def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
@@ -509,6 +520,17 @@ class ContractTests(unittest.TestCase):
         )
         row["committed_work"] -= 1
         with self.assertRaisesRegex(AcceptanceError, "fixed 512-file workload"):
+            validate_evidence(evidence)
+
+    def test_competitor_byte_oracle_rejects_mismatched_release(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["candidate"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row["committed_bytes"] = COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES - 1
+        with self.assertRaisesRegex(AcceptanceError, "unexpected byte count"):
             validate_evidence(evidence)
 
     def test_missing_oracle_and_lost_rows_are_rejected(self) -> None:

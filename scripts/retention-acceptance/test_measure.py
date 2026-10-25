@@ -76,6 +76,7 @@ class MeasurementBudgetTests(unittest.TestCase):
                 "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
                 "processed_count": 1000 if task_key != COMPETITOR_TASK else None,
                 "committed_work": 512 if task_key == COMPETITOR_TASK else 1000,
+                "committed_bytes": 512 * 256 if task_key == COMPETITOR_TASK else 0,
                 "details": archive_details if task_key == "retention_archive" and trigger_kind == "schedule" else {},
                 "error_detail": None,
             }
@@ -125,6 +126,7 @@ class MeasurementBudgetTests(unittest.TestCase):
                 "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
                 "committed_work": 32,
                 "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+                "committed_bytes": 32 * 256,
                 "error_detail": None,
             }
             for index in range(16)
@@ -137,6 +139,7 @@ class MeasurementBudgetTests(unittest.TestCase):
                 "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
                 "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
                 "committed_work": 1000,
+                "committed_bytes": 0,
                 "details": {},
                 "error_detail": None,
             }

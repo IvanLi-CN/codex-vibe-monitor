@@ -32,6 +32,7 @@ DATASETS = {
 }
 COMPETITOR_TASK = "raw_orphan_sweep"
 COMPETITOR_FILE_COUNT = 512
+COMPETITOR_FILE_BYTES = 256
 RUN_SECONDS = 120
 TRIALS_PER_VERSION = 3
 MAX_TEST_PHASE_SECONDS = 900
@@ -40,7 +41,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
 CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
 CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
@@ -130,7 +131,7 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
 
 
 def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
-    """Accept bounded orphan-sweep chunks while retaining strict failure checks."""
+    """Accept bounded chunks while keeping fixed-file completion as the oracle."""
     if row.get("status") == "success":
         return True
     if row.get("status") != "skipped" or row.get("completion") != "partial":
@@ -138,7 +139,10 @@ def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
     if row.get("error_detail") is not None:
         return False
     details = row.get("details")
-    if not isinstance(details, dict) or details.get("failures", 0) != 0:
+    if not isinstance(details, dict):
+        return False
+    failures = details.get("failures", 0)
+    if not isinstance(failures, int) or isinstance(failures, bool) or failures < 0:
         return False
     released = details.get("filesReleased")
     checked = details.get("filesChecked")
@@ -306,6 +310,18 @@ def _validate_task_runs(
     _require(competitor, "real background competitor evidence is missing")
     competitor_work = sum(row["committed_work"] for row in competitor)
     _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
+    competitor_bytes = [
+        row.get("committed_bytes")
+        for row in competitor
+        if row.get("committed_bytes") is not None
+    ]
+    if competitor_bytes:
+        _require(
+            len(competitor_bytes) == len(competitor)
+            and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in competitor_bytes)
+            and sum(competitor_bytes) == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+            "background competitor released an unexpected byte count",
+        )
     target_rows = [row for key in targets for row in by_key.get(key, [])]
     overlap = any(
         max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
@@ -537,6 +553,16 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     cleanup_end,
                     require_competitor_overlap=version == "candidate",
                 )
+            )
+            competitor_oracle = trial.get("competitor_file_oracle")
+            _require(
+                isinstance(competitor_oracle, dict)
+                and competitor_oracle.get("expected_count") == COMPETITOR_FILE_COUNT
+                and competitor_oracle.get("expected_bytes") == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES
+                and competitor_oracle.get("remaining_count") == 0
+                and competitor_oracle.get("remaining_bytes") == 0
+                and competitor_oracle.get("verified_empty") is True,
+                "fixed competitor file oracle is missing or not empty",
             )
             scrape_rows = trial.get("write_hold_samples")
             _require(isinstance(scrape_rows, list) and len(scrape_rows) >= 2, "raw production write-hold histogram evidence is missing")
