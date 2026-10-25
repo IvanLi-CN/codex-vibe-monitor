@@ -49,11 +49,12 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   ranges; a request in another reporting zone does not reinterpret the staged
   rows and remains generic unavailable until a matching range is prepared.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
-  the candidate query measures only text byte lengths that the source-row
-  projection will load before materializing source fields; raw `payload` is
-  neither materialized nor charged against the page budget,
-  then materializes only the selected rows. Candidate reads, source-row reads,
-  page staging, and publication use dedicated SQLite connections whose native
+  the key query first returns only the bounded `(occurred_at, id)` page, then one
+  page-materialization query restricted to those keys computes status/JSON
+  classification and byte estimates while returning the necessary source fields.
+  Raw `payload` is neither materialized nor charged against the page budget, and
+  the selected candidates are converted in memory without a second source reread.
+  Key-page reads, page staging, and publication use dedicated SQLite connections whose native
   busy-timeout and progress handler share the remaining recovery deadline. The
   page byte budget is 8 MiB, the
   write-transaction budget is 250 ms including a bounded commit wait, and a
@@ -218,7 +219,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - The invocation-range recovery component has separate [API/version impact](assets/invocation-range-version-impact.json) and [durable reservation/re-entry](assets/invocation-range-persistent-state.json) records. They preserve the deployed v4.8 reservation representation and explicitly leave final integrated verification pending.
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-recovery-query-fairness`, with implementation code at `c72088935b13e35807566ad77db70a3b497a6519` linearly rebased onto current `main@0694732d4e0e2106e3e688510b460c24785d7570`. No merge commit or unrelated base merge is included. The PR head may contain a later evidence-only documentation commit, while implementation evidence remains bound to the recorded code SHA and every delivery check must identify the head it tested. The previous candidate-bound empirical run is stale after this rebase; its functional and p95 results remain historical, but its CPU measurement was blocked and cannot authorize the current head. The candidate is not Step 5C-ready.
+- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-recovery-query-fairness`, with query-materialization optimization code at `f531330a63651682f84b31f04faf22dab3f637fd` linearly rebased onto current `main@0694732d4e0e2106e3e688510b460c24785d7570`. No merge commit or unrelated base merge is included. The PR head may contain a later evidence-only documentation commit, while implementation evidence remains bound to the recorded code SHA and every delivery check must identify the head it tested. Evidence from `91979138a0e9037bf8623ebe8d63855d2baceb5a` is stale for this candidate; the current candidate is not Step 5C-ready until its CI, recovery workload, and formal review converge.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary
@@ -239,7 +240,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   source range remains recoverable without a production database copy. The
   stateful oracle covers 10,001 historical rows plus today/yesterday rows
   across two accounts and asserts exact global and account aggregates.
-- The compacted-source reader now coalesces the Shanghai `today`, `yesterday`, and `previous7d` windows into one half-open scan range. Its first query is forced through `idx_codex_invocations_occurred_at_id`, seeks by the durable `(occurred_at, id)` tuple, and returns at most 512 keys. Expensive status, JSON classification, and byte-estimate expressions run only in a second query constrained by those keys; the stateful plan regression rejects multi-index OR, global scans, and temporary sorting.
+- The compacted-source reader now coalesces the Shanghai `today`, `yesterday`, and `previous7d` windows into one half-open scan range. Its first query is forced through `idx_codex_invocations_occurred_at_id`, seeks by the durable `(occurred_at, id)` tuple, and returns at most 512 keys. Expensive status, JSON classification, byte-estimate expressions, and necessary source fields run together in one second query constrained by those keys, eliminating the previous duplicate source reread; the stateful plan regression rejects multi-index OR, global scans, and temporary sorting.
 - Candidate selection treats a missing terminal projection as a live `running`/`pending` boundary and does not advance past it. A page with no terminal or cursor progress returns deferred without a durable no-op write, preserving late-terminal exactness while allowing already selected terminal rows before the boundary to commit.
 - The scheduler executes one bounded recovery turn per admission, drops any returned reservation before the next scheduler tick, yields one second after committed progress, and uses `10/20/40/60` second deferred retry backoff with a 60-second cap. Fixed-cardinality observability counters and a retry delay gauge are updated in memory; structured logs carry only counts, state, deadlines, and retry timing, never payload text.
 - Archive maintenance exposes the normalized Snapshot page writer and cleanup
