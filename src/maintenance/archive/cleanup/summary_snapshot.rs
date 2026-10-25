@@ -1252,7 +1252,17 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     {
         // No incomplete V2 page may survive a source replacement. The manifest identity scopes
         // the outcome row, while this filesystem identity fences work that spans attempts.
-        let mut tx = pool.begin().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+            tx.as_mut(),
+            candidate.id,
+            &candidate.sha256,
+        )
+        .await?
+        {
+            tx.rollback().await?;
+            return Ok("complete");
+        }
         sqlx::query(
             "DELETE FROM summary_archive_snapshot
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
@@ -1345,7 +1355,17 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         {
             // A pre-V2 checkpoint only proves ID order. It cannot be combined with the
             // chronological V2 proof, so discard its unproven pages and restart this manifest.
-            let mut tx = pool.begin().await?;
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+            if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+                tx.as_mut(),
+                candidate.id,
+                &candidate.sha256,
+            )
+            .await?
+            {
+                tx.rollback().await?;
+                return Ok("complete");
+            }
             sqlx::query(
                 "DELETE FROM summary_archive_snapshot
                  WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
