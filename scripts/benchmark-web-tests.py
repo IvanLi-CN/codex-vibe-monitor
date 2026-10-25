@@ -485,8 +485,8 @@ def isolate_phase_sources(source: Path, phases_to_run: list[Phase], root: Path) 
     return sources
 
 
-def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phase:
-    command = phase.command.replace(str(source), str(isolated))
+def rebase_phase_ports(phase: Phase, group: str) -> Phase:
+    command = phase.command
     group_port_offset = 0 if group == "A" else 200
     if phase.name == "e2e-pr":
         port_base = 60180 + group_port_offset
@@ -509,6 +509,11 @@ def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phas
     for old, new in ports.items():
         command = command.replace(old, new)
     return Phase(phase.name, command, phase.cwd)
+
+
+def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phase:
+    phase = Phase(phase.name, phase.command.replace(str(source), str(isolated)), phase.cwd)
+    return rebase_phase_ports(phase, group)
 
 
 def execute_phase(phase: Phase, source: Path, directory: Path, deadline: float, env: dict) -> dict:
@@ -587,6 +592,7 @@ def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manife
     if phase is None:
         raise ValueError(f"Manifest is missing phase {group}/{phase_name}")
     phase = materialize_phase(phase, manifest, group, source, directory)
+    phase = rebase_phase_ports(phase, group)
     env = {**os.environ, "CI": "1", "DOCS_BASE": f"/{os.environ['GITHUB_REPOSITORY'].split('/')[-1]}/",
            "PYTHONDONTWRITEBYTECODE": "1", "PLAYWRIGHT_BROWSERS_PATH": str(output / "browsers"),
            "STORYBOOK_DISABLE_TELEMETRY": "1", "XDG_CACHE_HOME": str(output / "cache" / group / phase_name)}

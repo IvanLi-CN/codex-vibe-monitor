@@ -218,6 +218,17 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertIn("127.0.0.1:60484", candidate.command)
         self.assertNotEqual(baseline.command, candidate.command)
 
+    def test_phase_mode_rebases_materialized_browser_ports_for_b(self):
+        phase = MODULE.Phase(
+            "e2e-main",
+            "bun run dev -- --port 60080\nE2E_BASE_URL=http://127.0.0.1:60083\nE2E_DEMO_BASE_URL=http://127.0.0.1:60084",
+        )
+        rebased = MODULE.rebase_phase_ports(phase, "B")
+        self.assertIn("--port 60480", rebased.command)
+        self.assertIn("127.0.0.1:60483", rebased.command)
+        self.assertIn("127.0.0.1:60484", rebased.command)
+        self.assertNotIn("127.0.0.1:6008", rebased.command)
+
     def test_aggregate_group_requires_every_phase_and_uses_max_wall_time(self):
         data = manifest()
         with tempfile.TemporaryDirectory() as temporary:
