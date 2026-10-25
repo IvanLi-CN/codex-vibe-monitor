@@ -486,23 +486,22 @@ pub(crate) async fn stage_task_summary_archive_manifest(
                  ORDER BY id DESC
                  LIMIT 1",
             )
-            .bind(&staging_outcome.dataset)
+            .bind(staging_outcome.dataset)
             .bind(&staging_outcome.month_key)
             .bind(&staging_outcome.file_path)
             .bind(existing_sha256)
             .bind(staging_outcome.row_count)
             .fetch_optional(resources.connection_mut())
             .await?;
-            if let Some(batch_id) = proven_batch_id {
-                if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+            if let Some(batch_id) = proven_batch_id
+                && crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
                     resources.connection_mut(),
                     batch_id,
                     existing_sha256,
                 )
                 .await?
-                {
-                    return Ok(Some(batch_id));
-                }
+            {
+                return Ok(Some(batch_id));
             }
             Ok(None)
         }
