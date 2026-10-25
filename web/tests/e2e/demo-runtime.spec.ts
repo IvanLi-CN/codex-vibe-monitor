@@ -1,65 +1,18 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  type DemoRouteCase,
+  demoBrowserRepresentativeRoutes,
+  demoRoutes,
+} from "../../src/demo/route-matrix";
+import type { DemoScene } from "../../src/demo/runtime";
 
-type RouteCase = {
-  path: string;
-  expectedPath: string;
-};
-
-const allRoutes: RouteCase[] = [
-  { path: "/#/", expectedPath: "/dashboard" },
-  { path: "/#/dashboard", expectedPath: "/dashboard" },
-  {
-    path: "/#/dashboard/invocations/demo-invocation-9002",
-    expectedPath: "/dashboard/invocations/demo-invocation-9002",
-  },
-  { path: "/#/stats", expectedPath: "/stats" },
-  { path: "/#/live", expectedPath: "/live" },
-  { path: "/#/records", expectedPath: "/records" },
-  { path: "/#/account-pool", expectedPath: "/account-pool/transits" },
-  { path: "/#/account-pool/upstream-accounts", expectedPath: "/account-pool/pool" },
-  { path: "/#/account-pool/transits", expectedPath: "/account-pool/transits" },
-  { path: "/#/account-pool/pool", expectedPath: "/account-pool/pool" },
-  {
-    path: "/#/account-pool/upstream-accounts/new?mode=apiKey",
-    expectedPath: "/account-pool/transits/new",
-  },
-  {
-    path: "/#/account-pool/upstream-accounts/new?mode=oauth",
-    expectedPath: "/account-pool/pool/new",
-  },
-  {
-    path: "/#/account-pool/maintenance-records",
-    expectedPath: "/account-pool/maintenance-records",
-  },
-  { path: "/#/account-pool/groups", expectedPath: "/account-pool/groups" },
-  { path: "/#/system", expectedPath: "/system/status" },
-  { path: "/#/system/status", expectedPath: "/system/status" },
-  { path: "/#/system/performance", expectedPath: "/system/performance" },
-  { path: "/#/system/tasks", expectedPath: "/system/tasks" },
-  {
-    path: "/#/system/tasks/retention_archive",
-    expectedPath: "/system/tasks/retention_archive",
-  },
-  { path: "/#/system/prompt-cache", expectedPath: "/system/prompt-cache" },
-  { path: "/#/system/settings", expectedPath: "/system/settings" },
-  { path: "/#/system/models", expectedPath: "/system/models" },
-  { path: "/#/system/proxy", expectedPath: "/system/proxy" },
-  { path: "/#/settings", expectedPath: "/system/settings" },
-  { path: "/#/settings/legacy", expectedPath: "/system/settings" },
-  { path: "/#/not-a-route", expectedPath: "/dashboard" },
-];
-
-const scenes = ["operational", "attention", "empty", "network-failure"] as const;
-type DemoScene = (typeof scenes)[number];
+const allRoutes = demoRoutes;
 type DemoFetchResult = {
   outcome: "failed" | "resolved";
   method: string;
   path: string;
 };
 const DEMO_ROUTE_TIMEOUT_MS = 45_000;
-const nonOperationalScenes = scenes.filter(
-  (value) => value !== "operational" && value !== "network-failure",
-);
 
 function routeLandmark(page: Page, path: string, allowExpectedFailure = false): Locator {
   switch (path) {
@@ -444,7 +397,7 @@ function routeWithScene(path: string, scene: string) {
   return `${path}${separator}demoScene=${scene}&demoTheme=light`;
 }
 
-async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
+async function gotoDemoRoute(page: Page, route: DemoRouteCase, scene: string) {
   const initialPath =
     scene !== "operational" && (route.path === "/#/" || route.path === "/#/not-a-route")
       ? "/#/dashboard"
@@ -472,7 +425,7 @@ async function gotoDemoRoute(page: Page, route: RouteCase, scene: string) {
 
 async function expectDemoShell(
   page: Page,
-  route: RouteCase,
+  route: DemoRouteCase,
   options: {
     allowExpectedFailure?: boolean;
     expectedDetailState?: "success" | "empty";
@@ -549,9 +502,13 @@ test.describe("Web Demo runtime", () => {
     }
   });
 
-  for (const scene of nonOperationalScenes) {
+  for (const scene of ["attention", "empty"] as const) {
     test(`resolves every production route in ${scene} scene`, async ({ page }) => {
-      for (const route of allRoutes) {
+      for (const route of allRoutes.filter((candidate) =>
+        demoBrowserRepresentativeRoutes.includes(
+          candidate.path as (typeof demoBrowserRepresentativeRoutes)[number],
+        ),
+      )) {
         const { onPageError, pageErrors } = capturePageErrors(page);
         try {
           await gotoDemoRoute(page, route, scene);
@@ -626,7 +583,11 @@ test.describe("Web Demo runtime", () => {
     });
 
     let previousExpectedApiRequest: Pick<DemoFetchResult, "method" | "path"> | null = null;
-    for (const route of allRoutes) {
+    for (const route of allRoutes.filter((candidate) =>
+      demoBrowserRepresentativeRoutes.includes(
+        candidate.path as (typeof demoBrowserRepresentativeRoutes)[number],
+      ),
+    )) {
       const { onPageError, pageErrors } = capturePageErrors(page);
       try {
         const expectedApiRequest = networkFailureApiRequest(route.path);

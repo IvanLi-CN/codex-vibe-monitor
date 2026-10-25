@@ -1810,6 +1810,36 @@ function timeseries(range: string | null) {
   };
 }
 
+function dashboardNetworkTimeseries(range: string | null) {
+  const normalizedRange = range ?? "today";
+  const start = Date.parse(demoNow()) - 24 * 3_600_000;
+  const empty = demoModel.snapshot.scene === "empty";
+  const points = empty
+    ? []
+    : Array.from({ length: 24 }, (_, index) => {
+        const bucketStart = start + index * 3_600_000;
+        const uploadBytesPerSecond = 4_800 + ((index * 430) % 6_400);
+        const downloadBytesPerSecond = 28_000 + ((index * 1_730) % 36_000);
+        return {
+          bucketStart: new Date(bucketStart).toISOString(),
+          bucketEnd: new Date(bucketStart + 3_600_000).toISOString(),
+          uploadBytesPerSecond,
+          downloadBytesPerSecond,
+          uploadBytes: uploadBytesPerSecond * 3_600,
+          downloadBytes: downloadBytesPerSecond * 3_600,
+          isLiveBucket: normalizedRange !== "yesterday" && index === 23,
+        };
+      });
+  return {
+    range: normalizedRange,
+    rangeStart: new Date(start).toISOString(),
+    rangeEnd: demoNow(),
+    snapshotId: 901,
+    bucketSeconds: 3_600,
+    points,
+  };
+}
+
 function parallelWork() {
   const start = Date.parse(demoNow()) - 24 * 3_600_000;
   const points =
@@ -5035,6 +5065,9 @@ export async function handleDemoRequest(request: Request) {
     });
   }
   if (pathname === "/api/stats/timeseries") return json(timeseries(url.searchParams.get("range")));
+  if (pathname === "/api/stats/dashboard-network-timeseries") {
+    return json(dashboardNetworkTimeseries(url.searchParams.get("range")));
+  }
   if (request.method === "DELETE" && pathname.startsWith("/api/stats/invocation-timeline/")) {
     return new HttpResponse(null, { status: 204 });
   }

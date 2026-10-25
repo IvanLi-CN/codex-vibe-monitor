@@ -1,9 +1,9 @@
 import "vitest/config";
-import { readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv, type UserConfig } from "vite";
+import { defineConfig, loadEnv, type Plugin, transformWithEsbuild, type UserConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 function normalizeBase(base: string | undefined): string {
@@ -70,6 +70,182 @@ function manualChunkForApplicationRuntime(id: string): string | undefined {
     return "runtime-translations";
   }
   return undefined;
+}
+
+const ACCOUNT_POOL_SUITE_SCOPE_KEYS = [
+  "act",
+  "React",
+  "createRoot",
+  "afterEach",
+  "beforeAll",
+  "beforeEach",
+  "describe",
+  "expect",
+  "it",
+  "vi",
+  "MemoryRouter",
+  "createMemoryRouter",
+  "RouterProvider",
+  "Route",
+  "Routes",
+  "SystemNotificationProvider",
+  "I18nProvider",
+  "UpstreamAccountCreatePage",
+  "UpstreamAccountsPage",
+  "SharedUpstreamAccountDetailDrawer",
+  "navigateMock",
+  "hookMocks",
+  "upstreamAccountsEventMocks",
+  "apiMocks",
+  "sseMocks",
+  "MockValidationEventSource",
+  "MockBulkSyncEventSource",
+  "buildImportedOauthValidationCounts",
+  "TEST_REQUIRED_GROUP_NAME",
+  "TEST_REQUIRED_BOUND_PROXY_KEYS",
+  "TEST_FORWARD_PROXY_NODES",
+  "TEST_GROUP_SUMMARIES",
+  "expectedGroupSelection",
+  "UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY",
+  "UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY",
+  "LOCALE_STORAGE_KEY",
+  "FIXED_NOW_MS",
+  "render",
+  "rerender",
+  "remount",
+  "flushAsync",
+  "flushTimers",
+  "flushSessionSyncDebounce",
+  "flushSessionSyncRetry",
+  "setFileInputFiles",
+  "pasteIntoField",
+  "setInputValue",
+  "setFieldValue",
+  "setBodyInputValue",
+  "clickButton",
+  "clickBodyButton",
+  "findButton",
+  "findBodyButton",
+  "getBatchRows",
+  "pageTextContent",
+  "setComboboxValue",
+  "mockUpstreamAccounts",
+  "blurField",
+  "buildCompletedBatchOauthRow",
+  "writeStoredUpstreamFilters",
+  "readStoredUpstreamFilters",
+  "expectRosterHookQuery",
+  "findExactTextElements",
+  "findFixedContainerByText",
+  "setCompactViewportMatch",
+  "clickTab",
+  "expandLoginHealthDetails",
+  "clickDrawerBackdrop",
+  "clickDrawerGutter",
+  "clickFirstRosterRow",
+  "clickCheckboxByLabel",
+  "clickCombobox",
+  "clickCommandItem",
+  "pressButton",
+  "defaultEffectiveRoutingRule",
+  "defaultPoolTags",
+  "deferred",
+  "buildBulkSyncCounts",
+  "buildBulkSyncSnapshot",
+  "buildBulkSyncSnapshotEvent",
+  "buildBulkSyncJobResponse",
+  "mockBulkSyncPage",
+  "mockAccountsPage",
+  "mockRosterFreshnessPage",
+  "storage",
+  "host",
+  "root",
+  "dateNowSpy",
+] as const;
+
+const ACCOUNT_POOL_SUITE_MUTABLE_SCOPE_KEYS = new Set(["host", "root", "dateNowSpy"]);
+
+function rewriteMutableSuiteReferences(source: string): string {
+  let output = "";
+  let index = 0;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === "'" || character === '"' || character === "`") {
+      const quote = character;
+      const start = index;
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === "\\") {
+          index += 2;
+          continue;
+        }
+        if (source[index] === quote) {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      output += source.slice(start, index);
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "/") {
+      const end = source.indexOf("\n", index + 2);
+      const nextIndex = end === -1 ? source.length : end;
+      output += source.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      const nextIndex = end === -1 ? source.length : end + 2;
+      output += source.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+    if (!/[A-Za-z_$]/.test(character)) {
+      output += character;
+      index += 1;
+      continue;
+    }
+    const start = index;
+    index += 1;
+    while (index < source.length && /[A-Za-z0-9_$]/.test(source[index])) {
+      index += 1;
+    }
+    const identifier = source.slice(start, index);
+    const previous = output.trimEnd().at(-1);
+    const next = source.slice(index).match(/^\s*([):,}=])/u)?.[1];
+    if (ACCOUNT_POOL_SUITE_MUTABLE_SCOPE_KEYS.has(identifier) && previous !== "." && next !== ":") {
+      output += `scope.${identifier}`;
+    } else {
+      output += identifier;
+    }
+  }
+  return output;
+}
+
+function accountPoolSuitePlugin(): Plugin {
+  return {
+    name: "codex-vibe-monitor-account-pool-test-suites",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (!importer || !source.endsWith("?suite")) return undefined;
+      const filePath = resolve(dirname(importer), source.slice(0, -"?suite".length));
+      return `virtual:codex-vibe-monitor-suite:${filePath}`;
+    },
+    async load(id) {
+      if (!id.startsWith("virtual:codex-vibe-monitor-suite:")) return undefined;
+      const source = readFileSync(id.slice("virtual:codex-vibe-monitor-suite:".length), "utf8");
+      const keys = ACCOUNT_POOL_SUITE_SCOPE_KEYS.filter(
+        (key) => !ACCOUNT_POOL_SUITE_MUTABLE_SCOPE_KEYS.has(key),
+      ).join(", ");
+      return transformWithEsbuild(
+        `export default function registerSuite(scope) { let { ${keys} } = scope;\n${rewriteMutableSuiteReferences(source)}\n}`,
+        id,
+        { loader: "tsx", jsx: "automatic", sourcemap: true },
+      );
+    },
+  };
 }
 
 function createPwaPlugins() {
@@ -205,6 +381,7 @@ export function createAppViteConfig(mode: string): UserConfig {
   return {
     base,
     plugins: [
+      accountPoolSuitePlugin(),
       {
         name: "codex-vibe-monitor-install-icon-assets",
         transformIndexHtml(html) {
