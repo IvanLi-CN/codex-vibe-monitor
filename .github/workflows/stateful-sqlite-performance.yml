@@ -153,8 +153,10 @@ jobs:
         run: |
           set -euo pipefail
           wall_file="$EVIDENCE_ROOT/wall-times.txt"
+          target_wall_file="$EVIDENCE_ROOT/target-wall-times.txt"
           failure_file="$EVIDENCE_ROOT/replay-failures.txt"
           : > "$wall_file"
+          : > "$target_wall_file"
           : > "$failure_file"
           overall_status=0
           for replay in cold warm; do
@@ -210,6 +212,69 @@ jobs:
               done
             done
           done
+          setup_target_indices=(0 1 2 5)
+          setup_target_filters=(
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline)'
+            'test(=tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration)'
+          )
+          for replay in cold warm; do
+            case "$replay" in
+              cold) ref_names=(control candidate) ;;
+              warm) ref_names=(candidate control) ;;
+            esac
+            for ref_name in "${ref_names[@]}"; do
+              for target_position in "${!setup_target_indices[@]}"; do
+                target_index="${setup_target_indices[$target_position]}"
+                target_filter="${setup_target_filters[$target_position]}"
+                repo="$GITHUB_WORKSPACE/trusted"
+                archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
+                workspace="$EVIDENCE_ROOT/$ref_name/target-workspace/$replay/setup-$target_index"
+                mkdir -p "$workspace"
+                log="$EVIDENCE_ROOT/logs/$ref_name/$replay/setup-$target_index.log"
+                mkdir -p "$(dirname "$log")"
+                replay_env=(
+                  CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
+                  BACKEND_TEST_WORKSPACE="$workspace"
+                  CARGO_HOME="$CARGO_HOME"
+                  CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/target-replay-target"
+                  NEXTEST_SUCCESS_OUTPUT=final
+                )
+                if [ "$ref_name" = control ]; then
+                  replay_env+=(CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH=1)
+                fi
+                start_ms="$(date +%s%3N)"
+                set +e
+                (
+                  cd "$repo"
+                  env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
+                    --profile stateful-sqlite \
+                    --test-filter "$target_filter" \
+                    --archive-dir "$archive_dir"
+                ) > "$log" 2>&1
+                status=$?
+                set -e
+                end_ms="$(date +%s%3N)"
+                wall_ms=$((end_ms - start_ms))
+                printf 'stateful-target-performance ref=%s replay=%s target=%s wall_ms=%s exit_code=%s\n' \
+                  "$ref_name" "$replay" "$target_index" "$wall_ms" "$status" \
+                  | tee -a "$target_wall_file"
+                if [ "$status" -ne 0 ]; then
+                  overall_status=1
+                  {
+                    printf 'ref=%s replay=%s target=%s exit_code=%s\n' \
+                      "$ref_name" "$replay" "$target_index" "$status"
+                    sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g' "$log" \
+                      | grep -E '(backend_test_profile=|Summary|FAIL|failed|test result:|signal|timeout)' \
+                      | tail -n 120 \
+                      | sed -E 's#(/home/runner/work/|/tmp/)[^[:space:]]+#<path>#g' \
+                      || true
+                  } >> "$failure_file"
+                fi
+              done
+            done
+          done
           exit "$overall_status"
 
       - name: Generate empirical acceptance card
@@ -226,6 +291,7 @@ jobs:
           python3 trusted/.github/scripts/stateful-sqlite-performance.py \
             --root "$EVIDENCE_ROOT" \
             --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
+            --target-wall-file "$EVIDENCE_ROOT/target-wall-times.txt" \
             --control-source-sha "$CANDIDATE_SHA" \
             --candidate-sha "$CANDIDATE_SHA" \
             --trusted-harness-sha "$TRUSTED_HARNESS_SHA" \
@@ -246,6 +312,7 @@ jobs:
             ${{ runner.temp }}/stateful-sqlite-performance/revisions.txt
             ${{ runner.temp }}/stateful-sqlite-performance/runner-context.txt
             ${{ runner.temp }}/stateful-sqlite-performance/wall-times.txt
+            ${{ runner.temp }}/stateful-sqlite-performance/target-wall-times.txt
             ${{ runner.temp }}/stateful-sqlite-performance/replay-failures.txt
             ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.json
             ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.md
