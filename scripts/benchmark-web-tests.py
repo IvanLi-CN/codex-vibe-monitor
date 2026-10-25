@@ -828,7 +828,7 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
 def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
     lines = ["# Whole-PR frontend A/B", "", f"Verdict: **{'PASS' if verdict['passed'] else 'FAIL'}** — `{verdict['reason']}`.", "",
              f"A `{a.get('sha')}`; B `{b.get('sha')}`; workload `{manifest['digest']}`.", "",
-             f"Each phase has a {GROUP_SECONDS}-second process wall-clock budget; group wall is the maximum phase wall, and A+B group wall must stay within {AB_TOTAL_SECONDS} seconds. Independent CI jobs run concurrently, with all builds and test reports included.", "",
+             f"Each phase has a {GROUP_SECONDS}-second process wall-clock budget; group wall is the maximum phase wall, and A+B group wall must stay within {AB_TOTAL_SECONDS} seconds. Each phase runs A then B sequentially on the same GitHub-hosted runner, with isolated source, cache, ports, and reports.", "",
              "| Phase | A seconds | B seconds | A − B seconds |", "|---|---:|---:|---:|"]
     for name in manifest["workload"]:
         left = next((p for p in a.get("phases", []) if p["name"] == name), None)
