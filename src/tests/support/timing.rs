@@ -15,10 +15,11 @@ pub(crate) fn test_timing_span(phase: &'static str) -> Option<TestTimingSpan> {
     })
 }
 
-pub(crate) fn test_timing_target(target: &str) {
-    if timing_enabled() {
-        eprintln!("stateful-test-timing target={target}");
-    }
+pub(crate) fn test_timing_target(target: &'static str) -> Option<TestTimingTarget> {
+    timing_enabled().then(|| {
+        eprintln!("stateful-test-timing target_start={target}");
+        TestTimingTarget { target }
+    })
 }
 
 pub(crate) async fn timed_test_phase<Fut>(phase: &'static str, future: Fut) -> Fut::Output
@@ -42,6 +43,10 @@ pub(crate) struct TestTimingSpan {
     started_at: Instant,
 }
 
+pub(crate) struct TestTimingTarget {
+    target: &'static str,
+}
+
 impl Drop for TestTimingSpan {
     fn drop(&mut self) {
         eprintln!(
@@ -49,5 +54,11 @@ impl Drop for TestTimingSpan {
             self.phase,
             self.started_at.elapsed().as_millis()
         );
+    }
+}
+
+impl Drop for TestTimingTarget {
+    fn drop(&mut self) {
+        eprintln!("stateful-test-timing target_end={}", self.target);
     }
 }

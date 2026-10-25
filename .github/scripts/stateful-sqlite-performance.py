@@ -30,8 +30,11 @@ PHASE_RE = re.compile(
     r"stateful-test-timing phase=(?P<phase>[a-z0-9_]+) "
     r"elapsed_ms=(?P<elapsed>[0-9]+)"
 )
-TARGET_MARKER_RE = re.compile(
-    r"stateful-test-timing target=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+TARGET_START_MARKER_RE = re.compile(
+    r"stateful-test-timing target_start=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+)
+TARGET_END_MARKER_RE = re.compile(
+    r"stateful-test-timing target_end=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
 )
 WALL_RE = re.compile(
     r"^stateful-performance ref=(?P<ref>control|candidate) "
@@ -116,9 +119,14 @@ def parse_log(path: Path) -> dict[str, dict[str, list[int]]]:
     events: dict[str, dict[str, list[int]]] = {}
     current_target: str | None = None
     for line in lines:
-        target_marker = TARGET_MARKER_RE.search(line)
-        if target_marker is not None:
-            marker_target = target_marker.group("target")
+        target_end_marker = TARGET_END_MARKER_RE.search(line)
+        if target_end_marker is not None:
+            if current_target == target_end_marker.group("target"):
+                current_target = None
+            continue
+        target_start_marker = TARGET_START_MARKER_RE.search(line)
+        if target_start_marker is not None:
+            marker_target = target_start_marker.group("target")
             current_target = marker_target if marker_target in TARGETS else None
             continue
         if "stderr ───" in line:
