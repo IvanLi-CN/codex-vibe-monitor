@@ -140,6 +140,15 @@ labels!(RecoveryDiagnostic {
     IndexDefinitionConflict => "index_definition_conflict", IndexUnavailable => "index_unavailable",
     StatisticsLiveTail => "live_tail", StatisticsHistoricalCoverage => "historical_coverage",
     StatisticsPublicationConflict => "publication_conflict",
+    SummaryRecoveryScannedKeys => "summary_recovery_scanned_keys",
+    SummaryRecoveryCommittedTerminalRows => "summary_recovery_committed_terminal_rows",
+    SummaryRecoveryCursorAdvanced => "summary_recovery_cursor_advanced",
+    SummaryRecoveryBudgetExhausted => "summary_recovery_budget_exhausted",
+    SummaryRecoveryLiveBoundaryDeferred => "summary_recovery_live_boundary_deferred",
+    SummaryRecoveryPressureDeferred => "summary_recovery_pressure_deferred",
+    SummaryRecoveryContentionDeferred => "summary_recovery_contention_deferred",
+    SummaryRecoveryRetry => "summary_recovery_retry",
+    SummaryRecoveryPublication => "summary_recovery_publication",
     QueryPlanIndexed => "query_plan_indexed", QueryPlanFallback => "query_plan_fallback",
     QueryPlanUnavailable => "query_plan_unavailable",
     SummaryReorderBuffered => "summary_reorder_buffered",
@@ -202,7 +211,8 @@ const HISTOGRAMS: usize = RETENTION_COUNT * RetentionPhase::ALL.len()
     + InvocationRangePhase::ALL.len();
 const GAUGES: usize = RETENTION_COUNT * BacklogKind::ALL.len()
     + TASK_COUNT * WakeState::ALL.len()
-    + StatsProjection::ALL.len() * (PendingKind::ALL.len() + 1);
+    + StatsProjection::ALL.len() * (PendingKind::ALL.len() + 1)
+    + 1;
 
 #[derive(Clone, Copy)]
 pub(crate) enum PerformanceCounter {
@@ -346,6 +356,7 @@ pub(crate) enum PerformanceGauge {
     Wake(StartupBackfillTask, WakeState),
     ProjectionLastGood(StatsProjection),
     ProjectionPending(StatsProjection, PendingKind),
+    SummaryRecoveryRetryDelay,
 }
 impl PerformanceGauge {
     fn index(self) -> usize {
@@ -362,6 +373,9 @@ impl PerformanceGauge {
                     + StatsProjection::ALL.len()
                     + id as usize * PendingKind::ALL.len()
                     + kind as usize
+            }
+            Self::SummaryRecoveryRetryDelay => {
+                projection + StatsProjection::ALL.len() * (PendingKind::ALL.len() + 1)
             }
         }
     }
@@ -391,6 +405,10 @@ impl PerformanceGauge {
             Self::ProjectionPending(id, kind) => (
                 "cvm_stats_projection_pending_items",
                 vec![("query", id.label()), ("phase", kind.label())],
+            ),
+            Self::SummaryRecoveryRetryDelay => (
+                "cvm_summary_recovery_retry_delay_seconds",
+                vec![("scope", "dashboard")],
             ),
         };
         ObservabilityRuntime::key(name, &labels)
