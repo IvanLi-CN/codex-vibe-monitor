@@ -214,6 +214,8 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertIn("--port 60480", rebased.command)
         self.assertIn("127.0.0.1:60483", rebased.command)
         self.assertIn("127.0.0.1:60484", rebased.command)
+        self.assertIn("export E2E_BASE_URL=http://127.0.0.1:60480", rebased.command)
+        self.assertIn("E2E_DEMO_BASE_URL=http://127.0.0.1:60483", rebased.command)
         self.assertNotIn("127.0.0.1:6008", rebased.command)
 
     def test_aggregate_group_requires_every_phase_and_uses_max_wall_time(self):

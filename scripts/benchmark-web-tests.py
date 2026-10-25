@@ -506,6 +506,9 @@ def rebase_phase_ports(phase: Phase, group: str) -> Phase:
         ports = {}
     for old, new in ports.items():
         command = command.replace(old, new)
+    if phase.name in ("e2e-pr", "e2e-main"):
+        command = (f"export E2E_BASE_URL=http://127.0.0.1:{port_base} "
+                   f"E2E_DEMO_BASE_URL=http://127.0.0.1:{port_base + 3}\n{command}")
     return Phase(phase.name, command, phase.cwd)
 
 
