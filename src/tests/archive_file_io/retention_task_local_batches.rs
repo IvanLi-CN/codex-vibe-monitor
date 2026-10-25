@@ -2241,7 +2241,17 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
             .expect("existing final Summary proof"),
         1
     );
-    for (page_index, page) in pages {
+    let original_page_payload = pages
+        .first()
+        .map(|(_, page)| page.payload.clone())
+        .expect("completed Summary archive has a page");
+    for (page_index, mut page) in pages {
+        if page_index == 0 {
+            // Simulate a stale retry selected before proof publication. A valid final proof is an
+            // authority fence, so the retry must leave the proven page set untouched even when
+            // the replacement payload is not decodable.
+            page.payload = b"stale-retry-page".to_vec();
+        }
         crate::maintenance::store_task_summary_snapshot_page(
             &pool, &outcome, batch_id, page_index, page,
         )
@@ -2256,6 +2266,16 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
             .expect("final Summary proof after same-SHA replay"),
         1
     );
+    let retained_page_payload: Vec<u8> = sqlx::query_scalar(
+        "SELECT payload FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2 AND page_index=0",
+    )
+    .bind(batch_id)
+    .bind(&outcome.sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained proven Summary page");
+    assert_eq!(retained_page_payload, original_page_payload);
     assert_no_task_work_files(&config.archive_dir);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

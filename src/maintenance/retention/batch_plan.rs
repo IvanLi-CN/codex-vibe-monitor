@@ -685,6 +685,18 @@ pub(crate) async fn store_task_summary_snapshot_page(
         return Err(error);
     }
     let page_result: Result<()> = async {
+        // A completed proof is an authority fence. A retry may have selected this page before
+        // proof publication, but it must not rewrite a proven page set after the final marker
+        // commits and trigger proof invalidation.
+        if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+            resources.connection_mut(),
+            batch_id,
+            &outcome.sha256,
+        )
+        .await?
+        {
+            return Ok(());
+        }
         let manifest_matches = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(
                 SELECT 1 FROM archive_batches

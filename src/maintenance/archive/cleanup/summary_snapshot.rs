@@ -1463,7 +1463,21 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
                 bail!("Summary archive source identity changed before V2 page commit");
             }
-            let mut tx = pool.begin().await?;
+            // Serialize the proof check and page write with the final-proof transaction. The
+            // candidate query runs before this point and can become stale while a retention task
+            // publishes its proof; a deferred transaction would then rewrite the page and fire
+            // the trigger that revokes the newly published authority.
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+            if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+                tx.as_mut(),
+                candidate.id,
+                &candidate.sha256,
+            )
+            .await?
+            {
+                tx.rollback().await?;
+                return Ok("complete");
+            }
             store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page).await?;
             record_summary_archive_snapshot_backfill_outcome_tx(
                 tx.as_mut(),

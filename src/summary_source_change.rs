@@ -515,6 +515,27 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     Ok(true)
 }
 
+pub(crate) async fn summary_archive_snapshot_has_final_proof_tx(
+    connection: &mut SqliteConnection,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<bool> {
+    let marker_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(
+            SELECT 1 FROM summary_archive_snapshot_v2_proof
+            WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2
+        )",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_one(&mut *connection)
+    .await?;
+    if marker_exists == 0 {
+        return Ok(false);
+    }
+    summary_archive_snapshot_has_proof_tx(connection, archive_batch_id, manifest_sha256).await
+}
+
 pub(crate) async fn store_summary_archive_snapshot_v2_final_proof_tx(
     connection: &mut SqliteConnection,
     archive_batch_id: i64,
