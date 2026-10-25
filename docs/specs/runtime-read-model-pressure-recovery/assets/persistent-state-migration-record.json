@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1191 implementation candidate c72088935b13e35807566ad77db70a3b497a6519; prior Linux CI, migration evidence, and formal review belong to the superseded pre-rebase head, while current-head validation and empirical acceptance remain required.",
+      "to_program_version": "PR #1191 implementation candidate commit 19b657b3662a1613a759ad80242e4ffb18a347ba after the linear rebase onto main 0542af458161992d94ecc7d6236ddf9c553202ac; final-head PR checks and fresh Tier 4 review are read from the live PR and remain required. This follow-up makes no relative production-performance claim, so generic observability A/B is not a merge gate; a Summary-specific load test remains a separate follow-up.",
       "direct_major_skips_supported": false
     }
   },
@@ -159,34 +159,28 @@
   },
   "pending_execution_evidence": [
     {
-      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
-      "reason": "PR #1191 was rebased after its previous candidate-bound empirical acceptance classified performance evidence as blocked: functional scenarios passed, p95 passed, but metrics-mode CPU windows exceeded the stability limit and the observed CPU increase exceeded budget. The old evidence cannot authorize the rebased candidate; no threshold relaxation is authorized by the plan."
+      "candidate_head_sha": "19b657b3662a1613a759ad80242e4ffb18a347ba",
+      "reason": "This carrier records implementation evidence only. Final-head PR CI, migration lanes, and fresh Tier 4 review are read from live PR #1191 and remain required; the generic observability A/B comparison is outside this merge gate because it does not seed the Summary recovery fixture and this follow-up makes no relative production-performance claim."
     }
   ],
   "execution_evidence": {
-    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
-      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
-    "stateful_and_migration_profiles_passed": true,
-    "formal_review_passed": true,
+    "ci_run": "none",
+    "candidate_head_sha": "19b657b3662a1613a759ad80242e4ffb18a347ba",
+    "stateful_and_migration_profiles_passed": false,
+    "formal_review_passed": false,
     "performance_acceptance": {
-      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
-      "artifact": "observability-acceptance-40167801081-1",
-      "status": "blocked",
-      "functional_scenarios_passed": true,
-      "cpu_window_cv": 0.0521457846,
-      "cpu_observed_increase": 0.0720968518684939,
-      "p95_observed_increase": 0.0101117663,
-      "reason": "The classifier rejected unavailable evidence because CPU windows exceeded the 5% stability limit and the observed CPU increase exceeded the 5% budget; p95 latency remained within budget."
+      "status": "not_required",
+      "reason": "This follow-up makes no relative production-performance claim. Generic observability A/B does not exercise Summary recovery and is not a merge gate; a Summary-specific baseline/candidate load test is a separate follow-up."
     }
   },
   "delivery_context": {
-    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
-    "candidate_validation_status": "pr-rebased-validation-required",
-    "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+    "candidate_head_sha": "19b657b3662a1613a759ad80242e4ffb18a347ba",
+    "candidate_validation_status": "implementation-evidence-carrier-review-pending",
+    "active_base_sha": "0542af458161992d94ecc7d6236ddf9c553202ac",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0542af45; the topic adds no merge commit or unrelated base change.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base dff0b88dc00681720acfaa9103c8ddbba84d3325 onto current main 0542af458161992d94ecc7d6236ddf9c553202ac, producing implementation candidate commit 19b657b3662a1613a759ad80242e4ffb18a347ba. Final-head PR checks and fresh Tier 4 review are required after the rebase. Acceptance re-audit removed the inapplicable generic observability A/B comparison from the merge gate; a Summary-specific relative-performance load test remains a separate follow-up.",
     "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }
