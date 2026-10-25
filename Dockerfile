@@ -97,6 +97,11 @@ COPY vendor/hotpath/LICENSE.txt /usr/local/share/licenses/hotpath/LICENSE.txt
 COPY scripts/search-raw /usr/local/bin/search-raw
 
 # Stage 5: production runtime image
+# BuildKit permits ARG expansion in FROM but not in COPY --from. Resolve the
+# selected contexts through fixed aliases so canonical and named-context builds
+# share one production image layout.
+FROM ${RUST_CONTEXT} AS production-rust-context
+FROM ${WEB_CONTEXT} AS production-web-context
 FROM ${RUNTIME_CONTEXT} AS production-runtime
 ARG RUST_CONTEXT
 ARG WEB_CONTEXT
@@ -104,8 +109,8 @@ ARG APP_EFFECTIVE_VERSION
 ARG APP_GIT_REVISION
 ARG FRONTEND_EFFECTIVE_VERSION
 
-COPY --from=${RUST_CONTEXT} /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
-COPY --from=${WEB_CONTEXT} /app/web/dist ./web
+COPY --from=production-rust-context /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
+COPY --from=production-web-context /app/web/dist ./web
 
 RUN chmod 0755 /usr/local/bin/search-raw
 
