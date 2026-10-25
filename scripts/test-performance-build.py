@@ -323,6 +323,52 @@ class PerformanceBuildContractTests(unittest.TestCase):
             finally:
                 sys.argv = old_argv
 
+    def test_build_report_accepts_complete_image_cache_hit_without_producer_cards(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_dir = root / "image"
+            image_dir.mkdir()
+            (image_dir / "image.json").write_text(json.dumps({
+                "schema": "cvm-performance-build-image-v1",
+                "component": "image",
+                "candidate": "a" * 40,
+                "buildIdentity": "b" * 64,
+                "status": "ready",
+                "startedAt": "2026-10-25T00:00:10Z",
+                "finishedAt": "2026-10-25T00:00:20Z",
+                "cache": {"status": "hit"},
+                "artifact": "candidate.tar.gz",
+                "archiveSha256": hashlib.sha256(b"image").hexdigest(),
+            }))
+            (image_dir / "candidate.tar.gz").write_bytes(b"image")
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({"jobs": [{
+                "databaseId": 101,
+                "name": "Observability Performance Image",
+                "status": "completed",
+                "conclusion": "success",
+                "createdAt": None,
+                "startedAt": "2026-10-25T00:00:12Z",
+                "completedAt": "2026-10-25T00:00:20Z",
+            }]}))
+            output = root / "report.json"
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(root), "--output", str(output),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
+                ]
+                report.main()
+            finally:
+                sys.argv = old_argv
+            value = json.loads(output.read_text())
+            self.assertEqual(value["status"], "passed")
+            self.assertEqual(value["cache"]["image"]["status"], "hit")
+            self.assertEqual([job["component"] for job in value["jobs"]], ["image"])
+
     def test_build_report_preserves_workflow_failure_as_failed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

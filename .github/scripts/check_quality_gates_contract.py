@@ -584,7 +584,19 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and report_checkout.get("with", {}).get("path") == "candidate-report",
         f"{workflow_path} build-only reports must use the candidate generator without changing formal harness sources",
     )
-    require("observability-build-report.py" in str(report_step.get("run", "")) and "report_root" in str(report_step.get("run", "")) and "candidate-report" in str(report_step.get("run", "")) and "--build-identity" in str(report_step.get("run", "")) and "--run-started" in str(report_step.get("run", "")) and "--jobs-json" in str(report_step.get("run", "")) and "--workflow-failure" in str(report_step.get("run", "")), f"{workflow_path} build report must bind identity, measured Actions timings and dependency failures")
+    report_run = str(report_step.get("run", ""))
+    require(
+        "observability-build-report.py" in report_run
+        and "report_root" in report_run
+        and "candidate-report" in report_run
+        and "--build-identity" in report_run
+        and "--run-started" in report_run
+        and "--jobs-json" in report_run
+        and "--workflow-failure" in report_run
+        and "COMPLETE_IMAGE_CACHE_HIT" in report_run
+        and "PRODUCER_RESULT" in report_run,
+        f"{workflow_path} build report must bind identity, measured Actions timings and distinguish expected producer skips from failures",
+    )
     report_upload = uses_step_config(report, "Upload build report", "actions/upload-artifact@v7", workflow_path)
     require(report_upload.get("with", {}).get("name") == "observability-build-report-${{ github.run_id }}" and report_upload.get("with", {}).get("retention-days") == 14, f"{workflow_path} build report retention drifted")
 

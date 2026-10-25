@@ -1222,7 +1222,11 @@ jobs:
             --run-id "$RUN_ID"
           )
           if [ "$BUILD_ONLY" = "true" ]; then args+=(--build-only); fi
-          if [ "$PRODUCER_RESULT" != "success" ] || [ "$IMAGE_RESULT" != "success" ]; then args+=(--workflow-failure); fi
+          if [ "$IMAGE_RESULT" != "success" ]; then
+            args+=(--workflow-failure)
+          elif [ "$PRODUCER_RESULT" != "success" ] && [ "$COMPLETE_IMAGE_CACHE_HIT" != "true" ]; then
+            args+=(--workflow-failure)
+          fi
           report_root="$PWD/trusted"
           if [ "$BUILD_ONLY" = "true" ]; then report_root="$PWD/candidate-report"; fi
           test -f "$report_root/scripts/observability-build-report.py"
