@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.2",
+  "base_stable_version": "4.13.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-25T03:24:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3e728b4f2836708090b60391427f0675f43ef765",
+  "pr_number": 1190,
+  "pr_title": "fix(tests): keep timeline ownership fixture within retention",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.2",
+  "target_sha": "b1c523815090218499954e719b1b356b60d933cd",
+  "type_label": "type:patch"
+}
