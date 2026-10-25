@@ -347,8 +347,8 @@ class WorkflowTests(unittest.TestCase):
         path = MODULE.ROOT / ".github/workflows/ci-observability-performance.yml"
         with patch.object(checker, "load_yaml", return_value=workflow):
             checker.validate_observability_performance(path)
-        for job_id, field, value in (("frontend-test-ab", "if", "always()"),
-                                      ("frontend-test-ab", "with", {}),
+        for job_id, field, value in (("observability-performance", "if", "github.event_name == 'pull_request_target'"),
+                                      ("observability-performance-result", "if", "contains(github.event.pull_request.labels.*.name, 'run:observability-performance')"),
                                       ("observability-performance-image", "if", "github.event_name == 'workflow_dispatch'")):
             changed = copy.deepcopy(workflow)
             changed["jobs"][job_id][field] = value

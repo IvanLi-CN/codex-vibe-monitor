@@ -1,6 +1,6 @@
 # Observability Acceptance Single-Runner Bundle
 
-Status: Accepted
+Status: Superseded by ADR 0048
 
 ## Context
 

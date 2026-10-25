@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Expose explicit degraded Summary data quality, serve eligible broad Source Journal compaction gaps with acknowledged overlays, fail closed for scoped source gaps and unproven current rank, repair pending invocation archive Summary rollups with fail-closed SHA identity, and add generation-fenced Dashboard compacted-source recovery with bounded background batches that resume from durable page state.",
+    "description": "Expose explicit degraded Summary data quality, serve eligible broad Source Journal compaction gaps with acknowledged overlays, fail closed for scoped source gaps and unproven current rank, repair pending invocation archive Summary rollups with fail-closed SHA identity, and add generation-fenced Dashboard compacted-source recovery with bounded background batches that resume from durable page state. The query-fairness follow-up coalesces the recovery range, uses covering tuple seeks, and adds adaptive in-memory scheduling without changing the durable format.",
     "release_unit_description": "Dashboard Summary bounded source recovery.",
     "affected_contracts": [
       "public-api",
@@ -16,9 +16,9 @@
       "major"
     ],
     "planned": {
-      "impact": "minor",
-      "reasoning": "The public change is additive and patch-level: coded unavailable errors and optional system-status recovery fields preserve existing healthy responses. The durable change is minor because it adds four optional recovery tables and additive usage columns with idempotent forward migration; existing business rows and old reader paths remain untouched.",
-      "assessed_at": "2026-10-09T10:54:44Z",
+      "impact": "patch",
+      "reasoning": "This follow-up changes no schema, checkpoint format, or public response shape. It only narrows the existing format-1 reader query, releases scheduler resources between bounded turns, and adjusts in-memory page and retry state.",
+      "assessed_at": "2026-10-25T00:00:00Z",
       "evidence": [
         "docs/adr/0035-summary-source-journal-degraded-read-path.md",
         "docs/specs/runtime-read-model-pressure-recovery/SPEC.md",
@@ -27,13 +27,13 @@
       ]
     },
     "current": {
-      "impact": "minor",
+      "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "The candidate adds only optional public recovery diagnostics and a coded unavailable body, plus additive durable checkpoint/staging tables and usage columns. Healthy response fields remain compatible, older readers can ignore the new tables/columns, and the recovery path narrows claims until exact publication rather than returning approximations."
+        "description": "The follow-up adds no public or durable fields. Healthy response fields, coded unavailable bodies, and existing format-1 checkpoint/staging rows remain compatible; the recovery path still narrows claims until exact publication rather than returning approximations."
       },
-      "reasoning": "Healthy responses retain their previous fields, while the optional system-status recovery object and coded 503 body are additive. Supported earlier same-Minor readers can ignore the new recovery tables/columns. Dashboard day-window staging is generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication; the 10,000 journal retention bound is not used as a full-table admission gate. A complete recovery turn covers its durable reads, bounded checkpoint reset and state writes, rollback/close cleanup, and publication deadline; reset and publication write transactions are capped at 250 ms while the worker turn remains capped at 2 seconds. Candidate/source reads plus publication use dedicated SQLite connections with deadline-aligned busy timeouts, progress handlers, and bounded close paths. The materialization budget covers only loaded projection text, so raw payload is not staged or charged. The in-memory snapshot is exposed only after the publication commit.",
-      "reassessed_at": "2026-10-24T06:43:42Z",
+      "reasoning": "Healthy responses retain their previous fields, while the existing optional system-status recovery object and coded 503 body remain additive. Dashboard day-window staging remains generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication. The follow-up changes only the key-page query plan, bounded source reads, in-memory adaptive page size, and scheduler backoff; it retains the 512-row, 8 MiB, 250 ms, and 2 s limits and adds no DDL.",
+      "reassessed_at": "2026-10-25T00:00:00Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
@@ -52,9 +52,9 @@
       ]
     },
     "verified": {
-      "impact": "minor",
-      "reasoning": "Impact classification is verified from the additive schema and API shape: healthy Summary fields remain compatible, coded 503 and system-status fields are optional, and the recovery tables/usage columns are forward-only. Functional stateful, representative-scale, contention, migration and artifact evidence passed in current-head CI run 40089397737; current-head Tier 4 review found no implementation blocker; local macOS targeted Rust execution remains blocked by the sqlx_macros dylib toolchain failure.",
-      "verified_at": "2026-10-24T10:00:00Z",
+      "impact": "patch",
+      "reasoning": "The implementation candidate changes no public or persistent representation. Verification is intentionally pending the new candidate's Linux stateful, contention, and empirical acceptance lanes; local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
+      "verified_at": "2026-10-25T00:00:00Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
@@ -66,7 +66,9 @@
         "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
         "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::recovery_snapshot_window_ranges_expire_at_the_next_reporting_day",
-        "web/src/hooks/useStats.integration.test.tsx::retries_a_pending_HTTP_recovery_summary_until_it_becomes_exact"
+        "web/src/hooks/useStats.integration.test.tsx::retries_a_pending_HTTP_recovery_summary_until_it_becomes_exact",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::deferred_recovery_uses_bounded_exponential_backoff"
       ]
     }
   },
@@ -84,7 +86,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "The main SQLite database gains the existing optimizer/repair state plus additive Dashboard compacted-source checkpoint, aggregate, usage, and bounded record-identity tables. Dashboard recovery stores fixed Shanghai day-window boundaries, a tuple cursor, processed rows, target generation-fence values, normalized aggregates, usage breakdowns, and list-limited identities; it does not copy payloads. A durable cursor compare-and-swap prevents concurrent page double counting, coverage-fence changes discard unpublishable staging, and append-only live-tail changes are served through exact bounded deltas. Recovery state transitions use a bounded connection and remaining worker-turn deadline, so contention defers rather than extending the recovery turn. NULL or blank replay-marker SHA values fail closed, stale markers re-enter repair, and non-error source text over the materialization budget fails closed. All new state is idempotent and forward-repairable; no allocator writeback, backup copy, destructive cleanup, or deployment state is introduced.",
+      "state_description": "The existing SQLite Dashboard compacted-source checkpoint, aggregate, usage, and bounded record-identity tables remain unchanged at format 1. The follow-up stores no new durable field: it only reads fixed Shanghai day-window boundaries with an occurred_at,id tuple cursor, keeps generation-fence compare-and-swap publication, and retains the no-payload staging rule. Runtime page sizing, retry delay, and diagnostics remain in memory and reset after process restart or generation identity change.",
       "source_program_compatibility_range": "Supported earlier same-Minor readers can ignore the additive Dashboard recovery tables/columns and continue using existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations.",
       "evidence": [
         "src/schema/summary_coverage.rs::ensure_column_with_definition",
@@ -95,23 +97,23 @@
   },
   "release_unit": {
     "member_change_records": [
-      "53aed6b8",
+      "PR #1191: th/summary-recovery-query-fairness@c72088935b13e35807566ad77db70a3b497a6519",
       "assets/persistent-state-migration-record.json"
     ],
-    "maximum_verified_impact": "minor",
+    "maximum_verified_impact": "patch",
     "calculation_evidence": [
       "public_api=patch: additive recovery fields and stable coded unavailable body with existing healthy-response compatibility",
-      "persistent_state=minor: additive idempotent checkpoint/staging tables and usage columns readable by supported earlier same-Minor readers"
+      "persistent_state=patch: existing format-1 checkpoint/staging state is reused without DDL or durable representation changes"
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "53aed6b8",
-    "candidate_validation_status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-passed-visual-pending-base-synced",
-    "active_base_sha": "76beb053ac529bde47961dddb1e14b4d176700f8",
-    "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "candidate_validation_status": "pr-rebased-validation-required",
+    "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+    "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The candidate was rebased directly onto origin/main@76beb053; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR CI and Tier 4 reviews must bind to the pushed th/summary-source-recovery-batch head; no older PR evidence is reused.",
-    "release_compatibility": "Public API impact is patch and persistent-state impact is minor; final release channel and predicted version remain for the Step 5C Agent default release decision card."
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }

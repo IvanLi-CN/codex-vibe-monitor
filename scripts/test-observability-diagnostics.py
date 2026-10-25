@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Regressions for bounded CPU evidence and non-certifying diagnostic isolation."""
-import copy
 import gzip
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -18,10 +16,6 @@ sys.path.insert(0, str(SOURCE / "scripts/observability-diagnostics"))
 import evidence
 import run as diagnostic
 
-spec = importlib.util.spec_from_file_location("diagnostic_gate_contract", SOURCE / ".github/scripts/check_quality_gates_contract.py")
-contract = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = contract
-spec.loader.exec_module(contract)
 CONTAINER, CANDIDATE, BUILD = "a" * 64, "b" * 40, "c" * 40
 
 
@@ -210,32 +204,6 @@ with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(subprocess.TimeoutExpired):
                 run.capture({"windowId": "0-true"}, CONTAINER, ("fixed-driver-image", self.root / "profile-source"))
         self.assertEqual(execute.call_args.args[0], ["docker", "rm", "-f", driver])
-
-
-class WorkflowTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-observability-performance.yml")
-
-    def test_separate_hosted_diagnosis_preserves_certification_contract(self):
-        contract.require_observability_diagnostic_contract(self.workflow)
-        contract.require_observability_performance_contract(self.workflow)
-
-    def test_private_unbounded_and_certificate_artifacts_rejected(self):
-        for suffix in ["private/**", "*.log", "empirical-card.json", "**", "data/*.db"]:
-            workflow = copy.deepcopy(self.workflow)
-            step = workflow["jobs"]["observability-diagnostics"]["steps"][-1]
-            step["with"]["path"] += "\n${{ runner.temp }}/observability-diagnostics/" + suffix
-            with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
-
-    def test_wrong_runner_certifying_entrypoint_or_budget_dependency_rejected(self):
-        for key, value in [("runs-on", "self-hosted"), ("needs", "observability-performance"), ("if", "always()")]:
-            workflow = copy.deepcopy(self.workflow)
-            workflow["jobs"]["observability-diagnostics"][key] = value
-            with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
-        workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["observability-performance"]["needs"] = "observability-diagnostics"
-        with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
 
 
 if __name__ == "__main__":

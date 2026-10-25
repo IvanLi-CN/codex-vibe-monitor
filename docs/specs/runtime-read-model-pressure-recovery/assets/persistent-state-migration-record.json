@@ -2,16 +2,16 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then add the Dashboard compacted-source recovery checkpoint/staging set and repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
+    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then add the Dashboard compacted-source recovery checkpoint/staging set and repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions. The query-fairness follow-up reuses the existing format-1 Dashboard state and changes no DDL.",
     "release_unit_description": "Dashboard Summary bounded source recovery.",
-    "version_impact": "minor"
+    "version_impact": "patch"
   },
   "durable_state": {
-    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, invocation_rollup_hourly derived rows, and additive Dashboard compacted-source checkpoint/staging tables used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state. Dashboard staging stores only normalized aggregates, a tuple cursor, generation-fence values, state, and list-limited record identities; it never stores invocation payloads.",
+    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, invocation_rollup_hourly derived rows, and additive Dashboard compacted-source checkpoint/staging tables used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state. Dashboard staging stores only normalized aggregates, a tuple cursor, generation-fence values, state, and list-limited record identities; it never stores invocation payloads. The query-fairness follow-up only changes the existing reader cursor, scheduler, and in-memory runtime page limit.",
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "53aed6b8 implementation candidate.",
+      "to_program_version": "PR #1191 implementation candidate c72088935b13e35807566ad77db70a3b497a6519; prior Linux CI, migration evidence, and formal review belong to the superseded pre-rebase head, while current-head validation and empirical acceptance remain required.",
       "direct_major_skips_supported": false
     }
   },
@@ -66,6 +66,12 @@
       }
     ]
   },
+  "follow_up_compatibility": {
+    "version_impact": "patch",
+    "schema_change": false,
+    "format_version": 1,
+    "description": "The follow-up coalesces the Shanghai recovery range, seeks a bounded key page through the existing occurred_at,id covering index, removes payload work from the first-stage query, and changes only in-memory adaptive page sizing, backoff, and low-cardinality diagnostics. Existing checkpoint/staging rows remain readable and no old rows are rewritten or deleted."
+  },
   "rollout_observability": {
     "operations_must_remain_separate": true,
     "operation_sequence": [
@@ -87,7 +93,10 @@
       "A committed Dashboard page resumes after restart without duplicate aggregate or usage contributions; a concurrent stale page is discarded by cursor compare-and-swap; a coverage-fence change leaves the old staging unpublished while live-tail changes preserve it",
       "Publication rejects staging whose canonical terminal counts changed after scanning and forces a bounded rescan; stored Shanghai window ranges expire at the next reporting day",
       "A cancelled or timed-out publication cannot expose an uncommitted hub snapshot; the complete recovery turn defers when checkpoint, state, or publication work cannot fit its remaining deadline",
-      "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract; recovery state transitions are themselves bounded by the worker turn budget and defer when the state write cannot complete"
+      "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract; recovery state transitions are themselves bounded by the worker turn budget and defer when the state write cannot complete",
+      "The recovery key query uses a covering tuple seek with no temporary sort; candidate and source-row reads are constrained to the fetched key IDs and do not scan or stage payloads",
+      "A read timeout halves the in-memory page limit down to one, successful pages retain that limit, and a generation identity change or process restart restores the 512-key limit",
+      "A committed page resets the deferred retry delay, while repeated pressure, contention, timeout, or no-progress turns expose the current 10/20/40/60-second retry deadline"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",
@@ -106,14 +115,17 @@
       "required_test_evidence": [
         "The public API remains nonbreaking and candidate-written state uses existing representations readable by supported earlier same-Minor readers.",
         "Repeated ensure_schema recognizes the partial index without duplication and the real pending-rollup query uses it.",
-      "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
-      "NULL and blank replay markers fail closed; force repair deduplicates source invocation IDs across archive pages and clears safe buckets before later replacement pages when a materialized authority bucket is missing.",
-      "The id > cursor ORDER BY id force-repair query uses idx_archive_batches_summary_rollup_repair_seek and its EXPLAIN plan is covered by the schema regression.",
+        "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
+        "NULL and blank replay markers fail closed; force repair deduplicates source invocation IDs across archive pages and clears safe buckets before later replacement pages when a materialized authority bucket is missing.",
+        "The id > cursor ORDER BY id force-repair query uses idx_archive_batches_summary_rollup_repair_seek and its EXPLAIN plan is covered by the schema regression.",
         "Legacy blank or NULL replay-marker SHA values remain readable, while a stale nonblank SHA and a materialized archive missing Summary marker proof are reopened for idempotent repair.",
         "A stale-marker full repair converges across 129 archive batches, pages past the 4,096-archive transaction boundary even after the first page clears the marker predicate, deduplicates restored live rows, and persists the live cursor across an incomplete retry.",
         "An eligible broad Source Journal compaction gap with an acknowledged overlay is explicitly degraded for both HTTP and Summary SSE, while scoped source gaps and unproven current rank remain unavailable.",
         "An unproven current rank and an all-time response without a hydrated baseline remain unavailable instead of falling through to an approximate resident response.",
-        "No old-version allocator writeback or deployment action is part of the migration contract."
+        "No old-version allocator writeback or deployment action is part of the migration contract.",
+        "The Dashboard recovery key-page EXPLAIN uses idx_codex_invocations_occurred_at_id with tuple seek and no global scan or temporary sort.",
+        "Candidate and source-row read timeouts halve the in-memory page limit to one; restart and changed generation identity restore 512 without changing format-1 state.",
+        "Recovery scheduling releases the priority reservation and execution lease after each bounded turn, waits one second after committed progress, and applies capped deferred backoff without no-op checkpoint writes."
       ]
     },
     "minor": {
@@ -145,20 +157,36 @@
       "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
     ]
   },
-  "pending_execution_evidence": [],
+  "pending_execution_evidence": [
+    {
+      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+      "reason": "PR #1191 was rebased after its previous candidate-bound empirical acceptance classified performance evidence as blocked: functional scenarios passed, p95 passed, but metrics-mode CPU windows exceeded the stability limit and the observed CPU increase exceeded budget. The old evidence cannot authorize the rebased candidate; no threshold relaxation is authorized by the plan."
+    }
+  ],
   "execution_evidence": {
-    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40089397737",
-    "candidate_head_sha": "53aed6b8ed2f5f663868fdbb5888c12c35e115f3",
-    "stateful_and_migration_profiles_passed": true
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
+      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "stateful_and_migration_profiles_passed": true,
+    "formal_review_passed": true,
+    "performance_acceptance": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "artifact": "observability-acceptance-40167801081-1",
+      "status": "blocked",
+      "functional_scenarios_passed": true,
+      "cpu_window_cv": 0.0521457846,
+      "cpu_observed_increase": 0.0720968518684939,
+      "p95_observed_increase": 0.0101117663,
+      "reason": "The classifier rejected unavailable evidence because CPU windows exceeded the 5% stability limit and the observed CPU increase exceeded the 5% budget; p95 latency remained within budget."
+    }
   },
   "delivery_context": {
-    "candidate_head_sha": "53aed6b8",
-    "candidate_validation_status": "current-head-ci-passed-local-targeted-rust-blocked-pr-tier4-passed-visual-pending-base-synced",
-    "active_base_sha": "76beb053ac529bde47961dddb1e14b4d176700f8",
-    "previous_review_base_sha": "207e6d6341240dd722d15a9e853485bed5e441a9",
+    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "candidate_validation_status": "pr-rebased-validation-required",
+    "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+    "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The candidate was rebased directly onto origin/main@76beb053; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR CI and Tier 4 reviews must bind to the pushed th/summary-source-recovery-batch head; no older PR evidence is reused.",
-    "release_compatibility": "The additive migration is minor and forward-repairable; public API additions are patch-level; no backup, allocator writeback, deployment state, or deployment action is in scope."
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }
