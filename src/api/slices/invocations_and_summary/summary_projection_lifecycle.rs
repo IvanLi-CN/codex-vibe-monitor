@@ -1382,6 +1382,17 @@ mod compacted_source_recovery_budget_tests {
     }
 
     #[test]
+    fn candidate_materialization_query_reuses_snapshot_budget_metadata() {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+        push_compacted_source_recovery_candidate_columns(&mut query);
+        let sql = query.build().sql().to_string();
+        assert!(sql.contains("NULL AS failure_kind"));
+        assert!(sql.contains("0 AS estimated_bytes"));
+        assert!(!sql.contains("= 'service_failure'"));
+        assert!(!sql.contains("(192 + length"));
+    }
+
+    #[test]
     fn recovery_runtime_keeps_adaptive_page_size_across_scheduler_turns() {
         let mut runtime = CompactedSourceRecoveryRuntime::default();
         runtime.halve_page_size();
@@ -1773,6 +1784,9 @@ struct CompactedSourceRecoveryCandidateBudget {
     id: i64,
     occurred_at: String,
     status: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+    is_actionable: Option<i64>,
     estimated_bytes: i64,
     error_message_bytes: i64,
 }
@@ -1805,9 +1819,9 @@ impl CompactedSourceRecoveryCandidateBudget {
             cost_reasoning: None,
             status: self.status,
             error_message: None,
-            failure_kind: None,
-            failure_class: None,
-            is_actionable: None,
+            failure_kind: self.failure_kind,
+            failure_class: self.failure_class,
+            is_actionable: self.is_actionable,
             estimated_bytes: self.estimated_bytes,
             error_message_bytes: self.error_message_bytes,
         })
@@ -2510,31 +2524,10 @@ fn push_compacted_source_recovery_candidate_columns(
         .push(
             " THEN '__summary_recovery_oversized_error__' ELSE error_message END AS error_message, ",
         )
-        .push(INVOCATION_FAILURE_KIND_SQL)
-        .push(" AS failure_kind, ")
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
-            " AS failure_class, CASE WHEN ",
-        )
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, (192");
-    for expression in [
-        "invoke_id",
-        "occurred_at",
-        "model",
-        INVOCATION_RESPONSE_MODEL_SQL,
-        INVOCATION_REASONING_EFFORT_SQL,
-        "status",
-        "error_message",
-        INVOCATION_FAILURE_KIND_SQL,
-        INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
-    ] {
-        push_compacted_source_recovery_text_length(query, expression);
-    }
-    query.push(
-        ") AS estimated_bytes, length(CAST(COALESCE(error_message, '') AS BLOB)) \
-         AS error_message_bytes FROM codex_invocations WHERE ",
-    );
+            "NULL AS failure_kind, NULL AS failure_class, NULL AS is_actionable, \
+             0 AS estimated_bytes, 0 AS error_message_bytes FROM codex_invocations WHERE ",
+        );
 }
 
 fn push_compacted_source_recovery_candidate_budget_columns(
@@ -2543,7 +2536,13 @@ fn push_compacted_source_recovery_candidate_budget_columns(
     query
         .push("SELECT id, occurred_at, ")
         .push(INVOCATION_STATUS_NORMALIZED_SQL)
-        .push(" AS status, (192");
+        .push(" AS status, ")
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, (192");
     for expression in [
         "invoke_id",
         "occurred_at",
@@ -2678,6 +2677,32 @@ async fn load_compacted_source_recovery_candidates(
         let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
         return Ok(None);
     }
+    let begin_result =
+        tokio::time::timeout(remaining, sqlx::query("BEGIN").execute(&mut connection)).await;
+    match begin_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let error = anyhow!(error).context("begin compacted source recovery read snapshot");
+            let _ =
+                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+            if is_sqlite_contention(&error) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        Err(_) => {
+            let _ =
+                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+            return Ok(None);
+        }
+    }
+    let remaining = budget.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        let _ =
+            rollback_and_close_compacted_source_recovery_connection_bounded(connection, deadline)
+                .await?;
+        return Ok(None);
+    }
     let mut budget_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
     push_compacted_source_recovery_candidate_budget_columns(&mut budget_query);
     budget_query.push("id IN (");
@@ -2707,43 +2732,58 @@ async fn load_compacted_source_recovery_candidates(
                 || Instant::now() >= deadline
                 || is_sqlite_contention(&error)
             {
-                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
-                    .await?;
+                let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                    connection, deadline,
+                )
+                .await?;
                 return Ok(None);
             } else {
-                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
-                    .await?;
+                let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                    connection, deadline,
+                )
+                .await?;
                 return Err(error);
             }
         }
         Err(_) => {
-            let _ =
-                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+            let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                connection, deadline,
+            )
+            .await?;
             return Ok(None);
         }
     };
+    let budget_candidates = budgets
+        .into_iter()
+        .filter_map(CompactedSourceRecoveryCandidateBudget::into_selection_candidate)
+        .collect::<Vec<_>>();
     let budget_page = CompactedSourceRecoveryCandidatePage {
         keys: keys.clone(),
-        candidates: budgets
-            .into_iter()
-            .filter_map(CompactedSourceRecoveryCandidateBudget::into_selection_candidate)
-            .collect(),
+        candidates: budget_candidates,
     };
     let (selected_budget_candidates, _, _) =
         match select_compacted_source_recovery_candidate_page(budget_page, page_size) {
             Ok(selection) => selection,
             Err(error) => {
-                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
-                    .await?;
+                let _ = rollback_and_close_compacted_source_recovery_connection_bounded(
+                    connection, deadline,
+                )
+                .await?;
                 return Err(error);
             }
         };
+    let selected_budget_by_id = selected_budget_candidates
+        .iter()
+        .map(|candidate| (candidate.id, candidate.clone()))
+        .collect::<HashMap<_, _>>();
     let selected_ids = selected_budget_candidates
         .iter()
         .map(|candidate| candidate.id)
         .collect::<Vec<_>>();
     if selected_ids.is_empty() {
-        if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
+        if !rollback_and_close_compacted_source_recovery_connection_bounded(connection, deadline)
+            .await?
+        {
             return Ok(None);
         }
         return Ok(Some(CompactedSourceRecoveryCandidatePage {
@@ -2754,13 +2794,14 @@ async fn load_compacted_source_recovery_candidates(
 
     let remaining = budget.saturating_sub(started.elapsed());
     if remaining.is_zero() {
-        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        let _ =
+            rollback_and_close_compacted_source_recovery_connection_bounded(connection, deadline)
+                .await?;
         return Ok(None);
     }
     let mut candidate_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
     push_compacted_source_recovery_candidate_columns(&mut candidate_query);
-    candidate_query.push(INVOCATION_STATUS_NORMALIZED_SQL);
-    candidate_query.push(" NOT IN ('running', 'pending') AND id IN (");
+    candidate_query.push("id IN (");
     {
         let mut separated = candidate_query.separated(", ");
         for id in selected_ids {
@@ -2778,15 +2819,31 @@ async fn load_compacted_source_recovery_candidates(
             .fetch_all(&mut connection),
     )
     .await;
-    let closed = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+    let closed =
+        rollback_and_close_compacted_source_recovery_connection_bounded(connection, deadline)
+            .await?;
     if !closed {
         return Ok(None);
     }
     match candidate_result {
-        Ok(Ok(candidates)) => Ok(Some(CompactedSourceRecoveryCandidatePage {
-            keys,
-            candidates,
-        })),
+        Ok(Ok(candidates)) => {
+            let candidates = candidates
+                .into_iter()
+                .filter_map(|mut candidate| {
+                    let budget = selected_budget_by_id.get(&candidate.id)?;
+                    candidate.failure_kind = budget.failure_kind.clone();
+                    candidate.failure_class = budget.failure_class.clone();
+                    candidate.is_actionable = budget.is_actionable;
+                    candidate.estimated_bytes = budget.estimated_bytes;
+                    candidate.error_message_bytes = budget.error_message_bytes;
+                    Some(candidate)
+                })
+                .collect();
+            Ok(Some(CompactedSourceRecoveryCandidatePage {
+                keys,
+                candidates,
+            }))
+        }
         Ok(Err(error)) => {
             let error =
                 anyhow!(error).context("load bounded compacted source recovery materialized page");
