@@ -294,7 +294,7 @@ def build_card(
         "baseline_reference_sha": baseline_reference_sha,
         "baseline_source_sha": baseline_source_sha,
         "candidate_sha": candidate_sha,
-        "baseline_mode": "baseline archive with fresh file fixtures; candidate archive with allowlisted current-schema file fixtures",
+        "baseline_mode": "baseline archive with template preparation skipped and fresh file fixtures; candidate archive with allowlisted current-schema file fixtures",
         "runner": "GitHub-hosted ubuntu-24.04; separate baseline/candidate archives; 6 nextest threads",
         "replay_order": ["cold", "warm"],
         "thresholds": {

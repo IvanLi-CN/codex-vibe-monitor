@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       baseline_ref:
-        description: Timed pre-template baseline commit or ref
+        description: Timed baseline revision for the fresh-schema control replay
         required: true
-        default: 30518796320b16233c04d1c3e74a0a56164904b9
+        default: 1996295afa0aa1352aad559cdd469a7df6242559
         type: string
       candidate_ref:
         description: Candidate commit or ref to measure
@@ -125,7 +125,7 @@ jobs:
             CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
               --archive-file "$archive" \
               --extract-to "$extract" \
-              --workspace-remap "$repo" \
+              --workspace-remap "$GITHUB_WORKSPACE/candidate" \
               --no-run > "$ref_root/archive-extract.log" 2>&1
           done
 
@@ -143,6 +143,7 @@ jobs:
           : > "$wall_file"
           : > "$failure_file"
           overall_status=0
+          runner="$GITHUB_WORKSPACE/candidate/.github/scripts/run-backend-tests.sh"
           for ref_name in baseline candidate; do
             repo="$GITHUB_WORKSPACE/$ref_name"
             archive_dir="$EVIDENCE_ROOT/$ref_name/archive-extract"
@@ -159,12 +160,14 @@ jobs:
                   CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/replay-target"
                   NEXTEST_SUCCESS_OUTPUT=final
                 )
+                if [ "$ref_name" = baseline ]; then
+                  replay_env+=(BACKEND_TEST_SKIP_SCHEMA_TEMPLATE=1)
+                fi
                 start_ms="$(date +%s%3N)"
                 set +e
                 (
                   cd "$repo"
-                  env "${replay_env[@]}" \
-                    bash .github/scripts/run-backend-tests.sh \
+                  env "${replay_env[@]}" bash "$runner" \
                     --profile stateful-sqlite \
                     --partition "hash:$shard/2" \
                     --archive-dir "$archive_dir"
