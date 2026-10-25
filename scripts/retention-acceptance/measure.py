@@ -942,6 +942,70 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
         connection.close()
 
 
+def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
+    """Capture scheduler state when a trial cannot produce terminal evidence."""
+    connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True, timeout=2)
+    try:
+        connection.execute("PRAGMA busy_timeout=2000")
+        keys = (*tuple(DATASETS[name]["task_key"] for name in DATASETS), COMPETITOR_TASK)
+        placeholders = ",".join("?" for _ in keys)
+        tasks = [
+            {
+                "task_key": row[0],
+                "enabled": row[1],
+                "is_manual": row[2],
+                "interval_secs": row[3],
+                "next_trigger_at": row[4],
+                "next_catchup_at": row[5],
+                "catchup_reason": row[6],
+            }
+            for row in connection.execute(
+                "SELECT task_key,enabled,is_manual,interval_secs,next_trigger_at,next_catchup_at,catchup_reason "
+                f"FROM managed_tasks WHERE task_key IN ({placeholders}) ORDER BY task_key",
+                keys,
+            )
+        ]
+        runs = [
+            {
+                "id": row[0],
+                "task_key": row[1],
+                "trigger_kind": row[2],
+                "status": row[3],
+                "started_at": row[4],
+                "actual_started_at": row[5],
+                "finished_at": row[6],
+                "actual_finished_at": row[7],
+                "summary": row[8],
+                "error_detail": row[9],
+                "completion": row[10],
+            }
+            for row in connection.execute(
+                "SELECT id,task_key,trigger_kind,status,started_at,actual_started_at,finished_at,"
+                "actual_finished_at,summary,error_detail,completion "
+                f"FROM managed_task_runs WHERE task_key IN ({placeholders}) ORDER BY id",
+                keys,
+            )
+        ]
+        retry_state = [
+            {
+                "task_key": row[0],
+                "failure_count": row[1],
+                "next_eligible_at": row[2],
+                "reason": row[3],
+            }
+            for row in connection.execute(
+                "SELECT task_key,failure_count,next_eligible_at,reason "
+                f"FROM maintenance_owner_retry_state WHERE task_key IN ({placeholders}) ORDER BY task_key",
+                keys,
+            )
+        ]
+        return {"managed_tasks": tasks, "managed_task_runs": runs, "retry_state": retry_state}
+    except sqlite3.Error as error:
+        return {"error": f"could not capture maintenance scheduler state: {error}"}
+    finally:
+        connection.close()
+
+
 def task_owners_idle(maintenance_db: Path) -> bool:
     connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
     try:
@@ -1249,6 +1313,7 @@ def run_trial(
             "latency_samples_ms": input_samples,
             "foreground_workload": foreground_evidence,
             "task_runs": task_evidence,
+            "task_state_snapshot": task_state_snapshot(maintenance_db),
             "write_hold_samples": write_scrapes,
             "write_hold_buckets": write_buckets,
         }
