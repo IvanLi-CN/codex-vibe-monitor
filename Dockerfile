@@ -6,8 +6,8 @@ COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
 
 COPY web/ ./
-COPY scripts/production-build.sh /usr/local/bin/production-build.sh
 ARG APP_EFFECTIVE_VERSION
+COPY scripts/production-build.sh /usr/local/bin/production-build.sh
 ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
 RUN sh /usr/local/bin/production-build.sh web
 
@@ -30,9 +30,9 @@ RUN mkdir -p src \
 
 # Copy app sources and build the real binary.
 COPY src ./src
-COPY scripts/production-build.sh /usr/local/bin/production-build.sh
 ARG APP_EFFECTIVE_VERSION
 ARG APP_GIT_REVISION
+COPY scripts/production-build.sh /usr/local/bin/production-build.sh
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION} APP_GIT_REVISION=${APP_GIT_REVISION}
 RUN PRODUCTION_BUILD_FORCE_REBUILD=1 sh /usr/local/bin/production-build.sh rust
 
