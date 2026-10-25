@@ -1,9 +1,18 @@
 use super::*;
+use chrono::{DateTime, Utc};
 
 impl SubscriptionTopic {
     pub(super) async fn build_cached_payload(
         &self,
         state: Arc<AppState>,
+    ) -> Result<BuiltSubscriptionTopicPayload, ApiError> {
+        self.build_cached_payload_at(state, Utc::now()).await
+    }
+
+    pub(super) async fn build_cached_payload_at(
+        &self,
+        state: Arc<AppState>,
+        now: DateTime<Utc>,
     ) -> Result<BuiltSubscriptionTopicPayload, ApiError> {
         if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
             match self {
@@ -145,9 +154,8 @@ impl SubscriptionTopic {
                             response.data_quality =
                                 Some(StatsDataQualityResponse::summary_delta_journal_pending());
                         }
-                        let range_start =
-                            summary_window_range(&summary_window, reporting_tz, Utc::now())?
-                                .map(|(start, _)| start);
+                        let range_start = summary_window_range(&summary_window, reporting_tz, now)?
+                            .map(|(start, _)| start);
                         return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                             DashboardTopicMaterializer::Summary {
                                 base: Arc::new(StdMutex::new(
@@ -199,13 +207,14 @@ impl SubscriptionTopic {
                     time_zone,
                     upstream_account_id,
                 } => {
-                    let Json(response) = fetch_dashboard_network_timeseries(
-                        State(state),
-                        Query(DashboardNetworkTimeseriesQuery {
+                    let response = build_dashboard_network_timeseries_response_at(
+                        state.as_ref(),
+                        &DashboardNetworkTimeseriesQuery {
                             range: range.clone(),
                             time_zone: Some(time_zone.clone()),
                             upstream_account_id: *upstream_account_id,
-                        }),
+                        },
+                        now,
                     )
                     .await?;
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
@@ -378,13 +387,14 @@ impl SubscriptionTopic {
                 time_zone,
                 upstream_account_id,
             } => {
-                let Json(response) = fetch_dashboard_network_timeseries(
-                    State(state),
-                    Query(DashboardNetworkTimeseriesQuery {
+                let response = build_dashboard_network_timeseries_response_at(
+                    state.as_ref(),
+                    &DashboardNetworkTimeseriesQuery {
                         range: range.clone(),
                         time_zone: Some(time_zone.clone()),
                         upstream_account_id: *upstream_account_id,
-                    }),
+                    },
+                    now,
                 )
                 .await?;
                 Ok(serde_json::to_value(response)?)

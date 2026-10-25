@@ -1,4 +1,5 @@
 use super::*;
+use chrono::{DateTime, Utc};
 
 impl SubscriptionHub {
     pub(crate) async fn register_topic_subscribers(
@@ -280,7 +281,19 @@ impl SubscriptionHub {
         descriptors: Vec<SubscriptionTopicDescriptor>,
         resume: Vec<SubscriptionResumeCursor>,
     ) -> Result<PreparedSubscriptionConnection, ApiError> {
-        self.prepare_connection_with_capability(state, descriptors, resume, false)
+        self.prepare_connection_with_capability_at(state, descriptors, resume, false, None)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn prepare_connection_at(
+        &self,
+        state: Arc<AppState>,
+        descriptors: Vec<SubscriptionTopicDescriptor>,
+        resume: Vec<SubscriptionResumeCursor>,
+        now: DateTime<Utc>,
+    ) -> Result<PreparedSubscriptionConnection, ApiError> {
+        self.prepare_connection_with_capability_at(state, descriptors, resume, false, Some(now))
             .await
     }
 
@@ -290,6 +303,24 @@ impl SubscriptionHub {
         descriptors: Vec<SubscriptionTopicDescriptor>,
         resume: Vec<SubscriptionResumeCursor>,
         supports_deltas: bool,
+    ) -> Result<PreparedSubscriptionConnection, ApiError> {
+        self.prepare_connection_with_capability_at(
+            state,
+            descriptors,
+            resume,
+            supports_deltas,
+            None,
+        )
+        .await
+    }
+
+    async fn prepare_connection_with_capability_at(
+        &self,
+        state: Arc<AppState>,
+        descriptors: Vec<SubscriptionTopicDescriptor>,
+        resume: Vec<SubscriptionResumeCursor>,
+        supports_deltas: bool,
+        now: Option<DateTime<Utc>>,
     ) -> Result<PreparedSubscriptionConnection, ApiError> {
         let resume_by_topic_key = resume
             .into_iter()
@@ -310,7 +341,10 @@ impl SubscriptionHub {
                     .is_none_or(|cached| cached.dirty)
             };
             let cached = 'cached: loop {
-                let cached = match self.ensure_cached_topic(state.clone(), topic.clone()).await {
+                let cached = match self
+                    .ensure_cached_topic_with_now(state.clone(), topic.clone(), now)
+                    .await
+                {
                     Ok(cached) => cached,
                     Err(ApiError::Unavailable(_)) => {
                         // Summary is exact-or-unavailable. Keep this expected projection gap local
@@ -544,6 +578,15 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         topic: SubscriptionTopic,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
+        self.ensure_cached_topic_with_now(state, topic, None).await
+    }
+
+    async fn ensure_cached_topic_with_now(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        now: Option<DateTime<Utc>>,
+    ) -> Result<CachedSubscriptionTopic, ApiError> {
         let topic_key = topic.cache_key()?;
         let summary_selection = if let SubscriptionTopic::SummaryCurrent {
             window,
@@ -624,6 +667,8 @@ impl SubscriptionHub {
                 "summary topic has an unproven projection gap"
             )));
         }
+        #[cfg(not(test))]
+        let _ = now;
         if let Some(existing) = existing
             && !summary_cache_stale
             && ((has_active_owner
@@ -640,7 +685,7 @@ impl SubscriptionHub {
         }
         if !has_active_owner {
             #[cfg(test)]
-            return self.refresh_topic(state, topic, false).await;
+            return self.refresh_topic_with_now(state, topic, false, now).await;
             #[cfg(not(test))]
             return Err(ApiError::from(anyhow!(
                 "subscription topic setup requires an active owner"
@@ -673,7 +718,19 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
-        self.refresh_topic_inner(state, topic, emit_live, false, None)
+        self.refresh_topic_with_now(state, topic, emit_live, None)
+            .await
+            .map(|cached| cached.expect("unguarded topic refresh should always commit"))
+    }
+
+    async fn refresh_topic_with_now(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+        now: Option<DateTime<Utc>>,
+    ) -> Result<CachedSubscriptionTopic, ApiError> {
+        self.refresh_topic_inner_with_now(state, topic, emit_live, false, None, now)
             .await
             .map(|cached| cached.expect("unguarded topic refresh should always commit"))
     }
@@ -1007,6 +1064,26 @@ impl SubscriptionHub {
         require_active_owner: bool,
         expected_upstream_account_attempt_refresh_generation: Option<u64>,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
+        self.refresh_topic_inner_with_now(
+            state,
+            topic,
+            emit_live,
+            require_active_owner,
+            expected_upstream_account_attempt_refresh_generation,
+            None,
+        )
+        .await
+    }
+
+    async fn refresh_topic_inner_with_now(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+        require_active_owner: bool,
+        expected_upstream_account_attempt_refresh_generation: Option<u64>,
+        now: Option<DateTime<Utc>>,
+    ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let coalesce_managed_task_refresh = is_managed_task_refresh_topic(&topic);
         let topic_key = topic.cache_key()?;
         let mut result = self
@@ -1016,6 +1093,7 @@ impl SubscriptionHub {
                 emit_live,
                 require_active_owner,
                 expected_upstream_account_attempt_refresh_generation,
+                now,
             )
             .await?;
         while coalesce_managed_task_refresh && result.is_some() {
@@ -1036,6 +1114,7 @@ impl SubscriptionHub {
                     emit_live,
                     require_active_owner,
                     expected_upstream_account_attempt_refresh_generation,
+                    now,
                 )
                 .await?;
         }
@@ -1049,6 +1128,7 @@ impl SubscriptionHub {
         emit_live: bool,
         require_active_owner: bool,
         expected_upstream_account_attempt_refresh_generation: Option<u64>,
+        now: Option<DateTime<Utc>>,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let topic_key = topic.cache_key()?;
         let schema_epoch = topic.schema_epoch();
@@ -1196,7 +1276,10 @@ impl SubscriptionHub {
             };
             (BuiltSubscriptionTopicPayload::Json(payload), None, None)
         } else {
-            let payload = match topic.build_cached_payload(state.clone()).await {
+            let payload = match topic
+                .build_cached_payload_at(state.clone(), now.unwrap_or_else(Utc::now))
+                .await
+            {
                 Ok(payload) => payload,
                 Err(error) => {
                     if coalesce_managed_task_refresh {
