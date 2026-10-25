@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "current-head-validation-blocked",
-  "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-  "implementation_commit": "642b49641f16e04a403fd57612c16f3914985b98",
-  "active_base_sha": "5167cd514f2efa30f2322e5407a754f8b7c56022",
+  "status": "current-head-validation-pending",
+  "candidate_head_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+  "implementation_commit": "316385432289ce108d218e5aa9f60edbd5dc6435",
+  "active_base_sha": "9c8c8aeac7a40728a36b4159a51c8416465b4a64",
   "base_ref": "main",
   "pr_number": 1191,
   "candidate_branch": "th/summary-recovery-query-fairness",
   "base_sync": {
-    "previous_base_sha": "e4fbd13ddb7f4d3c87b369a8407803100c55e6cb",
+    "previous_base_sha": "5167cd514f2efa30f2322e5407a754f8b7c56022",
     "merge_commit_sha": null,
     "merge_strategy": "linear-rebase-to-current-main",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "The implementation candidate is linearly rebased onto current main 5167cd51; no merge commit or unrelated base merge is included.",
+    "mainline_scope": "The implementation candidate is linearly rebased onto current main 9c8c8aea; no merge commit or unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
@@ -28,7 +28,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::page_selection_honors_adaptive_row_limit"
         ],
-        "status": "passed on current-head PR CI run 40199571804 (head 5c3d6181); Stateful SQLite and representative-scale lanes completed successfully"
+        "status": "pending current-head Stateful SQLite CI for 31638543; prior run 40199571804 was bound to pre-rebase head 5c3d6181"
       },
       {
         "id": "A2",
@@ -38,7 +38,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
         ],
-        "status": "passed on current-head PR CI run 40199571804 (head 5c3d6181); Stateful SQLite lanes completed successfully"
+        "status": "pending current-head Stateful SQLite CI for 31638543; prior run 40199571804 was bound to pre-rebase head 5c3d6181"
       },
       {
         "id": "A3",
@@ -48,7 +48,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "passed on current-head PR CI run 40199571804 (head 5c3d6181); Archive/File I/O and backend resource lanes completed successfully"
+        "status": "pending current-head resource-profile CI for 31638543; prior run 40199571804 was bound to pre-rebase head 5c3d6181"
       },
       {
         "id": "A4",
@@ -59,7 +59,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "passed on current-head PR CI run 40199571804 (head 5c3d6181); API, migration, status, and diagnostics lanes completed successfully"
+        "status": "pending current-head compatibility lanes for 31638543; prior run 40199571804 was bound to pre-rebase head 5c3d6181"
       },
       {
         "id": "A5",
@@ -69,7 +69,7 @@
           "Observability Performance Budget",
           "GitHub CI candidate-bound evidence artifact"
         ],
-        "status": "blocked: candidate-bound run 40199586495 paired workload lanes passed, but Observability Performance Budget job 121193024124 failed closed because hardware comparability evidence was unavailable (default-observability-ab reported incompatible cpuModel); the existing observability harness also does not seed the planned summary-recovery fixture"
+        "status": "pending: rebase onto main 9c8c8aea invalidated run 40199586495, which was bound to pre-rebase head 5c3d6181; a new candidate-bound run for 31638543 is required. The prior run's budget gate failed closed on unavailable hardware comparability evidence, and the existing observability harness does not seed the planned summary-recovery fixture"
       },
       {
         "id": "A6",
@@ -79,7 +79,7 @@
           "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "blocked: current-head PR CI run 40199571804 passed, but empirical recovery evidence is unavailable and the candidate cannot enter Step 5C"
+        "status": "blocked pending current-head CI, empirical recovery evidence, and fresh Tier 4 formal review for 31638543"
       }
     ]
   },
@@ -111,28 +111,26 @@
   "empirical_acceptance": {
     "required": true,
     "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
-    "status": "blocked-hardware-comparability-evidence",
-    "candidate_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-    "previous_candidate_sha": "6d64e1413120dc821a4b92c669b3b8a3d5c71d74",
+    "status": "pending-current-head-performance-evidence",
+    "candidate_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+    "previous_candidate_sha": "642b49641f16e04a403fd57612c16f3914985b98",
     "contract_digest": "2a3e47d2afc022281681956e95a566e57fcece92aaddb25308d387c0289b13bf",
     "scenario_set_digest": "91e15552313348ade24b539822c79c92a495f0a5b3b51e2fdf84c3963c3d9694",
-    "evidence_locator": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495",
+    "evidence_locator": "pending-current-head-candidate-performance-run",
     "failure": {
-      "status": "blocked",
-      "run": "40199586495",
-      "job": "Observability Performance Budget (121193024124)",
-      "measured_candidate_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
+      "status": "pending",
+      "run": null,
+      "job": "Observability Performance Budget",
+      "measured_candidate_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
       "stale_after_rebase": false,
       "fixture_coverage": "The existing observability harness exercises isolated proxy and observability traffic but does not seed the planned summary-recovery fixture; a passing result will not by itself certify recovery-page performance.",
-      "failure_reason": "The budget classifier failed closed with hardware comparability evidence unavailable because default-observability-ab reported incompatible cpuModel. The runtime and pair-0/pair-1/pair-2 workload lanes completed successfully, but their partial evidence cannot certify the performance budget.",
-      "artifacts": [
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495/artifacts/12601969239",
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495/artifacts/12601967868",
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495/artifacts/12602290021",
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495/artifacts/12602230157",
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495/artifacts/12602075655"
-      ],
-      "policy": "Do not use the prior candidate-bound result to authorize this head; require a valid current-head certificate and the planned summary-recovery evidence before Step 5C."
+      "previous_attempt": {
+        "run": "40199586495",
+        "measured_head_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
+        "status": "blocked-hardware-comparability-evidence",
+        "reason": "Observability Performance Budget failed closed because default-observability-ab reported incompatible cpuModel; paired workload lanes passed but the partial evidence could not certify the budget."
+      },
+      "policy": "Do not use pre-rebase evidence to authorize this head; require a valid current-head certificate and the planned summary-recovery evidence before Step 5C."
     }
   },
   "deployment_surfaces": {
@@ -142,7 +140,7 @@
   },
   "local_validation": {
     "validated_commit": "642b49641f16e04a403fd57612c16f3914985b98",
-    "stale_after_rebase": false,
+    "stale_after_rebase": true,
     "passed": [
       "cargo fmt --all -- --check",
       "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json",
@@ -162,46 +160,45 @@
   "visual_evidence": [],
   "visual_evidence_owner_confirmation": "not_applicable",
   "execution_evidence": {
-    "ci_run": "40199571804",
-    "head_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
-    "current_head_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
+    "ci_run": "pending-current-head-ci-run",
+    "head_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+    "current_head_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
     "stale_after_rebase": false,
-    "passed_lanes": [
+    "passed_lanes": [],
+    "failed_lanes": [],
+    "pending_lanes": [
+      "Lint & Format Check",
+      "Repository Tooling Checks",
+      "PR E2E Test Producer",
+      "Front-end Tests",
+      "PR Smoke Artifact Producer",
+      "Storybook Accessibility Tests",
       "Backend Test Archive Producer",
-      "Backend Tests (Archive / File I/O)",
+      "Docs & Web Demo Build",
+      "Records Overlay E2E",
+      "Retention Migration Validation",
+      "Backend Tests (Stateful SQLite shard 1/2)",
       "Backend Tests (Lightweight)",
       "Backend Tests (Representative Scale)",
-      "Backend Tests (Stateful SQLite shard 1/2)",
       "Backend Tests (Stateful SQLite shard 2/2)",
+      "Backend Tests (Archive / File I/O)",
       "Backend Tests (Stateful SQLite)",
       "Build Artifacts",
-      "Docs & Web Demo Build",
-      "Front-end Tests",
-      "Lint & Format Check",
-      "PR E2E Test Producer",
-      "PR Smoke Artifact Producer",
-      "Records Overlay E2E",
-      "Repository Tooling Checks",
-      "Retention Migration Validation",
       "Review Policy Gate",
-      "Storybook Accessibility Tests",
-      "Tier 4 formal review",
-      "Validate PR labels"
+      "Validate PR labels",
+      "Observability Performance Budget",
+      "Tier 4 formal review"
     ],
-    "failed_lanes": [
-      "Observability Performance Budget"
-    ],
-    "pending_lanes": [],
     "performance_acceptance": {
-      "run": "40199586495",
-      "artifact": "observability-acceptance-40199586495-1 (12601969239)",
-      "candidate_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-      "current_candidate_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
-      "status": "blocked",
+      "run": null,
+      "artifact": null,
+      "candidate_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+      "current_candidate_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+      "status": "pending",
       "stale_after_rebase": false,
       "functional_scenarios_passed": null,
       "fixture_coverage": "Existing observability A/B coverage is not the summary-recovery workload required by A5.",
-      "reason": "The three paired workload lanes passed, but the Observability Performance Budget classifier failed closed because hardware comparability evidence was unavailable (incompatible cpuModel). The existing harness also does not seed the summary-recovery workload required by A5."
+      "reason": "Pre-rebase performance evidence is stale after rebasing onto main 9c8c8aea; a new current-head run is required, and the existing harness does not seed the summary-recovery workload required by A5."
     }
   }
 }
