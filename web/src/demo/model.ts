@@ -850,9 +850,20 @@ function createState(scene: DemoScene): DemoState {
 class DemoModel {
   #state = createState("operational");
   #listeners = new Set<DemoListener>();
+  #promptCacheMaterializationEnabled = true;
 
   get snapshot(): DemoState {
     return this.#state;
+  }
+
+  get promptCacheMaterializationEnabled(): boolean {
+    return this.#promptCacheMaterializationEnabled;
+  }
+
+  setPromptCacheMaterializationEnabled(enabled: boolean): void {
+    if (this.#promptCacheMaterializationEnabled === enabled) return;
+    this.#promptCacheMaterializationEnabled = enabled;
+    this.#emit();
   }
 
   subscribe(listener: DemoListener): () => void {
@@ -863,11 +874,13 @@ class DemoModel {
   setScene(scene: DemoScene) {
     if (this.#state.scene === scene) return;
     this.#state = createState(scene);
+    this.#promptCacheMaterializationEnabled = true;
     this.#emit();
   }
 
   reset() {
     this.#state = createState(this.#state.scene);
+    this.#promptCacheMaterializationEnabled = true;
     this.#emit();
   }
 

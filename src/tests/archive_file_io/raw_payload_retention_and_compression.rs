@@ -892,8 +892,9 @@ async fn retention_pressure_defer_keeps_legacy_prepared_rows_unconsumed() {
 
 #[tokio::test]
 async fn retention_finalization_rejects_source_content_changed_after_archive_copy() {
-    let (pool, config, temp_dir) =
+    let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-source-content-identity").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     let occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
     let raw_path = config.proxy_raw_dir.join("source-content-identity.bin");
     fs::write(&raw_path, b"owned-until-verified-publication").expect("write raw response");

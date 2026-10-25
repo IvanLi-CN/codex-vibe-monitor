@@ -2,6 +2,8 @@ use super::*;
 
 pub(crate) const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_WRITE_ADMISSION_BUDGET: Duration = Duration::from_secs(15);
+pub(crate) const RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS: usize = 3;
+pub(crate) const RETENTION_PRESSURE_RETRY_BUDGET: Duration = Duration::from_secs(45);
 pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET: Duration = Duration::from_secs(15);
 pub(crate) const RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON: &str =
     "retention_archive_file_operation_budget";

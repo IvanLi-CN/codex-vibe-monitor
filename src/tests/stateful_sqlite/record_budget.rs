@@ -178,6 +178,182 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
 }
 
 #[tokio::test]
+async fn ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows()
+ {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open legacy schema test pool");
+    sqlx::query(
+        "CREATE TABLE summary_all_time_projection_checkpoint (
+            scope TEXT PRIMARY KEY,
+            live_high_watermark_id INTEGER NOT NULL,
+            rollup_live_cursor INTEGER NOT NULL,
+            account_rollup_live_cursor INTEGER,
+            manifest_high_watermark_id INTEGER,
+            durable_terminal_sequence_watermark INTEGER NOT NULL,
+            global_manifest_next_id INTEGER NOT NULL DEFAULT 0,
+            account_manifest_next_id INTEGER NOT NULL DEFAULT 0,
+            global_manifest_complete INTEGER NOT NULL DEFAULT 0,
+            account_manifest_complete INTEGER NOT NULL DEFAULT 0,
+            global_rollup_next_rowid INTEGER NOT NULL DEFAULT 0,
+            account_rollup_next_rowid INTEGER NOT NULL DEFAULT 0,
+            account_unavailable INTEGER NOT NULL DEFAULT 0,
+            global_total_count INTEGER NOT NULL DEFAULT 0,
+            global_success_count INTEGER NOT NULL DEFAULT 0,
+            global_failure_count INTEGER NOT NULL DEFAULT 0,
+            global_total_tokens INTEGER NOT NULL DEFAULT 0,
+            global_total_cost REAL NOT NULL DEFAULT 0,
+            global_non_success_cost REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy all-time checkpoint");
+    sqlx::query(
+        "INSERT INTO summary_all_time_projection_checkpoint (
+            scope, live_high_watermark_id, rollup_live_cursor,
+            durable_terminal_sequence_watermark, global_total_count
+        ) VALUES ('legacy', 17, 11, 13, 5)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy all-time checkpoint");
+    sqlx::query(
+        "CREATE TABLE summary_all_time_projection_account_checkpoint (
+            scope TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost REAL NOT NULL DEFAULT 0,
+            non_success_cost REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (scope, upstream_account_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy account checkpoint");
+    sqlx::query(
+        "INSERT INTO summary_all_time_projection_account_checkpoint (
+            scope, upstream_account_id, total_count
+        ) VALUES ('legacy', 7, 3)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy account checkpoint");
+    sqlx::query(
+        "CREATE TABLE summary_compacted_source_recovery_checkpoint (
+            scope TEXT PRIMARY KEY,
+            format_version INTEGER NOT NULL DEFAULT 1,
+            time_zone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+            range_start TEXT NOT NULL,
+            range_end TEXT NOT NULL,
+            cursor_occurred_at TEXT,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            target_live_high_watermark_id INTEGER NOT NULL DEFAULT 0,
+            target_rollup_live_cursor INTEGER NOT NULL DEFAULT 0,
+            target_account_rollup_live_cursor INTEGER,
+            target_manifest_high_watermark_id INTEGER,
+            target_coverage_revision INTEGER NOT NULL DEFAULT 0,
+            target_account_coverage_revision INTEGER NOT NULL DEFAULT 0,
+            target_terminal_sequence INTEGER NOT NULL DEFAULT 0,
+            list_limit_max INTEGER NOT NULL DEFAULT 0,
+            processed_rows INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'pending',
+            last_error_code TEXT,
+            last_error_message TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy compacted recovery checkpoint");
+    sqlx::query(
+        "INSERT INTO summary_compacted_source_recovery_checkpoint (
+            scope, format_version, time_zone, range_start, range_end,
+            cursor_id, target_live_high_watermark_id, state
+        ) VALUES ('legacy-dashboard', 1, 'Asia/Shanghai', 'a', 'b', 9, 19, 'deferred')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy compacted recovery checkpoint");
+
+    ensure_schema(&pool).await.expect("migrate legacy schema");
+    ensure_schema(&pool)
+        .await
+        .expect("repeat legacy schema migration");
+
+    for (table, column) in [
+        (
+            "summary_all_time_projection_checkpoint",
+            "usage_rollup_next_rowid",
+        ),
+        (
+            "summary_all_time_projection_checkpoint",
+            "global_non_success_tokens",
+        ),
+        (
+            "summary_all_time_projection_account_checkpoint",
+            "non_success_tokens",
+        ),
+        (
+            "summary_compacted_source_recovery_checkpoint",
+            "window_ranges_json",
+        ),
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"
+        ))
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect migrated schema column");
+        assert_eq!(count, 1, "missing migrated column {table}.{column}");
+    }
+    let all_time_row = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        "SELECT live_high_watermark_id, rollup_live_cursor,
+                durable_terminal_sequence_watermark, global_total_count
+           FROM summary_all_time_projection_checkpoint
+          WHERE scope = 'legacy'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read preserved legacy all-time checkpoint");
+    assert_eq!(all_time_row, (17, 11, 13, 5));
+    let account_row = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT upstream_account_id, total_count, non_success_tokens
+           FROM summary_all_time_projection_account_checkpoint
+          WHERE scope = 'legacy'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read preserved legacy account checkpoint");
+    assert_eq!(account_row, (7, 3, 0));
+    let recovery_row = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        "SELECT format_version, cursor_id, target_live_high_watermark_id, state
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = 'legacy-dashboard'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read preserved legacy recovery checkpoint");
+    assert_eq!(recovery_row, (1, 9, 19, "deferred".to_string()));
+    let recovery_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type = 'table' AND name LIKE 'summary_compacted_source_recovery_%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count recovery tables");
+    assert_eq!(recovery_table_count, 4);
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn stats_serves_last_good_snapshot_for_terminal_and_source_gaps() {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),

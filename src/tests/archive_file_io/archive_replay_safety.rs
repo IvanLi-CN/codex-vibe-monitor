@@ -1,4 +1,4 @@
-use super::archive_backfill_and_materialization::{
+use super::archive_backfill_test_support::{
     budgeted_archive_io_test_dir, write_valid_invocation_archive,
 };
 use super::*;

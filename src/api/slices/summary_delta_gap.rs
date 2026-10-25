@@ -14,7 +14,7 @@ pub(crate) fn summary_source_gap_status(
     window: &SummaryWindow,
     reporting_tz: Tz,
     upstream_account_id: Option<i64>,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     let source_gap_matches_scope = |gap: &DeltaGapProof| {
         gap.source_gap
             && (upstream_account_id.is_none()
@@ -61,7 +61,14 @@ pub(crate) fn summary_source_gap_status(
         upstream_account_id,
     );
     let allows_degraded = compaction && !scoped && valid_overlay && !invalid_overlay;
-    (pending, pending && !allows_degraded)
+    // A strict scoped identity gap is outside the dashboard recovery worker's proof. Even when
+    // a compaction gap is present in the same selection, keep the unavailable response generic so
+    // the client does not retry a recovery path that cannot repair the scoped identity.
+    (
+        pending,
+        pending && !allows_degraded,
+        compaction && !scoped_strict,
+    )
 }
 
 pub(crate) fn summary_gap_affects_selection(

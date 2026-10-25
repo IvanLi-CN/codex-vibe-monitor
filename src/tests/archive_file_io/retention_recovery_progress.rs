@@ -2,8 +2,9 @@ use super::*;
 
 #[tokio::test]
 async fn retention_rejects_archive_replacement_after_writer_proof_before_admission() {
-    let (pool, config, temp_dir) =
+    let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-recovery-file-replacement").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     seed_recovery_invocation(&pool, &occurred_at).await;
     let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");

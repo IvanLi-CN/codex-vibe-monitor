@@ -3596,6 +3596,83 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBe("gpt-5.6-sol");
   });
 
+  it.each([
+    {
+      label: "GPT-5.6 max reasoning",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "max",
+      generation: "5.6",
+      icon: "white-balance-sunny",
+    },
+    {
+      label: "GPT-6 identity",
+      model: "gpt-6-astra",
+      reasoningEffort: "high",
+      generation: "6",
+      icon: "creation",
+    },
+    {
+      label: "GPT-6.1 explicit none",
+      model: "gpt-6.1-luna",
+      reasoningEffort: "none",
+      generation: "6.1",
+      icon: "weather-night",
+    },
+    {
+      label: "GPT-5.6 without reasoning",
+      model: "gpt-5.6-sol",
+      reasoningEffort: null,
+      generation: "5.6",
+      icon: "white-balance-sunny",
+    },
+  ] as const)("preserves migrated $label context semantics", ({
+    model,
+    reasoningEffort,
+    generation,
+    icon,
+  }) => {
+    renderSection(
+      createResponse([
+        createConversation(`pck-migrated-${generation}-${reasoningEffort ?? "none"}`, [
+          createPreview({
+            id: 8,
+            invokeId: `invoke-migrated-${generation}-${reasoningEffort ?? "none"}`,
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model,
+            requestModel: model,
+            responseModel: model,
+            reasoningEffort,
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing migrated model context cluster");
+    }
+
+    expect(cluster.getAttribute("aria-label")).toContain(model);
+    expect(cluster.querySelector(`[data-model-generation-segment="${generation}"]`)).not.toBeNull();
+    expect(cluster.querySelector(`[data-model-icon="${icon}"]`)).not.toBeNull();
+    expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(cluster.textContent).not.toContain("—");
+    if (reasoningEffort == null) {
+      expect(cluster.querySelector('[data-model-context-part="reasoning-effort"]')).toBeNull();
+    } else {
+      expect(
+        cluster.querySelector(
+          '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
+        )?.textContent,
+      ).toContain(reasoningEffort);
+    }
+  });
+
   it("reuses the grouped context cluster in upstream-account recent rows", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
     const firstInvocation = upstreamActivity.accounts[0]?.recentInvocations[0];

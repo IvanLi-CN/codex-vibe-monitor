@@ -204,6 +204,7 @@ export default function LivePage() {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
+    errorCode: summaryErrorCode,
   } = useSummary(summaryWindow, summaryWindow === "current" ? { limit } : undefined);
 
   const { records, isLoading, error } = useInvocationStream(limit, undefined, undefined, {
@@ -334,7 +335,12 @@ export default function LivePage() {
               ))}
             </SegmentedControl>
           </div>
-          <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
+          <StatsCards
+            stats={summary}
+            loading={summaryLoading}
+            error={summaryError}
+            errorCode={summaryErrorCode}
+          />
         </div>
       </section>
 

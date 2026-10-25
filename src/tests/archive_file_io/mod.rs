@@ -13,10 +13,15 @@ mod terminal_journal_recovery;
 
 pub(crate) use super::*;
 
-mod archive_backfill_and_materialization;
+mod archive_backfill_test_support;
+mod archive_copy_summary_and_manifest;
 mod archive_publication;
+mod archive_replay_recovery;
 mod archive_replay_safety;
+mod archive_startup_and_expiry;
+mod archive_storage_schema_reconciliation;
 mod gpt6_cache_write_migration;
+mod historical_rollup_materialization;
 mod invocation_range_native_recovery;
 mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;
@@ -31,10 +36,12 @@ mod raw_compression_budget;
 mod raw_payload_retention_and_compression;
 mod retention_batch_wait;
 mod retention_capacity_benchmark;
+mod retention_pool_archive_maintenance;
 mod retention_recovery_progress;
 mod retention_service_rate_benchmark;
 mod retention_task_local_batches;
 mod retention_task_work_ownership;
+mod stale_archive_reconciliation;
 mod system_storage_measurement;
 mod xhttp_validation_pipeline;
 

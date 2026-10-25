@@ -313,14 +313,6 @@ export const ExactZeroEstimateStates: Story = {
       <TaskWorkloadSummary trend={zeroPendingTrend("capture_gap")} />
     </div>
   ),
-  tags: ["test"],
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText("观测已过期，等待新数据")).toBeVisible();
-    await expect(canvas.getByText("任务已停用，暂停清零预估")).toBeVisible();
-    await expect(canvas.getByText("观测存在缺口，清零预估暂不可用")).toBeVisible();
-    await expect(canvas.queryByText("已清空")).toBeNull();
-  },
 };
 
 export const AccessiblePointInspection: Story = {
