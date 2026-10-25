@@ -574,6 +574,10 @@ def phase_report(phase_name: str, directory: Path) -> dict:
     return {}
 
 
+def phase_report_success(report: dict) -> bool:
+    return all(section.get("success") is True for section in report.values())
+
+
 def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manifest: dict, output: Path) -> dict:
     actions_only()
     if group not in ("A", "B") or phase_name not in manifest["workload"]:
@@ -600,6 +604,9 @@ def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manife
     if record["status"] == "passed":
         try:
             record["report"] = phase_report(phase_name, directory)
+            if record["report"] and not phase_report_success(record["report"]):
+                record.update(status="failed", returncode=1,
+                              reason="Test report contains failed, skipped, or retried cases")
         except (OSError, ValueError, KeyError) as error:
             record.update(status="failed", returncode=1, reason=f"Missing or malformed phase report: {error}")
     write_json(directory / "result.json", record)
@@ -609,9 +616,10 @@ def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manife
 def normalized_environment(records: list[dict]) -> dict:
     if not records:
         return {}
+    sample = records[0].get("environment", records[0])
     keys = ("bun", "cpu_model", "cpu_count", "memory", "runner_name", "runner_image",
             "runner_image_version", "kernel", "chromium_descriptor")
-    return {key: records[0].get(key) for key in keys}
+    return {key: sample.get(key) for key in keys}
 
 
 def aggregate_group(group: str, manifest: dict, results_root: Path) -> dict:

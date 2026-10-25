@@ -61,6 +61,11 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(group=group_name, status=status):
                 self.assertEqual(MODULE.phase_exit_code(group_name, status), 1)
 
+    def test_failed_phase_report_is_not_a_successful_measurement(self):
+        self.assertTrue(MODULE.phase_report_success({"unit": {"success": True}}))
+        self.assertFalse(MODULE.phase_report_success({"browser": {"success": False}}))
+        self.assertTrue(MODULE.phase_report_success({}))
+
     def test_both_complete_require_ten_percent_and_five_seconds(self):
         for a, b, expected in ((100, 90, True), (100, 91, False), (40, 36, False), (50, 45, True), (90, 100, False)):
             with self.subTest(a=a, b=b):
@@ -247,6 +252,8 @@ class ExecutionContractTests(unittest.TestCase):
             self.assertEqual(result["wall_seconds"], len(MODULE.WORKLOAD))
             self.assertEqual(result["critical_path_seconds"], len(MODULE.WORKLOAD))
             self.assertTrue(result["reports"]["success"])
+            self.assertEqual(result["environment"]["bun"], "1.3.14")
+            self.assertEqual(result["phase_environments"]["unit"]["runner_image"], "ubuntu-24.04")
             (root / "A" / MODULE.WORKLOAD[0] / "result.json").unlink()
             self.assertEqual(MODULE.aggregate_group("A", data, root)["status"], "incomplete")
 
