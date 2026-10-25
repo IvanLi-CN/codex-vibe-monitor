@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.10",
+  "base_stable_version": "4.13.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-25T16:25:18Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8b74d41dcdba7728142de0406404d72079f9901e",
+  "pr_number": 1211,
+  "pr_title": "refactor(tests): split OAuth route SQLite fixtures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.10",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.10",
+  "target_sha": "0542af458161992d94ecc7d6236ddf9c553202ac",
+  "type_label": "type:patch"
+}
