@@ -920,7 +920,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep','summary_coverage_recovery') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
+            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
