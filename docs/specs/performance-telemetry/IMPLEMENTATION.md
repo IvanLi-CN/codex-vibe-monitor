@@ -46,7 +46,7 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 
 维护竞争观测按主人明确确认的功能验收边界交付：指标正确性、有界性、业务行为兼容、功能回归、Grafana 查询与视觉证据、必需 CI 和正式审查仍是门禁；本批不再以上线前取得 5% CPU/请求与成功响应 p95 开销证明为条件，该预算明确保留为未验证。REQ-016/016A 的数值、稳定性、完整性和时限规则保持不变，历史 unavailable 或失败证据不改为通过，不因此新增性能实验；后续达标声明仍须有效的专项证据，应用合并和部署仍须确认具体发布卡。
 
-[指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式串行 bundle 的 60 分钟上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
+[指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式 parallel workload lane 的 60 分钟共享上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
 
 性能镜像构建仅从 GitHub Actions 缓存恢复已有层，不向 `pull_request_target` 默认分支上下文的只读缓存导出；镜像构建、装载和后续 artifact 交接仍须成功。质量合同拒绝重新加入缓存导出，避免镜像构建完成后因 `failed to reserve cache` 阻止测量。触发方式、权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
@@ -230,19 +230,19 @@ CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 
 
 ## Validation
 
-当前实现以 ADR 0047 的单 runner bundle 合同为准：独占 GitHub-hosted job 串行执行 runtime/CPU attach 与三轮 paired suite，job 内共享 60 分钟时钟；三轮必须记录相同的 `runnerIdentity`、`runnerScope=serial-bundle` 和五项硬件字段，原有九窗口、准入、CV、5% CPU/p95、trace 与失败保留规则不变。下一段保留的是迁移前的三 runner 验证记录，不是当前验收入口。
+当前实现以 ADR 0048 的 parallel workload lane 合同为准：不可变镜像发布后生成一个共享 60 分钟起始时刻，runtime、CPU attach 与三轮 paired suite 分别在四个独立 GitHub-hosted job 中执行；每个 workload job 只使用自己的 runner 临时目录、Compose project、SQLite/fixture 状态和 sampler，pair 内三个 mode 仍串行。三轮必须记录不同的 `runnerIdentity`、对应的 `runnerScope=parallel-pair-*` 和相同五项硬件字段，原有九窗口、准入、CV、5% CPU/p95、trace 与失败保留规则不变。
 
-验收使用三台隔离 runner 并行完成三轮同机配对，每轮三个模式各预热 60 秒、测量 60 秒、完成 300/300 请求；功能与 CPU attach 在第四台 runner 并行运行。测试阶段共享 15 分钟起始时刻，脚本在第 14 分钟中断，准备和等待计入预算，各 job 硬超时 15 分钟；汇总超出共享时限不能通过。每个窗口保留既有 PSI 阈值及连续三次安静样本，每窗口最多等 180 秒、每轮最多等 450 秒。原始窗口、初末与 10 秒压力样本、时钟、身份及真实 trace 均独立校验；`cpu-attribution.json` 固定每个窗口的容器/PID/cgroup v2 身份，要求 PID 的实际 cgroup 路径对应 Docker 容器 ID，并记录 runner 允许 CPU 的 `/proc/stat`、app cgroup `cpu.stat`/`cpu.pressure`/`cpu.max`、进程 affinity 与 counter delta；首个 CPU 归因样本显式标记 `counterDeltaStatus=baseline` 且不填充 delta，后续原始样本必须包含实际 counter delta；验证器拒绝缺失、负值、字段不完整或 CPU 集合不一致的 delta，按相邻原始 host/app 计数器重算并逐样本核对，窗口汇总 delta 必须与首尾样本重算结果一致；验证器还必须逐样本校验 app `cpu.pressure` 的完整数值结构，并在准备阶段独立核对每个 cgroup 路径与容器 ID 的对应关系；每个原始样本的 app `cpu.max` 必须等于准备阶段的一核配额，准备记录与原始样本逐服务交叉校验；缺失、替换、回退、配额变化或不支持均保持 unavailable。所有分支的镜像和合同必须一致，三台配对主机的 CPU 型号、核心数、内核、runner 镜像及版本必须逐项相同，按同机比值比较并保留 5% 开销及稳定性门槛。分支部分卡不能替代汇总经验卡；完整 hosted 实测尚待当前候选验证。
+验收使用三台隔离 runner 并行完成三轮配对，每轮三个模式各预热 60 秒、测量 60 秒、完成 300/300 请求；功能与 CPU attach 在第四台 runner 并行运行。四个 workload job 共享镜像发布后的起始时刻，脚本在第 59 分钟停止新操作并保留收尾，各 job 硬超时 60 分钟；排队、准备和等待计入同一绝对预算，汇总超出共享时限不能通过。每个窗口保留既有 PSI 阈值及连续三次安静样本，每窗口最多等 180 秒、每轮最多等 450 秒。原始窗口、初末与 10 秒压力样本、时钟、身份及真实 trace 均独立校验；`cpu-attribution.json` 固定每个窗口的容器/PID/cgroup v2 身份，要求 PID 的实际 cgroup 路径对应 Docker 容器 ID，并记录 runner 允许 CPU 的 `/proc/stat`、app cgroup `cpu.stat`/`cpu.pressure`/`cpu.max`、进程 affinity 与 counter delta；首个 CPU 归因样本显式标记 `counterDeltaStatus=baseline` 且不填充 delta，后续原始样本必须包含实际 counter delta；验证器拒绝缺失、负值、字段不完整或 CPU 集合不一致的 delta，按相邻原始 host/app 计数器重算并逐样本核对，窗口汇总 delta 必须与首尾样本重算结果一致；验证器还必须逐样本校验 app `cpu.pressure` 的完整数值结构，并在准备阶段独立核对每个 cgroup 路径与容器 ID 的对应关系；每个原始样本的 app `cpu.max` 必须等于准备阶段的一核配额，准备记录与原始样本逐服务交叉校验；缺失、替换、回退、配额变化或不支持均保持 unavailable。所有分支的镜像和合同必须一致，三台配对主机的 CPU 型号、核心数、内核、runner 镜像及版本必须逐项相同，按同机比值比较并保留 5% 开销及稳定性门槛。分支部分卡不能替代汇总经验卡；完整 hosted 实测尚待当前候选验证。
 
 本次修复还覆盖了未来 Linux `cpu.stat` 字段的安全解析、CPU 归因准备失败的固定诊断和有限证据、trusted/candidate acceptance contract 与 harness 身份绑定，以及硬件不匹配时对已验证 runtime 场景的独立保留；确定性 Python 回归共 109 项。诊断 source 现在只接受已知服务和字段的有限枚举，未知或超长输入统一降级为固定 `cpu-attribution`；重新汇总遇到缺失或不兼容证据时会删除旧的 A/B 派生样本和摘要，避免 stale evidence 混入当前卡。当前候选尚未获得新的 5% 经验性通过卡；最近的专项 run `39717762452` attempt 1 中三组 pair 的硬件字段不一致并全部发生 `cpu_read_failed` 准备失败，因此只能作为不可用证据，不能替代当前候选证明。GitHub API 当前没有 self-hosted runner，工作流也没有绑定专用 runner group；合并后的 `workflow_dispatch` 只能修正 trusted harness 版本绑定，实际 5% 证明仍需明确授权的固定资源或后续基础设施决定。
 
 CPU attach 的并发负载客户端也使用共享绝对截止时间，并提前 5 秒限制 Docker CLI 的子进程超时；主线程收到截止信号后，executor 不再等待原有 600 秒客户端上限。日志收集失败时仍通过 finally 清理本次 Compose project，超时或清理失败均不能借部分通过卡获得完整通过结论。
-串行 bundle 合同新增的 runner scope/identity 回归使确定性 Python 验收回归达到 110 项。
+parallel workload lane 合同新增的 runner scope/identity、matrix cancellation 和跨 runner 硬件聚合回归纳入确定性 Python 验收。
 
 镜像装载和 samply 下载、checksum、解包准备也通过同一截止时间包装器执行；下载重试不能超出剩余预算。包装器在超时时只终止自己刚创建的进程组，等待最多 5 秒排空，不启动过期的准备操作。
 
 测试 runner 首步必须在共享时钟释放后 60 秒内准入，过期或未来时钟直接失败，不执行 checkout 或测试。两个 checkout 与镜像 artifact 下载各设 1 分钟 step 超时，因此 Actions 准备阶段有独立上界，后续脚本仍沿用共享绝对截止点；runner 排队不足不延长测试预算。
-当前串行 bundle 在测量 job 首步记录共享时钟，不再依赖镜像 job 到测量 job 的 60 秒排队窗口；checkout、镜像下载和 sampler 准备仍计入同一 60 分钟绝对截止点。
+当前 parallel workload lane 在镜像 artifact 发布后记录共享时钟，不再为每个 matrix lane 重置预算；checkout、镜像下载和 sampler 准备仍计入同一 60 分钟绝对截止点。`fail-fast: false` 保留其余 lane 的证据，结果 job 等待全部 lane 后再分类；任一 lane 缺件、取消或失败都不能产生完整通过卡。
 artifact 白名单明确包含 `measurement-windows.json` 与 `cpu-attribution.json`；32 项工具和 28 项验收工具
 测试通过，包括完整 DDL 变体保留、连续准入、累计等待、窗口压力/间隔、证据重读
 与敏感产物拒绝。新的候选仍须通过当前 SHA 的 GitHub-hosted Actions 与六条正式审查。
@@ -325,12 +325,13 @@ SQLite 分桶首次出现一项既有超时夹具的 502/503 差异；三次单�
 不受该状态页改动影响，最终候选仍需刷新静态、Web 与 Linux 运行验收。
 
 性能开销验收迁移到 GitHub Actions：生产镜像构建与测量使用独立 GitHub-hosted
-runner，测量串行执行同一镜像的运行时场景和三对 300 秒 A/B，保留 5% 稳定性与
-开销预算。失败产物按 run/attempt 留存并阻断现有 Build Artifacts 门禁。
+job，测量以四个 workload lane 并行执行同一镜像的运行时场景和三对 60 秒 A/B；
+每个 pair lane 内部保持三种 mode 串行，保留 5% 稳定性与开销预算。失败产物按
+run/attempt 留存并阻断现有 Build Artifacts 门禁。
 共享测试机只签发运行时集成卡；此前受干扰的 A/B 保留为诊断记录，不用于证明预算。
 当前实现已接入工作流，是否通过以对应候选的 Actions 场景结果与验收卡为准。
 
-当前工作流已将上述测量收敛为单 runner serial bundle：runtime、CPU attach 与三轮 60 秒 A/B 在同一 job 内顺序执行，部分 artifact 仍按 `runtime`、`pair-0`、`pair-1`、`pair-2` 分开上传，汇总器要求同一 runner identity/scope 后才允许比较。
+当前工作流将上述测量拆为四个 parallel workload lane：runtime、CPU attach 与三轮 60 秒 A/B 在独立 job 中执行，部分 artifact 仍按 `runtime`、`pair-0`、`pair-1`、`pair-2` 分开上传，汇总器要求 pair runner identity 各不相同且五项硬件字段完全一致后才允许比较。
 
 候选 `c22dde3f` 的 GitHub-hosted Actions 四项经验性场景与全部 18 个 CI job 通过，
 三对稳定窗口完成 9,000 个测量请求；CPU/请求增加 4.04%，p95 增加 0.24%，

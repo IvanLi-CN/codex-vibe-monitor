@@ -36,9 +36,9 @@ def actions_context(source, run, candidate, *, require_runner_identity=True):
     if head != candidate:
         raise ValueError("checked-out source does not match performance Candidate SHA")
     # GitHub documents GITHUB_JOB as the job identifier. Matrix cells share
-    # that id, so the workflow supplies its lane explicitly; a serial bundle
-    # supplies a stable scope to prove that all suites ran in one job. RUNNER_NAME
-    # is retained only as metadata because hosted names may repeat.
+    # that id, so the workflow supplies its lane explicitly; each workload lane
+    # supplies a stable scope to prove that its evidence stayed on one job.
+    # RUNNER_NAME is retained only as metadata because hosted names may repeat.
     job = os.environ.get("GITHUB_JOB", "").strip()
     lane = os.environ.get("OBSERVABILITY_LANE", "").strip()
     scope = os.environ.get("OBSERVABILITY_RUNNER_SCOPE", "").strip()
