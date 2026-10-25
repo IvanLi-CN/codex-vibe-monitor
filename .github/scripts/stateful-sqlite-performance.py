@@ -104,7 +104,7 @@ def sample(events: dict[str, list[int]]) -> dict[str, object]:
     }
 
 
-def parse_wall_file(path: Path) -> dict[tuple[str, str, str], int]:
+def parse_wall_file(path: Path) -> tuple[dict[tuple[str, str, str], int], list[str]]:
     values: dict[tuple[str, str, str], int] = {}
     failures: list[str] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -127,9 +127,7 @@ def parse_wall_file(path: Path) -> dict[tuple[str, str, str], int]:
     missing = sorted(expected - values.keys())
     if missing:
         raise ValueError("missing wall-time records: " + ", ".join("/".join(key) for key in missing))
-    if failures:
-        raise ValueError("replay command failed: " + ", ".join(failures))
-    return values
+    return values, failures
 
 
 def build_card(
@@ -137,6 +135,7 @@ def build_card(
     baseline_sha: str,
     candidate_sha: str,
     wall: dict[tuple[str, str, str], int],
+    replay_failures: list[str],
 ) -> dict[str, object]:
     replay_samples: dict[str, dict[str, dict[str, object]]] = {"baseline": {}, "candidate": {}}
     for ref in replay_samples:
@@ -216,7 +215,7 @@ def build_card(
     )
     setup_pass = measured_setup_tests >= 4 and measured_setup_improvements >= 4
     wall_pass = candidate_total_median <= baseline_total_median * 1.05
-    accepted = setup_pass and wall_pass
+    accepted = not replay_failures and setup_pass and wall_pass
     return {
         "acceptance": "pass" if accepted else "fail",
         "baseline_sha": baseline_sha,
@@ -241,6 +240,7 @@ def build_card(
             "regression_pct": total_regression_pct,
             "passed": wall_pass,
         },
+        "replay_failures": replay_failures,
         "shard_wall": shard_wall,
         "tests": tests,
     }
@@ -259,13 +259,28 @@ def markdown_card(card: dict[str, object]) -> str:
         f"- Runner: {card['runner']}",
         f"- Replay order: `{', '.join(card['replay_order'])}`",
         "",
-        "## Setup gate",
-        "",
-        f"{setup_gate['improved_tests']}/{setup_gate['measured_tests']} setup-bearing tests improved by at least 20%.",
-        "",
-        "| Test | Baseline setup median (ms) | Candidate setup median (ms) | Reduction | Status |",
-        "| --- | ---: | ---: | ---: | --- |",
     ]
+    if card["replay_failures"]:
+        lines.extend(
+            [
+                "## Replay failures",
+                "",
+                "The card is diagnostic only because one or more replay commands failed:",
+                "",
+            ]
+            + [f"- `{failure}`" for failure in card["replay_failures"]]
+            + [""],
+        )
+    lines.extend(
+        [
+            "## Setup gate",
+            "",
+            f"{setup_gate['improved_tests']}/{setup_gate['measured_tests']} setup-bearing tests improved by at least 20%.",
+            "",
+            "| Test | Baseline setup median (ms) | Candidate setup median (ms) | Reduction | Status |",
+            "| --- | ---: | ---: | ---: | --- |",
+        ]
+    )
     for result in card["tests"]:
         reduction = result["setup_reduction_pct"]
         reduction_text = "control" if reduction is None else f"{reduction:.1f}%"
@@ -308,11 +323,13 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        wall, replay_failures = parse_wall_file(args.wall_file)
         card = build_card(
             args.root,
             args.baseline_sha,
             args.candidate_sha,
-            parse_wall_file(args.wall_file),
+            wall,
+            replay_failures,
         )
     except (OSError, ValueError, KeyError) as error:
         print(f"::error::stateful SQLite performance evidence is incomplete: {error}", file=sys.stderr)

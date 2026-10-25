@@ -137,9 +137,12 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
         run: |
-          set -uo pipefail
+          set -euo pipefail
           wall_file="$EVIDENCE_ROOT/wall-times.txt"
+          failure_file="$EVIDENCE_ROOT/replay-failures.txt"
           : > "$wall_file"
+          : > "$failure_file"
+          overall_status=0
           for ref_name in baseline candidate; do
             repo="$GITHUB_WORKSPACE/$ref_name"
             archive_dir="$EVIDENCE_ROOT/$ref_name/archive-extract"
@@ -170,11 +173,17 @@ jobs:
                 printf 'stateful-performance ref=%s replay=%s shard=%s wall_ms=%s exit_code=%s\n' \
                   "$ref_name" "$replay" "$shard" "$wall_ms" "$status" | tee -a "$wall_file"
                 if [ "$status" -ne 0 ]; then
-                  exit "$status"
+                  overall_status=1
+                  {
+                    printf 'ref=%s replay=%s shard=%s exit_code=%s\n' \
+                      "$ref_name" "$replay" "$shard" "$status"
+                    grep -E '^\s*(FAIL|test result:)' "$log" | tail -n 80 || true
+                  } >> "$failure_file"
                 fi
               done
             done
           done
+          exit "$overall_status"
 
       - name: Generate empirical acceptance card
         id: acceptance
@@ -209,6 +218,7 @@ jobs:
             ${{ runner.temp }}/stateful-sqlite-performance/revisions.txt
             ${{ runner.temp }}/stateful-sqlite-performance/runner-context.txt
             ${{ runner.temp }}/stateful-sqlite-performance/wall-times.txt
+            ${{ runner.temp }}/stateful-sqlite-performance/replay-failures.txt
             ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.json
             ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.md
           if-no-files-found: warn
