@@ -1,5 +1,10 @@
 # 独立性能遥测历史
 
+- 2026-10-26：修复完整镜像 cache restore/save 的路径规范差异，避免相同 build identity 因
+  cache version 不一致产生假 miss；质量合同现在严格要求两处路径相同。build report 通过只读
+  `gh run view --json jobs` 绑定 Actions job ID、状态和真实 job 时间戳，保留 producer 卡的
+  编译时间并额外报告 job 排队/执行时间。
+
 - 2026-10-25：完成 Observability Performance 构建并行与复用改造。新增 `build_only` 与
   `build_path=auto|canonical` 手动输入；auto 在独立 runner 并行生产 Rust、Web、runtime-base，
   通过 `observability-performance-v2` 缓存和 named contexts 装配 production runtime，命中

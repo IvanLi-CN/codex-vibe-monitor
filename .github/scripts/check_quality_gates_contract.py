@@ -457,7 +457,12 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     cached_load = step_config(image, "Load and verify complete image cache", workflow_path)
     require(("docker load" in str(cached_load.get("run", "")) or "'docker','load'" in str(cached_load.get("run", ""))) and "buildIdentity" in str(cached_load.get("run", "")), f"{workflow_path} complete image hit must be verified before measurement")
     cache_save = uses_step_config(image, "Save complete candidate image cache", "actions/cache/save@v4", workflow_path)
-    require(cache_save.get("continue-on-error") is True and "observability-performance-v2-image-" in str(cache_save.get("with", {}).get("key", "")), f"{workflow_path} complete image cache save must be isolated and best effort")
+    require(
+        cache_save.get("continue-on-error") is True
+        and cache_save.get("with", {}).get("path") == "${{ runner.temp }}/observability-image"
+        and "observability-performance-v2-image-" in str(cache_save.get("with", {}).get("key", "")),
+        f"{workflow_path} complete image cache save must use the exact restore path and remain isolated/best effort",
+    )
     clock = step_config(image, "Start shared acceptance wall clock", workflow_path)
     require(clock.get("id") == "acceptance_clock" and "date +%s" in str(clock.get("run", "")) and "GITHUB_OUTPUT" in str(clock.get("run", "")) and clock.get("timeout-minutes") == 1, f"{workflow_path} image job must emit one shared clock")
     image_outputs = require_mapping(image.get("outputs"), f"{workflow_path}.image.outputs")
@@ -501,8 +506,10 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(combined.get("if") == "always()" and set(str(combined.get("with", {}).get("path", "")).splitlines()) == {aggregate_prefix + item for item in ("empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json")}, f"{workflow_path} aggregate evidence whitelist drifted")
 
     require(report.get("name") == "Observability Performance Build Report" and report.get("needs") == ["observability-performance-resolve", "observability-performance-producer", "observability-performance-image"] and "needs.observability-performance-image.result == 'success'" in str(report.get("if", "")) and report.get("timeout-minutes") == 5, f"{workflow_path} build report job metadata drifted")
+    timestamps = step_config(report, "Collect Actions job timestamps", workflow_path)
+    require("gh run view" in str(timestamps.get("run", "")) and "--json jobs" in str(timestamps.get("run", "")) and require_mapping(timestamps.get("env"), "Actions timestamp collection env").get("GH_TOKEN") == "${{ github.token }}", f"{workflow_path} build report must collect read-only Actions job timestamps")
     report_step = step_config(report, "Generate build report", workflow_path)
-    require("observability-build-report.py" in str(report_step.get("run", "")) and "--build-identity" in str(report_step.get("run", "")) and "--run-started" in str(report_step.get("run", "")), f"{workflow_path} build report must bind identity and measured timings")
+    require("observability-build-report.py" in str(report_step.get("run", "")) and "--build-identity" in str(report_step.get("run", "")) and "--run-started" in str(report_step.get("run", "")) and "--jobs-json" in str(report_step.get("run", "")), f"{workflow_path} build report must bind identity and measured Actions timings")
     report_upload = uses_step_config(report, "Upload build report", "actions/upload-artifact@v7", workflow_path)
     require(report_upload.get("with", {}).get("name") == "observability-build-report-${{ github.run_id }}" and report_upload.get("with", {}).get("retention-days") == 14, f"{workflow_path} build report retention drifted")
 

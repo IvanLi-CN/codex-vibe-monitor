@@ -586,7 +586,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.temp }}/observability-image/
+          path: ${{ runner.temp }}/observability-image
           key: observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }}
 
       - name: Start shared acceptance wall clock
@@ -818,6 +818,13 @@ jobs:
           name: observability-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-build/image
 
+      - name: Collect Actions job timestamps
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run view "$RUN_ID" --repo "$REPOSITORY" --json jobs > "$RUNNER_TEMP/actions-jobs.json"
+
       - name: Generate build report
         env:
           RUN_STARTED_AT: ${{ needs.observability-performance-resolve.outputs.controller_started }}
@@ -832,6 +839,7 @@ jobs:
             --build-identity "$BUILD_IDENTITY"
             --build-path "$BUILD_PATH"
             --run-started "$RUN_STARTED_AT"
+            --jobs-json "$RUNNER_TEMP/actions-jobs.json"
             --repository "$REPOSITORY"
             --run-id "$RUN_ID"
           )

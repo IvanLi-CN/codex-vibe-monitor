@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combine producer and image timing cards into the build-only report."""
+"""Combine build cards and read-only Actions timestamps into the build report."""
 
 from __future__ import annotations
 
@@ -41,6 +41,41 @@ def load_cards(root: pathlib.Path) -> list[dict[str, Any]]:
     return cards
 
 
+def load_actions_jobs(path: pathlib.Path) -> dict[str, dict[str, Any]]:
+    payload = json.loads(path.read_text())
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list):
+        raise ValueError("Actions jobs payload must contain a jobs list")
+    indexed: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        if not isinstance(job, dict) or not isinstance(job.get("name"), str):
+            continue
+        indexed[job["name"]] = job
+    return indexed
+
+
+def actions_job_name(card: dict[str, Any]) -> str:
+    component = card.get("component")
+    if component in {"rust", "web", "runtime-base"}:
+        return f"Observability Performance Producer ({component})"
+    return "Observability Performance Image"
+
+
+def actions_timing(job: dict[str, Any], run_started: str) -> dict[str, Any]:
+    started = job.get("startedAt")
+    finished = job.get("completedAt")
+    return {
+        "databaseId": job.get("databaseId", job.get("id")),
+        "name": job.get("name"),
+        "status": job.get("status"),
+        "conclusion": job.get("conclusion"),
+        "startedAt": started,
+        "completedAt": finished,
+        "queueSeconds": seconds_between(run_started, started),
+        "executionSeconds": seconds_between(started, finished),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=pathlib.Path)
@@ -49,12 +84,14 @@ def main() -> None:
     parser.add_argument("--build-identity", required=True)
     parser.add_argument("--build-path", required=True, choices=("auto", "canonical"))
     parser.add_argument("--run-started", required=True)
+    parser.add_argument("--jobs-json", required=True, type=pathlib.Path)
     parser.add_argument("--build-only", action="store_true")
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run-id", required=True)
     args = parser.parse_args()
 
     cards = load_cards(args.input)
+    actions_jobs = load_actions_jobs(args.jobs_json)
     components = {
         card["component"]: card
         for card in cards
@@ -66,15 +103,22 @@ def main() -> None:
     )
     jobs = []
     for card in [*components.values(), image] if image else list(components.values()):
+        action_name = actions_job_name(card)
+        action_job = actions_jobs.get(action_name)
+        if action_job is None:
+            raise ValueError(f"Actions job timestamp missing for {action_name}")
+        action = actions_timing(action_job, args.run_started)
+        card_execution = card.get("elapsedSeconds") or seconds_between(card.get("startedAt"), card.get("finishedAt"))
         jobs.append(
             {
                 "component": card.get("component", "image"),
                 "runner": card.get("runner"),
                 "startedAt": card.get("startedAt"),
                 "finishedAt": card.get("finishedAt"),
-                "queueSeconds": seconds_between(args.run_started, card.get("startedAt")),
-                "executionSeconds": card.get("elapsedSeconds")
-                or seconds_between(card.get("startedAt"), card.get("finishedAt")),
+                "queueSeconds": action["queueSeconds"],
+                "executionSeconds": action["executionSeconds"] or card_execution,
+                "cardExecutionSeconds": card_execution,
+                "actions": action,
                 "cache": card.get("cache", {}),
                 "transfer": card.get("transfer", {}),
                 "status": card.get("status", "unknown"),
@@ -108,6 +152,7 @@ def main() -> None:
                 for job in jobs
                 if job["executionSeconds"] is not None
             ),
+            "actionsObserved": True,
             "transfer": image.get("transfer", {}) if image else {"status": "missing"},
         },
         "artifacts": {

@@ -76,7 +76,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertEqual(restore["with"]["path"], "${{ runner.temp }}/observability-image")
         self.assertIn("$RUNNER_TEMP/observability-image", verify["run"])
         self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/observability-image/")
-        self.assertEqual(save["with"]["path"], "${{ runner.temp }}/observability-image/")
+        self.assertEqual(save["with"]["path"], "${{ runner.temp }}/observability-image")
         broken = copy.deepcopy(self.workflow)
         upload = next(step for step in broken["jobs"]["observability-performance-image"]["steps"] if step["name"] == "Upload performance candidate image")
         upload["with"]["if-no-files-found"] = "warn"
@@ -117,10 +117,31 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "archiveSha256": "c" * 64,
             }))
             output = root / "build-report.json"
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({
+                "jobs": [
+                    {
+                        "databaseId": 101,
+                        "name": "Observability Performance Producer (rust)",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "startedAt": "2026-10-25T00:00:12Z",
+                        "completedAt": "2026-10-25T00:01:12Z",
+                    },
+                    {
+                        "databaseId": 102,
+                        "name": "Observability Performance Image",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "startedAt": "2026-10-25T00:01:14Z",
+                        "completedAt": "2026-10-25T00:01:46Z",
+                    },
+                ]
+            }))
             import sys
             old_argv = sys.argv
             try:
-                sys.argv = ["observability-build-report.py", "--input", str(root), "--output", str(output), "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto", "--run-started", "2026-10-25T00:00:00Z", "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123"]
+                sys.argv = ["observability-build-report.py", "--input", str(root), "--output", str(output), "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto", "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json), "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123"]
                 report.main()
             finally:
                 sys.argv = old_argv
@@ -130,6 +151,8 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["cache"]["namespace"], "observability-performance-v2")
             self.assertEqual(value["status"], "passed")
             self.assertGreater(value["timing"]["imageReadySeconds"], 0)
+            self.assertEqual(value["jobs"][0]["actions"]["databaseId"], 101)
+            self.assertEqual(value["jobs"][0]["executionSeconds"], 60.0)
 
 
 if __name__ == "__main__":

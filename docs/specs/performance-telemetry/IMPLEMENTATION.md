@@ -55,7 +55,9 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 `scripts/production-build.sh`，image job 通过 named contexts 装配同一份 production
 runtime；未知配方回退到候选自己的 canonical Dockerfile。每次 run 还上传保留 14 天的
 `cvm-performance-build-report-v1`，记录 candidate/build identity、缓存命中、队列/执行
-时间、传输和镜像 ready 时间。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
+时间、传输和镜像 ready 时间；报告 job 通过只读 `gh run view --json jobs` 绑定 GitHub
+Actions 的 job ID、状态和实际时间戳。完整镜像 cache 的 restore/save 使用完全相同的路径，
+避免 cache version 漂移造成假 miss。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
 权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
 合成夹具使用与应用校验一致的 HTTPS `/v1/traces` endpoint。隔离入口在该摄入路径接受应用专属的固定非秘密测试 token 或可信客户端的独立摄入凭据；固定 token 不获得查询能力，应用容器不挂载随机生成的 Tempo 摄入或查询凭据。配置和请求处理的定向回归验证路径、凭据隔离及拒绝边界；生产 endpoint 校验、真实鉴权和性能验收断言不变。
