@@ -40,6 +40,7 @@ type TimelineDiagnostics = {
   activeTraversals: number;
   maxActiveTraversals: number;
   nextTraversalDelayMs: number;
+  holdNextTraversalDelayMs: number;
   longTasks: Array<{ duration: number; startTime: number }>;
   longTaskObserverSupported: boolean;
   timelineActivationStartMs: number | null;
@@ -78,6 +79,7 @@ function installDiagnostics(page: Page, initialRange: "today" | "yesterday" | "1
       activeTraversals: 0,
       maxActiveTraversals: 0,
       nextTraversalDelayMs: 0,
+      holdNextTraversalDelayMs: 0,
       longTasks: [],
       longTaskObserverSupported: PerformanceObserver.supportedEntryTypes.includes("longtask"),
       timelineActivationStartMs: null,
@@ -267,6 +269,10 @@ function installTimelineFetchInstrumentationInPage() {
             rangeStart: payload.rangeStart,
             rangeEnd: payload.rangeEnd,
           });
+          if (diagnostics.holdNextTraversalDelayMs > 0) {
+            diagnostics.nextTraversalDelayMs = diagnostics.holdNextTraversalDelayMs;
+            diagnostics.holdNextTraversalDelayMs = 0;
+          }
         }
       } catch {
         // Keep the fetch instrumentation non-invasive when a demo response is malformed.
@@ -702,6 +708,7 @@ test("keeps the old live window visible and commits it before catching up", asyn
             .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
           if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
           diagnostics.nextTraversalDelayMs = delayMs;
+          diagnostics.holdNextTraversalDelayMs = delayMs;
         }, MOVING_WINDOW_TRAVERSAL_DELAY_MS),
       ),
     );
