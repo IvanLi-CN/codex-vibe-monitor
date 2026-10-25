@@ -126,6 +126,7 @@ jobs:
           if ! id -u "$CANDIDATE_USER" >/dev/null 2>&1; then
             sudo useradd --create-home --shell /usr/sbin/nologin "$CANDIDATE_USER"
           fi
+          sudo install -d -m 700 -o "$CANDIDATE_USER" -g "$CANDIDATE_USER" "/home/$CANDIDATE_USER/.config"
 
       - name: Prepare read-only Rust toolchain for candidate user
         id: toolchain
@@ -151,16 +152,19 @@ jobs:
           {
             sudo -u "$CANDIDATE_USER" env \
               HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
               PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
               RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
               rustc --version
             sudo -u "$CANDIDATE_USER" env \
               HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
               PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
               RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
               cargo --version
             sudo -u "$CANDIDATE_USER" env \
               HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
               PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
               RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
               cargo-nextest --version
@@ -211,6 +215,7 @@ jobs:
             cd "$repo"
             sudo -u "$CANDIDATE_USER" env \
               HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
               PATH="$PATH" \
               RUSTC="$RUSTC" \
               CARGO_HOME="$CARGO_HOME" \
@@ -231,6 +236,7 @@ jobs:
             cd "$trusted_repo"
             sudo -u "$CANDIDATE_USER" env \
               HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
               PATH="$PATH" \
               RUSTC="$RUSTC" \
               CARGO_HOME="$extract_cargo_home" \
@@ -325,6 +331,7 @@ jobs:
                 replay_env=(
                   CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
                   HOME="/home/$CANDIDATE_USER"
+                  XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config"
                   PATH="$PATH"
                   RUSTC="$RUSTC"
                   BACKEND_TEST_WORKSPACE="$workspace"
@@ -402,6 +409,7 @@ jobs:
                 replay_env=(
                   CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
                   HOME="/home/$CANDIDATE_USER"
+                  XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config"
                   PATH="$PATH"
                   RUSTC="$RUSTC"
                   BACKEND_TEST_WORKSPACE="$workspace"
