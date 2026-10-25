@@ -195,6 +195,20 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["jobs"][0]["actions"]["databaseId"], 101)
             self.assertEqual(value["jobs"][0]["executionSeconds"], 60.0)
 
+            jobs = json.loads(jobs_json.read_text())
+            for job in jobs["jobs"]:
+                job["createdAt"] = None
+            jobs_json.write_text(json.dumps(jobs))
+            try:
+                sys.argv = ["observability-build-report.py", "--input", str(root), "--output", str(output), "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto", "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json), "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123"]
+                report.main()
+            finally:
+                sys.argv = old_argv
+            unavailable_queue = json.loads(output.read_text())
+            self.assertEqual(unavailable_queue["status"], "passed")
+            self.assertIsNone(unavailable_queue["timing"]["queueSeconds"])
+            self.assertFalse(unavailable_queue["timing"]["queueTimingComplete"])
+
     def test_build_report_rejects_missing_actions_timestamps(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

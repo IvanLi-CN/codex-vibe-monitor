@@ -185,7 +185,7 @@ def main() -> None:
             validation_errors.append(f"Actions job timestamp missing for {action_name}")
             continue
         action = actions_timing(action_job, args.run_started)
-        if action["queueSeconds"] is None or action["executionSeconds"] is None:
+        if action["executionSeconds"] is None:
             message = f"Actions job timestamps incomplete for {action_name}"
             if not args.workflow_failure:
                 raise ValueError(message)
@@ -198,7 +198,7 @@ def main() -> None:
             if not args.workflow_failure:
                 raise ValueError(message)
             validation_errors.append(message)
-        if action["queueSeconds"] is None or action["executionSeconds"] is None:
+        if action["executionSeconds"] is None:
             if args.workflow_failure:
                 continue
             raise ValueError(f"Actions job timestamps incomplete for {action_name}")
@@ -261,6 +261,7 @@ def main() -> None:
         "imageExportSeconds": [job["phases"].get("imageExportSeconds") for job in jobs if job["component"] == "image"],
         "imageUploadSeconds": [job["phases"].get("imageUploadSeconds") for job in jobs if job["component"] == "image"],
     }
+    queue_timing_complete = bool(queue_seconds) and all(value is not None for value in queue_seconds)
     report = {
         "schema": SCHEMA,
         "candidate": args.candidate,
@@ -283,6 +284,7 @@ def main() -> None:
             "imageReadyAt": ready_at,
             "imageReadySeconds": seconds_between(args.run_started, ready_at),
             "queueSeconds": optional_sum(queue_seconds),
+            "queueTimingComplete": queue_timing_complete,
             "runOffsetSeconds": optional_sum([job["actions"].get("runOffsetSeconds") for job in jobs]),
             "executionSeconds": optional_sum(execution_seconds),
             "runnerUsageSeconds": optional_sum(execution_seconds),

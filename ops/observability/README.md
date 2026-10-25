@@ -208,7 +208,9 @@ verified named contexts 装配生产镜像。兼容缓存位于独立的 `observ
 namespace，缓存写入为 60 秒 best-effort；命中完整镜像时跳过 producer，未知配方回退到
 候选自己的 canonical Dockerfile。每个 build run 上传保留 14 天的
 `cvm-performance-build-report-v1`，报告实际恢复/保存、队列/执行、传输、装配和镜像 ready
-时间；报告 job 用只读 `gh run view --json jobs` 记录 Actions job ID、状态和实际时间戳。
+时间；队列时间只在 Actions check-run 提供 `created_at` 时计算，否则记录为 unavailable，
+不以 run 起始时间或零值替代。报告 job 用只读 `gh run view --json jobs` 和同一 candidate
+check-runs 记录构建 job ID、状态和实际时间戳。
 完整镜像 cache 的 restore/save 使用完全相同的路径，避免 cache version 漂移造成假 miss。
 镜像仍传输 image ID、revision 与 archive checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像：runtime lane 负责
 功能场景（含 original-process CPU attach），pair-0、pair-1、pair-2 各自完成一轮 paired

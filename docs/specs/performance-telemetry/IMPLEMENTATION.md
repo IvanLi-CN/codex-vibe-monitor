@@ -57,7 +57,8 @@ runtime；候选的 Dockerfile、`.dockerignore`、工具链和共享生产脚�
 recipe 合同一致时走 auto，否则回退到候选自己的 canonical Dockerfile；基础镜像 tag 在
 resolver 中解析为实际 manifest digest 并纳入 build identity。每次 run 还上传保留 14 天的
 `cvm-performance-build-report-v1`，记录 candidate/build identity、缓存命中、队列/执行
-时间、总 runner 使用量、cache restore/save phase timing、传输和镜像 ready 时间；报告 job
+时间（GitHub 未提供 check-run `created_at` 时显式为 unavailable）、总 runner 使用量、
+cache restore/save phase timing、传输和镜像 ready 时间；报告 job
 通过只读 `gh run view --json jobs` 绑定 GitHub Actions 的 job ID、成功状态和实际时间戳，
 任一失败或身份不匹配都会拒绝生成 passed 报告。完整镜像 cache 的 restore/save 使用完全相同的路径，
 避免 cache version 漂移造成假 miss。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
