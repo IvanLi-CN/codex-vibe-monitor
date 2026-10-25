@@ -142,9 +142,67 @@ def require_playwright_ci_config(workflow_path: Path, workflow_name: str) -> Non
 
 
 def require_observability_performance_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
+    require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
+    require_exact_named_jobs(
+        workflow,
+        {"Observability Performance Image", "Observability Acceptance (parallel workload lanes)", "Observability Performance Budget"},
+        workflow_path,
+    )
+    on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
+    require(set(on_section) == {"workflow_dispatch"}, f"{workflow_path} must have only the workflow_dispatch trigger")
+    dispatch = event_config(workflow, "workflow_dispatch", workflow_path)
+    dispatch_inputs = require_mapping(dispatch.get("inputs"), f"{workflow_path}.on.workflow_dispatch.inputs")
+    require(set(dispatch_inputs) == {"candidate_ref"}, f"{workflow_path} must expose only the candidate_ref input")
+    candidate_input = require_mapping(dispatch_inputs.get("candidate_ref"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_ref")
+    require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
+            f"{workflow_path} manual acceptance must require a string candidate_ref")
+    permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
+    require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")
     performance_job = job_config(workflow, "observability-performance", workflow_path)
     image_job = job_config(workflow, "observability-performance-image", workflow_path)
-    opt_in_if = "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
+    resolver = step_config(image_job, "Resolve performance sources", f"{workflow_path}.jobs.observability-performance-image")
+    resolver_run = str(resolver.get("run", ""))
+    require(
+        resolver.get("id") == "refs"
+        and 'test "$EVENT_NAME" = "workflow_dispatch"' in resolver_run
+        and "WORKFLOW_REF" in resolver_run
+        and 'refs/heads/main' in resolver_run
+        and 'candidate_repository="$REPOSITORY"' in resolver_run
+        and "INPUT_CANDIDATE_REF" in resolver_run
+        and 'trusted_ref="$WORKFLOW_SHA"' in resolver_run
+        and "[0-9a-fA-F]{40}" in resolver_run
+        and "git check-ref-format --branch" in resolver_run
+        and 'candidate_ref="refs/heads/$candidate_input"' in resolver_run
+        and "github.event.pull_request" not in resolver_run,
+        f"{workflow_path} must resolve and bind the manual trusted/candidate sources",
+    )
+    image_checkout = checkout_step(image_job, "Checkout performance candidate", f"{workflow_path}.jobs.observability-performance-image")
+    require(
+        image_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
+        and image_checkout.get("path") == "candidate"
+        and image_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}",
+        f"{workflow_path} image job must build only the resolved candidate checkout",
+    )
+    identity = step_config(image_job, "Bind candidate identity", f"{workflow_path}.jobs.observability-performance-image")
+    identity_run = str(identity.get("run", ""))
+    require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run,
+            f"{workflow_path} must pin the candidate checkout to its resolved commit")
+    for job_id, job_name in [("observability-performance", "performance"), ("observability-performance-result", "aggregation")]:
+        job = job_config(workflow, job_id, workflow_path)
+        trusted = checkout_step(job, "Checkout trusted acceptance harness", f"{workflow_path}.jobs.{job_id}")
+        candidate = checkout_step(job, "Checkout candidate identity", f"{workflow_path}.jobs.{job_id}")
+        require(
+            trusted.get("repository") == "${{ github.repository }}"
+            and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}"
+            and trusted.get("path") == "trusted",
+            f"{workflow_path} {job_name} must run the harness from the resolved trusted checkout",
+        )
+        require(
+            candidate.get("repository") == "${{ needs.observability-performance-image.outputs.candidate_repository }}"
+            and candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}"
+            and candidate.get("path") == "candidate",
+            f"{workflow_path} {job_name} must use the resolved candidate checkout only for identity",
+        )
     require(performance_job.get("name") == "Observability Acceptance (parallel workload lanes)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 60 and image_job.get("timeout-minutes") == 15,
             "the image job must finish within 15 minutes and each workload lane within 60 minutes")
@@ -158,7 +216,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     )
     concurrency = require_mapping(workflow.get("concurrency"), f"{workflow_path}.concurrency")
     require(
-        concurrency.get("group") == "observability-performance-${{ github.event.pull_request.number || inputs.candidate_sha || github.run_id }}"
+        concurrency.get("group") == "observability-performance-${{ inputs.candidate_ref || github.run_id }}"
         and concurrency.get("cancel-in-progress") is False,
         "performance acceptance runs must not cancel an in-flight candidate measurement",
     )
@@ -191,8 +249,8 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and performance_env.get("OBSERVABILITY_RUNNER_SCOPE") == "parallel-${{ matrix.lane }}",
         "each workload lane must bind its shared clock, lane, and isolated runner scope",
     )
-    require(image_job.get("if") == opt_in_if and performance_job.get("if") == opt_in_if,
-            "observability performance jobs must require explicit label or manual opt-in")
+    require("if" not in image_job and "if" not in performance_job,
+            "observability performance jobs must run only from the workflow dispatch trigger")
     require_job_and_steps_fail_closed(
         performance_job,
         "ci-pr.yml.jobs.observability-performance",
@@ -210,7 +268,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     image_build_with = require_mapping(image_build.get("with"), "observability performance image build")
     require(
         "cache-to" not in image_build_with,
-        "pull_request_target performance builds must not export to the read-only Actions cache",
+        "performance builds must not export to the read-only Actions cache",
     )
     image_upload = uses_step_config(
         image_job,
@@ -316,110 +374,10 @@ def require_pr_smoke_artifact_contract(smoke_job: dict[str, Any], build_job: dic
     )
 
 
-def require_observability_diagnostic_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
-    job = job_config(workflow, "observability-diagnostics", workflow_path)
-    require(job.get("name") == "Observability CPU Diagnosis"
-            and job.get("needs") == "observability-performance-image"
-            and job.get("runs-on") == RUNNER_X64 and job.get("timeout-minutes") == 15
-            and job.get("if") == ("github.event_name == 'pull_request_target' && github.event.action == 'labeled' "
-                                   "&& github.event.label.name == 'run:observability-performance' "
-                                   "&& (github.event.pull_request.number == 1071 || "
-                                   "github.event.pull_request.number == 1079)"),
-            "diagnosis must be the explicitly opted-in bounded hosted VM experiment")
-    require_job_and_steps_fail_closed(job, f"{workflow_path}.jobs.observability-diagnostics")
-    performance = job_config(workflow, "observability-performance", workflow_path)
-    require(performance.get("needs") == "observability-performance-image",
-            "diagnosis must not replace or certify the performance gate")
-    for name in ["Checkout trusted acceptance harness", "Download performance candidate image",
-                 "Verify and load candidate image", "Prepare pinned CPU sampler"]:
-        require(step_config(job, name, "diagnostics") == {key: value for key, value in step_config(performance, name, "performance").items() if key not in {"if", "timeout-minutes"}},
-                "diagnosis must use identical candidate image verification and pinned sampler")
-    run = step_config(job, "Run bounded CPU diagnosis", "diagnostics")
-    script = str(run.get("run", ""))
-    require("scripts/observability-diagnostics/run.py" in script
-            and '--candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE"' in script
-            and "--suite" not in script and "observability-acceptance/run.py" not in script,
-            "diagnosis must use the separate non-certifying entrypoint")
-    upload = step_config(job, "Upload bounded CPU diagnostic evidence", "diagnostics")
-    require(upload.get("if") == "always()" and upload.get("with", {}).get("retention-days") == 14,
-            "diagnosis must retain failed evidence with bounded retention")
-    expected = {"diagnostic-card.json", "diagnostic-windows.json", "cpu-timeseries.jsonl", "scenarios.json",
-                "run-config.json", "image-identity.json", "runner-context.json", "environment-admission.jsonl",
-                "resource-observer.jsonl", "measurement-windows.json", "profiles/*/*.manifest.json",
-                "profiles/*/*.json.gz", "profiles/*/*.syms.json"}
-    prefix = "${{ runner.temp }}/observability-diagnostics/"
-    paths = str(upload.get("with", {}).get("path", "")).splitlines()
-    require({p.strip() for p in paths if p.strip()} == {prefix + p for p in expected},
-            "diagnosis artifacts must exclude certificates, secrets, raw payloads, logs and databases")
-    build = workflow.get("jobs", {}).get("build")
-    if build is not None:
-        require("observability-diagnostics" not in build.get("needs", []),
-                "diagnosis must not replace or certify the performance gate")
-
-
 def validate_observability_performance(path: Path) -> None:
     workflow_path = "ci-observability-performance.yml"
     workflow = load_yaml(path)
-    require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
-    require_exact_named_jobs(
-        workflow,
-        {"Observability Performance Image", "Observability Acceptance (parallel workload lanes)", "Observability Performance Budget", "Observability CPU Diagnosis"},
-        workflow_path,
-    )
-    on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
-    require("pull_request" not in on_section and "merge_group" not in on_section, f"{workflow_path} must not run on untrusted pull_request or merge_group events")
-    dispatch = event_config(workflow, "workflow_dispatch", workflow_path)
-    dispatch_inputs = require_mapping(dispatch.get("inputs"), f"{workflow_path}.on.workflow_dispatch.inputs")
-    candidate_input = require_mapping(dispatch_inputs.get("candidate_sha"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_sha")
-    require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
-            f"{workflow_path} manual acceptance must require a string candidate_sha")
-    web_input = require_mapping(dispatch_inputs.get("web_test_baseline_sha"), "frontend A/B baseline input")
-    require(web_input.get("required") is False and web_input.get("type") == "string" and web_input.get("default") == "",
-            "frontend A/B dispatcher must remain an optional manual input")
-    web = job_config(workflow, "frontend-test-ab", workflow_path)
-    require(web.get("if") == "github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha != ''"
-            and web.get("uses") == "./.github/workflows/web-test-ab.yml"
-            and web.get("with") == {"baseline_sha": "${{ inputs.web_test_baseline_sha }}", "candidate_sha": "${{ inputs.candidate_sha }}"},
-            "frontend A/B must exclusively dispatch the exact manual SHA pair")
-    assert_event_types(event_config(workflow, "pull_request_target", workflow_path), {"labeled"}, f"{workflow_path}.on.pull_request_target")
-    permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
-    require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")
-    image = job_config(workflow, "observability-performance-image", workflow_path)
-    resolver = step_config(image, "Resolve performance sources", f"{workflow_path}.jobs.observability-performance-image")
-    resolver_run = str(resolver.get("run", ""))
-    require(
-        resolver.get("id") == "refs"
-        and "WORKFLOW_REF" in resolver_run
-        and 'refs/heads/main' in resolver_run
-        and "candidate_repository" in resolver_run
-        and "trusted_ref" in resolver_run,
-        f"{workflow_path} must resolve and bind the manual trusted/candidate sources",
-    )
-    image_checkout = checkout_step(image, "Checkout performance candidate", f"{workflow_path}.jobs.observability-performance-image")
-    require(
-        image_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
-        and image_checkout.get("path") == "candidate"
-        and image_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}",
-        f"{workflow_path} image job must build only the resolved candidate checkout",
-    )
-    for job_id, job_name in [("observability-performance", "performance"), ("observability-performance-result", "aggregation"), ("observability-diagnostics", "diagnosis")]:
-        job = job_config(workflow, job_id, workflow_path)
-        trusted = checkout_step(job, "Checkout trusted acceptance harness", f"{workflow_path}.jobs.{job_id}")
-        candidate = checkout_step(job, "Checkout candidate identity", f"{workflow_path}.jobs.{job_id}")
-        require(
-            trusted.get("repository") == "${{ github.repository }}"
-            and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}"
-            and trusted.get("path") == "trusted",
-            f"{workflow_path} {job_name} must run the harness from the resolved trusted checkout",
-        )
-        require(
-            candidate.get("repository") == "${{ needs.observability-performance-image.outputs.candidate_repository }}"
-            and candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}"
-            and candidate.get("path") == "candidate",
-            f"{workflow_path} {job_name} must use the resolved candidate checkout only for identity",
-        )
     require_observability_performance_contract(workflow, workflow_path)
-    require_observability_diagnostic_contract(workflow, workflow_path)
 
 
 def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:
@@ -1412,8 +1370,6 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     )
     if performance_declared:
         require_observability_performance_contract(workflow)
-    if "Observability CPU Diagnosis" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ()):
-        require_observability_diagnostic_contract(workflow)
     require_exact_if(
         build_job,
         "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",

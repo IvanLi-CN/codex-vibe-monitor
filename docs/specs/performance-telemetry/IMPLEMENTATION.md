@@ -48,24 +48,27 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 
 [指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式 parallel workload lane 的 60 分钟共享上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
 
-性能镜像构建仅从 GitHub Actions 缓存恢复已有层，不向 `pull_request_target` 默认分支上下文的只读缓存导出；镜像构建、装载和后续 artifact 交接仍须成功。质量合同拒绝重新加入缓存导出，避免镜像构建完成后因 `failed to reserve cache` 阻止测量。触发方式、权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
+性能镜像构建仅从 GitHub Actions 缓存恢复已有层，不向只读缓存导出；镜像构建、装载和后续 artifact 交接仍须成功。质量合同拒绝重新加入缓存导出，避免镜像构建完成后因 `failed to reserve cache` 阻止测量。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
 合成夹具使用与应用校验一致的 HTTPS `/v1/traces` endpoint。隔离入口在该摄入路径接受应用专属的固定非秘密测试 token 或可信客户端的独立摄入凭据；固定 token 不获得查询能力，应用容器不挂载随机生成的 Tempo 摄入或查询凭据。配置和请求处理的定向回归验证路径、凭据隔离及拒绝边界；生产 endpoint 校验、真实鉴权和性能验收断言不变。
 
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
-合并的必要测试。`Observability Performance Budget` 及 CPU 诊断保留为辅助
-job；它们位于默认分支控制的 `pull_request_target` 工作流中，只有显式添加一次性
-`run:observability-performance` 标签时启动；候选修改验收 harness 时，必须在 `main` 上通过同一 workflow 的
-`workflow_dispatch` 输入完整 `candidate_sha` 执行合并后复测。普通 PR 与 merge queue 事件不会默认消耗长时 runner。继续上传失败或
-缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact producer。质量门禁合同和自测
-覆盖此依赖边界，未改变 5% 性能验收阈值。本次请求生命周期 PR 的就绪判断不宣称该
-预算已验证；预算结论留给显式启动的专项运行。
+合并的必要测试。`Observability Performance Budget` 通过 trusted `main` 上的
+`workflow_dispatch` 手动启动；唯一必填输入 `candidate_ref` 接受同仓库分支名或完整
+40 字符提交 SHA。分支先用 `git check-ref-format --branch` 校验并规范为
+`refs/heads/<name>`，image job checkout 后用 `git rev-parse HEAD` 固定 candidate SHA；
+后续 workload 和汇总只消费该 SHA。workflow 与验收脚本始终来自 `github.sha` 绑定的
+trusted `main`，候选只作为隔离镜像运行时代码和身份 checkout。label、PR 事件、自动
+重试和 candidate-controlled harness 都不再启动或改变验收。普通 PR 与 merge queue
+事件不会默认消耗长时 runner。继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR
+smoke artifact producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
+本次请求生命周期 PR 的就绪判断不宣称该预算已验证；预算结论留给显式启动的专项运行。
 普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
 当 GitHub-hosted runner 因明确的资源压力无法提供有效测量时，验收步骤保留非零结果并由分类器将该辅助 job 收口为中性；`empirical-card.json` 仍为 `unavailable`，原始压力证据仍上传，功能/设置/证据错误和预算超标继续失败。
 历史开销超标或 unavailable 不因此改写为通过；#1079 的性能回归根因及
 50 倍吞吐、24 小时固定存量归零和在线延迟目标留待专项 Actions 验证。
 
-## Hosted CPU diagnosis
+## Historical CPU diagnosis source
 
 诊断快照 helper 的 CLI 分发仅在直接执行时运行，CPU diagnosis runner 导入
 `client.py` 时不会因缺少 `mode` 丢失计数器。子进程回归覆盖无参数导入和固定
@@ -77,11 +80,9 @@ job；它们位于默认分支控制的 `pull_request_target` 工作流中，只
 11.77%，超过 5% 稳定性上限；该数值不是已接受的 CPU 开销百分比。先前同合同
 候选 `36d8c612` 通过，仅作为历史比较。普通修复批次停在七批，根因尚未确定。
 
-独立 GitHub-hosted VM 的 `Observability CPU Diagnosis` 仅用于明确列名的 PR
-#1071 和 #1079，且同样需要一次性添加 `run:observability-performance` 标签。
-#1079 的同合同候选 CPU/请求开销为 8.50%，超过 5% 门槛；
-主线历史证据为 3.02%。现有采样发生在 A/B 之前，不能归因测量窗口内的差异，
-因此临时复用该作业补齐窗口计数和 CPU profile；根因未定，不开启普通修复批次。
+历史 CPU diagnosis job 不再属于当前 workflow，也没有固定 PR 号或调度 label 入口。
+诊断源码和它的确定性回归仍保留，用于未来经 owner-approved 设计重新接入前的工具维护；
+历史候选 CPU/请求开销与主线证据只作为背景记录，不能签发当前预算结论。
 入口在 `scripts/observability-diagnostics/`，不修改预算验收脚本、场景摘要来源或
 阈值；消费同一不可变镜像，复用合成初始化、60 秒预热与六个交替 300 秒诊断窗口。
 每秒记录绑定原容器和 PID start ticks 的 user/system CPU、throttle、context switch、

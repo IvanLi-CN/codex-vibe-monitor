@@ -1,41 +1,24 @@
 name: Observability Performance
 
 on:
-  pull_request_target:
-    types:
-      - labeled
   workflow_dispatch:
     inputs:
-      candidate_sha:
-        description: Full 40-character commit SHA to measure after the candidate is trusted
+      candidate_ref:
+        description: Same-repository branch name or full 40-character commit SHA to measure
         required: true
-        type: string
-      web_test_baseline_sha:
-        description: Optional old frontend SHA; routes this manual invocation exclusively to frontend A/B
-        required: false
-        default: ''
         type: string
 
 concurrency:
-  group: ${{ inputs.web_test_baseline_sha && 'frontend-test-ab-dispatch' || 'observability-performance' }}-${{ github.event.pull_request.number || inputs.candidate_sha || github.run_id }}
+  group: observability-performance-${{ inputs.candidate_ref || github.run_id }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  frontend-test-ab:
-    name: Frontend Test A/B dispatcher
-    if: github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha != ''
-    uses: ./.github/workflows/web-test-ab.yml
-    with:
-      baseline_sha: ${{ inputs.web_test_baseline_sha }}
-      candidate_sha: ${{ inputs.candidate_sha }}
-
   observability-performance-image:
     name: Observability Performance Image
     # Build once; test jobs consume this immutable image without compiling.
-    if: (github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -51,24 +34,22 @@ jobs:
           WORKFLOW_REF: ${{ github.ref }}
           WORKFLOW_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
-          INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          INPUT_CANDIDATE_REF: ${{ inputs.candidate_ref }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            test "$WORKFLOW_REF" = "refs/heads/main"
-            candidate_repository="$REPOSITORY"
-            candidate_ref="$INPUT_CANDIDATE_SHA"
-            trusted_ref="$WORKFLOW_SHA"
+          test "$EVENT_NAME" = "workflow_dispatch"
+          test "$WORKFLOW_REF" = "refs/heads/main"
+          candidate_repository="$REPOSITORY"
+          candidate_input="$INPUT_CANDIDATE_REF"
+          trusted_ref="$WORKFLOW_SHA"
+          test -n "$candidate_input"
+          if [[ "$candidate_input" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            candidate_ref="$candidate_input"
           else
-            candidate_repository="$PR_HEAD_REPOSITORY"
-            candidate_ref="$PR_HEAD_SHA"
-            trusted_ref="$PR_BASE_SHA"
+            git check-ref-format --branch "$candidate_input"
+            candidate_ref="refs/heads/$candidate_input"
           fi
-          [[ "$candidate_ref" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$trusted_ref" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$trusted_ref" =~ ^[0-9a-fA-F]{40}$ ]]
           {
             printf 'candidate_repository=%s\n' "$candidate_repository"
             printf 'candidate_ref=%s\n' "$candidate_ref"
@@ -85,7 +66,11 @@ jobs:
 
       - name: Bind candidate identity
         id: identity
-        run: echo "candidate=$(git -C candidate rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          candidate="$(git -C candidate rev-parse HEAD)"
+          [[ "$candidate" =~ ^[0-9a-f]{40}$ ]]
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -130,11 +115,17 @@ jobs:
           overwrite: true
           retention-days: 1
 
+      - name: Start shared acceptance wall clock
+        id: acceptance_clock
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          started="$(date +%s)"
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+
   observability-performance:
     name: Observability Acceptance (parallel workload lanes)
     needs: observability-performance-image
-    # Add the run:observability-performance label to launch the one-shot hosted measurement.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -315,99 +306,4 @@ jobs:
             ${{ runner.temp }}/observability-acceptance/ab-samples.json
             ${{ runner.temp }}/observability-acceptance/ab-summary.json
           if-no-files-found: error
-          retention-days: 14
-
-  observability-diagnostics:
-    name: Observability CPU Diagnosis
-    needs: observability-performance-image
-    # Explicit opt-in experiment; never a budget certificate and never a default PR job.
-    if: github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance' && (github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Checkout trusted acceptance harness
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ needs.observability-performance-image.outputs.trusted_ref }}
-          path: trusted
-          persist-credentials: false
-
-      - name: Checkout candidate identity
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ needs.observability-performance-image.outputs.candidate_repository }}
-          ref: ${{ needs.observability-performance-image.outputs.candidate }}
-          path: candidate
-          persist-credentials: false
-
-      - name: Download performance candidate image
-        uses: actions/download-artifact@v7
-        with:
-          name: observability-image-${{ github.run_id }}
-          path: ${{ runner.temp }}/observability-image
-
-      - name: Verify and load candidate image
-        env:
-          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
-        run: |
-          python3 trusted/scripts/observability-acceptance/deadline.py -- python3 - <<'PY'
-          import hashlib,json,os,pathlib,subprocess
-          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
-          metadata=json.loads((root/'candidate.json').read_text())
-          assert metadata['candidate']==os.environ['CANDIDATE']==subprocess.check_output(['git','-C','candidate','rev-parse','HEAD'],text=True).strip()
-          archive=root/'candidate.tar.gz'
-          assert hashlib.file_digest(archive.open('rb'),'sha256').hexdigest()==metadata['archiveSha256']
-          subprocess.run(['docker','load','--input',str(archive)],check=True)
-          image=json.loads(subprocess.check_output(['docker','image','inspect',metadata['imageId']],text=True))[0]
-          assert image['Config']['Labels']['org.opencontainers.image.revision']==metadata['candidate']
-          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('OBSERVABILITY_IMAGE='+image['Id']+'\n')
-          PY
-
-      - name: Prepare pinned CPU sampler
-        run: |
-          # shellcheck disable=SC2016
-          python3 trusted/scripts/observability-acceptance/deadline.py -- bash -euo pipefail -c '
-          mkdir -p "$RUNNER_TEMP/observability-tools"
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
-            https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-x86_64-unknown-linux-gnu.tar.xz \
-            -o "$RUNNER_TEMP/observability-tools/samply.tar.xz"
-          echo "61875daad67888798690dea3cb2748279df6ac299c5c6a857d67eed7642473d9  $RUNNER_TEMP/observability-tools/samply.tar.xz" | sha256sum --check
-          tar -xJf "$RUNNER_TEMP/observability-tools/samply.tar.xz" -C "$RUNNER_TEMP/observability-tools"
-          echo "0ca59d520059aa2ee4db1860c732089829e75740ee75314e84d2b0ab8c90873e  $RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" | sha256sum --check
-          sudo sysctl -w kernel.perf_event_paranoid=1
-          '
-
-      - name: Run bounded CPU diagnosis
-        env:
-          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: |
-          python3 trusted/scripts/observability-diagnostics/run.py \
-            --source "$PWD/trusted" --candidate-source "$PWD/candidate" --run "$RUNNER_TEMP/observability-diagnostics" \
-            --agent "diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE" \
-            --samply "$RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply"
-
-      - name: Upload bounded CPU diagnostic evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: observability-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          # Whitelist synthetic evidence; exclude token files, Compose secrets and databases.
-          path: |
-            ${{ runner.temp }}/observability-diagnostics/diagnostic-card.json
-            ${{ runner.temp }}/observability-diagnostics/diagnostic-windows.json
-            ${{ runner.temp }}/observability-diagnostics/cpu-timeseries.jsonl
-            ${{ runner.temp }}/observability-diagnostics/scenarios.json
-            ${{ runner.temp }}/observability-diagnostics/run-config.json
-            ${{ runner.temp }}/observability-diagnostics/image-identity.json
-            ${{ runner.temp }}/observability-diagnostics/runner-context.json
-            ${{ runner.temp }}/observability-diagnostics/environment-admission.jsonl
-            ${{ runner.temp }}/observability-diagnostics/resource-observer.jsonl
-            ${{ runner.temp }}/observability-diagnostics/measurement-windows.json
-            ${{ runner.temp }}/observability-diagnostics/profiles/*/*.manifest.json
-            ${{ runner.temp }}/observability-diagnostics/profiles/*/*.json.gz
-            ${{ runner.temp }}/observability-diagnostics/profiles/*/*.syms.json
-          if-no-files-found: warn
           retention-days: 14

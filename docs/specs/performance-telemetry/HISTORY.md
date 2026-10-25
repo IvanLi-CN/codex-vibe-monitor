@@ -1,5 +1,7 @@
 # 独立性能遥测历史
 
+- 2026-10-25：将 Observability Performance workflow 收敛为 trusted `main` 上唯一的 `workflow_dispatch` 入口，移除 `pull_request_target`/label 调度、前端 dispatcher 和历史 diagnostics job。`candidate_ref` 接受同仓库分支名或完整 40 字符 SHA；分支先验证并规范为 `refs/heads/<name>`，image job 用 `git rev-parse HEAD` 固定 candidate SHA，后续 workload 与汇总只消费该 SHA，trusted harness 始终绑定 `github.sha`。诊断源码及 `ci-pr` 回归保留，当前测量阈值、并行 lane、时钟、artifact 白名单、权限和 required-check 配置不变。该决定由 ADR 0049 记录。
+
 - 2026-10-25：将显式 Observability Acceptance 从单 runner serial bundle 改为四个 workload lane 的独立 hosted jobs。不可变镜像发布后只记录一次共享 60 分钟起始时刻；runtime 与三个 pair workload 各自拥有 runner 临时目录、Compose project、SQLite/fixture 和 sampler，pair 内 off/metrics/full 仍串行。汇总保留 candidate、image、contract、harness、run/attempt、共享时钟、失败证据和五项硬件字段校验，要求三组 pair identity 各不相同且硬件完全一致；阈值、准入、窗口覆盖和失败分类不变。该 successor decision 由 ADR 0048 记录，当前候选需在合并后的 `main` 上重新 dispatch 才能取得经验性卡。
 
 - 2026-10-22：修复 `cpu.stat` 对 Linux 合法未来字段的解析兼容性，固定并限制 CPU 归因准备失败诊断，且让硬件不匹配时的汇总保留已验证 runtime 场景和 pair 失败证据；不完整重汇总还会清除旧的 A/B 派生样本和摘要。现有 GitHub-hosted `ubuntu-24.04` 标签仍不被视为硬件一致性证明；低成本 preflight 与专用资源方案记录在 ADR 0046，5% 经验性结论继续要求当前候选的完整、可比较 hosted 证据。

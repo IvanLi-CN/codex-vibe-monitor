@@ -1338,6 +1338,46 @@ class WorkflowGateTests(unittest.TestCase):
     def test_current_workflow_fails_closed(self):
         self.verify(self.workflow)
 
+    def test_manual_dispatch_is_the_only_scheduler_and_candidate_ref_is_required(self):
+        on_section = contract.mapping_get(self.workflow, "on")
+        self.assertEqual(set(on_section), {"workflow_dispatch"})
+        self.assertEqual(set(on_section["workflow_dispatch"]["inputs"]), {"candidate_ref"})
+        self.assertTrue(on_section["workflow_dispatch"]["inputs"]["candidate_ref"]["required"])
+        self.assertNotIn("observability-diagnostics", self.workflow["jobs"])
+        workflow = copy.deepcopy(self.workflow)
+        contract.mapping_get(workflow, "on")["pull_request_target"] = {"types": ["labeled"]}
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_candidate_branch_resolution_and_identity_pin_are_required(self):
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Resolve performance sources")
+        resolver["run"] = resolver["run"].replace("git check-ref-format --branch", "git check-ref-format")
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Resolve performance sources")
+        resolver["run"] = resolver["run"].replace('candidate_ref="refs/heads/$candidate_input"', 'candidate_ref="$candidate_input"')
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        identity = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Bind candidate identity")
+        identity["run"] = "echo candidate=unbound >> \"$GITHUB_OUTPUT\""
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_downstream_jobs_use_only_the_pinned_candidate_sha_and_trusted_main_sha(self):
+        for job_id in ("observability-performance", "observability-performance-result"):
+            workflow = copy.deepcopy(self.workflow)
+            checkout = next(step for step in workflow["jobs"][job_id]["steps"]
+                            if step["name"] == "Checkout candidate identity")
+            checkout["with"]["ref"] = "${{ inputs.candidate_ref }}"
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Resolve performance sources")
+        resolver["run"] = resolver["run"].replace('trusted_ref="$WORKFLOW_SHA"', 'trusted_ref="$candidate_input"')
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
     def test_read_only_cache_export_is_rejected(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(x for x in workflow["jobs"]["observability-performance-image"]["steps"]
@@ -1406,13 +1446,10 @@ class WorkflowGateTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_time_limit_and_parallel_lane_contract_cannot_be_removed(self):
-        for job in ("observability-performance", "observability-performance-image", "observability-diagnostics"):
+        for job in ("observability-performance", "observability-performance-image"):
             workflow = copy.deepcopy(self.workflow)
             workflow["jobs"][job]["timeout-minutes"] = 16
-            if job == "observability-diagnostics":
-                with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
-            else:
-                with self.assertRaises(contract.ContractError): self.verify(workflow)
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
         workflow["jobs"]["observability-performance"]["strategy"] = {"matrix": {"lane": ["pair-0", "pair-1", "pair-2"]}}
         with self.assertRaises(contract.ContractError): self.verify(workflow)
