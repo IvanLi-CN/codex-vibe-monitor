@@ -1022,6 +1022,9 @@ async fn replay_raw_overflow_spool_segments(
 }
 
 fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) {
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return;
+    };
     for path in paths {
         if let Some(directory) = path.parent() {
             let bytes = fs::metadata(path)

@@ -264,6 +264,9 @@ where
         );
         return Ok(false);
     };
+    let Some(file_phase) = crate::try_acquire_file_phase_permit() else {
+        return Ok(false);
+    };
     let file_sha256 = if Path::new(file_path).exists() {
         match sha256_hex_file_with_deadline(
             Path::new(file_path),
@@ -287,6 +290,7 @@ where
     } else {
         None
     };
+    drop(file_phase);
     // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
     // manifest and rename its file under the same lock, so they either win before this check or
     // wait until this identity has been fully finalized.
@@ -347,6 +351,10 @@ where
                 tx.rollback().await?;
                 return Ok(false);
             }
+            let Some(file_phase) = crate::try_acquire_file_phase_permit() else {
+                tx.rollback().await?;
+                return Ok(false);
+            };
             let current_sha256 = if Path::new(file_path).is_file() {
                 Some(sha256_hex_file_with_deadline(
                     Path::new(file_path),
@@ -355,6 +363,7 @@ where
             } else {
                 None
             };
+            drop(file_phase);
             if current_sha256 != file_sha256 {
                 tx.rollback().await?;
                 return Ok(false);
@@ -435,6 +444,10 @@ where
         return Ok(false);
     }
 
+    let Some(file_phase) = crate::try_acquire_file_phase_permit() else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
     match remove_file(file_path) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -448,6 +461,7 @@ where
             return Ok(false);
         }
     }
+    drop(file_phase);
     if let Some(source_safe_start) = source_safe_start {
         crate::long_term_stats::advance_long_term_integrity_source_start_tx(
             tx.as_mut(),

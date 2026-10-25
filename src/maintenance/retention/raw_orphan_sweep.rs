@@ -738,9 +738,20 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         // durable release-pending row and held fence let the next slice recover without a second
         // unlink attempt.
         let unlink_path = path.clone();
+        let Some(file_phase) = try_acquire_file_phase_permit() else {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            result.deferred = true;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        };
         let unlink_operation = context
             .run_with_candidate_budget(async move {
                 tokio::task::spawn_blocking(move || {
+                    let _file_phase = file_phase;
                     let file_result = match fs::remove_file(&unlink_path) {
                         Ok(()) => (true, sync_retention_raw_parent(&unlink_path)),
                         Err(error) => (false, Err(error)),

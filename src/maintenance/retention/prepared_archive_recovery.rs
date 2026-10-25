@@ -1143,12 +1143,15 @@ pub(crate) async fn retention_recovery_finalize_published(
         }
     };
     let removed = if inventory_intent_recorded {
+        // The committed transaction and its write admission must be fully released before the
+        // raw deletion phase can make a nonblocking file-permit attempt.
+        drop(admission);
         delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?
     } else {
         drop(raw_deletion_plan);
+        drop(admission);
         0
     };
-    drop(admission);
     retention_recovery_record_progress();
     Ok(removed)
 }

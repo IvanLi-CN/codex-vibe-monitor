@@ -61,6 +61,9 @@ pub(crate) fn cleanup_stale_archive_temp_files(
         if !dry_run && archive_operation_lease.is_none() {
             continue;
         }
+        let Some(_file_phase) = crate::try_acquire_file_phase_permit() else {
+            continue;
+        };
         let file_size = archive_file_size(&file_path);
         if dry_run {
             summary.stale_temp_files_removed += 1;

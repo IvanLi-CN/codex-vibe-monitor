@@ -260,8 +260,9 @@ where
             return Ok(None);
         }
 
-        // The fence is held only while the digest and non-blocking admission probe run. If either
-        // resource is unavailable, release the fence before waiting for the other resource.
+        // The shared file permit and directory fence cover only artifact verification. If either
+        // resource is unavailable, release both before waiting for database admission.
+        let file_phase = acquire_file_phase_permit(operation).await?;
         let archive_lock = retention_archive_file_try_lock(archive_path)?;
         #[cfg(test)]
         pause_before_archive_file_verify().await;
@@ -283,6 +284,7 @@ where
         } else {
             false
         };
+        drop(file_phase);
         drop(file_verify_phase);
         if expected_sha256
             .zip(actual_sha256)

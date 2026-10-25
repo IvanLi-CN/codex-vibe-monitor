@@ -234,6 +234,11 @@ pub(crate) fn delete_proxy_raw_paths(
         fences,
         identities,
     } = plan;
+    let Some(_file_phase) = super::file_phase::try_acquire_file_phase_permit() else {
+        return Err(super::retention::retention_write_deferred(
+            "proxy_raw_delete",
+        ));
+    };
     // Keep every exclusive raw-directory fence until all identity checks and unlinks finish.
     let _fences = fences;
     let mut removed = 0usize;
@@ -480,6 +485,15 @@ pub(crate) fn is_archive_temp_file_name(name: &str) -> bool {
 }
 
 pub(crate) fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let Some(_file_phase) = super::file_phase::try_acquire_file_phase_permit() else {
+        return Err(super::retention::retention_write_deferred(
+            "archive_directory_scan",
+        ));
+    };
+    collect_archive_file_paths_unchecked(root, files)
+}
+
+fn collect_archive_file_paths_unchecked(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     if !root.exists() {
         return Ok(());
     }
@@ -490,7 +504,7 @@ pub(crate) fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) 
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_archive_file_paths(&path, files)?;
+            collect_archive_file_paths_unchecked(&path, files)?;
         } else if file_type.is_file() {
             files.push(path);
         }
@@ -793,6 +807,7 @@ where
         timeout,
         shutdown,
     } = request;
+    let file_phase = super::acquire_file_phase_permit(operation).await?;
     let Some(lease) =
         ArchiveFileOperationLease::register_with_shared_reads(protected_paths, shared_read_paths)
     else {
@@ -801,10 +816,12 @@ where
     let timed_out = Arc::clone(&lease.timed_out);
     let worker_timed_out = Arc::clone(&timed_out);
     let worker_cancellation = Arc::clone(&timed_out);
+    let worker_file_phase = file_phase.clone();
     let progress = Arc::new(Mutex::new(ArchiveFileProgress::new(None)));
     let worker_progress = Arc::clone(&progress);
     let _cancellation_signal = ArchiveFileOperationCancellationSignal(Arc::clone(&timed_out));
     let mut worker = tokio::task::spawn_blocking(move || {
+        let _file_phase = worker_file_phase;
         let _lease = lease;
         let cleanup_paths = |paths: &[PathBuf]| {
             for path in paths {
