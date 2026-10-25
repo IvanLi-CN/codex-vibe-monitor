@@ -176,7 +176,7 @@ jobs:
                   else:
                       continue
                   for file_path in files:
-                      name = file_path.relative_to(root).as_posix().encode()
+                      name = file_path.relative_to(base).as_posix().encode()
                       hasher.update(len(name).to_bytes(4, "big"))
                       hasher.update(name)
                       hasher.update(file_path.read_bytes())
