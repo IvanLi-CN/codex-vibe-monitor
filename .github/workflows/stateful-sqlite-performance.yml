@@ -187,9 +187,12 @@ jobs:
           sudo install -d -m 755 "$CANDIDATE_WORK_ROOT"
           repo="$CANDIDATE_WORK_ROOT/candidate-source"
           trusted_repo="$CANDIDATE_WORK_ROOT/trusted-replay"
-          sudo cp -a "$GITHUB_WORKSPACE/candidate" "$repo"
+          sudo install -d -m 755 "$repo"
+          sudo cp -a "$GITHUB_WORKSPACE/candidate/." "$repo/"
+          sudo rm -rf "$repo/.git"
           sudo install -d -m 755 "$trusted_repo"
           sudo cp -a "$GITHUB_WORKSPACE/trusted/." "$trusted_repo/"
+          sudo rm -rf "$trusted_repo/.git"
           sudo chown -R root:root "$repo" "$trusted_repo"
           sudo chmod -R a+rX "$repo" "$trusted_repo"
           ref_root="$EVIDENCE_ROOT/candidate"
@@ -266,6 +269,7 @@ jobs:
           set -euo pipefail
           trusted_repo="$CANDIDATE_WORK_ROOT/trusted-replay"
           sudo cp -a "$GITHUB_WORKSPACE/trusted/." "$trusted_repo/"
+          sudo rm -rf "$trusted_repo/.git"
           sudo chown -R root:root "$trusted_repo"
           sudo chmod -R a+rX "$trusted_repo"
 
