@@ -562,10 +562,14 @@ def workflow_named_job_names(workflow: dict[str, Any], where: str) -> set[str]:
 
 
 def require_exact_named_jobs(workflow: dict[str, Any], expected_jobs: set[str], where: str) -> None:
+    jobs = workflow_jobs(workflow, where)
     actual_jobs = workflow_named_job_names(workflow, where)
     require(
-        actual_jobs == expected_jobs,
-        f"{where}: declared jobs drifted missing={sorted(expected_jobs - actual_jobs)} unexpected={sorted(actual_jobs - expected_jobs)}",
+        len(jobs) == len(expected_jobs)
+        and len(actual_jobs) == len(jobs)
+        and actual_jobs == expected_jobs,
+        f"{where}: declared jobs drifted count={len(jobs)} expected_count={len(expected_jobs)} "
+        f"missing={sorted(expected_jobs - actual_jobs)} unexpected={sorted(actual_jobs - expected_jobs)}",
     )
 
 

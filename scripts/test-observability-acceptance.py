@@ -1338,6 +1338,12 @@ class WorkflowGateTests(unittest.TestCase):
     def test_current_workflow_fails_closed(self):
         self.verify(self.workflow)
 
+    def test_duplicate_named_extra_job_is_rejected(self):
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["unexpected-extra"] = {"name": "Observability Performance Budget"}
+        with self.assertRaises(contract.ContractError):
+            self.verify(workflow)
+
     def test_manual_dispatch_is_the_only_scheduler_and_candidate_ref_is_required(self):
         on_section = contract.mapping_get(self.workflow, "on")
         self.assertEqual(set(on_section), {"workflow_dispatch"})
