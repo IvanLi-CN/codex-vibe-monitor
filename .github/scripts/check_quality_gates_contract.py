@@ -180,8 +180,15 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(
         image_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
         and image_checkout.get("path") == "candidate"
-        and image_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}",
+        and image_checkout.get("ref") == "refs/heads/main"
+        and image_checkout.get("fetch-depth") == 0,
         f"{workflow_path} image job must build only the resolved candidate checkout",
+    )
+    pin_candidate = step_config(image_job, "Pin candidate checkout", f"{workflow_path}.jobs.observability-performance-image")
+    require(
+        'git -C candidate fetch --no-tags --force origin "$CANDIDATE_REF"' in str(pin_candidate.get("run", ""))
+        and 'git -C candidate checkout --detach "$CANDIDATE_REF"' in str(pin_candidate.get("run", "")),
+        f"{workflow_path} image job must explicitly pin the candidate ref",
     )
     identity = step_config(image_job, "Bind candidate identity", f"{workflow_path}.jobs.observability-performance-image")
     identity_run = str(identity.get("run", ""))
@@ -199,9 +206,16 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         )
         require(
             candidate.get("repository") == "${{ needs.observability-performance-image.outputs.candidate_repository }}"
-            and candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}"
+            and candidate.get("ref") == "refs/heads/main"
+            and candidate.get("fetch-depth") == 0
             and candidate.get("path") == "candidate",
             f"{workflow_path} {job_name} must use the resolved candidate checkout only for identity",
+        )
+        pin_candidate = step_config(job, "Pin candidate identity", f"{workflow_path}.jobs.{job_id}")
+        require(
+            'git -C candidate fetch --no-tags --force origin "$CANDIDATE"' in str(pin_candidate.get("run", ""))
+            and 'git -C candidate checkout --detach "$CANDIDATE"' in str(pin_candidate.get("run", "")),
+            f"{workflow_path} {job_name} must explicitly pin the candidate SHA",
         )
     require(performance_job.get("name") == "Observability Acceptance (parallel workload lanes)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 60 and image_job.get("timeout-minutes") == 15,
@@ -403,7 +417,19 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         f"{workflow_path} must resolve trusted main and same-repository candidate sources",
     )
     resolve_checkout = checkout_step(resolve, "Checkout performance candidate", f"{workflow_path}.jobs.observability-performance-resolve")
-    require(resolve_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}" and resolve_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}" and resolve_checkout.get("path") == "candidate", f"{workflow_path} resolver checkout drifted")
+    require(
+        resolve_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
+        and resolve_checkout.get("ref") == "refs/heads/main"
+        and resolve_checkout.get("fetch-depth") == 0
+        and resolve_checkout.get("path") == "candidate",
+        f"{workflow_path} resolver checkout drifted",
+    )
+    pin_candidate = step_config(resolve, "Pin candidate checkout", f"{workflow_path}.jobs.observability-performance-resolve")
+    require(
+        'git -C candidate fetch --no-tags --force origin "$CANDIDATE_REF"' in str(pin_candidate.get("run", ""))
+        and 'git -C candidate checkout --detach "$CANDIDATE_REF"' in str(pin_candidate.get("run", "")),
+        f"{workflow_path} resolver must explicitly pin branch and SHA candidates",
+    )
     identity = step_config(resolve, "Bind candidate and build identity", f"{workflow_path}.jobs.observability-performance-resolve")
     identity_run = str(identity.get("run", ""))
     require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "rust_deps_cache_key", "rust_target_cache_key", "web_cache_key", "web_deps_cache_key", "runtime_cache_key", "base_image_digests", "trusted_recipe_digest", "rust_image", "web_image", "runtime_image", "def pinned", "cache_digest", 'build_only == "true"')), f"{workflow_path} must bind candidate, pinned base images and build identity")
@@ -472,7 +498,18 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
 
     require(image.get("needs") == ["observability-performance-resolve", "observability-performance-producer"] and "always()" in str(image.get("if", "")) and "effective_build_path == 'canonical'" in str(image.get("if", "")) and "complete_image_cache_hit == 'true'" in str(image.get("if", "")) and image.get("runs-on") == RUNNER_X64 and image.get("timeout-minutes") == 15, f"{workflow_path} image join must distinguish canonical skip, complete-image hit and producer failure")
     image_checkout = checkout_step(image, "Checkout candidate assembly sources", f"{workflow_path}.jobs.observability-performance-image")
-    require(image_checkout.get("repository") == "${{ needs.observability-performance-resolve.outputs.candidate_repository }}" and image_checkout.get("ref") == "${{ needs.observability-performance-resolve.outputs.candidate }}", f"{workflow_path} image assembly must use the pinned candidate")
+    require(
+        image_checkout.get("repository") == "${{ needs.observability-performance-resolve.outputs.candidate_repository }}"
+        and image_checkout.get("ref") == "refs/heads/main"
+        and image_checkout.get("fetch-depth") == 0,
+        f"{workflow_path} image assembly must use the pinned candidate",
+    )
+    pin_candidate = step_config(image, "Pin candidate assembly sources", f"{workflow_path}.jobs.observability-performance-image")
+    require(
+        'git -C candidate fetch --no-tags --force origin "$CANDIDATE"' in str(pin_candidate.get("run", ""))
+        and 'git -C candidate checkout --detach "$CANDIDATE"' in str(pin_candidate.get("run", "")),
+        f"{workflow_path} image assembly must explicitly pin the candidate SHA",
+    )
     for name in ("Assemble production image from verified contexts", "Build canonical production image"):
         build = uses_step_config(image, name, "docker/build-push-action@v7", workflow_path)
         build_with = require_mapping(build.get("with"), f"{workflow_path}.{name}")
@@ -534,7 +571,18 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     for job_id in ("observability-performance", "observability-performance-result"):
         candidate = checkout_step(workflow["jobs"][job_id], "Checkout candidate identity", f"{workflow_path}.jobs.{job_id}")
         trusted = checkout_step(workflow["jobs"][job_id], "Checkout trusted acceptance harness", f"{workflow_path}.jobs.{job_id}")
-        require(candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}" and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}", f"{workflow_path} downstream jobs must consume resolver-pinned identities")
+        require(
+            candidate.get("ref") == "refs/heads/main"
+            and candidate.get("fetch-depth") == 0
+            and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}",
+            f"{workflow_path} downstream jobs must consume resolver-pinned identities",
+        )
+        pin_candidate = step_config(workflow["jobs"][job_id], "Pin candidate identity", f"{workflow_path}.jobs.{job_id}")
+        require(
+            'git -C candidate fetch --no-tags --force origin "$CANDIDATE"' in str(pin_candidate.get("run", ""))
+            and 'git -C candidate checkout --detach "$CANDIDATE"' in str(pin_candidate.get("run", "")),
+            f"{workflow_path} downstream jobs must explicitly pin the candidate SHA",
+        )
     for name in ("Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
         require(step_config(performance, name, workflow_path).get("timeout-minutes") == 1, f"{workflow_path} {name} must have a bounded preparation timeout")
     for name in ("Verify and load candidate image", "Prepare pinned CPU sampler"):
@@ -589,9 +637,16 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(
         candidate_report_checkout.get("if") == "env.BUILD_ONLY == 'true'"
         and candidate_report_checkout.get("with", {}).get("repository") == "${{ github.repository }}"
-        and candidate_report_checkout.get("with", {}).get("ref") == "${{ needs.observability-performance-resolve.outputs.candidate }}"
+        and candidate_report_checkout.get("with", {}).get("ref") == "refs/heads/main"
+        and candidate_report_checkout.get("with", {}).get("fetch-depth") == 0
         and candidate_report_checkout.get("with", {}).get("path") == "candidate-report",
         f"{workflow_path} build-only reports must use the candidate-compatible generator only in qualification mode",
+    )
+    pin_report = step_config(report, "Pin candidate report generator (build-only)", workflow_path)
+    require(
+        'git -C candidate-report fetch --no-tags --force origin "$CANDIDATE"' in str(pin_report.get("run", ""))
+        and 'git -C candidate-report checkout --detach "$CANDIDATE"' in str(pin_report.get("run", "")),
+        f"{workflow_path} build-only report generator must be pinned to the candidate SHA",
     )
     report_run = str(report_step.get("run", ""))
     require(
