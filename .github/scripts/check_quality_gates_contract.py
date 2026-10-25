@@ -144,19 +144,38 @@ def require_playwright_ci_config(workflow_path: Path, workflow_name: str) -> Non
 def require_observability_performance_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
     performance_job = job_config(workflow, "observability-performance", workflow_path)
     image_job = job_config(workflow, "observability-performance-image", workflow_path)
-    opt_in_if = "(github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
-    require(performance_job.get("name") == "Observability Acceptance (serial bundle)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
+    opt_in_if = "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
+    require(performance_job.get("name") == "Observability Acceptance (parallel workload lanes)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 60 and image_job.get("timeout-minutes") == 15,
-            "the image job must finish within 15 minutes and the serial bundle within 60 minutes")
-    require("strategy" not in performance_job,
-            "the full acceptance bundle must run in one job instead of independent matrix runners")
-    clock = step_config(performance_job, "Start test wall clock", workflow_path)
-    require("env" not in clock
-            and str(clock.get("run", "")).strip().splitlines() == ["set -euo pipefail",
-                'started="$(date +%s)"',
-                'echo "OBSERVABILITY_TEST_STARTED_UTC=$started" >> "$GITHUB_ENV"']
-            and clock.get("timeout-minutes") == 1,
-            "the serial bundle must start one shared wall-clock budget on its own runner")
+            "the image job must finish within 15 minutes and each workload lane within 60 minutes")
+    strategy = require_mapping(performance_job.get("strategy"), f"{workflow_path}.jobs.observability-performance.strategy")
+    matrix = require_mapping(strategy.get("matrix"), f"{workflow_path}.jobs.observability-performance.strategy.matrix")
+    require(
+        strategy.get("fail-fast") is False
+        and strategy.get("max-parallel") == 4
+        and matrix.get("lane") == ["runtime", "pair-0", "pair-1", "pair-2"],
+        "performance workload lanes must run concurrently without cancelling sibling evidence",
+    )
+    concurrency = require_mapping(workflow.get("concurrency"), f"{workflow_path}.concurrency")
+    require(
+        concurrency.get("group") == "observability-performance-${{ github.event.pull_request.number || inputs.candidate_sha || github.run_id }}"
+        and concurrency.get("cancel-in-progress") is False,
+        "performance acceptance runs must not cancel an in-flight candidate measurement",
+    )
+    clock = step_config(image_job, "Start shared acceptance wall clock", workflow_path)
+    require(
+        clock.get("id") == "acceptance_clock"
+        and str(clock.get("run", "")).strip().splitlines() == ["set -euo pipefail",
+            'started="$(date +%s)"',
+            'echo "started=$started" >> "$GITHUB_OUTPUT"']
+        and clock.get("timeout-minutes") == 1,
+        "the image producer must emit one shared acceptance wall-clock start",
+    )
+    image_outputs = require_mapping(image_job.get("outputs"), f"{workflow_path}.jobs.observability-performance-image.outputs")
+    require(
+        image_outputs.get("acceptance_started") == "${{ steps.acceptance_clock.outputs.started }}",
+        "every workload lane must consume the image producer's shared clock",
+    )
     for name in ("Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
         require(step_config(performance_job, name, workflow_path).get("timeout-minutes") == 1,
                 "checkout and artifact actions must fit bounded preparation before the shared deadline")
@@ -165,6 +184,13 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
                 in str(step_config(performance_job, name, workflow_path).get("run", "")),
                 "preparation including download retries must share the execution deadline")
     require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
+    performance_env = require_mapping(performance_job.get("env"), f"{workflow_path}.jobs.observability-performance.env")
+    require(
+        performance_env.get("OBSERVABILITY_TEST_STARTED_UTC") == "${{ needs.observability-performance-image.outputs.acceptance_started }}"
+        and performance_env.get("OBSERVABILITY_LANE") == "${{ matrix.lane }}"
+        and performance_env.get("OBSERVABILITY_RUNNER_SCOPE") == "parallel-${{ matrix.lane }}",
+        "each workload lane must bind its shared clock, lane, and isolated runner scope",
+    )
     require(image_job.get("if") == opt_in_if and performance_job.get("if") == opt_in_if,
             "observability performance jobs must require explicit label or manual opt-in")
     require_job_and_steps_fail_closed(
@@ -221,8 +247,9 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require("scripts/observability-acceptance/bundle.py" in str(acceptance.get("run", ""))
             and "--source \"$PWD/trusted\"" in str(acceptance.get("run", ""))
             and "--candidate-source \"$PWD/candidate\"" in str(acceptance.get("run", ""))
+            and '--lane "$OBSERVABILITY_LANE"' in str(acceptance.get("run", ""))
             and "--seconds 60 --rate 5" in str(acceptance.get("run", "")),
-            "performance gate must use the fixed bounded single-runner Actions bundle")
+            "performance gate must use the fixed bounded workload lane Actions bundle")
     result_job = job_config(workflow, "observability-performance-result", workflow_path)
     require(result_job.get("name") == "Observability Performance Budget"
             and result_job.get("needs") == ["observability-performance-image", "observability-performance"]
@@ -248,18 +275,18 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
                          "run-config.json", "image-identity.json", "runner-context.json", "cpu-attribution.json",
                          "environment-admission.jsonl", "resource-observer.jsonl", "measurement-windows.json",
                          "cpu-verified/*.manifest.json", "cpu-verified/*.json.gz", "cpu-verified/*.syms.json"}
-    prefix = "${{ runner.temp }}/observability-acceptance/"
-    for lane in ("runtime", "pair-0", "pair-1", "pair-2"):
-        upload = step_config(performance_job, f"Upload {lane} acceptance evidence", "ci-pr.yml.jobs.observability-performance")
-        require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
-        evidence = str(upload.get("with", {}).get("path", "")).splitlines()
-        require({line.strip() for line in evidence if line.strip()} == {prefix + lane + "/" + name for name in expected_evidence},
-                "performance evidence must include exactly the declared artifact whitelist")
-        require(upload.get("with", {}).get("name") == f"observability-part-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{lane}",
-                "part evidence must be attempt/lane scoped")
+    upload = step_config(performance_job, "Upload workload acceptance evidence", workflow_path)
+    require(upload.get("if") == "always()", "failed performance lanes must preserve evidence")
+    prefix = "${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/"
+    evidence = str(upload.get("with", {}).get("path", "")).splitlines()
+    require({line.strip() for line in evidence if line.strip()} == {prefix + name for name in expected_evidence},
+            "performance evidence must include exactly the declared artifact whitelist")
+    require(upload.get("with", {}).get("name") == "observability-part-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane }}",
+            "workload evidence must be attempt/lane scoped")
     combined = step_config(result_job, "Upload aggregated acceptance evidence", workflow_path)
+    aggregate_prefix = "${{ runner.temp }}/observability-acceptance/"
     require(combined.get("if") == "always()" and set(str(combined.get("with", {}).get("path", "")).splitlines())
-            == {prefix + name for name in ("empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json")},
+            == {aggregate_prefix + name for name in ("empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json")},
             "aggregate evidence must use its exact safe whitelist")
 
 
@@ -336,7 +363,7 @@ def validate_observability_performance(path: Path) -> None:
     require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
     require_exact_named_jobs(
         workflow,
-        {"Observability Performance Image", "Observability Acceptance (serial bundle)", "Observability Performance Budget", "Observability CPU Diagnosis", "Frontend Test A/B dispatcher"},
+        {"Observability Performance Image", "Observability Acceptance (parallel workload lanes)", "Observability Performance Budget", "Observability CPU Diagnosis"},
         workflow_path,
     )
     on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify all serial-bundle parts before issuing the only full empirical certificate."""
+"""Verify all isolated workload parts before issuing the only full empirical certificate."""
 import argparse
 import json
 import time
@@ -12,6 +12,7 @@ from run import acceptance_contract_digest, acceptance_harness_digest, certifica
 
 RUNTIME_SCENARIOS = {"https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu"}
 LANES = ("runtime", "pair-0", "pair-1", "pair-2")
+PAIR_LANES = ("pair-0", "pair-1", "pair-2")
 HARDWARE_KEYS = ("cpuModel", "cpuCount", "kernel", "runnerImage", "runnerImageVersion")
 
 
@@ -52,9 +53,19 @@ def verify_part(
             or config.get("candidateAcceptanceContractDigest") != candidate_contract_digest
             or config.get("candidateAcceptanceHarnessDigest") != candidate_harness_digest):
         raise AcceptanceHarnessIdentityError("candidate acceptance contract or harness differs from trusted harness; run post-merge verification")
+    expected_scope = f"parallel-{lane}"
+    if (
+        context.get("runnerScope") != expected_scope
+        or not isinstance(context.get("runnerIdentity"), str)
+        or not context["runnerIdentity"].endswith(f":{expected_scope}")
+    ):
+        if lane in PAIR_LANES:
+            raise HardwareCompatibilityError("hardware metadata unavailable: parallel runner identity")
+        raise ValueError("part runner/image identity mismatch")
     if (context["runnerEnvironment"] != "github-hosted" or context["evidenceLocator"] != expected["evidence_locator"]
             or context["candidate"] != expected["empirical_candidate_sha"] or config["candidate"] != context["candidate"]
-            or config["suite"] != lane or image["Config"]["Labels"]["org.opencontainers.image.revision"] != context["candidate"]):
+            or config["suite"] != lane
+            or image["Config"]["Labels"]["org.opencontainers.image.revision"] != context["candidate"]):
         raise ValueError("part runner/image identity mismatch")
     scenarios = read(root, "scenarios.json")
     names = RUNTIME_SCENARIOS if lane == "runtime" else {"default-observability-ab"}
@@ -98,10 +109,15 @@ def hardware_signature(context):
 def verify_hardware_compatibility(contexts):
     if len(contexts) != 3:
         raise HardwareCompatibilityError("hardware metadata unavailable: expected three paired suites")
-    if any(context.get("runnerScope") != "serial-bundle" for context in contexts):
-        raise HardwareCompatibilityError("hardware metadata unavailable: missing serial runner scope")
-    if len({context["runnerIdentity"] for context in contexts}) != 1:
-        raise HardwareCompatibilityError("hardware metadata incompatible: runner identity")
+    if {context.get("runnerLane") for context in contexts} != set(PAIR_LANES):
+        raise HardwareCompatibilityError("hardware metadata unavailable: incomplete parallel runner lanes")
+    for context in contexts:
+        lane = context.get("runnerLane")
+        scope = f"parallel-{lane}"
+        if context.get("runnerScope") != scope or not str(context.get("runnerIdentity", "")).endswith(f":{scope}"):
+            raise HardwareCompatibilityError("hardware metadata unavailable: parallel runner identity")
+    if len({context["runnerIdentity"] for context in contexts}) != len(contexts):
+        raise HardwareCompatibilityError("hardware metadata unavailable: duplicate parallel runner identity")
     reference = hardware_signature(contexts[0])
     for context in contexts[1:]:
         signature = hardware_signature(context)
@@ -145,7 +161,7 @@ def aggregate(source, candidate_source, root, parts, candidate):
     # The result job verifies identities from each measurement part; it is not
     # itself a measurement runner and does not need a job-scoped identity.
     context = actions_context(candidate_source, root, candidate, require_runner_identity=False)
-    expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three sequential same-runner paired experiments in one job; the bundle is bounded to 60 minutes.")
+    expected = certificate(source, candidate, context, "unavailable", "Hosted runtime and three isolated paired workload runners; each workload keeps its three modes serial and the complete experiment is bounded to 60 minutes.")
     trusted_harness_sha = source_revision(source)
     trusted_contract_digest = acceptance_contract_digest(source)
     candidate_contract_digest = acceptance_contract_digest(candidate_source)
@@ -182,9 +198,9 @@ def aggregate(source, candidate_source, root, parts, candidate):
             raise ValueError("parts used different candidate images")
         pairs = [item[1] for item in verified[1:]]
         pair_scenarios = [item[2]["default-observability-ab"] for item in verified[1:]]
-        # The bundle owns all off/metrics/full windows on one Actions runner.
-        # Exact hardware/runtime metadata remains mandatory even though the job
-        # identity already proves that the three suites share one runner.
+        # Each workload owns all off/metrics/full windows on one Actions runner.
+        # The workloads may use different hosted runners, so exact hardware
+        # metadata remains mandatory before their samples can be pooled.
         verify_hardware_compatibility(pairs)
         bad = next((row for row in pair_scenarios if row["status"] == "failed"), None)
         bad = bad or next((row for row in pair_scenarios if row["status"] != "passed"), None)

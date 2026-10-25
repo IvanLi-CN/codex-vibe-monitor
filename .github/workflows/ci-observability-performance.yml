@@ -42,6 +42,7 @@ jobs:
       candidate: ${{ steps.identity.outputs.candidate }}
       candidate_repository: ${{ steps.refs.outputs.candidate_repository }}
       trusted_ref: ${{ steps.refs.outputs.trusted_ref }}
+      acceptance_started: ${{ steps.acceptance_clock.outputs.started }}
     steps:
       - name: Resolve performance sources
         id: refs
@@ -68,9 +69,11 @@ jobs:
           fi
           [[ "$candidate_ref" =~ ^[0-9a-f]{40}$ ]]
           [[ "$trusted_ref" =~ ^[0-9a-f]{40}$ ]]
-          printf 'candidate_repository=%s\n' "$candidate_repository" >> "$GITHUB_OUTPUT"
-          printf 'candidate_ref=%s\n' "$candidate_ref" >> "$GITHUB_OUTPUT"
-          printf 'trusted_ref=%s\n' "$trusted_ref" >> "$GITHUB_OUTPUT"
+          {
+            printf 'candidate_repository=%s\n' "$candidate_repository"
+            printf 'candidate_ref=%s\n' "$candidate_ref"
+            printf 'trusted_ref=%s\n' "$trusted_ref"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout performance candidate
         uses: actions/checkout@v7
@@ -128,22 +131,24 @@ jobs:
           retention-days: 1
 
   observability-performance:
-    name: Observability Acceptance (serial bundle)
+    name: Observability Acceptance (parallel workload lanes)
     needs: observability-performance-image
     # Add the run:observability-performance label to launch the one-shot hosted measurement.
-    if: (github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
-    # One fresh VM owns runtime and all three paired experiments for exact
-    # hardware identity; no compiler or parallel suite shares it.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        lane: [runtime, pair-0, pair-1, pair-2]
+    # Each lane gets a fresh VM and owns its complete fixture, database,
+    # Compose project, sampler, and CPU admission. Pair modes stay serial.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      OBSERVABILITY_TEST_STARTED_UTC: ${{ needs.observability-performance-image.outputs.acceptance_started }}
+      OBSERVABILITY_LANE: ${{ matrix.lane }}
+      OBSERVABILITY_RUNNER_SCOPE: parallel-${{ matrix.lane }}
     steps:
-      - name: Start test wall clock
-        timeout-minutes: 1
-        run: |
-          set -euo pipefail
-          started="$(date +%s)"
-          echo "OBSERVABILITY_TEST_STARTED_UTC=$started" >> "$GITHUB_ENV"
-
       - name: Checkout trusted acceptance harness
         timeout-minutes: 1
         uses: actions/checkout@v7
@@ -170,6 +175,7 @@ jobs:
           set -euo pipefail
           test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_REF"
           test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE"
+          test "$OBSERVABILITY_RUNNER_SCOPE" = "parallel-$OBSERVABILITY_LANE"
 
       - name: Download performance candidate image
         timeout-minutes: 1
@@ -197,6 +203,7 @@ jobs:
 
       - name: Prepare pinned CPU sampler
         run: |
+          # shellcheck disable=SC2016
           python3 trusted/scripts/observability-acceptance/deadline.py -- bash -euo pipefail -c '
           mkdir -p "$RUNNER_TEMP/observability-tools"
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
@@ -220,102 +227,31 @@ jobs:
             --agent "actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE" \
             --samply "$RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" \
+            --lane "$OBSERVABILITY_LANE" \
             --seconds 60 --rate 5
 
-      - name: Upload runtime acceptance evidence
+      - name: Upload workload acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-runtime
+          name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane }}
           # Whitelist synthetic evidence; exclude token files, Compose secrets and databases.
           path: |
-            ${{ runner.temp }}/observability-acceptance/runtime/runtime-card.json
-            ${{ runner.temp }}/observability-acceptance/runtime/part-outcome.json
-            ${{ runner.temp }}/observability-acceptance/runtime/scenarios.json
-            ${{ runner.temp }}/observability-acceptance/runtime/client-failures.json
-            ${{ runner.temp }}/observability-acceptance/runtime/ab-samples.json
-            ${{ runner.temp }}/observability-acceptance/runtime/run-config.json
-            ${{ runner.temp }}/observability-acceptance/runtime/image-identity.json
-            ${{ runner.temp }}/observability-acceptance/runtime/runner-context.json
-            ${{ runner.temp }}/observability-acceptance/runtime/cpu-attribution.json
-            ${{ runner.temp }}/observability-acceptance/runtime/environment-admission.jsonl
-            ${{ runner.temp }}/observability-acceptance/runtime/resource-observer.jsonl
-            ${{ runner.temp }}/observability-acceptance/runtime/measurement-windows.json
-            ${{ runner.temp }}/observability-acceptance/runtime/cpu-verified/*.manifest.json
-            ${{ runner.temp }}/observability-acceptance/runtime/cpu-verified/*.json.gz
-            ${{ runner.temp }}/observability-acceptance/runtime/cpu-verified/*.syms.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload pair-0 acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-pair-0
-          path: |
-            ${{ runner.temp }}/observability-acceptance/pair-0/runtime-card.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/part-outcome.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/scenarios.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/client-failures.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/ab-samples.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/run-config.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/image-identity.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/runner-context.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/cpu-attribution.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/environment-admission.jsonl
-            ${{ runner.temp }}/observability-acceptance/pair-0/resource-observer.jsonl
-            ${{ runner.temp }}/observability-acceptance/pair-0/measurement-windows.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/cpu-verified/*.manifest.json
-            ${{ runner.temp }}/observability-acceptance/pair-0/cpu-verified/*.json.gz
-            ${{ runner.temp }}/observability-acceptance/pair-0/cpu-verified/*.syms.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload pair-1 acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-pair-1
-          path: |
-            ${{ runner.temp }}/observability-acceptance/pair-1/runtime-card.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/part-outcome.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/scenarios.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/client-failures.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/ab-samples.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/run-config.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/image-identity.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/runner-context.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/cpu-attribution.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/environment-admission.jsonl
-            ${{ runner.temp }}/observability-acceptance/pair-1/resource-observer.jsonl
-            ${{ runner.temp }}/observability-acceptance/pair-1/measurement-windows.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/cpu-verified/*.manifest.json
-            ${{ runner.temp }}/observability-acceptance/pair-1/cpu-verified/*.json.gz
-            ${{ runner.temp }}/observability-acceptance/pair-1/cpu-verified/*.syms.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload pair-2 acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-pair-2
-          path: |
-            ${{ runner.temp }}/observability-acceptance/pair-2/runtime-card.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/part-outcome.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/scenarios.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/client-failures.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/ab-samples.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/run-config.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/image-identity.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/runner-context.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/cpu-attribution.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/environment-admission.jsonl
-            ${{ runner.temp }}/observability-acceptance/pair-2/resource-observer.jsonl
-            ${{ runner.temp }}/observability-acceptance/pair-2/measurement-windows.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/cpu-verified/*.manifest.json
-            ${{ runner.temp }}/observability-acceptance/pair-2/cpu-verified/*.json.gz
-            ${{ runner.temp }}/observability-acceptance/pair-2/cpu-verified/*.syms.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/runtime-card.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/part-outcome.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/scenarios.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/client-failures.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/ab-samples.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/run-config.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/image-identity.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/runner-context.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/cpu-attribution.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/environment-admission.jsonl
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/resource-observer.jsonl
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/measurement-windows.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/cpu-verified/*.manifest.json
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/cpu-verified/*.json.gz
+            ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/cpu-verified/*.syms.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -430,6 +366,7 @@ jobs:
 
       - name: Prepare pinned CPU sampler
         run: |
+          # shellcheck disable=SC2016
           python3 trusted/scripts/observability-acceptance/deadline.py -- bash -euo pipefail -c '
           mkdir -p "$RUNNER_TEMP/observability-tools"
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
