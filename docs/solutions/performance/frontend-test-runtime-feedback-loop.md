@@ -28,6 +28,8 @@ Dependency download and artifact transfer happen before measurement and are repo
 
 Each A/B group has one shared, non-configurable **180-second** monotonic deadline for every complete measured workload phase. The seven phases run as independent hosted jobs; the group wall value is the maximum measured phase wall time, while the report also retains the phase sum and phase span. The runner kills the owned process groups, including background servers and browsers, at the deadline. A group with any timed-out or failed phase scores **0**, and a later stage cannot start a new budget. The measured A+B group wall values must also remain within **600 seconds**. Do not split a phase into hidden shards, resume, raise a timeout, or discard work to evade either limit. No test may run longer than 30 minutes.
 
+An A-phase deadline is an expected baseline datum only when the aggregate comparison can prove that the complete B workload passed within its own deadline and the A+B budget. The A phase therefore keeps its timeout evidence and does not fail the producer job by itself; B timeouts, failed or incomplete reports, retries, missing specs, and infrastructure errors remain producer failures, and the aggregate result remains the required gate.
+
 ## Whole-PR workload and decision
 
 | Measured phase | Included work                                                                                                            |

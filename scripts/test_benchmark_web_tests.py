@@ -51,6 +51,12 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(result["delta_is_lower_bound"])
         self.assertEqual(result["reason"], "baseline_timeout_candidate_complete")
 
+    def test_only_an_expected_baseline_timeout_keeps_the_producer_successful(self):
+        self.assertEqual(MODULE.phase_exit_code("A", "timeout"), 0)
+        for group_name, status in (("B", "timeout"), ("A", "failed"), ("B", "failed"), ("B", "environment_failed")):
+            with self.subTest(group=group_name, status=status):
+                self.assertEqual(MODULE.phase_exit_code(group_name, status), 1)
+
     def test_both_complete_require_ten_percent_and_five_seconds(self):
         for a, b, expected in ((100, 90, True), (100, 91, False), (40, 36, False), (50, 45, True), (90, 100, False)):
             with self.subTest(a=a, b=b):

@@ -59,6 +59,11 @@ def actions_only() -> None:
         raise SystemExit("Performance A/B execution is allowed only in GitHub Actions; local and Agent VM execution is forbidden")
 
 
+def phase_exit_code(group: str, status: str) -> int:
+    """Keep an expected baseline deadline available for the aggregate decision."""
+    return 0 if status == "passed" or (group == "A" and status == "timeout") else 1
+
+
 def load_workflow(source: Path, profile: str) -> dict:
     # Use the repository's existing parser, without importing scripts from either measured tree.
     spec = importlib.util.spec_from_file_location("web_ab_contract", ROOT / ".github/scripts/check_quality_gates_contract.py")
@@ -884,7 +889,7 @@ def main() -> int:
                       "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
                       "reason": str(error)}
             write_json(directory / "result.json", result)
-        return 0 if result["status"] == "passed" else 1
+        return phase_exit_code(args.group, result["status"])
     if args.mode == "aggregate":
         manifest = json.loads(args.manifest.read_text())
         summary = aggregate(manifest, args.results_root.resolve(), args.output.resolve())
