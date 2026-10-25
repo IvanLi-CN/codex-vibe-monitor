@@ -526,8 +526,8 @@ jobs:
             APP_GIT_REVISION=${{ needs.observability-performance-resolve.outputs.candidate }}
             APP_EFFECTIVE_VERSION=${{ needs.observability-performance-resolve.outputs.app_effective_version }}
           build-contexts: |
-            rust-builder=type=local,src=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
-            web-builder=type=local,src=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-web/context
+            rust-builder=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
+            web-builder=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-web/context
             runtime-base=oci-layout://${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-runtime-base/oci
           cache-from: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }}
           cache-to: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }},mode=max,ignore-error=true,timeout=60s

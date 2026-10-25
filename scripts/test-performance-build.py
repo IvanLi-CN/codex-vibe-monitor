@@ -55,8 +55,8 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("complete_image_cache_hit == 'true'", image["if"])
         auto = next(step for step in image["steps"] if step["name"] == "Assemble production image from verified contexts")
         contexts = auto["with"]["build-contexts"]
-        self.assertIn("rust-builder=type=local,src=", contexts)
-        self.assertIn("web-builder=type=local,src=", contexts)
+        self.assertIn("rust-builder=${{ runner.temp }}/", contexts)
+        self.assertIn("web-builder=${{ runner.temp }}/", contexts)
         self.assertIn("runtime-base=oci-layout://", contexts)
 
     def test_cache_write_failure_is_non_blocking_but_transfer_is_required(self) -> None:

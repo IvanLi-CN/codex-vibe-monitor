@@ -438,8 +438,8 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     auto_build_with = require_mapping(uses_step_config(image, "Assemble production image from verified contexts", "docker/build-push-action@v7", workflow_path).get("with"), f"{workflow_path}.auto-build.with")
     contexts = str(auto_build_with.get("build-contexts", ""))
     require(
-        "rust-builder=type=local,src=" in contexts
-        and "web-builder=type=local,src=" in contexts
+        "rust-builder=${{ runner.temp }}/" in contexts
+        and "web-builder=${{ runner.temp }}/" in contexts
         and "runtime-base=oci-layout://" in contexts,
         f"{workflow_path} auto image must consume verified local and OCI producer contexts",
     )
