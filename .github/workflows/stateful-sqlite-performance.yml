@@ -132,7 +132,7 @@ jobs:
         env:
           CANDIDATE_USER: stateful-sqlite-test
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
-          TOOL_ROOT: ${{ runner.temp }}/stateful-sqlite-tools
+          TOOL_ROOT: /opt/stateful-sqlite-performance-tools
         run: |
           set -euo pipefail
           sysroot="$(rustc --print sysroot)"
@@ -140,7 +140,7 @@ jobs:
           test -x "$sysroot/bin/cargo"
           test -x "$sysroot/bin/rustc"
           test -x "$nextest_bin"
-          install -d -m 755 "$TOOL_ROOT"
+          sudo install -d -m 755 "$TOOL_ROOT"
           sudo install -d -m 755 "$TOOL_ROOT/bin"
           sudo cp -a "$sysroot" "$TOOL_ROOT/sysroot"
           sudo chmod -R a+rX "$TOOL_ROOT/sysroot"
