@@ -364,6 +364,7 @@ The detailed requirements and verification entries above define the durable cont
 - 每个 child PR 运行定向回归、`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features` 与 Clippy。
 - 与 archive/SQLite 行为相符的 backend resource profile 通过 CI；integration frontier 使用 `Backend Tests (Stateful SQLite)` 的 exact SHA 结果。
 - Summary Ticket 使用 production-shaped archive fixture、HTTP SQL/file counter 与 exactness 对账；long-term Ticket 使用 `EXPLAIN` 与 bounded-migration fixture。
+- 本次 query-fairness follow-up 不宣称相对生产性能改善，因此 generic observability A/B 或硬件可比性不是合并门槛；合并门槛仍是当前 head 的代表性规模、Stateful SQLite exactness、查询计划、预算让出和状态契约证据。需要相对性能结论时，另行提供带 Summary recovery fixture 的同机基线/候选测量，不得用 observability harness 代替。
 
 ### Quality checks
 
