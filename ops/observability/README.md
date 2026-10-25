@@ -195,8 +195,9 @@ PR Ready，且不得把未运行写成预算已验证。分支在 image job 中�
 
 `.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用
 `candidate_ref` 解析出的同仓库候选提交构建生产镜像，并传输镜像 ID、revision 与 archive
-checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像，分别完成 runtime、
-CPU attach 和三轮 paired suite，`Observability Performance Budget` 只校验和汇总证据。
+checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像：runtime lane 负责
+功能场景（含 original-process CPU attach），pair-0、pair-1、pair-2 各自完成一轮 paired
+suite；`Observability Performance Budget` 只校验和汇总证据。
 workflow 必须从 `main` 的 trusted revision 执行，以 `github.sha` 作为 trusted harness；
 候选 checkout 只用于构建隔离镜像和记录身份，测量、分类、汇总脚本都从 trusted checkout
 执行。每个分支记录 trusted harness SHA、candidate SHA、trusted/candidate harness digest，

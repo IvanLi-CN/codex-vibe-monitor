@@ -332,7 +332,7 @@ run/attempt 留存并阻断现有 Build Artifacts 门禁。
 共享测试机只签发运行时集成卡；此前受干扰的 A/B 保留为诊断记录，不用于证明预算。
 当前实现已接入工作流，是否通过以对应候选的 Actions 场景结果与验收卡为准。
 
-当前工作流将上述测量拆为四个 parallel workload lane：runtime、CPU attach 与三轮 60 秒 A/B 在独立 job 中执行，部分 artifact 仍按 `runtime`、`pair-0`、`pair-1`、`pair-2` 分开上传，汇总器要求 pair runner identity 各不相同且五项硬件字段完全一致后才允许比较。
+当前工作流将上述测量拆为四个 parallel workload lane：runtime lane 负责功能场景和 CPU attach，pair-0、pair-1、pair-2 在独立 job 中各自执行一轮 60 秒 A/B；部分 artifact 仍按 `runtime`、`pair-0`、`pair-1`、`pair-2` 分开上传，汇总器要求 pair runner identity 各不相同且五项硬件字段完全一致后才允许比较。
 
 候选 `c22dde3f` 的 GitHub-hosted Actions 四项经验性场景与全部 18 个 CI job 通过，
 三对稳定窗口完成 9,000 个测量请求；CPU/请求增加 4.04%，p95 增加 0.24%，
