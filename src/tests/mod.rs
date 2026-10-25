@@ -13,7 +13,7 @@ pub(crate) use support::*;
 
 #[tokio::test]
 async fn prepare_current_schema_template_for_profile() {
-    let Some(path) = stateful_sqlite::current_stateful_schema_template_path() else {
+    let Some(path) = stateful_sqlite::current_profile_schema_template_path() else {
         return;
     };
     stateful_sqlite::write_current_schema_template(&path)

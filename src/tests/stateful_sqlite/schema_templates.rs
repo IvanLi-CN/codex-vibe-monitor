@@ -12,6 +12,13 @@ pub(crate) const LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV: &str =
 pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH";
 
+pub(crate) fn current_profile_schema_template_path() -> Option<PathBuf> {
+    std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
+        .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
+        .or_else(|| std::env::var_os(ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV))
+        .map(PathBuf::from)
+}
+
 pub(crate) fn current_stateful_schema_template_path() -> Option<PathBuf> {
     std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV).map(PathBuf::from)
 }
