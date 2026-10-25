@@ -320,7 +320,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   exit 1
 fi
 
-grep -q "observability performance image artifact must be run-scoped and replace the prior attempt" "$tmp_dir/observability-artifact.log"
+grep -q "ci-observability-performance.yml image artifact must be run scoped and required" "$tmp_dir/observability-artifact.log"
 
 smoke_artifact_repo="$tmp_dir/smoke-artifact-repo"
 copy_repo_snapshot "$repo_root" "$smoke_artifact_repo"
