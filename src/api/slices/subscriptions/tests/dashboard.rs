@@ -280,13 +280,14 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
         "terminal rebase must clear dirty bases and refresh the parallel materializer",
     );
     drop(guard);
+    let network_observed_at = Utc::now();
     state.dashboard_network_speed_cache.record_request_bytes(
         "dashboard-runtime-topology-network",
         &occurred_at,
         Some(42),
         Some("api.openai.com"),
         4096,
-        Utc::now() - ChronoDuration::seconds(1),
+        network_observed_at,
     );
     let network_capture = state
         .proxy_runtime_invocations
