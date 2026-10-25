@@ -315,20 +315,42 @@ def build_card(
     measured_setup_improvements = 0
     measured_setup_tests = 0
     setup_measurement_failures: list[str] = []
+    measured_target_wall_improvements = 0
+    measured_target_wall_tests = 0
+    target_wall_measurement_failures: list[str] = []
     for target in TARGETS:
         control_samples = [replay_samples["control"][replay][target] for replay in ("cold", "warm")]
         candidate_samples = [replay_samples["candidate"][replay][target] for replay in ("cold", "warm")]
+        control_setup = median([int(item["setup_ms"]) for item in control_samples])
+        candidate_setup = median([int(item["setup_ms"]) for item in candidate_samples])
         target_index = SETUP_TARGET_INDEX.get(target)
         if target_index is None:
-            control_setup = 0
-            candidate_setup = 0
+            control_target_wall = 0
+            candidate_target_wall = 0
+            target_wall_reduction_pct = None
+            target_wall_status = "not_applicable"
         else:
-            control_setup = median(
+            control_target_wall = median(
                 [target_wall[("control", replay, target_index)] for replay in ("cold", "warm")]
             )
-            candidate_setup = median(
+            candidate_target_wall = median(
                 [target_wall[("candidate", replay, target_index)] for replay in ("cold", "warm")]
             )
+            measured_target_wall_tests += 1
+            if control_target_wall <= 0 or candidate_target_wall <= 0:
+                target_wall_measurement_failures.append(target)
+                target_wall_reduction_pct = None
+                target_wall_status = "missing"
+            else:
+                target_wall_reduction_pct = (
+                    (control_target_wall - candidate_target_wall) * 100.0 / control_target_wall
+                )
+                if target_wall_reduction_pct >= 20.0:
+                    measured_target_wall_improvements += 1
+                    target_wall_status = "pass"
+                else:
+                    target_wall_measurement_failures.append(target)
+                    target_wall_status = "fail"
         if target not in SETUP_TARGETS:
             reduction_pct = None
             setup_status = "not_applicable"
@@ -351,6 +373,10 @@ def build_card(
                 "candidate_setup_median_ms": candidate_setup,
                 "setup_reduction_pct": reduction_pct,
                 "setup_status": setup_status,
+                "control_target_wall_median_ms": control_target_wall,
+                "candidate_target_wall_median_ms": candidate_target_wall,
+                "target_wall_reduction_pct": target_wall_reduction_pct,
+                "target_wall_status": target_wall_status,
                 "control_whole_test_median_ms": median(
                     [int(item["whole_test_ms"]) for item in control_samples]
                 ),
@@ -401,15 +427,21 @@ def build_card(
         and measured_setup_improvements >= 4
         and not setup_measurement_failures
     )
+    target_wall_pass = (
+        measured_target_wall_tests == len(SETUP_TARGETS)
+        and measured_target_wall_improvements >= 4
+        and not target_wall_measurement_failures
+    )
     wall_pass = candidate_total_median <= control_total_median * 1.05
-    all_failures = [*replay_failures, *target_failures]
-    accepted = not all_failures and setup_pass and wall_pass
+    all_failures = [*replay_failures, *target_failures, *target_wall_measurement_failures]
+    accepted = not all_failures and setup_pass and target_wall_pass and wall_pass
     return {
         "acceptance": "pass" if accepted else "fail",
         "control_source_sha": control_source_sha,
         "candidate_sha": candidate_sha,
         "trusted_harness_sha": trusted_harness_sha,
-        "setup_measurement": "trusted harness external target wall time; candidate phase timing is diagnostic only",
+        "setup_measurement": "candidate file_state_setup phase median; exact target markers are required",
+        "target_wall_measurement": "trusted harness external target wall corroboration; includes the complete target test",
         "comparison": "same candidate source and archive; control forces fresh schema for allowlisted file-backed fixtures, candidate uses the current-schema template",
         "control_mode": "candidate archive with allowlisted file-backed fixtures forced to fresh schema",
         "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads; interleaved control/candidate pairs",
@@ -426,11 +458,20 @@ def build_card(
             "maximum_full_profile_regression_pct": 5.0,
         },
         "setup_gate": {
+            "measurement": "file_state_setup phase median",
             "required_tests": len(SETUP_TARGETS),
             "measured_tests": measured_setup_tests,
             "improved_tests": measured_setup_improvements,
             "measurement_failures": setup_measurement_failures,
             "passed": setup_pass,
+        },
+        "target_wall_gate": {
+            "measurement": "trusted external target wall median",
+            "required_tests": len(SETUP_TARGETS),
+            "measured_tests": measured_target_wall_tests,
+            "improved_tests": measured_target_wall_improvements,
+            "measurement_failures": target_wall_measurement_failures,
+            "passed": target_wall_pass,
         },
         "full_profile_gate": {
             "control_replays_ms": control_totals,
@@ -461,6 +502,7 @@ def markdown_card(card: dict[str, object]) -> str:
         f"- Comparison: {card['comparison']}",
         f"- Control mode: {card['control_mode']}",
         f"- Setup measurement: {card['setup_measurement']}",
+        f"- Target wall measurement: {card['target_wall_measurement']}",
         f"- Runner: {card['runner']}",
         f"- Replay order: `{', '.join(card['replay_order'])}`",
         f"- Paired execution order: `{'; '.join(card['paired_execution_order'])}`",
@@ -500,6 +542,29 @@ def markdown_card(card: dict[str, object]) -> str:
         lines.append(
             f"| `{short_name}` | {result['control_setup_median_ms']} | "
             f"{result['candidate_setup_median_ms']} | {reduction_text} | {result['setup_status']} |"
+        )
+    target_wall_gate = card["target_wall_gate"]
+    lines.extend(
+        [
+            "",
+            "## Trusted target wall corroboration",
+            "",
+            f"{target_wall_gate['improved_tests']}/{target_wall_gate['required_tests']} setup-bearing target walls improved by at least 20%.",
+            "",
+            "| Test | Control target wall median (ms) | Candidate target wall median (ms) | Reduction | Status |",
+            "| --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for result in card["tests"]:
+        if result["target_wall_status"] == "not_applicable":
+            continue
+        reduction = result["target_wall_reduction_pct"]
+        reduction_text = "missing" if reduction is None else f"{reduction:.1f}%"
+        short_name = str(result["test"]).rsplit("::", 1)[-1]
+        lines.append(
+            f"| `{short_name}` | {result['control_target_wall_median_ms']} | "
+            f"{result['candidate_target_wall_median_ms']} | {reduction_text} | "
+            f"{result['target_wall_status']} |"
         )
     lines.extend(
         [
