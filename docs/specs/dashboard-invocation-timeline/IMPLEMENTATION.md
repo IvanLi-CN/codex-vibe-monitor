@@ -53,7 +53,7 @@
 
 ## Delivery Gates
 
-- Current-head CI, empirical acceptance including refreshed visual evidence, and Tier 3 review are complete for candidate `942bc0dd1f8060733d8c4924cb57468d70ebda52`; the remaining delivery gate is the flow's merge/release decision card.
+- Tier 3 read-only review is complete for the current PR candidate, with no blocking code findings. The current-head GitHub CI run is still pending without jobs, and the current-head Agent VM performance rerun is unavailable because host CPU pressure prevents VM startup; the recorded p95 remains source-equivalent evidence from candidate `5547897f4e821ad7bf8b4d7ddffbd16adb6ea163`, not a new current-head claim. The remaining delivery gates are current-head CI, empirical performance evidence or an explicit flow disposition for the unavailable environment, and the flow's merge/release decision card.
 
 ## Related Changes
 
