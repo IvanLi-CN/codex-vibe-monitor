@@ -48,15 +48,24 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 
 [指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式 parallel workload lane 的 60 分钟共享上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
 
-性能镜像构建仅从 GitHub Actions 缓存恢复已有层，不向只读缓存导出；镜像构建、装载和后续 artifact 交接仍须成功。质量合同拒绝重新加入缓存导出，避免镜像构建完成后因 `failed to reserve cache` 阻止测量。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
+性能镜像构建使用 `observability-performance-v2` 命名空间：Rust、Bun、runtime-base
+和完整镜像分别按有效输入恢复，BuildKit 使用 `mode=max`、60 秒超时和
+`ignore-error=true` 保存；cache restore/save 失败只回退到干净构建，必需编译、产物
+交接和身份校验仍 fail-closed。Rust/Web producer 在独立 runner 上调用
+`scripts/production-build.sh`，image job 通过 named contexts 装配同一份 production
+runtime；未知配方回退到候选自己的 canonical Dockerfile。每次 run 还上传保留 14 天的
+`cvm-performance-build-report-v1`，记录 candidate/build identity、缓存命中、队列/执行
+时间、传输和镜像 ready 时间。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
+权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
 合成夹具使用与应用校验一致的 HTTPS `/v1/traces` endpoint。隔离入口在该摄入路径接受应用专属的固定非秘密测试 token 或可信客户端的独立摄入凭据；固定 token 不获得查询能力，应用容器不挂载随机生成的 Tempo 摄入或查询凭据。配置和请求处理的定向回归验证路径、凭据隔离及拒绝边界；生产 endpoint 校验、真实鉴权和性能验收断言不变。
 
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
 合并的必要测试。`Observability Performance Budget` 通过 trusted `main` 上的
-`workflow_dispatch` 手动启动；唯一必填输入 `candidate_ref` 接受同仓库分支名或完整
-40 字符提交 SHA。分支先用 `git check-ref-format --branch` 校验并规范为
-`refs/heads/<name>`，image job checkout 后用 `git rev-parse HEAD` 固定 candidate SHA；
+`workflow_dispatch` 手动启动；`candidate_ref` 接受同仓库分支名或完整 40 字符提交 SHA，
+`build_only` 默认关闭，`build_path` 默认 `auto`，只有 build-only 验证允许选择
+`canonical`。分支先用 `git check-ref-format --branch` 校验并规范为
+`refs/heads/<name>`，resolver checkout 后用 `git rev-parse HEAD` 固定 candidate SHA；
 后续 workload 和汇总只消费该 SHA。workflow 与验收脚本始终来自 `github.sha` 绑定的
 trusted `main`，候选只作为隔离镜像运行时代码和身份 checkout。label、PR 事件、自动
 重试和 candidate-controlled harness 都不再启动或改变验收。普通 PR 与 merge queue

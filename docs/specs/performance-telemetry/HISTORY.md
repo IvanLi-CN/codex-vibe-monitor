@@ -1,5 +1,14 @@
 # 独立性能遥测历史
 
+- 2026-10-25：完成 Observability Performance 构建并行与复用改造。新增 `build_only` 与
+  `build_path=auto|canonical` 手动输入；auto 在独立 runner 并行生产 Rust、Web、runtime-base，
+  通过 `observability-performance-v2` 缓存和 named contexts 装配 production runtime，命中
+  完整身份时跳过 producer，未知配方回退候选 canonical Dockerfile。`cvm-performance-build-v1`
+  固定 candidate、配方、平台、工具链、flags、锁文件和版本输入，镜像与 producer 归档在交接
+  前校验 SHA、image ID 和 revision；新增保留 14 天的 `cvm-performance-build-report-v1`，只记录
+  实际队列、执行、恢复/保存、传输、装配与 ready 时间。正式性能验收仍 main-only/manual-only，
+  四路测量与预算阈值未改变，build-only 结果不产生性能通过卡。
+
 - 2026-10-25：将 Observability Performance workflow 收敛为 trusted `main` 上唯一的 `workflow_dispatch` 入口，移除 `pull_request_target`/label 调度、前端 dispatcher 和历史 diagnostics job。`candidate_ref` 接受同仓库分支名或完整 40 字符 SHA；分支先验证并规范为 `refs/heads/<name>`，image job 用 `git rev-parse HEAD` 固定 candidate SHA，后续 workload 与汇总只消费该 SHA，trusted harness 始终绑定 `github.sha`。诊断源码及 `ci-pr` 回归保留，当前测量阈值、并行 lane、时钟、artifact 白名单、权限和 required-check 配置不变。该决定由 ADR 0049 记录。
 
 - 2026-10-25：将显式 Observability Acceptance 从单 runner serial bundle 改为四个 workload lane 的独立 hosted jobs。不可变镜像发布后只记录一次共享 60 分钟起始时刻；runtime 与三个 pair workload 各自拥有 runner 临时目录、Compose project、SQLite/fixture 和 sampler，pair 内 off/metrics/full 仍串行。汇总保留 candidate、image、contract、harness、run/attempt、共享时钟、失败证据和五项硬件字段校验，要求三组 pair identity 各不相同且硬件完全一致；阈值、准入、窗口覆盖和失败分类不变。该 successor decision 由 ADR 0048 记录，当前候选需在合并后的 `main` 上重新 dispatch 才能取得经验性卡。

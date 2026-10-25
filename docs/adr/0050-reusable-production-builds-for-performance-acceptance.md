@@ -1,0 +1,34 @@
+# Reusable Production Builds for Performance Acceptance
+
+Status: Accepted
+
+Performance Acceptance reuses verified production build artifacts and gives independent build producers separate execution resources before repeating expensive compilation. The default design compiles outside Docker's image builder in a pinned production-compatible container and uses the image builder for final assembly. This choice makes producer resources and artifact caches independently manageable; moving a compiler outside the image builder alone does not establish a speedup. Measurements validate the resulting execution costs and benefits.
+
+## Context
+
+[Run 40199586495](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40199586495/job/121187707952) recorded a 9-minute-27-second image job and an 8-minute-32-second Docker build. Rust dependency compilation took 2 minutes 36 seconds, followed by 5 minutes 10 seconds compiling the application binary. The frontend build took 52.8 seconds and overlapped Rust compilation. BuildKit already executed independent stages concurrently, but the build log contained no `CACHED` hits. These are observed timings from a run whose final performance budget classification failed, not evidence of a successful acceptance or a promised optimized duration.
+
+The previous performance workflow imported a dedicated GitHub Actions build cache without exporting newly produced cache entries. Its effective version included the run and attempt identifiers, changing build inputs even when the candidate commit was unchanged. Independent stages also shared the image job's execution resources. The accepted implementation replaces that path with the `observability-performance-v2` cache namespace, a stable build identity, three independent producers, named-context assembly, and a 14-day `cvm-performance-build-report-v1` artifact.
+
+## Agreed Design
+
+- Resolve the candidate to one immutable SHA and derive a Performance Candidate Build Identity from all effective build inputs. Reuse a complete immutable image only when that identity and the artifact verification match. Derive the performance version from the candidate identity; retain run and attempt identifiers in the experiment evidence.
+- Complete the cache restore/save lifecycle. Separate reusable downloads, Rust compilation artifacts, frontend output, build environments, runtime dependencies, and complete candidate images according to their effective inputs. A candidate SHA alone is insufficient to establish artifact compatibility. Performance candidate caches must not overwrite trusted release caches. Cache saves use bounded best-effort BuildKit export; required artifact transfer and image verification remain fail-closed.
+- On a complete-image miss, allow Rust compilation, frontend production, and runtime-environment preparation to execute concurrently on independent runners. Each producer checks for compatible reusable artifacts before building. Assemble one immutable production runtime image from the verified outputs and distribute that image to the existing four acceptance lanes.
+- Compile outside `docker build` in a pinned production-compatible Rust and Debian Bookworm container on a dedicated producer runner. This is not native compilation against the runner's host libraries. Preserve production features, compiler settings, runtime libraries, and observability symbols. Share the production build recipe rather than maintaining an independent approximation or using the PR smoke image.
+- Preserve candidate-owned build semantics. Changes to the Dockerfile, toolchain, flags, dependencies, or other build inputs invalidate incompatible artifacts. An unrecognized candidate build recipe falls back to the candidate's canonical Dockerfile path rather than silently omitting its changes.
+- Start the four measurement runners when the immutable image is available. Reusing build artifacts never reuses workload results, admission observations, hardware identity, or a prior acceptance card. The manual trigger and source boundary in [ADR 0049](0049-manual-observability-performance-acceptance.md), and the measurement isolation and evidence rules in [ADR 0048](0048-observability-acceptance-parallel-workload-lanes.md), remain authoritative.
+- Permit `build_only` validation from an implementation branch without treating its workflow as a trusted performance harness. Formal acceptance remains main-only and requires `build_path=auto`; `build_path=canonical` is a build-only baseline path.
+- Validate the external-compilation design against an observed baseline with compatible production inputs. Record queueing, cache restore/save, compilation, artifact transfer, assembly, total elapsed time, and total runner usage. Exercise cold cache, a new candidate with reusable dependencies, an identical-candidate rerun, frontend-only changes, and dependency or recipe changes. A second complete optimized build pipeline is not a prerequisite for choosing the architecture. Report actual observations without substituting a timeout or a predicted duration.
+
+## Efficiency Priority
+
+The primary optimization target is the first test of a new PR candidate: a previously unseen candidate may reuse compatible dependency and environment caches, but cannot assume an existing image for that exact candidate. Assess elapsed time from manual dispatch to the final acceptance result, including queueing, cache operations, compilation, transfers, assembly, and workloads. Identical-candidate reruns and fully cold builds are additional validation scenarios. Faster reruns must not justify a regression in the primary scenario.
+
+The build dependency graph and cache ownership determine the default architecture before implementation. Measurements verify whether the implementation achieves its intended benefit and identify regressions or a need to revise that design; they do not defer this architectural decision to the owner or require implementing two complete competing pipelines.
+
+## Consequences
+
+The reusable unit becomes a verified production artifact, independent from each new acceptance experiment. This introduces compatibility manifests and explicit cache ownership, in exchange for avoiding repeated work and allowing build resources to be scheduled independently. Separate producer jobs also add queueing and artifact-transfer costs, which must be included when validating the design's efficiency.
+
+The observed application compilation was a binary build. Dependency compiler caching alone cannot be treated as proof that the application's compilation and linking will disappear after a source change. A faster default must be demonstrated by the relevant workload measurements.

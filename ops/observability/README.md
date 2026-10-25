@@ -181,8 +181,9 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
 完整性能验收只由 trusted `main` 上的 `workflow_dispatch` 手动启动，输入
-`candidate_ref` 可指定任意同仓库分支名或完整 40 字符提交 SHA；未显式启动时不阻塞普通
-PR Ready，且不得把未运行写成预算已验证。分支在 image job 中验证并规范为
+`candidate_ref` 可指定任意同仓库分支名或完整 40 字符提交 SHA；`build_only` 默认关闭，
+`build_path` 默认 `auto`，只有 build-only 验证允许选择 `canonical`。未显式启动时不阻塞普通
+PR Ready，且不得把未运行写成预算已验证。分支在 resolver job 中验证并规范为
 `refs/heads/<name>`，再由 `git rev-parse HEAD` 固定 candidate SHA；所有 workload、
 汇总和证据只绑定该 SHA。label、PR 事件和自动重试不会启动长测。
 任何测试环境通过都不能代替 101 公网验收。
@@ -193,9 +194,14 @@ PR Ready，且不得把未运行写成预算已验证。分支在 image job 中�
 共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
-`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用
-`candidate_ref` 解析出的同仓库候选提交构建生产镜像，并传输镜像 ID、revision 与 archive
-checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像：runtime lane 负责
+`.github/workflows/ci-observability-performance.yml` 先由 resolver 生成
+`cvm-performance-build-v1` identity；auto 路径在三个独立 `ubuntu-24.04` producer runner
+上并行生成 Rust、Web 和 runtime-base，再由 `Observability Performance Image` 使用
+verified named contexts 装配生产镜像。兼容缓存位于独立的 `observability-performance-v2`
+namespace，缓存写入为 60 秒 best-effort；命中完整镜像时跳过 producer，未知配方回退到
+候选自己的 canonical Dockerfile。每个 build run 上传保留 14 天的
+`cvm-performance-build-report-v1`，报告实际恢复/保存、队列/执行、传输、装配和镜像 ready
+时间。镜像仍传输 image ID、revision 与 archive checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像：runtime lane 负责
 功能场景（含 original-process CPU attach），pair-0、pair-1、pair-2 各自完成一轮 paired
 suite；`Observability Performance Budget` 只校验和汇总证据。
 workflow 必须从 `main` 的 trusted revision 执行，以 `github.sha` 作为 trusted harness；
