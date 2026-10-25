@@ -19,6 +19,20 @@ const completeRun: ManagedTaskRun = {
   details: { resourceWaitMs: 12_000, fileResourceWaitMs: 8_000 },
 };
 
+function formatExpectedTimestamp(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZoneName: "short",
+  }).format(new Date(value));
+}
+
 const meta = {
   title: "System/ManagedTaskRunFacts",
   component: ManagedTaskRunFacts,
@@ -42,7 +56,13 @@ export const CompleteWithIdentity: Story = {
   args: { run: completeRun },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByText(/GMT[+-]\d+ \d{2}:\d{2}:\d{2}/)).toHaveLength(3);
+    for (const timestamp of [
+      completeRun.startedAt,
+      completeRun.actualStartedAt,
+      completeRun.actualFinishedAt,
+    ]) {
+      await expect(canvas.getByText(formatExpectedTimestamp(timestamp as string))).toBeVisible();
+    }
     await expect(canvas.getByText("500.0 s")).toBeVisible();
     await expect(canvas.getByText("1360.0 s")).toBeVisible();
     await expect(canvas.getByText("12.0 s")).toBeVisible();
