@@ -5,9 +5,14 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { ObservabilityTaskLink } from "../../features/observability/ObservabilityTaskLink";
+import { ManagedTaskRunFacts } from "../../features/system/ManagedTaskRunFacts";
 import { RetentionOwnerRunFacts } from "../../features/system/RetentionOwnerRunFacts";
 import { RetentionRunThroughput } from "../../features/system/RetentionRunThroughput";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
+import {
+  formatManagedTaskDuration,
+  formatManagedTaskTimestamp,
+} from "../../features/system/taskRunFacts";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
   type CurrentTaskExecution,
@@ -28,26 +33,6 @@ import {
   managedTaskScheduleSourceLabel,
   managedTaskTriggerLabel,
 } from "./taskLabels";
-
-function formatDuration(ms?: number | null): string {
-  if (ms == null) return "—";
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
-}
-
-function formatStartedAt(value?: string | null): string {
-  if (!value) return "未知";
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return "未知";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(new Date(timestamp));
-}
 
 type ScheduleKind = "interval" | "cron";
 
@@ -276,8 +261,8 @@ export default function SystemTaskDetailPage() {
                 <div className="text-xs text-base-content/60">当前实际工作</div>
                 <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
                   <span>{managedTaskPhaseLabel(activeRuntime.phase)}</span>
-                  <span>实际开始：{formatStartedAt(activeRuntime.startedAt)}</span>
-                  <span>用时：{formatDuration(displayedElapsedMs)}</span>
+                  <span>实际开始：{formatManagedTaskTimestamp(activeRuntime.startedAt)}</span>
+                  <span>用时：{formatManagedTaskDuration(displayedElapsedMs)}</span>
                   <span>级别：{managedTaskExecutionClassLabel(activeRuntime.executionClass)}</span>
                 </div>
                 {activeRuntime.activeChildTitle ? (
@@ -312,14 +297,14 @@ export default function SystemTaskDetailPage() {
               <div className="text-xs text-base-content/60">下次巡检</div>
               <div className="mt-1 font-medium">
                 {progress?.nextInspectionAt
-                  ? formatStartedAt(progress.nextInspectionAt)
+                  ? formatManagedTaskTimestamp(progress.nextInspectionAt)
                   : managedTaskNextTriggerLabel(task)}
               </div>
             </div>
             <div>
               <div className="text-xs text-base-content/60">下次追赶资格</div>
               <div className="mt-1 font-medium">
-                {nextCatchupAt ? formatStartedAt(nextCatchupAt) : "无"}
+                {nextCatchupAt ? formatManagedTaskTimestamp(nextCatchupAt) : "无"}
               </div>
               <div className="mt-1 text-xs text-base-content/60">
                 {progress?.catchupState === "scheduled"
@@ -495,14 +480,13 @@ export default function SystemTaskDetailPage() {
                   className="grid gap-1 border-b border-base-300/60 pb-3 text-sm last:border-0"
                 >
                   <div className="flex flex-wrap justify-between gap-2">
-                    <span>{run.startedAt}</span>
                     <span className="font-medium">
-                      {managedTaskRunStatusLabel(run.status, run.completion)} ·{" "}
-                      {formatDuration(run.durationMs)}
+                      {managedTaskRunStatusLabel(run.status, run.completion)}
                     </span>
-                  </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60">
                     {run.triggerKind ? <span>触发：{run.triggerKind}</span> : null}
+                  </div>
+                  <ManagedTaskRunFacts run={run} />
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60">
                     {run.processedCount != null ? <span>处理：{run.processedCount}</span> : null}
                     {run.updatedCount != null ? <span>更新：{run.updatedCount}</span> : null}
                   </div>
@@ -552,7 +536,11 @@ export default function SystemTaskDetailPage() {
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
                   {managedTaskKey === "retention_archive" ||
                   (run.details?.ownershipVersion === 2 && run.details.archiveBatches?.length) ? (
-                    <RetentionRunThroughput details={run.details} />
+                    <RetentionRunThroughput
+                      details={run.details}
+                      executionDurationMs={run.executionDurationMs}
+                      schedulerWaitMs={run.schedulerWaitMs}
+                    />
                   ) : null}
                 </div>
               ))

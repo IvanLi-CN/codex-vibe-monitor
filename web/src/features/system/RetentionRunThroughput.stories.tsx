@@ -7,11 +7,11 @@ const batches: NonNullable<ManagedTaskRunDetails["archiveBatches"]> = [
   {
     dataset: "codex_invocations",
     monthKey: "2026-09",
-    batchRows: 1000,
-    committedRows: 1000,
-    committedRowsPerSecond: 32.26,
-    arrivalRowsPerSecond: 0.3472,
-    serviceRateMultiple: 92.9,
+    batchRows: 866,
+    committedRows: 866,
+    committedRowsPerSecond: 866 / 500,
+    arrivalRowsPerSecond: 0.673,
+    serviceRateMultiple: 866 / 500 / 0.673,
     filePrepareMs: 3600,
     sourceIdentityMs: 420,
     archiveWriterMs: 2500,
@@ -23,9 +23,9 @@ const batches: NonNullable<ManagedTaskRunDetails["archiveBatches"]> = [
     monthKey: "2026-09",
     batchRows: 1000,
     committedRows: 1000,
-    committedRowsPerSecond: 32.26,
+    committedRowsPerSecond: 1000 / 500,
     arrivalRowsPerSecond: 0.4167,
-    serviceRateMultiple: 77.4,
+    serviceRateMultiple: 1000 / 500 / 0.4167,
     filePrepareMs: 1800,
     sourceIdentityMs: 380,
     archiveWriterMs: 1900,
@@ -33,6 +33,13 @@ const batches: NonNullable<ManagedTaskRunDetails["archiveBatches"]> = [
     lockWaitMs: 80,
   },
 ];
+
+const upstreamFallbackBatch = {
+  ...batches[1],
+  // The single-batch story proves the positive execution-duration fallback.
+  committedRowsPerSecond: null,
+  serviceRateMultiple: null,
+};
 
 const meta = {
   title: "System/RetentionRunThroughput",
@@ -54,15 +61,90 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Committed: Story = {
-  args: { details: { timeoutCount: 0, archiveBatches: batches } },
+  args: {
+    details: { timeoutCount: 0, archiveBatches: batches },
+    executionDurationMs: 500_000,
+    schedulerWaitMs: 1_360_000,
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("调用记录 · 2026-09")).toBeVisible();
-    await expect(canvas.getByText("92.9×")).toBeVisible();
+    await expect(canvas.getByText("2.6×")).toBeVisible();
+    await expect(canvas.getByText("1.73 条/s")).toBeVisible();
+    await expect(canvas.getByText("执行用时：500.0 s")).toBeVisible();
+    await expect(canvas.getByText("调度等待：1360.0 s")).toBeVisible();
+    await expect(canvas.getAllByText("SQLite 写入准入等待")).toHaveLength(2);
     await expect(canvas.getByText("0.42 s")).toBeVisible();
     await expect(canvas.getByText("2.50 s")).toBeVisible();
+    await expect(canvas.getAllByText("未知")).toHaveLength(1);
+    await expect(canvas.getByText("2.00 条/s")).toBeVisible();
+    await expect(canvas.getByText("4.8×")).toBeVisible();
+    await expect(canvas.getAllByText("1000 / 1000 条")).toHaveLength(1);
+  },
+};
+
+export const MultiBatchFallbackUnknown: Story = {
+  args: {
+    details: {
+      timeoutCount: 0,
+      archiveBatches: batches.map((batch) => ({
+        ...batch,
+        committedRowsPerSecond: null,
+        serviceRateMultiple: null,
+      })),
+    },
+    executionDurationMs: 500_000,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("调用记录 · 2026-09")).toBeVisible();
+    await expect(canvas.queryByText("1.73 条/s")).not.toBeInTheDocument();
+    await expect(canvas.queryByText("2.00 条/s")).not.toBeInTheDocument();
+    await expect(canvas.queryByText("2.6×")).not.toBeInTheDocument();
+    await expect(canvas.queryByText("4.8×")).not.toBeInTheDocument();
+  },
+};
+
+export const SingleBatchFallback: Story = {
+  args: {
+    details: { timeoutCount: 0, archiveBatches: [upstreamFallbackBatch] },
+    executionDurationMs: 500_000,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("1000 / 1000 条")).toBeVisible();
+    await expect(canvas.getByText("2.00 条/s")).toBeVisible();
+    await expect(canvas.getByText("4.8×")).toBeVisible();
+  },
+};
+
+export const DerivedRateOverflowUnknown: Story = {
+  args: {
+    details: {
+      timeoutCount: 0,
+      archiveBatches: [
+        {
+          dataset: "codex_invocations",
+          monthKey: "2026-09",
+          batchRows: 1,
+          committedRows: 1,
+          committedRowsPerSecond: Number.MAX_VALUE,
+          arrivalRowsPerSecond: Number.MIN_VALUE,
+          serviceRateMultiple: null,
+          filePrepareMs: 0,
+          sourceIdentityMs: 0,
+          archiveWriterMs: 0,
+          summaryProofMs: 0,
+          lockWaitMs: 0,
+        },
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("服务倍率")).toBeVisible();
     await expect(canvas.getByText("未知")).toBeVisible();
-    await expect(canvas.getAllByText("1000 / 1000 条")).toHaveLength(2);
+    await expect(canvas.queryByText("Infinity×")).not.toBeInTheDocument();
   },
 };
 
