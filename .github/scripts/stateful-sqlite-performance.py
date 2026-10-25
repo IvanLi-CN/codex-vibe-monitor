@@ -41,6 +41,11 @@ WALL_RE = re.compile(
     r"replay=(?P<replay>cold|warm) shard=(?P<shard>[12]) "
     r"wall_ms=(?P<wall>[0-9]+) exit_code=(?P<exit>[0-9]+)$"
 )
+TARGET_WALL_RE = re.compile(
+    r"^stateful-target-performance ref=(?P<ref>control|candidate) "
+    r"replay=(?P<replay>cold|warm) target=(?P<target>[0125]) "
+    r"wall_ms=(?P<wall>[0-9]+) exit_code=(?P<exit>[0-9]+)$"
+)
 # The file-backed fixture span encloses the leaf setup spans. Use only the
 # outer span for the gate so setup work cannot be counted more than once.
 SETUP_PHASES = {"file_state_setup"}
@@ -101,7 +106,9 @@ PHASE_REQUIREMENTS = {
         "setup_any": {"file_template_copy", "file_schema_initialize"},
     },
 }
-SETUP_TARGETS = frozenset({TARGETS[0], TARGETS[1], TARGETS[2], TARGETS[5]})
+SETUP_TARGET_INDEXES = (0, 1, 2, 5)
+SETUP_TARGETS = frozenset(TARGETS[index] for index in SETUP_TARGET_INDEXES)
+SETUP_TARGET_INDEX = {TARGETS[index]: index for index in SETUP_TARGET_INDEXES}
 
 
 def median(values: list[int]) -> int:
@@ -239,13 +246,44 @@ def parse_wall_file(path: Path) -> tuple[dict[tuple[str, str, str], int], list[s
     return values, failures
 
 
+def parse_target_wall_file(path: Path) -> tuple[dict[tuple[str, str, int], int], list[str]]:
+    values: dict[tuple[str, str, int], int] = {}
+    failures: list[str] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = TARGET_WALL_RE.fullmatch(line.strip())
+        if match is None:
+            continue
+        key = (match.group("ref"), match.group("replay"), int(match.group("target")))
+        if key in values:
+            raise ValueError(f"duplicate target wall-time record: {'/'.join(map(str, key))}")
+        exit_code = int(match.group("exit"))
+        if exit_code != 0:
+            failures.append(f"{'/'.join(map(str, key))} exit_code={exit_code}")
+        values[key] = int(match.group("wall"))
+    expected = {
+        (ref, replay, target_index)
+        for ref in ("control", "candidate")
+        for replay in ("cold", "warm")
+        for target_index in SETUP_TARGET_INDEXES
+    }
+    missing = sorted(expected - values.keys())
+    if missing:
+        raise ValueError(
+            "missing target wall-time records: "
+            + ", ".join("/".join(map(str, key)) for key in missing)
+        )
+    return values, failures
+
+
 def build_card(
     root: Path,
     control_source_sha: str,
     candidate_sha: str,
     trusted_harness_sha: str,
     wall: dict[tuple[str, str, str], int],
+    target_wall: dict[tuple[str, str, int], int],
     replay_failures: list[str],
+    target_failures: list[str],
 ) -> dict[str, object]:
     replay_samples: dict[str, dict[str, dict[str, object]]] = {"control": {}, "candidate": {}}
     for ref in replay_samples:
@@ -262,8 +300,17 @@ def build_card(
     for target in TARGETS:
         control_samples = [replay_samples["control"][replay][target] for replay in ("cold", "warm")]
         candidate_samples = [replay_samples["candidate"][replay][target] for replay in ("cold", "warm")]
-        control_setup = median([int(item["setup_ms"]) for item in control_samples])
-        candidate_setup = median([int(item["setup_ms"]) for item in candidate_samples])
+        target_index = SETUP_TARGET_INDEX.get(target)
+        if target_index is None:
+            control_setup = 0
+            candidate_setup = 0
+        else:
+            control_setup = median(
+                [target_wall[("control", replay, target_index)] for replay in ("cold", "warm")]
+            )
+            candidate_setup = median(
+                [target_wall[("candidate", replay, target_index)] for replay in ("cold", "warm")]
+            )
         if target not in SETUP_TARGETS:
             reduction_pct = None
             setup_status = "not_applicable"
@@ -337,12 +384,14 @@ def build_card(
         and not setup_measurement_failures
     )
     wall_pass = candidate_total_median <= control_total_median * 1.05
-    accepted = not replay_failures and setup_pass and wall_pass
+    all_failures = [*replay_failures, *target_failures]
+    accepted = not all_failures and setup_pass and wall_pass
     return {
         "acceptance": "pass" if accepted else "fail",
         "control_source_sha": control_source_sha,
         "candidate_sha": candidate_sha,
         "trusted_harness_sha": trusted_harness_sha,
+        "setup_measurement": "trusted harness external target wall time; candidate phase timing is diagnostic only",
         "comparison": "same candidate source and archive; control forces fresh schema for allowlisted file-backed fixtures, candidate uses the current-schema template",
         "control_mode": "candidate archive with allowlisted file-backed fixtures forced to fresh schema",
         "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads; interleaved control/candidate pairs",
@@ -373,7 +422,8 @@ def build_card(
             "regression_pct": total_regression_pct,
             "passed": wall_pass,
         },
-        "replay_failures": replay_failures,
+        "replay_failures": all_failures,
+        "target_timing_failures": target_failures,
         "shard_wall": shard_wall,
         "tests": tests,
     }
@@ -392,6 +442,7 @@ def markdown_card(card: dict[str, object]) -> str:
         f"- Trusted harness: `{card['trusted_harness_sha']}`",
         f"- Comparison: {card['comparison']}",
         f"- Control mode: {card['control_mode']}",
+        f"- Setup measurement: {card['setup_measurement']}",
         f"- Runner: {card['runner']}",
         f"- Replay order: `{', '.join(card['replay_order'])}`",
         f"- Paired execution order: `{'; '.join(card['paired_execution_order'])}`",
@@ -463,18 +514,22 @@ def main() -> int:
     parser.add_argument("--control-source-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--trusted-harness-sha", required=True)
+    parser.add_argument("--target-wall-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
 
     try:
         wall, replay_failures = parse_wall_file(args.wall_file)
+        target_wall, target_failures = parse_target_wall_file(args.target_wall_file)
         card = build_card(
             args.root,
             args.control_source_sha,
             args.candidate_sha,
             args.trusted_harness_sha,
             wall,
+            target_wall,
             replay_failures,
+            target_failures,
         )
     except (OSError, ValueError, KeyError) as error:
         print(f"::error::stateful SQLite performance evidence is incomplete: {error}", file=sys.stderr)
