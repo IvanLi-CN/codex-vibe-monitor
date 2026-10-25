@@ -2697,6 +2697,11 @@ export interface SystemStatusResponse {
   otherFilesBytes: number;
   projectionHealth: SystemProjectionHealth;
   rawMetricsHealth: SystemRawMetricsHealth;
+  summaryRecovery?: {
+    state: string;
+    processedRows: number;
+    lastErrorCode?: string;
+  };
   runtimePressureHealth?: RuntimePressureHealth;
   refreshedAt: string;
 }
@@ -5753,6 +5758,10 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   const rawBodies = normalizeSystemStatusMetric(payload.rawBodies);
   const requestRawBodies = normalizeSystemStatusMetric(payload.requestRawBodies);
   const responseRawBodies = normalizeSystemStatusMetric(payload.responseRawBodies);
+  const summaryRecoveryPayload =
+    payload.summaryRecovery && typeof payload.summaryRecovery === "object"
+      ? (payload.summaryRecovery as Record<string, unknown>)
+      : null;
   if (rawMetricsHealth.state !== "ready") {
     rawBodies.bytes = null;
     requestRawBodies.bytes = null;
@@ -5771,6 +5780,19 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
     otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
     projectionHealth: normalizeSystemProjectionHealth(payload.projectionHealth),
     rawMetricsHealth,
+    summaryRecovery: summaryRecoveryPayload
+      ? {
+          state:
+            typeof summaryRecoveryPayload.state === "string"
+              ? summaryRecoveryPayload.state
+              : "unknown",
+          processedRows: normalizeFiniteNumber(summaryRecoveryPayload.processedRows) ?? 0,
+          lastErrorCode:
+            typeof summaryRecoveryPayload.lastErrorCode === "string"
+              ? summaryRecoveryPayload.lastErrorCode
+              : undefined,
+        }
+      : undefined,
     runtimePressureHealth: normalizeRuntimePressureHealth(payload.runtimePressureHealth),
     refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };

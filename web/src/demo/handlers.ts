@@ -1734,13 +1734,24 @@ function demoDashboardActivitySummary(accounts: ReturnType<typeof demoDashboardA
   };
 }
 
+function demoLiveRangeEndMs() {
+  const base = Date.parse(demoNow());
+  if (
+    typeof window === "undefined" ||
+    demoSearchParamsFromLocation().get("demoTimelineMovingWindow") !== "1"
+  ) {
+    return base;
+  }
+  return base + (window.__CVM_DEMO_TIMESERIES_REVISION__ ?? 0) * 1_000;
+}
+
 function performanceNaturalDayTimeseries(range: "today" | "yesterday", revision: number) {
   const todayStart = new Date(demoNow());
   todayStart.setHours(0, 0, 0, 0);
   const yesterdayStart = new Date(todayStart);
   yesterdayStart.setDate(yesterdayStart.getDate() - 1);
   const start = range === "today" ? todayStart.getTime() : yesterdayStart.getTime();
-  const end = range === "today" ? Date.parse(demoNow()) : todayStart.getTime();
+  const end = range === "today" ? demoLiveRangeEndMs() : todayStart.getTime();
   const count = Math.floor((end - start) / 60_000);
 
   return {
@@ -1776,10 +1787,11 @@ function timeseries(range: string | null) {
   if (performanceFixture && (range === "today" || range === "yesterday")) {
     return performanceNaturalDayTimeseries(range, revision);
   }
-  const start = Date.parse(demoNow()) - 24 * 3_600_000;
+  const end = demoLiveRangeEndMs();
+  const start = end - 24 * 3_600_000;
   return {
     rangeStart: new Date(start).toISOString(),
-    rangeEnd: demoNow(),
+    rangeEnd: new Date(end).toISOString(),
     bucketSeconds: 3600,
     effectiveBucket: "1h",
     availableBuckets: ["1m", "15m", "1h", "1d"],
@@ -4857,7 +4869,7 @@ function filterDemoInvocations(url: URL) {
 
 function demoInvocationTimeline(url: URL) {
   const requestedEnd = Date.parse(url.searchParams.get("to") ?? "");
-  const rangeEnd = Number.isFinite(requestedEnd) ? requestedEnd : Date.parse(demoNow());
+  const rangeEnd = Number.isFinite(requestedEnd) ? requestedEnd : demoLiveRangeEndMs();
   const requestedStart = Date.parse(url.searchParams.get("from") ?? "");
   const rangeStart = Number.isFinite(requestedStart)
     ? requestedStart
@@ -5056,11 +5068,11 @@ export async function handleDemoRequest(request: Request) {
   if (pathname === "/api/stats/dashboard-network-timeseries") {
     return json(dashboardNetworkTimeseries(url.searchParams.get("range")));
   }
-  if (pathname === "/api/stats/invocation-timeline") {
-    return json(demoInvocationTimeline(url));
-  }
   if (request.method === "DELETE" && pathname.startsWith("/api/stats/invocation-timeline/")) {
     return new HttpResponse(null, { status: 204 });
+  }
+  if (pathname === "/api/stats/invocation-timeline") {
+    return json(demoInvocationTimeline(url));
   }
   if (pathname === "/api/stats/parallel-work")
     return json(parallelWork(), { headers: { ETag: "demo-parallel-work" } });

@@ -13,28 +13,39 @@ mod terminal_journal_recovery;
 
 pub(crate) use super::*;
 
-mod archive_backfill_and_materialization;
+mod archive_backfill_test_support;
+mod archive_copy_summary_and_manifest;
+mod archive_http_and_shutdown;
 mod archive_publication;
+mod archive_replay_recovery;
 mod archive_replay_safety;
+mod archive_startup_and_expiry;
+mod archive_storage_schema_reconciliation;
+mod deferred_pool_cleanup_guards;
 mod gpt6_cache_write_migration;
+mod historical_rollup_materialization;
 mod invocation_range_native_recovery;
 mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;
 mod payload_metadata_backfills;
 mod performance_index_ownership;
+mod pool_attempt_lifecycle;
+mod pool_invocation_orphan_recovery;
 mod prompt_cache_control_file_lock;
 mod raw_compression_budget;
-#[expect(
-    clippy::await_holding_lock,
-    reason = "Mock reservation logs intentionally stay locked until async assertions observe requests."
-)]
-mod raw_payload_retention_and_compression;
+mod raw_payload_archive_finalization;
+mod raw_payload_capture_and_ownership;
+mod raw_payload_cleanup_and_reconciliation;
+mod raw_payload_compression;
 mod retention_batch_wait;
 mod retention_capacity_benchmark;
+mod retention_pool_archive_maintenance;
 mod retention_recovery_progress;
 mod retention_service_rate_benchmark;
 mod retention_task_local_batches;
 mod retention_task_work_ownership;
+mod stale_archive_reconciliation;
+mod stale_pool_orphan_recovery;
 mod system_storage_measurement;
 mod xhttp_validation_pipeline;
 

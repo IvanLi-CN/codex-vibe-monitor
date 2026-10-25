@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 21,
-    "suppression_entries": 125
+    "inventory_entries": 28,
+    "suppression_entries": 126
   },
   "loc_targets": {
     "production": 2500,
@@ -19,16 +19,58 @@
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
-      "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
+      "path": "src/tests/archive_file_io/raw_payload_capture_and_ownership.rs",
       "role": "test_helper",
-      "line_budget": 12908,
-      "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
+      "line_budget": 383,
+      "next_module_workstream": "Split raw payload capture and ownership fixtures by path, blob, schema, and bootstrap behavior."
     },
     {
-      "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
+      "path": "src/tests/archive_file_io/raw_payload_archive_finalization.rs",
       "role": "test_helper",
-      "line_budget": 9763,
-      "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
+      "line_budget": 604,
+      "next_module_workstream": "Split raw payload archive finalization fixtures by quota snapshots, identity, recovery, quarantine, and publication."
+    },
+    {
+      "path": "src/tests/archive_file_io/raw_payload_cleanup_and_reconciliation.rs",
+      "role": "test_helper",
+      "line_budget": 2040,
+      "next_module_workstream": "Split raw payload cleanup fixtures by reconciliation, orphan scans, writer fences, admission, and dry-run behavior."
+    },
+    {
+      "path": "src/tests/archive_file_io/raw_payload_compression.rs",
+      "role": "test_helper",
+      "line_budget": 638,
+      "next_module_workstream": "Split raw payload compression fixtures by eligibility, path repair, budget ordering, CLI modes, and archive publication."
+    },
+    {
+      "path": "src/tests/archive_file_io/archive_http_and_shutdown.rs",
+      "role": "test_helper",
+      "line_budget": 1175,
+      "next_module_workstream": "Split archive HTTP and shutdown fixtures by child processes, readiness, imported OAuth jobs, and runtime sequencing."
+    },
+    {
+      "path": "src/tests/archive_file_io/pool_attempt_lifecycle.rs",
+      "role": "test_helper",
+      "line_budget": 1050,
+      "next_module_workstream": "Split pool attempt lifecycle fixtures by snapshots, dispatch filtering, broadcasts, phases, and orphan recovery."
+    },
+    {
+      "path": "src/tests/archive_file_io/pool_invocation_orphan_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 1465,
+      "next_module_workstream": "Split pool invocation orphan fixtures by running cleanup, phase distinctions, atomic recovery, and routing reservations."
+    },
+    {
+      "path": "src/tests/archive_file_io/deferred_pool_cleanup_guards.rs",
+      "role": "test_helper",
+      "line_budget": 675,
+      "next_module_workstream": "Split deferred pool cleanup fixtures by guard lifecycle, synthetic runtime, pending persistence, and failover."
+    },
+    {
+      "path": "src/tests/archive_file_io/stale_pool_orphan_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 1711,
+      "next_module_workstream": "Split stale pool orphan fixtures by selectors, phase classification, active exclusion, rollback, batching, and owner availability."
     },
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
@@ -525,10 +567,16 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
-      "path": "src/tests/archive_file_io/mod.rs",
+      "path": "src/tests/archive_file_io/pool_invocation_orphan_recovery.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/archive_file_io/mod.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect for the reservation assertion that intentionally observes the mock log after an async route-state query; remove it when the test fixture exposes an async-aware observation boundary."
+    },
+    {
+      "path": "src/tests/archive_file_io/stale_pool_orphan_recovery.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect for the reservation assertion that intentionally observes the mock log after an async route-state query; remove it when the test fixture exposes an async-aware observation boundary."
     },
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",

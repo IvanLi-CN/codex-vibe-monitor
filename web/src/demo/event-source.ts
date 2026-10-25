@@ -90,9 +90,15 @@ export class DemoTopicEventSource implements EventTarget {
     }
     if (this.readyState !== DemoTopicEventSource.OPEN) return;
     this.#unsubscribe = subscribeToDemoRealtime((payload) => {
+      const movingTimelineWindow =
+        demoSearchParamsFromLocation().get("demoTimelineMovingWindow") === "1";
       const changedTopics =
         payload.type === "records" && payload.records.length === 0
-          ? topics.filter((topic) => topic.topic === "dashboard.activity.current")
+          ? topics.filter(
+              (topic) =>
+                topic.topic === "dashboard.activity.current" ||
+                (movingTimelineWindow && topic.topic === "stats.timeseries.open-window"),
+            )
           : topics;
       if (changedTopics.length > 0) void this.publish(changedTopics, "live");
     });

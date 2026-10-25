@@ -58,6 +58,24 @@ pub(crate) enum ApiError {
     Internal(anyhow::Error),
 }
 
+#[derive(Debug)]
+struct CodedUnavailableError {
+    code: &'static str,
+    message: anyhow::Error,
+}
+
+impl std::fmt::Display for CodedUnavailableError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for CodedUnavailableError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.message.root_cause())
+    }
+}
+
 impl ApiError {
     pub(crate) fn bad_request<E>(err: E) -> Self
     where
@@ -73,6 +91,16 @@ impl ApiError {
         Self::Unavailable(err.into())
     }
 
+    pub(crate) fn unavailable_with_code<E>(code: &'static str, err: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::Unavailable(anyhow::Error::new(CodedUnavailableError {
+            code,
+            message: err.into(),
+        }))
+    }
+
     pub(crate) fn conflict<E>(err: E) -> Self
     where
         E: Into<anyhow::Error>,
@@ -86,7 +114,19 @@ impl IntoResponse for ApiError {
         let (status, err) = match self {
             ApiError::BadRequest(err) => (StatusCode::BAD_REQUEST, err),
             ApiError::Conflict(err) => (StatusCode::CONFLICT, err),
-            ApiError::Unavailable(err) => (StatusCode::SERVICE_UNAVAILABLE, err),
+            ApiError::Unavailable(err) => {
+                if let Some(coded) = err.downcast_ref::<CodedUnavailableError>() {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "code": coded.code,
+                            "message": coded.to_string(),
+                        })),
+                    )
+                        .into_response();
+                }
+                (StatusCode::SERVICE_UNAVAILABLE, err)
+            }
             ApiError::Internal(err) => (StatusCode::INTERNAL_SERVER_ERROR, err),
         };
         let message = format!("{err}");

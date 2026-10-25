@@ -63,6 +63,10 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   MiB. Compaction must preserve a durable union proof; it must not time-delete
   entries or silently advance a cursor. An intersecting time/account/current-rank selection is unavailable while its proof is unabsorbed unless the gap is a broad source-journal compaction proof with an acknowledged in-memory overlay; that narrow case is explicitly degraded, while a disjoint Exact-Ready selection remains memory-only. A missing cursor without durable metadata remains broad unavailable until reconciliation instead of being assigned the range of a later entry.
 - `RollingDelta` may rebuild bounded descriptor keys off-request after restart, but must not re-admit complete live source or raw archive data. It never authorizes request-time SQLite/archive/file I/O, partial data, or stale last-good success presented as exact. When the affected proof is a pending in-memory Summary Delta Journal gap or an eligible source-journal compaction proof, the existing last-good Projection plus acknowledged terminal overlay may be served as an explicitly degraded response with `dataQuality.proofPending`; scoped source identity and coverage gaps remain unavailable while background reconciliation and all-time convergence proceed independently.
+- Dashboard day-window recovery for `today`, `yesterday`, and `previous7d` MUST use the canonical `codex_invocations` source only through a background, generation-fenced checkpoint. Until its completed staging is published, the window MUST remain explicitly unavailable rather than returning zero, truncated, or approximate totals.
+- Dashboard compacted-source recovery MUST use `(occurred_at, id)` keyset pages of at most 512 rows, a page byte budget of 8 MiB, a 250 ms write-transaction budget, and a 2 s worker-turn budget. The aggregate, bounded record identities, cursor, target fence, and state MUST advance atomically.
+- `SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES=10_000` is only the bounded source journal retention limit. It MUST NOT be reused as a full-table recovery admission threshold; a compacted source range larger than 10,000 rows is admitted when its canonical range and generation fence are valid.
+- A pending or failed dashboard recovery MUST preserve HTTP 503 and a stable JSON `code` (`summary_recovery_pending` or `summary_recovery_failed`), while `/api/system/status` exposes low-cardinality recovery state without source payloads. The Dashboard MUST render the coded pending/failed state instead of indefinite loading or zero-valued success.
 
 ### Non-goals
 
@@ -71,6 +75,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 不修改 timeseries minute writer；该 ownership 留给独立的 #837 后续线。
 - 不自动操作 Dockrev、srv-101、重启、回滚或部署镜像。
 - 不把单次 terminal journal tail repair 或外部 forward-proxy 530 视为本主题的实现项；它们只在观察期记录是否复发。
+- 不制作生产数据库副本、执行 VACUUM/WAL 截断、清理 proof/journal，或在本次代码交付中自动部署、重启、回滚或修复线上数据库。
 
 ## 范围（Scope）
 
@@ -80,6 +85,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - terminal invocation classification、legacy/archive overlay 与 rollup classification coverage 的 materialization 合同。
 - 全局 SQLite pressure gate 与 startup backfill 的 defer/due/wake 合同。
 - long-term legacy interval migration 的 cursor/seek、短事务、pressure/cancel 合同。
+- Dashboard `today`、`yesterday`、`previous7d` 的 canonical source recovery、account 聚合、durable checkpoint、generation-fenced publication 与 coded unavailable 状态。
 - 四个交付 Ticket 的 checkpointed promotion 与只读生产观察证据。
 
 ### Out of scope
@@ -87,6 +93,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - Dashboard hot-topic 或 timeseries writer 的实现细节。
 - HTTP wire shape、owner-facing UI 和运行时部署机制的重设计。
 - 通过人工维护任务或请求期回源绕开缺失的 read-model coverage。
+- 30d/all-time projection、archive rollup 或其他不属于当前 Dashboard 三个 day-window 的全历史重建。
 
 ## Requirements
 
@@ -152,6 +159,8 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - archive manifest 或历史 source capacity 超过 bounded source admission 或 shared resident preview capacity 时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
 - `codex_invocations` archive 的 `completed` 是 Summary-eligible 状态，不是“文件已写出”的泛化标记。转入该状态前必须在同一事务中证明有限 coverage、当前 manifest SHA、historical rollup materialization 与全部必需 Summary replay target；数据库最终化约束必须拒绝绕过该规则的写入。新的 archive 在 raw source cleanup 前还必须持久化当前 manifest identity 对应的压缩 Summary Archive Snapshot V2、coverage proof 与 SHA；V1 仅可作为 legacy backfill 输入，绝不构成 cleanup authority。任何 Snapshot 压力或失败都保留 authoritative archive 并留下可恢复 checkpoint。
 - All-time coverage uses independent global and account scope versions across manifest, archive replay and verified Snapshot V2 proof. Archive rollup materialization advances those versions through its replay proof; ordinary hot/live rollup writes advance only the independent live-tail cursor and bounded overlay. They do not invalidate a completed historical checkpoint or trigger full live admission. Only a changed historical coverage input restarts its affected scope, and an unknown impact remains fail-closed.
+- Dashboard compacted-source recovery uses an additive checkpoint and staging tables. It captures fixed Shanghai window boundaries, the live/rollup/account/manifest/coverage/terminal target fence, a `(occurred_at, id)` cursor, aggregate deltas, usage breakdowns, and bounded record identities; it never copies invocation payloads. A committed page advances all of these facts in one transaction, a concurrent worker must win a durable cursor compare-and-swap, and a restart resumes from the committed tuple without duplicate counting.
+- The dashboard recovery worker owns separate pending/running/deferred/failed/completed states. It yields at the first of the 512-row, 8 MiB, 250 ms transaction, or 2 s turn budgets; coverage-fence changes clear unpublishable staging and rebuild against the new target, while append-only live-tail changes preserve committed historical pages and are applied through the bounded exact delta overlay. Non-error source text that cannot be materialized within the page budget fails closed; only a completed staging set matching the current coverage fence is published to the in-memory Summary read model.
 - Summary Delta Journal 的 gap proof 预算耗尽时不得淘汰较早的 account/time/rank proof；必须保留一个广义 proof，直至 generation-fenced durable reconciliation 吸收该缺口。若已存在 last-good immutable Projection，intersecting selection 可以继续组合已确认 terminal overlay，但必须返回 `StatsResponse.dataQuality = { state: "degraded", proofPending: true, reason: "summary_delta_journal_pending" }`；没有已发布 Projection 或命中独立 archive/source coverage gap 时仍保持 `unavailable`。terminal journal 或 shutdown recovery 在 SQLite commit 后必须作为有界 exact replay overlay 接入 rolling Projection，不能让正常 Rolling 退化为完整 live admission。
 - Summary live-tail reconciliation MUST key absorption and proof retirement by
   the durable `(row_id, invoke_id, occurred_at)` identity. An ACK or restart
@@ -224,6 +233,9 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 4. 低优先级 backfill 遇到关闭的 pressure gate 时只注册一次内存 scheduler future-eligibility deadline；对应事件或 deadline 只重新选择候选任务，执行前仍检查 durable progress，durable progress 保持不变。Account Activity V2 coverage repair 在同一 permit 内完成这个 due 检查与 repair，避免嵌套获取 global gate。
 5. long-term migration 读取 cursor 后执行一个最多 512 行的微事务；压力、取消或时间预算耗尽时安全退出，后续从持久 cursor 继续。
 6. 每个 checkpoint 的 GitHub release 由累计 integration frontier 生成；主人部署确认后才开始相关 Ticket 的只读 900 秒观察。
+7. 当 source journal compaction proof 使旧 tail 不再完整时，Supervisor 创建或续跑 Dashboard compacted-source checkpoint；每一页只读取 canonical 必要列，在同一事务中写聚合、受 `list_limit_max` 限制的 record identity、游标和状态，完成后再以 generation fence 发布内存 snapshot。
+8. 当 broad compaction proof 已生效时，rolling refresh 不再同时走 legacy source-tail fallback；该范围由 compacted-source recovery worker 独占修复，避免同一 canonical rows 被重复登记为 strict scoped gap，遮蔽已经精确发布的 generation-fenced snapshot。
+9. Dashboard natural-day panel 在对应 `today` 或 `yesterday` Summary 仍在 loading、pending 或 failed 时，不得把已存在的 activity snapshot 当作 exact 成功；必须沿用 coded unavailable 状态，避免旧 snapshot 或零值遮蔽恢复进度。
 
 ### Edge cases / errors
 
@@ -237,6 +249,8 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 ## 接口契约（Interfaces & Contracts）
 
 Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `dataQuality`，仅当请求选择 intersecting 的 Summary Delta Journal proof gap 或 eligible Source Journal compaction proof 时在 `/api/stats` 与 `/api/stats/summary` 增加 `dataQuality`：`state = "degraded"`、`proofPending = true`、`reason = "summary_delta_journal_pending"`。该状态只来自内存，不改变请求期 zero-I/O 合同；无已发布 Projection、无 acknowledged overlay 或命中独立 durable source/archive gap 仍返回既有 `unavailable`。
+
+Dashboard 三个 day-window 在恢复期间继续使用 503 unavailable wire status，但 body 为 `{ "code": "summary_recovery_pending|summary_recovery_failed", "message": "..." }`；健康响应保留既有字段并可选增加 `summaryRecovery.state`、`processedRows` 和 `lastErrorCode`。恢复成功后，HTTP/SSE 仍只从与当前 `SummaryProjectionGenerationFence` 相等的内存 snapshot 返回结果。
 
 ## 关联合同
 
@@ -290,6 +304,11 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - Method: GitHub CI tests concurrent owners, startup and UTC rollover preparation, blocked SQLite, refill completion, eviction, cancellation and restart; fixed metric combinations are exported and checked for budget and instance isolation.
 - Pass: no range is issued before durable commit or reused across recovery; speculative preparation stays bounded and demand has priority, eligible refill work continues without another request, and an empty range retains the 100ms failure bound. Diagnostic scrape performs no SQL or file scan. Compilation and runtime validation run only in GitHub CI and each test stage is limited to 15 minutes.
 
+### VER-RMPR-008 — Dashboard compacted-source recovery
+
+- Method: stateful SQLite tests and the independent exact oracle cover a compacted proof with more than 10,000 canonical terminal rows, fixed Shanghai `today`/`yesterday`/`previous7d` ranges, multiple upstream accounts, committed-page restart, generation-fence invalidation, and contention budgets.
+- Pass: recovery never performs a global terminal count gate, uses `(occurred_at, id)` keyset pages no larger than 512 rows, commits aggregate/identity/cursor state atomically, resumes without duplicate or missing rows, publishes only the target generation, and matches canonical totals, usage, account scopes, and bounded record identities.
+
 ## Detailed Acceptance Criteria
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
@@ -321,6 +340,11 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - Given 一个 checkpoint 已发布且主人确认 exact version 已部署，When 执行 900 秒 `$srv-101-ops` 只读观察，Then 结果绑定同一 release identity，不执行服务器写入。
 - Given 已发布 last-good Summary Projection、已确认 terminal overlay 与 intersecting 的 Summary Delta Journal 或 broad Source Journal compaction proof gap，When 请求 `/api/stats` 或 `/api/stats/summary`，Then handler 返回 last-good 加已确认 overlay、附带 `dataQuality.proofPending = true`，且关闭 SQLite 后仍不执行 SQL、archive 或文件访问；scoped source identity、late historical coverage 或无 overlay 的 gap 仍返回 `unavailable`。
 - Given Summary Delta Journal proof gap 仍待后台 reconciliation，When 请求路径执行，Then 不执行 archive proof、全历史扫描或 broad JSON parse；后台以固定有界批次继续恢复，首次没有已发布 Projection 的请求仍返回 `unavailable`。
+- Given compacted source proof covers 10,001 terminal rows, When Dashboard recovery runs, Then it admits the range without a global `COUNT(*)`/`LIMIT 10001` gate and completes through `(occurred_at, id)` pages capped at 512 rows.
+- Given a worker commits one recovery page and is cancelled or restarted, When the next worker starts, Then it resumes from the durable tuple cursor and target coverage fence, does not recount the committed page, and keeps the window unavailable until the complete snapshot is generation-fenced and published.
+- Given `today`, `yesterday`, and `previous7d` plus multiple upstream accounts, When the independent oracle compares the published result, Then totals, success/failure counts, tokens, costs, usage/model/reasoning breakdowns, account scopes, and bounded record identities match the canonical source exactly.
+- Given SQLite write contention, sustained terminal writes, or a page that reaches 8 MiB, 250 ms, or 2 s, When recovery yields, Then it commits only the completed page, preserves progress across live-tail changes, records `deferred`, and leaves request handlers free of recovery SQL and production backup/destructive operations.
+- Given recovery is pending, running, deferred, failed, or completed, When `/api/system/status` and Dashboard summary requests are read, Then the status is low-cardinality and the coded 503 state is localized; no zero or indefinite loading state is presented as success.
 
 ## Contract Coverage
 
@@ -340,3 +364,6 @@ The detailed requirements and verification entries above define the durable cont
 - 每次 checkpoint/aggregate 以 Initiative v4 guard 的 exact head/base、release 与 observation receipt 为准。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas; story_id_or_title: Dashboard/TodayStatsOverview/RecoveryPending; requested_viewport: desktop1280; viewport_strategy: storybook-viewport; margin_policy: require_margin; evidence_surface: component; surface_selector: [data-visual-evidence-surface]; target_selector: [data-visual-evidence-target]; state: pending; evidence_status: owner_confirmation_pending; evidence_note: source-managed Storybook canvas shows localized recovery-in-progress copy instead of loading or zero metrics; image: ![Dashboard recovery pending](./assets/dashboard-recovery-pending.png)
+- source_type: storybook_canvas; story_id_or_title: Dashboard/TodayStatsOverview/RecoveryFailed; requested_viewport: desktop1280; viewport_strategy: storybook-viewport; margin_policy: require_margin; evidence_surface: component; surface_selector: [data-visual-evidence-surface]; target_selector: [data-visual-evidence-target]; state: failed; evidence_status: owner_confirmation_pending; evidence_note: source-managed Storybook canvas shows localized failure copy and preserves the existing retry path; image: ![Dashboard recovery failed](./assets/dashboard-recovery-failed.png)
