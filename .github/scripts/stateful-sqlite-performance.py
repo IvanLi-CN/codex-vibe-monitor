@@ -54,16 +54,17 @@ def parse_log(path: Path) -> dict[str, dict[str, list[int]]]:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     events: dict[str, dict[str, list[int]]] = {}
     current_target: str | None = None
-    in_stderr = False
     for index, line in enumerate(lines):
+        for target in TARGETS:
+            if target in line:
+                current_target = target
+                break
         if "stderr ───" in line:
-            current_target = target_from_lines(lines, index)
-            in_stderr = True
+            current_target = current_target or target_from_lines(lines, index)
             continue
         if "stdout ───" in line:
-            in_stderr = False
             continue
-        if not in_stderr or current_target is None:
+        if current_target is None:
             continue
         match = PHASE_RE.search(line)
         if match is None:
