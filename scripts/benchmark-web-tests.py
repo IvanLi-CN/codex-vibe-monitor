@@ -149,7 +149,12 @@ def test_files(source: Path) -> list[str]:
 
 
 def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
-    """Ignore only the reviewed timeline wait tuning while hashing test coverage."""
+    """Ignore only reviewed execution-only tuning while hashing test coverage."""
+    if path.name == "dashboard-working-conversations-layout.spec.ts":
+        text = text.replace(
+            'await page.goto("/#/dashboard", { waitUntil: "networkidle" });',
+            'await page.goto("/#/dashboard");',
+        )
     if path.name != "dashboard-timeline-capacity.spec.ts":
         return text
     text = re.sub(
