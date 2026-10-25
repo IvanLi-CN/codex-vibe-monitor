@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "design-only-implementation-and-validation-pending",
+  "migration": {
+    "description": "Migrate functional modules from SQLite to PostgreSQL through bounded runtime table copying and change reconciliation, then briefly gate each module and publish its durable authority generation.",
+    "release_unit_description": "Migration-capable application with storage routing, module transaction inventory, task admission overlay, background worker, progress and crash-safe cutover. No implementation or release is included in this design change.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Business facts, archive publication and Raw-reference proofs, recovery obligations, projections and consumer cursors, stable ID reservations, transactional change capture, per-table copy checkpoints and per-module authority generations.",
+    "storage_implementation": "Original SQLite main database, PostgreSQL targets, a small durable authority manifest, existing maintenance/performance SQLite stores and local archive/Raw/terminal/routing files with explicit independent paths.",
+    "source_compatibility_range": {
+      "from_program_versions": "4.13.11 at 85b46550da5fb04b8a4c39d310a9b04c80824047 is the initial source contract; runtime fixtures and verification are pending. No broader source range is claimed.",
+      "to_program_version": "Migration-capable candidate; release version has not been selected.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-catalog-target-capture",
+        "description": "Prepare target schema and a closed module/table catalog; install transactional source change capture in bounded background operations before copying, including delete, key-change and replacement semantics. Required indexes are built in the background before readiness.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-control-obligations",
+        "description": "Retain SQLite authority during preparation; persist migration identity and module generations; split accidental account-observation coupling into durable idempotent delivery without weakening routing control fences. Migration task holds compose with, rather than overwrite, operator policy.",
+        "order": 2,
+        "depends_on": ["ddl-catalog-target-capture"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-module-cutover",
+        "description": "After complete background verification, gate module operations, drain old leases/native work, reconcile through final watermark, prepare source fencing, durably publish target authority, then reopen on the new generation. Abort pre-commit on budget expiration; resolve uncertain outcomes rather than choosing a reachable backend.",
+        "order": 4,
+        "depends_on": ["historical-table-reconciliation"],
+        "observable": true,
+        "pauseable": true,
+        "pause_boundary": "Before authority publication, or after its outcome is durably resolved; never treat an in-flight authority decision as a safe cancellation point."
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "historical-table-reconciliation",
+        "description": "Copy tables through fixed-bound short keyset pages; commit target rows and copy cursor together; reconcile all changes from capture start with versioned tombstones and target checkpoints; validate normalized chunks and correctness proofs without long source snapshots or startup scans.",
+        "order": 3,
+        "depends_on": ["ddl-catalog-target-capture", "dml-control-obligations"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-catalog-target-capture", "dml-control-obligations", "historical-table-reconciliation", "dml-module-cutover"],
+    "progress_signals": [
+      "Per-table committed rows/bytes, scan bound/cursor, index status, dirty/verified chunks, pending keys, oldest-change age and applied watermark",
+      "Per-module dependency readiness, task holds/drain, authority generation, switch attempt duration and explicit result",
+      "Source P1 backlog, lock waits, throughput versus incoming change rate, disk/WAL/journal headroom and observation freshness"
+    ],
+    "pause_points": [
+      "Between independently committed schema operations and bounded copy/replay/validation batches",
+      "After native work actually commits or rolls back and drains",
+      "Before closing the switch gate, or after the durable authority decision is resolved"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery",
+    "before_cutover": "Keep source authority and resume committed copy/replay checkpoints; target unavailability pauses migration only.",
+    "after_cutover": "Keep PostgreSQL authority, fence stale source writers and restore journal/materializer ownership from the manifest. No automatic fallback to retained SQLite tables."
+  },
+  "validation": {
+    "status": "pending-implementation",
+    "required_test_evidence": [
+      "4.13.11 source fixture; complete transaction/table/trigger inventory and all-writer generation fence coverage",
+      "Concurrent insert/update/delete/key change/replace; retry and restart; no stale overwrite, resurrection or duplicate business effects",
+      "Invocation/attempt/source-descriptor and archive/source/Raw-proof atomicity; stable identity and control-generation preservation",
+      "Crash and ambiguous outcome tests around target commit, source acknowledgement/fence, authority publish and journal acknowledgement",
+      "Background-only historical work, representative capacity/convergence, short switch gate under ongoing traffic and timeout recovery",
+      "Progress correctness, task hold/restoration and forward repair after an interrupted partially migrated installation"
+    ]
+  }
+}

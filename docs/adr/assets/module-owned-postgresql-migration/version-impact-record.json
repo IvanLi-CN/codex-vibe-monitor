@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "design-only-implementation-and-validation-pending",
+  "change": {
+    "description": "Add module-owned PostgreSQL storage, online background migration and observable bounded cutover while retaining SQLite control modules and existing proxy contracts.",
+    "release_unit_description": "Future migration-capable application; this design-only change does not implement or release the capability.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "Compatible migration status/control capabilities may be added; existing proxy APIs remain compatible. Older binaries cannot safely write an installation whose module authority has moved to PostgreSQL.",
+      "evidence": ["docs/adr/0050-module-owned-postgresql-migration.md", "docs/design/postgresql-module-migration.md"]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {"detected": false, "description": "Current design follows module-based runtime migration with per-table progress and a short module switch gate."},
+      "reasoning": "Design classification only; no runtime compatibility or cutover evidence exists yet.",
+      "evidence": ["docs/adr/assets/module-owned-postgresql-migration/persistent-state-migration-record.json"]
+    },
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "planned_impact": "minor",
+      "change": "Compatible progress/control additions; existing proxy, HTTP and SSE semantics retained. Migration-related task deferrals and data quality must be explicit.",
+      "supported_consumer_range": "Existing same-Major clients; implementation verification pending.",
+      "evidence": []
+    },
+    "persistent_state": {
+      "applicable": true,
+      "planned_impact": "minor",
+      "state_description": "SQLite/PostgreSQL module authority, new durable capture/checkpoint state, preserved business and recovery identities; old program writes must be fenced.",
+      "source_program_compatibility_range": "Initial source 4.13.11 only; fixtures and runtime verification pending.",
+      "evidence": []
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["module-owned-postgresql-migration"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}
