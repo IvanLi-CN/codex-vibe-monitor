@@ -92,7 +92,8 @@
 ### Testing
 
 - Unit tests: runtime parsing, scene/model reset, redaction and route handlers.
-- E2E tests: route matrix, Inspector sharing, simulated mutation and network failure inside the existing Playwright job.
+- Route coverage is a shared 26-route x 4-scene (104-case) matrix. The jsdom integration suite mounts the real `App`, router, providers, demo handlers, and EventSource fallback for every matrix case; Chromium keeps all 26 operational routes plus four representative routes for attention, empty, and network-failure scenes, together with sharing, mutation, mobile, and security scenarios.
+- E2E tests: the shared route matrix contract, Inspector sharing, simulated mutation and network failure inside the existing Playwright job. CI invokes one functional project batch followed by one performance batch in PRs; main adds the isolated timeline-capacity batch after the performance batch so browser load cannot contaminate performance or capacity measurements.
 
 ### UI / Storybook (if applicable)
 
@@ -104,6 +105,7 @@
 ### Quality checks
 
 - `bun run lint`, `bun run test`, `bun run test-storybook`, demo build, Storybook build and Pages assembly smoke.
+- Performance A/B validation runs only in GitHub Actions through the manual whole-PR `web-test-ab.yml` entry; local and Agent VM A/B execution is forbidden. Each workload phase runs as an independent hosted job, each group has one total 180-second wall-clock deadline, and the measured A+B wall clock has a 600-second ceiling; do not split a phase, continue after a deadline, or change workflow timeout limits. Timeout scores 0; an old workload timeout and complete successful new workload within 180 seconds immediately passes the performance gate. When both complete, require at least 10% and 5 seconds saved. Keep raw JSONL, commands, reports, SHAs, environment and cache policy, export results and clean the run/artifacts afterward. Follow `docs/solutions/performance/frontend-test-runtime-feedback-loop.md` for the full workload, pre-merge manual entry and cleanup contract; performance acceptance alone does not certify semantic coverage equivalence.
 
 ## Visual Evidence
 

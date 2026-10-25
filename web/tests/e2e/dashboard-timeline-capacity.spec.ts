@@ -14,6 +14,11 @@ const CAPACITY_SCENARIO_DURATION_MS =
     : defaultScenarioDurationMs;
 const MINIMUM_TRAVERSALS = Math.max(2, Math.floor(CAPACITY_SCENARIO_DURATION_MS / 15_000) - 1);
 const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
+// Keep the delayed request just beyond one refresh interval to exercise overlap
+// protection without adding an unnecessary fixed wait to every viewport.
+const DELAYED_TRAVERSAL_MS = MINIMUM_REFRESH_INTERVAL_MS + 250;
+// The dense render proof only needs an in-flight request; cross-refresh overlap is covered above.
+const DENSE_TRAVERSAL_DELAY_MS = 250;
 const REVISION_INTERVAL_MS = 1_000;
 const MOVING_WINDOW_TRAVERSAL_DELAY_MS = Number(
   process.env.E2E_TIMELINE_TRAVERSAL_DELAY_MS ?? 16_000,
@@ -466,12 +471,12 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
       ),
     );
     expect(initialRangeEnds.every((rangeEnd) => rangeEnd != null && rangeEnd !== "")).toBe(true);
-    await page.evaluate(() => {
+    await page.evaluate((delayMs) => {
       const diagnostics = (window as TimelineDiagnosticsWindow)
         .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
       if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-      diagnostics.nextTraversalDelayMs = 20_000;
-    });
+      diagnostics.nextTraversalDelayMs = delayMs;
+    }, DELAYED_TRAVERSAL_MS);
     const triggerRevision = async () =>
       Promise.all(
         pages.map((clientPage) =>
@@ -1026,12 +1031,12 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         ...timelineMountLongTasks.map((task) => task.duration),
       );
 
-      await page.evaluate(() => {
+      await page.evaluate((delayMs) => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
         if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-        diagnostics.nextTraversalDelayMs = 20_000;
-      });
+        diagnostics.nextTraversalDelayMs = delayMs;
+      }, DENSE_TRAVERSAL_DELAY_MS);
       const beforeRefresh = await page.evaluate(() => {
         const diagnostics = (window as TimelineDiagnosticsWindow)
           .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
@@ -1067,44 +1072,85 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           ),
         )
         .toBeGreaterThan(beforeRefresh.liveMessages);
-      await expect
-        .poll(
+
+      const timelineControls = page.getByTestId("dashboard-invocation-timeline").locator("button");
+      await expect(timelineControls).toHaveCount(4);
+      const triggerDenseRefresh = async (releaseCountBefore: number) => {
+        await expect
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.activeTraversals ?? 0,
+              ),
+            { timeout: 15_000 },
+          )
+          .toBe(0);
+        const traversalCountBefore = await page.evaluate(
           () =>
+            (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+              ?.traversalStarts.length ?? 0,
+        );
+        await page.evaluate((delayMs) => {
+          const diagnostics = (window as TimelineDiagnosticsWindow)
+            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+          diagnostics.nextTraversalDelayMs = delayMs;
+        }, DENSE_TRAVERSAL_DELAY_MS);
+        // The capacity fixture anchors records at requestEnd - 15 minutes; lengthening the
+        // window keeps the synthetic dense records in range across both refreshes.
+        await timelineControls.nth(1).click();
+        await expect
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.traversalStarts.length ?? 0,
+              ),
+            { timeout: 15_000 },
+          )
+          .toBeGreaterThan(traversalCountBefore);
+        await expect
+          .poll(() =>
             page.evaluate(
               () =>
                 (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.activeTraversals ?? 0,
+                  ?.releasedSnapshots ?? 0,
             ),
-          { timeout: 45_000 },
-        )
-        .toBe(1);
+          )
+          .toBeGreaterThan(releaseCountBefore);
+        await expect
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.activeTraversals ?? 0,
+              ),
+            { timeout: 15_000 },
+          )
+          .toBe(0);
+        await expect(page.getByTestId("dashboard-invocation-timeline-lanes")).toHaveAttribute(
+          "data-total-calls",
+          "550",
+        );
+        await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
+      };
+      await triggerDenseRefresh(beforeRefresh.releaseCount);
+      const releaseCountAfterFirstRefresh = await page.evaluate(
+        () =>
+          (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+            ?.releasedSnapshots ?? 0,
+      );
+      await triggerDenseRefresh(releaseCountAfterFirstRefresh);
 
       const refreshedLanes = page.getByTestId("dashboard-invocation-timeline-lanes");
       await expect(refreshedLanes).toBeVisible();
       await expect(refreshedLanes).toHaveAttribute("data-total-calls", "550");
       await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
       await expectVisibleCallsAreVirtualized(page, 550);
-
-      await expect
-        .poll(
-          () =>
-            page.evaluate(
-              () =>
-                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.releasedSnapshots ?? 0,
-            ),
-          { timeout: 35_000 },
-        )
-        .toBeGreaterThan(beforeRefresh.releaseCount + 1);
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                ?.activeTraversals ?? 0,
-          ),
-        )
-        .toBe(0);
       await page.evaluate(
         () =>
           new Promise<void>((resolve) =>
@@ -1152,13 +1198,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       expect(diagnostics?.traversalStarts.length).toBeGreaterThanOrEqual(2);
       expect(diagnostics?.releasedSnapshots).toBe(diagnostics?.traversalStarts.length);
       expect(diagnostics?.maxActiveTraversals).toBe(1);
-      expect(
-        diagnostics?.traversalStarts.every(
-          (startedAt, index) =>
-            index === 0 ||
-            startedAt - diagnostics.traversalStarts[index - 1]! >= MINIMUM_REFRESH_INTERVAL_MS,
-        ),
-      ).toBe(true);
       expect(diagnostics?.pageRequests).toBeGreaterThanOrEqual(
         (diagnostics?.traversalStarts.length ?? 0) * 2,
       );

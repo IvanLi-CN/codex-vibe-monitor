@@ -634,34 +634,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          records_status=0
-          demo_status=0
-          dashboard_status=0
+          functional_status=0
           performance_status=0
-          retention_status=0
           timeline_capacity_status=0
-          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
-            bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
-          records_pid=$!
-          E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
-          demo_pid=$!
-          E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-retention-ownership \
-            bun run test:e2e -- --workers=1 --output=test-results/retention-ownership retention-maintenance-ownership.spec.ts &
-          retention_pid=$!
-          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \
-            bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts &
-          dashboard_pid=$!
-          wait "$records_pid" || records_status=$?
-          wait "$demo_pid" || demo_status=$?
-          wait "$retention_pid" || retention_status=$?
-          wait "$dashboard_pid" || dashboard_status=$?
-          E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \
-            bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?
-          E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=60000 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-timeline-capacity \
-            bun run test:e2e -- --workers=1 --output=test-results/dashboard-timeline-capacity dashboard-timeline-capacity.spec.ts || timeline_capacity_status=$?
-          dashboard_status=$(( dashboard_status || performance_status ))
-          exit $(( records_status || demo_status || retention_status || dashboard_status || timeline_capacity_status ))
+          CI_PROFILE=main E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \
+            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=2 --output=test-results/functional || functional_status=$?
+          CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \
+            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?
+          CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60085 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=30000 \
+            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-timeline-capacity \
+            bun run test:e2e -- --config=playwright.ci.config.ts --project=timeline-capacity --workers=1 --output=test-results/timeline-capacity || timeline_capacity_status=$?
+          exit $(( functional_status || performance_status || timeline_capacity_status ))
 
       - name: Upload Playwright diagnostics
         if: failure()

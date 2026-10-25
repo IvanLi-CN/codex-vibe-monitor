@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -113,10 +114,37 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
     )
 
 
+def require_playwright_ci_config(workflow_path: Path, workflow_name: str) -> None:
+    config_path = workflow_path.parents[2] / "web" / "playwright.ci.config.ts"
+    require(config_path.is_file(), f"{workflow_name} must include web/playwright.ci.config.ts")
+    config = config_path.read_text(encoding="utf-8")
+    required_specs = (
+        "records-filter-overlay",
+        "dashboard-working-conversations-layout",
+        "demo-runtime",
+        "retention-maintenance-ownership",
+        "dashboard-render-performance",
+        "dashboard-timeline-capacity",
+    )
+    missing_specs = [
+        spec
+        for spec in required_specs
+        if not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(spec)}(?![A-Za-z0-9_-])", config)
+    ]
+    require(
+        not missing_specs,
+        f"{workflow_name} web/playwright.ci.config.ts is missing required specs: {', '.join(missing_specs)}",
+    )
+    require(
+        "workers: 1" in config and "fixtureBaseURL" in config and "demoBaseURL" in config,
+        f"{workflow_name} web/playwright.ci.config.ts must preserve per-project workers and dedicated base URLs",
+    )
+
+
 def require_observability_performance_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
     performance_job = job_config(workflow, "observability-performance", workflow_path)
     image_job = job_config(workflow, "observability-performance-image", workflow_path)
-    opt_in_if = "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
+    opt_in_if = "(github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha == '') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
     require(performance_job.get("name") == "Observability Acceptance (serial bundle)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 60 and image_job.get("timeout-minutes") == 15,
             "the image job must finish within 15 minutes and the serial bundle within 60 minutes")
@@ -308,7 +336,7 @@ def validate_observability_performance(path: Path) -> None:
     require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
     require_exact_named_jobs(
         workflow,
-        {"Observability Performance Image", "Observability Acceptance (serial bundle)", "Observability Performance Budget", "Observability CPU Diagnosis"},
+        {"Observability Performance Image", "Observability Acceptance (serial bundle)", "Observability Performance Budget", "Observability CPU Diagnosis", "Frontend Test A/B dispatcher"},
         workflow_path,
     )
     on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
@@ -318,6 +346,14 @@ def validate_observability_performance(path: Path) -> None:
     candidate_input = require_mapping(dispatch_inputs.get("candidate_sha"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_sha")
     require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
             f"{workflow_path} manual acceptance must require a string candidate_sha")
+    web_input = require_mapping(dispatch_inputs.get("web_test_baseline_sha"), "frontend A/B baseline input")
+    require(web_input.get("required") is False and web_input.get("type") == "string" and web_input.get("default") == "",
+            "frontend A/B dispatcher must remain an optional manual input")
+    web = job_config(workflow, "frontend-test-ab", workflow_path)
+    require(web.get("if") == "github.event_name == 'workflow_dispatch' && inputs.web_test_baseline_sha != ''"
+            and web.get("uses") == "./.github/workflows/web-test-ab.yml"
+            and web.get("with") == {"baseline_sha": "${{ inputs.web_test_baseline_sha }}", "candidate_sha": "${{ inputs.candidate_sha }}"},
+            "frontend A/B must exclusively dispatch the exact manual SHA pair")
     assert_event_types(event_config(workflow, "pull_request_target", workflow_path), {"labeled"}, f"{workflow_path}.on.pull_request_target")
     permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
     require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")
@@ -1196,6 +1232,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require_storybook_browser_install(workflow, "ci-pr.yml")
     require_retention_migration_validation_contract(workflow, expected_jobs, auxiliary_jobs)
     require_bun_caches(workflow, "ci-pr.yml")
+    require_playwright_ci_config(path, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -1415,46 +1452,37 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         e2e_run = str(e2e_run_step.get("run", ""))
         require(
-            "records-filter-overlay.spec.ts" in e2e_run
-            and "demo-runtime.spec.ts" in e2e_run
-            and "dashboard-working-conversations-layout.spec.ts" in e2e_run
-            and "dashboard-render-performance.spec.ts" in e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression specs",
+            "playwright.ci.config.ts" in e2e_run
+            and "--project=fixtures-functional" in e2e_run
+            and "--project=demo-functional" in e2e_run
+            and "--project=performance" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression projects",
         )
         require(
-            "--output=test-results/records-overlay" in e2e_run
-            and "--output=test-results/demo-runtime" in e2e_run
-            and "--output=test-results/dashboard-working-conversations" in e2e_run
-            and "--output=test-results/dashboard-render-performance" in e2e_run,
+            "--output=test-results/functional" in e2e_run
+            and "--output=test-results/performance" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate all Playwright result directories",
         )
         expected_e2e_run = "\n".join(
             [
                 "set -euo pipefail",
-                "records_status=0",
-                "demo_status=0",
-                "dashboard_status=0",
+                "functional_status=0",
                 "performance_status=0",
-                "retention_status=0",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts || records_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts || demo_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-retention-ownership \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/retention-ownership retention-maintenance-ownership.spec.ts || retention_status=$?",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts || dashboard_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?",
-                "exit $(( records_status || demo_status || dashboard_status || performance_status || retention_status ))",
+                "CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
+                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?",
+                "CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\",
+                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
+                "exit $(( functional_status || performance_status ))",
             ]
         )
         require(
             e2e_run.strip() == expected_e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all four Playwright specs serially and propagate each status",
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run the functional and performance batches serially and propagate each status",
         )
         require(
-            "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,
+            "E2E_DEMO_BASE_URL=http://127.0.0.1:60083" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must run Web Demo against its mock-only server",
         )
         smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
@@ -1610,6 +1638,43 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
     require_storybook_browser_install(workflow, "ci-main.yml")
     require_bun_caches(workflow, "ci-main.yml")
+    require_playwright_ci_config(path, "ci-main.yml")
+
+    e2e_job = named_job_config(workflow, "records-overlay-e2e", expected_jobs, "ci-main.yml")
+    require_no_if(e2e_job, "ci-main.yml.jobs.records-overlay-e2e")
+    require_fail_closed(e2e_job, "ci-main.yml.jobs.records-overlay-e2e")
+    e2e_run_step = step_config(
+        e2e_job,
+        "Run records overlay and Web Demo Playwright regression",
+        "ci-main.yml.jobs.records-overlay-e2e",
+    )
+    e2e_run = str(e2e_run_step.get("run", ""))
+    expected_e2e_run = "\n".join(
+        [
+            "set -euo pipefail",
+            "functional_status=0",
+            "performance_status=0",
+            "timeline_capacity_status=0",
+            "CI_PROFILE=main E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
+            "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=2 --output=test-results/functional || functional_status=$?",
+            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\",
+            "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
+            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60085 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=30000 \\",
+            "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-timeline-capacity \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=timeline-capacity --workers=1 --output=test-results/timeline-capacity || timeline_capacity_status=$?",
+            "exit $(( functional_status || performance_status || timeline_capacity_status ))",
+        ]
+    )
+    require(
+        e2e_run.strip() == expected_e2e_run,
+        "ci-main.yml.jobs.records-overlay-e2e must run functional, performance, and timeline batches serially and propagate each status",
+    )
+    require(
+        all(project in e2e_run for project in ("fixtures-functional", "demo-functional", "performance", "timeline-capacity")),
+        "ci-main.yml.jobs.records-overlay-e2e must run all required Playwright projects",
+    )
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
@@ -2445,6 +2510,10 @@ def materialize_default_repo_root(script_repo_root: Path) -> Path:
 
     tempdir = Path(tempfile.mkdtemp(prefix="quality-gates-contract-"))
     shutil.copytree(script_repo_root / ".github", tempdir / ".github", dirs_exist_ok=True)
+    playwright_config = script_repo_root / "web" / "playwright.ci.config.ts"
+    require(playwright_config.is_file(), "repository must include web/playwright.ci.config.ts")
+    (tempdir / "web").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(playwright_config, tempdir / "web" / "playwright.ci.config.ts")
     shutil.copyfile(fixtures_root / "quality-gates.json", tempdir / ".github" / "quality-gates.json")
     for filename in ("ci-pr.yml", "ci-main.yml", "release.yml", "label-gate.yml", "review-policy.yml", "release-snapshot-pr.yml"):
         shutil.copyfile(fixtures_root / filename, tempdir / ".github" / "workflows" / filename)
