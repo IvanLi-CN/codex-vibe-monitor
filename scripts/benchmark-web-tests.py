@@ -575,6 +575,8 @@ def phase_report(phase_name: str, directory: Path) -> dict:
 
 
 def phase_report_success(report: dict) -> bool:
+    if "browser" in report:
+        return all(profile.get("success") is True for profile in report["browser"].values())
     return all(section.get("success") is True for section in report.values())
 
 

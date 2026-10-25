@@ -63,7 +63,9 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_failed_phase_report_is_not_a_successful_measurement(self):
         self.assertTrue(MODULE.phase_report_success({"unit": {"success": True}}))
-        self.assertFalse(MODULE.phase_report_success({"browser": {"success": False}}))
+        self.assertFalse(MODULE.phase_report_success({"browser": {"pr": {"success": False}}}))
+        self.assertTrue(MODULE.phase_report_success({"browser": {"pr": {"success": True}}}))
+        self.assertFalse(MODULE.phase_report_success({"browser": {"main": {"success": False}}}))
         self.assertTrue(MODULE.phase_report_success({}))
 
     def test_both_complete_require_ten_percent_and_five_seconds(self):
