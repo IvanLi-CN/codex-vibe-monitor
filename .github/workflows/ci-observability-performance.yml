@@ -189,7 +189,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/observability-image-cache
+          path: ${{ runner.temp }}/observability-image
           key: observability-performance-v2-image-${{ steps.identity.outputs.build_identity }}
 
       - name: Verify complete candidate image cache identity
@@ -201,8 +201,8 @@ jobs:
         run: |
           set -euo pipefail
           valid=false
-          if [ "$CACHE_HIT" = "true" ] && test -s "$RUNNER_TEMP/observability-image-cache/candidate.json" && test -s "$RUNNER_TEMP/observability-image-cache/candidate.tar.gz"; then
-            if CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" ROOT="$RUNNER_TEMP/observability-image-cache" python3 - <<'PY'
+          if [ "$CACHE_HIT" = "true" ] && test -s "$RUNNER_TEMP/observability-image/candidate.json" && test -s "$RUNNER_TEMP/observability-image/candidate.tar.gz"; then
+            if CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" ROOT="$RUNNER_TEMP/observability-image" python3 - <<'PY'
           import hashlib,json,os,pathlib
           root=pathlib.Path(os.environ['ROOT'])
           metadata=json.loads((root/'candidate.json').read_text())
@@ -220,7 +220,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: observability-cached-image-${{ github.run_id }}
-          path: ${{ runner.temp }}/observability-image-cache/
+          path: ${{ runner.temp }}/observability-image/
           if-no-files-found: error
           retention-days: 1
 

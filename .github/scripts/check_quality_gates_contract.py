@@ -410,7 +410,12 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     outputs = require_mapping(resolve.get("outputs"), f"{workflow_path}.jobs.observability-performance-resolve.outputs")
     require(outputs.get("candidate") == "${{ steps.identity.outputs.candidate }}" and outputs.get("trusted_ref") == "${{ steps.refs.outputs.trusted_ref }}" and outputs.get("effective_build_path") == "${{ steps.identity.outputs.effective_build_path }}" and outputs.get("complete_image_cache_hit") == "${{ steps.complete-image-cache-check.outputs.valid }}", f"{workflow_path} resolver outputs drifted")
     complete_cache = uses_step_config(resolve, "Restore complete candidate image cache", "actions/cache/restore@v4", workflow_path)
-    require("observability-performance-v2-image-" in str(complete_cache.get("with", {}).get("key", "")) and complete_cache.get("continue-on-error") is True, f"{workflow_path} complete image cache restore must be isolated and recoverable")
+    require(
+        complete_cache.get("with", {}).get("path") == "${{ runner.temp }}/observability-image"
+        and "observability-performance-v2-image-" in str(complete_cache.get("with", {}).get("key", ""))
+        and complete_cache.get("continue-on-error") is True,
+        f"{workflow_path} complete image cache restore must be isolated and recoverable",
+    )
     cache_check = step_config(resolve, "Verify complete candidate image cache identity", workflow_path)
     require(cache_check.get("id") == "complete-image-cache-check" and "archiveSha256" in str(cache_check.get("run", "")) and "buildIdentity" in str(cache_check.get("run", "")), f"{workflow_path} complete image cache must be identity checked")
 

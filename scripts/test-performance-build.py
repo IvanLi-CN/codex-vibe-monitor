@@ -65,6 +65,18 @@ class PerformanceBuildContractTests(unittest.TestCase):
         auto["with"]["cache-to"] = auto["with"]["cache-to"].replace(",ignore-error=true", "")
         with self.assertRaises(contract.ContractError):
             contract.require_observability_performance_contract(broken)
+
+    def test_complete_image_cache_uses_the_same_path_for_restore_and_save(self) -> None:
+        resolver = self.workflow["jobs"]["observability-performance-resolve"]
+        restore = next(step for step in resolver["steps"] if step["name"] == "Restore complete candidate image cache")
+        verify = next(step for step in resolver["steps"] if step["name"] == "Verify complete candidate image cache identity")
+        upload = next(step for step in resolver["steps"] if step["name"] == "Upload cached candidate image for assembly")
+        image = self.workflow["jobs"]["observability-performance-image"]
+        save = next(step for step in image["steps"] if step["name"] == "Save complete candidate image cache")
+        self.assertEqual(restore["with"]["path"], "${{ runner.temp }}/observability-image")
+        self.assertIn("$RUNNER_TEMP/observability-image", verify["run"])
+        self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/observability-image/")
+        self.assertEqual(save["with"]["path"], "${{ runner.temp }}/observability-image/")
         broken = copy.deepcopy(self.workflow)
         upload = next(step for step in broken["jobs"]["observability-performance-image"]["steps"] if step["name"] == "Upload performance candidate image")
         upload["with"]["if-no-files-found"] = "warn"
