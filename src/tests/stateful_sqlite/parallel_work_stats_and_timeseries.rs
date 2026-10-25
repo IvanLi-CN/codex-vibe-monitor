@@ -23069,15 +23069,20 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         SummaryProjectionTestInterleaveStage::BeforeArchiveIdentityRevalidation,
     );
     let stage_reached = Arc::new(Notify::new());
+    let replacement_cancelled = Arc::new(Notify::new());
     let replacement_path = archive_path.to_string_lossy().to_string();
     let concurrent_terminal_at = archived_at.clone();
     let replacement_pool = state.pool.clone();
     let replacement_interleave = interleave.clone();
     let replacement_stage_reached = stage_reached.clone();
+    let replacement_cancelled_for_writer = replacement_cancelled.clone();
     let replacement_archive_path_for_writer = replacement_archive_path.clone();
     let archive_path_for_writer = archive_path.clone();
     let replacement = tokio::spawn(async move {
-        replacement_stage_reached.notified().await;
+        tokio::select! {
+            _ = replacement_stage_reached.notified() => {}
+            _ = replacement_cancelled_for_writer.notified() => return,
+        }
         fs::rename(
             &replacement_archive_path_for_writer,
             &archive_path_for_writer,
@@ -23129,8 +23134,10 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         stage_reached,
     )
     .await;
-    replacement.await.expect("run legacy manifest replacement");
+    replacement_cancelled.notify_one();
+    let replacement_result = replacement.await;
     clear_summary_projection_test_interleave();
+    replacement_result.expect("run legacy manifest replacement");
     let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");
     assert!(
         hydration_error

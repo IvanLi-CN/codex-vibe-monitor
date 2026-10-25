@@ -26,16 +26,22 @@ pub(crate) fn current_stateful_schema_template_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn current_stateful_file_fixture_schema_template_path(_prefix: &str) -> Option<PathBuf> {
-    let force_fresh = std::env::var(STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH_ENV)
-        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-    if force_fresh {
+    if stateful_schema_template_force_fresh() {
         None
     } else {
         current_stateful_schema_template_path()
     }
 }
 
+fn stateful_schema_template_force_fresh() -> bool {
+    std::env::var(STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH_ENV)
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
 fn current_test_state_schema_template_path() -> Option<PathBuf> {
+    if stateful_schema_template_force_fresh() {
+        return None;
+    }
     std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
         .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
         .map(PathBuf::from)
