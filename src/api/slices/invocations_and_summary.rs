@@ -14777,7 +14777,7 @@ async fn build_summary_projection_once(
         pause_summary_projection_test_interleave(
             pool,
             mode,
-            SummaryProjectionTestInterleaveStage::BeforeArchiveIdentityRevalidation,
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
         )
         .await?;
         let mut after_id = None;
@@ -15226,7 +15226,7 @@ async fn build_summary_projection_once(
         pause_summary_projection_test_interleave(
             pool,
             mode,
-            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+            SummaryProjectionTestInterleaveStage::BeforeArchiveIdentityRevalidation,
         )
         .await?;
         require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
