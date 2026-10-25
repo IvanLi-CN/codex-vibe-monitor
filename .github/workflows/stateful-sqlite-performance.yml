@@ -3,11 +3,6 @@ name: Stateful SQLite Performance Acceptance
 on:
   workflow_dispatch:
     inputs:
-      baseline_ref:
-        description: Timed baseline revision for the fresh-schema control replay
-        required: true
-        default: 1996295afa0aa1352aad559cdd469a7df6242559
-        type: string
       candidate_ref:
         description: Candidate commit or ref to measure
         required: true
@@ -23,18 +18,10 @@ permissions:
 
 jobs:
   measure:
-    name: Stateful SQLite A/B replay
+    name: Stateful SQLite control/candidate replay
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - name: Checkout baseline
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.baseline_ref }}
-          path: baseline
-          fetch-depth: 1
-          persist-credentials: false
-
       - name: Checkout candidate
         uses: actions/checkout@v7
         with:
@@ -66,7 +53,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('baseline/Cargo.lock', 'candidate/Cargo.lock') }}
+          key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('candidate/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-stateful-sqlite-performance-registry-
 
@@ -77,10 +64,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT"
-          baseline_sha="$(git -C baseline rev-parse HEAD)"
           candidate_sha="$(git -C candidate rev-parse HEAD)"
-          test "$baseline_sha" != "$candidate_sha"
-          printf 'baseline_sha=%s\ncandidate_sha=%s\n' "$baseline_sha" "$candidate_sha" > "$EVIDENCE_ROOT/revisions.txt"
+          printf 'candidate_sha=%s\n' "$candidate_sha" > "$EVIDENCE_ROOT/revisions.txt"
           {
             printf 'runner_os=%s\n' "$RUNNER_OS"
             printf 'runner_arch=%s\n' "$RUNNER_ARCH"
@@ -91,10 +76,9 @@ jobs:
             printf 'rustc=%s\n' "$(rustc --version)"
             printf 'cargo_nextest=%s\n' "$(cargo-nextest --version)"
           } > "$EVIDENCE_ROOT/runner-context.txt"
-          echo "baseline_sha=$baseline_sha" >> "$GITHUB_OUTPUT"
           echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Build and extract baseline and candidate test archives
+      - name: Build and extract candidate test archive
         id: archives
         continue-on-error: true
         env:
@@ -103,31 +87,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT/cargo-home"
-          for ref_name in baseline candidate; do
-            repo="$GITHUB_WORKSPACE/$ref_name"
-            ref_root="$EVIDENCE_ROOT/$ref_name"
-            mkdir -p "$ref_root"
-            archive="$ref_root/backend-tests.tar.zst"
-            extract="$ref_root/archive-extract"
-            build_target="$ref_root/build-target"
-            test ! -e "$extract"
-            mkdir "$extract"
-            set +e
-            (
-              cd "$repo"
-              CARGO_TARGET_DIR="$build_target" \
-                cargo nextest archive --locked --all-features \
-                --archive-file "$archive" --zstd-level 0
-            ) > "$ref_root/archive-build.log" 2>&1
-            status=$?
-            set -e
-            test "$status" -eq 0
-            CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
-              --archive-file "$archive" \
-              --extract-to "$extract" \
-              --workspace-remap "$GITHUB_WORKSPACE/candidate" \
-              --no-run > "$ref_root/archive-extract.log" 2>&1
-          done
+          repo="$GITHUB_WORKSPACE/candidate"
+          ref_root="$EVIDENCE_ROOT/candidate"
+          mkdir -p "$ref_root"
+          archive="$ref_root/backend-tests.tar.zst"
+          extract="$ref_root/archive-extract"
+          build_target="$ref_root/build-target"
+          test ! -e "$extract"
+          mkdir "$extract"
+          set +e
+          (
+            cd "$repo"
+            CARGO_TARGET_DIR="$build_target" \
+              cargo nextest archive --locked --all-features \
+              --archive-file "$archive" --zstd-level 0
+          ) > "$ref_root/archive-build.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 0
+          CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
+            --archive-file "$archive" \
+            --extract-to "$extract" \
+            --workspace-remap "$repo" \
+            --no-run > "$ref_root/archive-extract.log" 2>&1
 
       - name: Run cold and warm Stateful SQLite replays
         id: replays
@@ -143,10 +125,9 @@ jobs:
           : > "$wall_file"
           : > "$failure_file"
           overall_status=0
-          runner="$GITHUB_WORKSPACE/candidate/.github/scripts/run-backend-tests.sh"
-          for ref_name in baseline candidate; do
-            repo="$GITHUB_WORKSPACE/$ref_name"
-            archive_dir="$EVIDENCE_ROOT/$ref_name/archive-extract"
+          for ref_name in control candidate; do
+            repo="$GITHUB_WORKSPACE/candidate"
+            archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
             workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
             mkdir -p "$workspace"
             for replay in cold warm; do
@@ -160,14 +141,14 @@ jobs:
                   CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/replay-target"
                   NEXTEST_SUCCESS_OUTPUT=final
                 )
-                if [ "$ref_name" = baseline ]; then
-                  replay_env+=(BACKEND_TEST_SKIP_SCHEMA_TEMPLATE=1)
+                if [ "$ref_name" = control ]; then
+                  replay_env+=(CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH=1)
                 fi
                 start_ms="$(date +%s%3N)"
                 set +e
                 (
                   cd "$repo"
-                  env "${replay_env[@]}" bash "$runner" \
+                  env "${replay_env[@]}" bash .github/scripts/run-backend-tests.sh \
                     --profile stateful-sqlite \
                     --partition "hash:$shard/2" \
                     --archive-dir "$archive_dir"
@@ -201,7 +182,6 @@ jobs:
         continue-on-error: true
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
-          BASELINE_SHA: ${{ steps.revisions.outputs.baseline_sha }}
           CANDIDATE_SHA: ${{ steps.revisions.outputs.candidate_sha }}
         run: |
           set -euo pipefail
@@ -209,8 +189,7 @@ jobs:
           python3 candidate/.github/scripts/stateful-sqlite-performance.py \
             --root "$EVIDENCE_ROOT" \
             --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
-            --baseline-sha "$BASELINE_SHA" \
-            --baseline-source-sha "$BASELINE_SHA" \
+            --control-source-sha "$CANDIDATE_SHA" \
             --candidate-sha "$CANDIDATE_SHA" \
             --output-dir "$EVIDENCE_ROOT/evidence" \
             | tee "$EVIDENCE_ROOT/evidence/acceptance-card.stdout"

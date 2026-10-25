@@ -426,9 +426,7 @@ run_profile() {
   local profile_start_epoch
   profile_start_epoch="$(date +%s)"
   echo "backend_test_profile=$selected_profile"
-  if [[ "$selected_profile" == "stateful-sqlite" && "${BACKEND_TEST_SKIP_SCHEMA_TEMPLATE:-}" == 1 ]]; then
-    echo "backend_test_stateful_schema_template=skipped"
-  elif [[ "$selected_profile" == "lightweight" || "$selected_profile" == "stateful-sqlite" || "$selected_profile" == "archive-file-io" ]]; then
+  if [[ "$selected_profile" == "lightweight" || "$selected_profile" == "stateful-sqlite" || "$selected_profile" == "archive-file-io" ]]; then
     prepare_schema_template "$selected_profile"
   fi
   nextest_args=(--no-fail-fast)
