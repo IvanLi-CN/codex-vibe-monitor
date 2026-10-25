@@ -824,6 +824,22 @@ test("keeps the old live window visible and commits it before catching up", asyn
             () =>
               page.evaluate(
                 () =>
+                  document.querySelector<HTMLElement>(
+                    '[data-testid="dashboard-invocation-timeline-lanes"]',
+                  )?.dataset.rangeEnd ?? "",
+              ),
+            { timeout: 10_000 },
+          )
+          .toBe(firstResponseWindows[index]?.rangeEnd),
+      ),
+    );
+    await Promise.all(
+      pages.map((page, index) =>
+        expect
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
                   (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
                     ?.timelineRequestWindows.length ?? 0,
               ),
