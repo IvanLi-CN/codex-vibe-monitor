@@ -1,5 +1,14 @@
+# syntax=docker/dockerfile:1
+
+# These defaults keep ordinary Docker builds on the canonical in-file stages.
+# Performance assembly overrides them with verified named contexts.
+ARG RUST_CONTEXT=rust-builder-canonical
+ARG WEB_CONTEXT=web-builder-canonical
+ARG RUNTIME_CONTEXT=runtime-base-builder
+
 # Stage 1: build the web assets
-FROM oven/bun:1.3.14-alpine AS web-builder
+ARG BUN_BASE=oven/bun:1.3.14-alpine
+FROM ${BUN_BASE} AS web-builder-canonical
 WORKDIR /app/web
 
 COPY web/package.json web/bun.lock ./
@@ -14,7 +23,8 @@ RUN sh /usr/local/bin/production-build.sh web
 # Stage 2: build the Rust binary
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
 # otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
-FROM rust:1.96.0-bookworm AS rust-builder
+ARG RUST_BASE=rust:1.96.0-bookworm
+FROM ${RUST_BASE} AS rust-builder-canonical
 WORKDIR /app
 
 RUN apt-get update \
@@ -36,7 +46,7 @@ COPY scripts/production-build.sh /usr/local/bin/production-build.sh
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION} APP_GIT_REVISION=${APP_GIT_REVISION}
 RUN PRODUCTION_BUILD_FORCE_REBUILD=1 sh /usr/local/bin/production-build.sh rust
 
-FROM rust-builder AS symbol-builder
+FROM rust-builder-canonical AS symbol-builder
 COPY scripts/export-observability-symbols.py /tmp/export-observability-symbols.py
 RUN python3 /tmp/export-observability-symbols.py --binary /app/target/release/codex-vibe-monitor \
     --output /symbols --revision "$APP_GIT_REVISION"
@@ -47,7 +57,8 @@ COPY --from=symbol-builder /symbols /symbols
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
 # The app defaults to `XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
 # a real Xray-core binary, subscription validation for share links (vmess/vless/trojan/ss) fails.
-FROM debian:bookworm-slim AS xray-downloader
+ARG RUNTIME_BASE=debian:bookworm-slim
+FROM ${RUNTIME_BASE} AS xray-downloader
 ARG XRAY_CORE_VERSION=26.2.6
 ARG TARGETARCH
 
@@ -72,7 +83,7 @@ RUN apt-get update \
     && rm -rf /tmp/xray /tmp/xray.zip
 
 # Stage 4: shared runtime base
-FROM debian:bookworm-slim AS runtime-base
+FROM ${RUNTIME_BASE} AS runtime-base-builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gzip libsqlite3-0 \
@@ -86,13 +97,15 @@ COPY vendor/hotpath/LICENSE.txt /usr/local/share/licenses/hotpath/LICENSE.txt
 COPY scripts/search-raw /usr/local/bin/search-raw
 
 # Stage 5: production runtime image
-FROM runtime-base AS production-runtime
+FROM ${RUNTIME_CONTEXT} AS production-runtime
+ARG RUST_CONTEXT
+ARG WEB_CONTEXT
 ARG APP_EFFECTIVE_VERSION
 ARG APP_GIT_REVISION
 ARG FRONTEND_EFFECTIVE_VERSION
 
-COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
-COPY --from=web-builder /app/web/dist ./web
+COPY --from=${RUST_CONTEXT} /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
+COPY --from=${WEB_CONTEXT} /app/web/dist ./web
 
 RUN chmod 0755 /usr/local/bin/search-raw
 

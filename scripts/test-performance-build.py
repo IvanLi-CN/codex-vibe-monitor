@@ -46,6 +46,11 @@ class PerformanceBuildContractTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertIn("production-build.sh rust", dockerfile)
         self.assertIn("production-build.sh web", dockerfile)
+        self.assertIn("FROM ${RUNTIME_CONTEXT} AS production-runtime", dockerfile)
+        self.assertIn("COPY --from=${RUST_CONTEXT}", dockerfile)
+        self.assertIn("COPY --from=${WEB_CONTEXT}", dockerfile)
+        self.assertIn("AS rust-builder-canonical", dockerfile)
+        self.assertIn("AS web-builder-canonical", dockerfile)
 
     def test_build_identity_includes_web_compiler_inputs(self) -> None:
         identity = next(
@@ -120,10 +125,13 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "startedAt": "2026-10-25T00:00:10Z",
                 "finishedAt": "2026-10-25T00:01:10Z",
                 "cache": {"restore": "miss", "save": "saved", "restoreSeconds": 1.5, "saveSeconds": 2.5},
+                "artifact": "component.tar.gz",
                 "archiveSha256": hashlib.sha256(b"component").hexdigest(),
             }))
             image_dir = root / "image"
             image_dir.mkdir()
+            image_archive = image_dir / "candidate.tar.gz"
+            image_archive.write_bytes(b"image")
             (image_dir / "image.json").write_text(json.dumps({
                 "schema": "cvm-performance-build-image-v1",
                 "component": "image",
@@ -135,7 +143,8 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "cache": {"status": "hit"},
                 "transfer": {"archiveBytes": 12},
                 "imageId": "sha256:image",
-                "archiveSha256": "c" * 64,
+                "artifact": "candidate.tar.gz",
+                "archiveSha256": hashlib.sha256(b"image").hexdigest(),
             }))
             output = root / "build-report.json"
             jobs_json = root / "actions-jobs.json"
@@ -146,6 +155,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                         "name": "Observability Performance Producer (rust)",
                         "status": "completed",
                         "conclusion": "success",
+                        "createdAt": "2026-10-25T00:00:11Z",
                         "startedAt": "2026-10-25T00:00:12Z",
                         "completedAt": "2026-10-25T00:01:12Z",
                     },
@@ -154,6 +164,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                         "name": "Observability Performance Image",
                         "status": "completed",
                         "conclusion": "success",
+                        "createdAt": "2026-10-25T00:01:13Z",
                         "startedAt": "2026-10-25T00:01:14Z",
                         "completedAt": "2026-10-25T00:01:46Z",
                     },
@@ -172,7 +183,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["cache"]["namespace"], "observability-performance-v2")
             self.assertEqual(value["status"], "passed")
             self.assertGreater(value["timing"]["imageReadySeconds"], 0)
-            self.assertEqual(value["timing"]["queueSeconds"], 86.0)
+            self.assertEqual(value["timing"]["queueSeconds"], 2.0)
             self.assertEqual(value["timing"]["runnerUsageSeconds"], 92.0)
             self.assertEqual(value["timing"]["cacheRestoreSeconds"], 1.5)
             self.assertEqual(value["timing"]["cacheSaveSeconds"], 2.5)
@@ -195,7 +206,10 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "finishedAt": "2026-10-25T00:01:10Z",
                 "elapsedSeconds": 60,
                 "cache": {"restore": "miss", "save": "saved"},
+                "artifact": "component.tar.gz",
+                "archiveSha256": hashlib.sha256(b"component").hexdigest(),
             }))
+            (component_dir / "component.tar.gz").write_bytes(b"component")
             image_dir = root / "image"
             image_dir.mkdir()
             (image_dir / "image.json").write_text(json.dumps({
@@ -208,7 +222,10 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "finishedAt": "2026-10-25T00:01:45Z",
                 "cache": {"status": "assembled"},
                 "imageId": "sha256:image",
+                "artifact": "candidate.tar.gz",
+                "archiveSha256": hashlib.sha256(b"image").hexdigest(),
             }))
+            (image_dir / "candidate.tar.gz").write_bytes(b"image")
             jobs_json = root / "actions-jobs.json"
             jobs_json.write_text(json.dumps({
                 "jobs": [
@@ -217,6 +234,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                         "name": "Observability Performance Producer (rust)",
                         "status": "completed",
                         "conclusion": "success",
+                        "createdAt": "2026-10-25T00:00:11Z",
                         "startedAt": "2026-10-25T00:00:12Z",
                         "completedAt": None,
                     },
@@ -225,6 +243,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                         "name": "Observability Performance Image",
                         "status": "completed",
                         "conclusion": "success",
+                        "createdAt": "2026-10-25T00:01:13Z",
                         "startedAt": "2026-10-25T00:01:14Z",
                         "completedAt": "2026-10-25T00:01:46Z",
                     },
@@ -258,13 +277,17 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "startedAt": "2026-10-25T00:00:10Z",
                 "finishedAt": "2026-10-25T00:00:20Z",
                 "cache": {"status": "hit"},
+                "artifact": "candidate.tar.gz",
+                "archiveSha256": hashlib.sha256(b"image").hexdigest(),
             }))
+            (image_dir / "candidate.tar.gz").write_bytes(b"image")
             jobs_json = root / "actions-jobs.json"
             jobs_json.write_text(json.dumps({"jobs": [{
                 "databaseId": 101,
                 "name": "Observability Performance Image",
                 "status": "completed",
                 "conclusion": "failure",
+                "createdAt": "2026-10-25T00:00:11Z",
                 "startedAt": "2026-10-25T00:00:12Z",
                 "completedAt": "2026-10-25T00:00:20Z",
             }]}))
@@ -278,6 +301,61 @@ class PerformanceBuildContractTests(unittest.TestCase):
                     "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
                 ]
                 with self.assertRaisesRegex(ValueError, "did not complete successfully"):
+                    report.main()
+            finally:
+                sys.argv = old_argv
+
+    def test_build_report_preserves_workflow_failure_as_failed_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({"jobs": []}))
+            output = root / "report.json"
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(root), "--output", str(output),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
+                    "--workflow-failure",
+                ]
+                report.main()
+            finally:
+                sys.argv = old_argv
+            value = json.loads(output.read_text())
+            self.assertEqual(value["status"], "failed")
+            self.assertIn("workflow dependency result was not successful", value["validationErrors"])
+
+    def test_build_report_rejects_corrupt_component_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            component_dir = root / "rust"
+            component_dir.mkdir()
+            archive = component_dir / "component.tar.gz"
+            archive.write_bytes(b"corrupt")
+            (component_dir / "component.json").write_text(json.dumps({
+                "schema": "cvm-performance-build-component-v1",
+                "component": "rust",
+                "candidate": "a" * 40,
+                "buildIdentity": "b" * 64,
+                "status": "ready",
+                "artifact": "component.tar.gz",
+                "archiveSha256": hashlib.sha256(b"expected").hexdigest(),
+            }))
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({"jobs": []}))
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(root), "--output", str(root / "report.json"),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
+                ]
+                with self.assertRaisesRegex(ValueError, "archive hash mismatch"):
                     report.main()
             finally:
                 sys.argv = old_argv

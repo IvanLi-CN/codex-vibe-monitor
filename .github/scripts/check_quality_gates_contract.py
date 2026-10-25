@@ -406,7 +406,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(resolve_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}" and resolve_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}" and resolve_checkout.get("path") == "candidate", f"{workflow_path} resolver checkout drifted")
     identity = step_config(resolve, "Bind candidate and build identity", f"{workflow_path}.jobs.observability-performance-resolve")
     identity_run = str(identity.get("run", ""))
-    require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "rust_deps_cache_key", "rust_target_cache_key", "web_cache_key", "web_deps_cache_key", "runtime_cache_key", "base_image_digests", "trusted_recipe_digest")), f"{workflow_path} must bind candidate and build identity")
+    require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "rust_deps_cache_key", "rust_target_cache_key", "web_cache_key", "web_deps_cache_key", "runtime_cache_key", "base_image_digests", "trusted_recipe_digest", "rust_image", "web_image", "runtime_image", "def pinned", "cache_digest")), f"{workflow_path} must bind candidate, pinned base images and build identity")
     outputs = require_mapping(resolve.get("outputs"), f"{workflow_path}.jobs.observability-performance-resolve.outputs")
     require(outputs.get("candidate") == "${{ steps.identity.outputs.candidate }}" and outputs.get("trusted_ref") == "${{ steps.refs.outputs.trusted_ref }}" and outputs.get("effective_build_path") == "${{ steps.identity.outputs.effective_build_path }}" and outputs.get("complete_image_cache_hit") == "${{ steps.complete-image-cache-check.outputs.valid }}", f"{workflow_path} resolver outputs drifted")
     complete_cache = uses_step_config(resolve, "Restore complete candidate image cache", "actions/cache/restore@v4", workflow_path)
@@ -450,13 +450,13 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     runtime_producer = step_config(producer, "Build runtime-base production artifact", workflow_path)
     runtime_run = str(runtime_producer.get("run", ""))
     require(
-        "--progress=plain" in runtime_run
-        and "CACHE_SAVE" in runtime_run
-        and "CACHE_RESTORE" in runtime_run
-        and "cache_restore=\"hit\"" in runtime_run
-        and "cache_save=\"failed\"" in runtime_run
-        and "cache_save=\"saved\"" in runtime_run
-        and "cache_save=\"unknown\"" in runtime_run,
+        "--progress=rawjson" in runtime_run
+        and "cache-observation.json" in runtime_run
+        and "restoreSeconds" in runtime_run
+        and "saveSeconds" in runtime_run
+        and "failed to export cache" in runtime_run
+        and 'save = "saved"' in runtime_run
+        and 'save = "unknown"' in runtime_run,
         f"{workflow_path} runtime-base producer must report observed cache export status",
     )
     require(checkout_step(resolve, "Checkout trusted production recipe", workflow_path).get("ref") == "${{ steps.refs.outputs.trusted_ref }}", f"{workflow_path} must compare candidate recipes with the trusted workflow revision")
@@ -464,6 +464,9 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     for name in ("Build Rust production artifact", "Build Web production artifact", "Build runtime-base production artifact"):
         step = step_config(producer, name, workflow_path)
         require("matrix.component" in str(step.get("if", "")) and "production" in str(step.get("run", "")), f"{workflow_path} {name} must remain required")
+    require("$RUST_IMAGE" in str(step_config(producer, "Build Rust production artifact", workflow_path).get("run", "")), f"{workflow_path} Rust producer must use the resolved immutable base image")
+    require("$WEB_IMAGE" in str(step_config(producer, "Build Web production artifact", workflow_path).get("run", "")), f"{workflow_path} Web producer must use the resolved immutable base image")
+    require("$RUNTIME_IMAGE" in runtime_run, f"{workflow_path} runtime-base producer must use the resolved immutable base image")
     producer_upload = uses_step_config(producer, "Upload verified producer artifact", "actions/upload-artifact@v7", workflow_path)
     require(producer_upload.get("with", {}).get("name") == "observability-build-${{ github.run_id }}-${{ matrix.component }}", f"{workflow_path} producer artifacts must be run/component scoped")
 
@@ -484,6 +487,13 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and "runtime-base=oci-layout://" in contexts,
         f"{workflow_path} auto image must consume verified local and OCI producer contexts",
     )
+    auto_args = str(auto_build_with.get("build-args", ""))
+    require(
+        "RUST_CONTEXT=rust-builder" in auto_args
+        and "WEB_CONTEXT=web-builder" in auto_args
+        and "RUNTIME_CONTEXT=runtime-base" in auto_args,
+        f"{workflow_path} auto image must select the verified named contexts",
+    )
     canonical_with = require_mapping(uses_step_config(image, "Build canonical production image", "docker/build-push-action@v7", workflow_path).get("with"), f"{workflow_path}.canonical-build.with")
     require("build-contexts" not in canonical_with, f"{workflow_path} canonical path must not consume producer contexts")
     image_upload = uses_step_config(image, "Upload performance candidate image", "actions/upload-artifact@v7", workflow_path)
@@ -498,6 +508,15 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and cache_save.get("with", {}).get("path") == "${{ runner.temp }}/observability-image"
         and "observability-performance-v2-image-" in str(cache_save.get("with", {}).get("key", "")),
         f"{workflow_path} complete image cache save must use the exact restore path and remain isolated/best effort",
+    )
+    image_cache_report = step_config(image, "Finalize image cache report", workflow_path)
+    image_cache_report_run = str(image_cache_report.get("run", ""))
+    require(
+        "always()" in str(image_cache_report.get("if", ""))
+        and "IMAGE_CACHE_SAVE_OUTCOME" in require_mapping(image_cache_report.get("env"), "image cache report env")
+        and "saveSeconds" in image_cache_report_run
+        and all(status in image_cache_report_run for status in ("saved", "failed", "skipped", "unknown")),
+        f"{workflow_path} complete image cache save outcome must be recorded",
     )
     clock = step_config(image, "Start shared acceptance wall clock", workflow_path)
     require(clock.get("id") == "acceptance_clock" and "date +%s" in str(clock.get("run", "")) and "GITHUB_OUTPUT" in str(clock.get("run", "")) and clock.get("timeout-minutes") == 1, f"{workflow_path} image job must emit one shared clock")
@@ -541,11 +560,19 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     aggregate_prefix = "${{ runner.temp }}/observability-acceptance/"
     require(combined.get("if") == "always()" and set(str(combined.get("with", {}).get("path", "")).splitlines()) == {aggregate_prefix + item for item in ("empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json")}, f"{workflow_path} aggregate evidence whitelist drifted")
 
-    require(report.get("name") == "Observability Performance Build Report" and report.get("needs") == ["observability-performance-resolve", "observability-performance-producer", "observability-performance-image"] and "needs.observability-performance-image.result == 'success'" in str(report.get("if", "")) and report.get("timeout-minutes") == 5, f"{workflow_path} build report job metadata drifted")
+    require(report.get("name") == "Observability Performance Build Report" and report.get("needs") == ["observability-performance-resolve", "observability-performance-producer", "observability-performance-image"] and "always()" in str(report.get("if", "")) and "needs.observability-performance-resolve.result == 'success'" in str(report.get("if", "")) and "needs.observability-performance-image.result == 'success'" not in str(report.get("if", "")) and report.get("timeout-minutes") == 5, f"{workflow_path} build report job metadata drifted")
     timestamps = step_config(report, "Collect Actions job timestamps", workflow_path)
     require("gh run view" in str(timestamps.get("run", "")) and "--json jobs" in str(timestamps.get("run", "")) and require_mapping(timestamps.get("env"), "Actions timestamp collection env").get("GH_TOKEN") == "${{ github.token }}", f"{workflow_path} build report must collect read-only Actions job timestamps")
     report_step = step_config(report, "Generate build report", workflow_path)
-    require("observability-build-report.py" in str(report_step.get("run", "")) and "--build-identity" in str(report_step.get("run", "")) and "--run-started" in str(report_step.get("run", "")) and "--jobs-json" in str(report_step.get("run", "")), f"{workflow_path} build report must bind identity and measured Actions timings")
+    report_checkout = step_config(report, "Checkout build-only report generator from candidate", workflow_path)
+    require(
+        report_checkout.get("if") == "env.BUILD_ONLY == 'true'"
+        and report_checkout.get("with", {}).get("repository") == "${{ needs.observability-performance-resolve.outputs.candidate_repository }}"
+        and report_checkout.get("with", {}).get("ref") == "${{ needs.observability-performance-resolve.outputs.candidate }}"
+        and report_checkout.get("with", {}).get("path") == "candidate-report",
+        f"{workflow_path} build-only reports must use the candidate generator without changing formal harness sources",
+    )
+    require("observability-build-report.py" in str(report_step.get("run", "")) and "report_root" in str(report_step.get("run", "")) and "candidate-report" in str(report_step.get("run", "")) and "--build-identity" in str(report_step.get("run", "")) and "--run-started" in str(report_step.get("run", "")) and "--jobs-json" in str(report_step.get("run", "")) and "--workflow-failure" in str(report_step.get("run", "")), f"{workflow_path} build report must bind identity, measured Actions timings and dependency failures")
     report_upload = uses_step_config(report, "Upload build report", "actions/upload-artifact@v7", workflow_path)
     require(report_upload.get("with", {}).get("name") == "observability-build-report-${{ github.run_id }}" and report_upload.get("with", {}).get("retention-days") == 14, f"{workflow_path} build report retention drifted")
 

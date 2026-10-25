@@ -1,5 +1,9 @@
 # 独立性能遥测历史
 
+- 2026-10-26：明确 build-only 的 pre-merge 报告来源隔离：实现分支可使用自身的
+  `build-report` 生成器完成构建资格验证，但不启动 workload、预算汇总或性能通过卡；正式
+  性能模式仍只从 trusted `main` checkout 报告生成器，避免资格路径改变正式验收合同。
+
 - 2026-10-26：修复完整镜像 cache restore/save 的路径规范差异，避免相同 build identity 因
   cache version 不一致产生假 miss；质量合同现在严格要求两处路径相同。build report 通过只读
   `gh run view --json jobs` 绑定 Actions job ID、状态和真实 job 时间戳，保留 producer 卡的
