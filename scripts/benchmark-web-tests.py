@@ -426,11 +426,46 @@ def prepare(baseline: Path, candidate: Path, baseline_sha: str, candidate_sha: s
     return manifest
 
 
+def process_descendants(root_pid: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            parent = next(
+                line.split("\t", 1)[1]
+                for line in (entry / "status").read_text().splitlines()
+                if line.startswith("PPid:\t")
+            )
+            children.setdefault(int(parent), []).append(int(entry.name))
+        except (OSError, StopIteration, ValueError):
+            continue
+    descendants: list[int] = []
+    pending = [root_pid]
+    while pending:
+        parent = pending.pop()
+        for child in children.get(parent, []):
+            descendants.append(child)
+            pending.append(child)
+    return descendants
+
+
 def terminate_group(process: subprocess.Popen) -> None:
+    # Chromium and preview servers can create a new session; kill the captured
+    # process tree as well as the phase process group before the next A/B leg.
+    descendants = process_descendants(process.pid)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    for pid in reversed(descendants):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def isolate_phase_sources(source: Path, phases_to_run: list[Phase], root: Path) -> dict[str, Path]:
