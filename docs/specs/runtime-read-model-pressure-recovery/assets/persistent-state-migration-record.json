@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1191 implementation candidate ea19e98097aa854ec4b84903173f442125bb814e; prior Linux CI, migration evidence, and formal review belong to the superseded validation head, while current-head validation and empirical acceptance remain required.",
+      "to_program_version": "PR #1191 implementation candidate 642b49641f16e04a403fd57612c16f3914985b98; prior Linux CI, migration evidence, and formal review belong to the superseded validation head, while current-head validation and empirical acceptance remain required.",
       "direct_major_skips_supported": false
     }
   },
@@ -159,13 +159,13 @@
   },
   "pending_execution_evidence": [
     {
-      "candidate_head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+      "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
       "reason": "PR #1191 was rebased onto current main after the previous candidate-bound empirical acceptance was cancelled as stale. The current head requires fresh current-head evidence; no threshold relaxation or reuse of the old result is authorized by the plan."
     }
   ],
   "execution_evidence": {
     "ci_run": "pending-current-head-ci-run",
-    "candidate_head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+    "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
     "stateful_and_migration_profiles_passed": false,
     "formal_review_passed": false,
     "performance_acceptance": {
@@ -178,13 +178,13 @@
     }
   },
   "delivery_context": {
-    "candidate_head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+    "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
     "candidate_validation_status": "current-head-validation-pending",
-    "active_base_sha": "9616191de308ccf21b6085ebd2fffaa6fb825b61",
+    "active_base_sha": "5167cd514f2efa30f2322e5407a754f8b7c56022",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 9616191d; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head f531330a63651682f84b31f04faf22dab3f637fd onto current main 9616191de308ccf21b6085ebd2fffaa6fb825b61, producing ea19e98097aa854ec4b84903173f442125bb814e; all prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 5167cd51; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 6d64e1413120dc821a4b92c669b3b8a3d5c71d74 onto current main 5167cd514f2efa30f2322e5407a754f8b7c56022, then received the snapshot-budget fix as 642b49641f16e04a403fd57612c16f3914985b98; all prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
     "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }

@@ -97,7 +97,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "PR #1191: th/summary-recovery-query-fairness@ea19e98097aa854ec4b84903173f442125bb814e",
+      "PR #1191: th/summary-recovery-query-fairness@642b49641f16e04a403fd57612c16f3914985b98",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+    "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
     "candidate_validation_status": "current-head-validation-pending",
-    "active_base_sha": "9616191de308ccf21b6085ebd2fffaa6fb825b61",
+    "active_base_sha": "5167cd514f2efa30f2322e5407a754f8b7c56022",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 9616191d; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head f531330a63651682f84b31f04faf22dab3f637fd onto current main 9616191de308ccf21b6085ebd2fffaa6fb825b61, producing ea19e98097aa854ec4b84903173f442125bb814e; all prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 5167cd51; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 6d64e1413120dc821a4b92c669b3b8a3d5c71d74 onto current main 5167cd514f2efa30f2322e5407a754f8b7c56022, then received the snapshot-budget fix as 642b49641f16e04a403fd57612c16f3914985b98; all prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }
