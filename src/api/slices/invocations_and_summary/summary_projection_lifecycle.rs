@@ -1,5 +1,7 @@
 use super::*;
-use crate::observability::contention::{RecoveryDiagnostic, record_recovery};
+use crate::observability::contention::{
+    PerformanceCounter, PerformanceGauge, RecoveryDiagnostic, record_recovery,
+};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
@@ -193,10 +195,32 @@ pub(crate) fn summary_coverage_recovery_next_turn_delay(
     next_turn: SummaryCoverageRecoveryNextTurn,
 ) -> Duration {
     match next_turn {
-        SummaryCoverageRecoveryNextTurn::Immediate => Duration::ZERO,
-        SummaryCoverageRecoveryNextTurn::Idle | SummaryCoverageRecoveryNextTurn::Deferred => {
-            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
-        }
+        // A committed page is progress, but it must still yield to request and maintenance
+        // work before the next recovery admission.
+        SummaryCoverageRecoveryNextTurn::Immediate => Duration::from_secs(1),
+        SummaryCoverageRecoveryNextTurn::Deferred => SUMMARY_COVERAGE_RECOVERY_RETRY_INITIAL,
+        SummaryCoverageRecoveryNextTurn::Idle => SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
+    }
+}
+
+const SUMMARY_COVERAGE_RECOVERY_PROGRESS_YIELD: Duration = Duration::from_secs(1);
+const SUMMARY_COVERAGE_RECOVERY_RETRY_INITIAL: Duration = Duration::from_secs(10);
+const SUMMARY_COVERAGE_RECOVERY_RETRY_MAX: Duration = Duration::from_secs(60);
+
+fn summary_coverage_recovery_retry_delay(current: Duration) -> Duration {
+    current
+        .saturating_mul(2)
+        .min(SUMMARY_COVERAGE_RECOVERY_RETRY_MAX)
+}
+
+fn summary_coverage_recovery_scheduler_delay(
+    next_turn: SummaryCoverageRecoveryNextTurn,
+    deferred_retry_delay: Duration,
+) -> Duration {
+    match next_turn {
+        SummaryCoverageRecoveryNextTurn::Deferred => deferred_retry_delay,
+        SummaryCoverageRecoveryNextTurn::Immediate => SUMMARY_COVERAGE_RECOVERY_PROGRESS_YIELD,
+        SummaryCoverageRecoveryNextTurn::Idle => SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
     }
 }
 
@@ -334,93 +358,60 @@ impl SummaryCoverageRecoverySupervisor {
     async fn run_with_startup_priority_reservation(
         state: &AppState,
         reservation: crate::db_pressure::DbBackgroundPriorityReservation,
+        runtime: &mut CompactedSourceRecoveryRuntime,
     ) -> Result<SummaryCoverageRecoveryNextTurn> {
-        Self::run_with_priority_reservation(state, Some(reservation)).await
+        Self::run_with_priority_reservation_runtime(state, Some(reservation), runtime).await
     }
 
     pub(crate) async fn run_with_priority_reservation(
         state: &AppState,
         reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
     ) -> Result<SummaryCoverageRecoveryNextTurn> {
+        let mut runtime = CompactedSourceRecoveryRuntime::default();
+        Self::run_with_priority_reservation_runtime(state, reservation, &mut runtime).await
+    }
+
+    async fn run_with_priority_reservation_runtime(
+        state: &AppState,
+        reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+        runtime: &mut CompactedSourceRecoveryRuntime,
+    ) -> Result<SummaryCoverageRecoveryNextTurn> {
         let Ok(_singleflight) = state.subscription_hub.try_lock_summary_coverage_recovery() else {
             return Ok(SummaryCoverageRecoveryNextTurn::Idle);
         };
-        Self::run_with_priority_reservation_locked(state, reservation).await
+        Self::run_with_priority_reservation_locked(state, reservation, runtime).await
     }
 
     async fn run_with_priority_reservation_locked(
         state: &AppState,
-        mut reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+        reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+        runtime: &mut CompactedSourceRecoveryRuntime,
     ) -> Result<SummaryCoverageRecoveryNextTurn> {
-        let drain_startup_coverage = reservation.is_some();
-        let mut unpublished_startup_pages = 0usize;
-        let recovery = async {
-            let mut retried_generation = false;
-            loop {
-                // The first turn must publish an already-proven recent range so 30d can become
-                // exact independently.  After that, keep publication batch-bound: checking the
-                // recent proof set alone is not enough because every newly verified page changes
-                // the durable identity set, and cloning the immutable resident overlay for each
-                // page can consume the entire historical recovery deadline.
-                let publish_overlay = !drain_startup_coverage
-                    || unpublished_startup_pages == 0
-                    || (unpublished_startup_pages > 0
-                        && unpublished_startup_pages.is_multiple_of(
-                            SUMMARY_HISTORICAL_COVERAGE_OVERLAY_PUBLICATION_PAGE_BATCHES,
-                        ));
-                match Self::run_once(
-                    state,
-                    reservation.take(),
-                    drain_startup_coverage,
-                    publish_overlay,
-                )
-                .await
-                {
-                    Ok(turn) => {
-                        let next_turn = turn.next_turn;
-                        let Some(next_reservation) = turn.reservation else {
-                            return Ok(next_turn);
-                        };
-                        reservation = Some(next_reservation);
-                        unpublished_startup_pages = unpublished_startup_pages.saturating_add(1);
-                        tokio::task::yield_now().await;
-                    }
-                    Err(error)
-                        if error
-                            .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
-                            .is_some()
-                            && !retried_generation =>
-                    {
-                        retried_generation = true;
-                        // V2 proof publication advances the coverage fence. Retry the bounded
-                        // supervisor page against the new fence; never fall back to a generic
-                        // RollingDelta or AllTime rebuild.
-                        reservation = None;
-                        unpublished_startup_pages = 0;
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
+        // A recovery invocation owns one bounded admission turn. In particular, a turn must not
+        // hand a fresh reservation back to this function and immediately chain another turn while
+        // retaining the execution lease. The caller drops the returned turn at this boundary, so
+        // any reservation created by legacy branches is released before the next scheduler tick.
+        let turn = match Self::run_once(state, reservation, true, true, runtime).await {
+            Ok(turn) => turn,
+            Err(error)
+                if error
+                    .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
+                    .is_some() =>
+            {
+                // A coverage fence changed during the bounded turn. Release the current
+                // admission and let the scheduler retry against the new identity; do not chain
+                // a second turn while retaining the execution lease.
+                runtime.mark_progress();
+                return Ok(SummaryCoverageRecoveryNextTurn::Immediate);
             }
+            Err(error) => return Err(error),
         };
-        tokio::pin!(recovery);
-        // Do not renew the lease on the interval's immediate first tick.  A just-published
-        // projection must still honor its recorded `refreshed_at`; the first keepalive is only
-        // needed after one cadence interval while a long historical page is in flight.
-        let mut renew = tokio::time::interval_at(
-            tokio::time::Instant::now() + SUMMARY_SNAPSHOT_MAX_STALE / 3,
-            SUMMARY_SNAPSHOT_MAX_STALE / 3,
-        );
-        loop {
-            tokio::select! {
-                result = &mut recovery => return result,
-                _ = renew.tick() => {
-                    if let Err(error) = renew_summary_projection_freshness_if_generation_matches(state).await {
-                        debug!(error = ?error, "summary historical coverage freshness renewal deferred");
-                    }
-                }
-            }
-        }
+        let next_turn = turn.next_turn;
+        // Never carry a reservation across the scheduler boundary. The old implementation
+        // returned it to this function and immediately ran another turn while holding the task
+        // lease, which starved request-facing and unrelated background work.
+        drop(turn.reservation);
+        Ok(next_turn)
     }
 
     async fn run_once(
@@ -428,6 +419,7 @@ impl SummaryCoverageRecoverySupervisor {
         reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
         _drain_startup_coverage: bool,
         publish_overlay: bool,
+        runtime: &mut CompactedSourceRecoveryRuntime,
     ) -> Result<SummaryCoverageRecoveryTurn> {
         // Admission deliberately precedes every checkpoint, manifest, and archive operation.
         // Pressure is scheduler-only: a denied pass neither reads nor writes recovery progress.
@@ -464,6 +456,12 @@ impl SummaryCoverageRecoverySupervisor {
                     reason = %reason,
                     "summary historical coverage recovery deferred before durable progress access"
                 );
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(
+                        RecoveryDiagnostic::SummaryRecoveryPressureDeferred,
+                    ),
+                    1,
+                );
                 crate::record_managed_task_discovered_work(&["summary_coverage_recovery"], 0);
                 crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 0);
                 return Ok(SummaryCoverageRecoveryTurn {
@@ -473,7 +471,7 @@ impl SummaryCoverageRecoverySupervisor {
             }
         };
         record_recovery(RecoveryDiagnostic::StatisticsHistoricalCoverage);
-        if let Some(turn) = run_compacted_source_recovery_turn(state).await? {
+        if let Some(turn) = run_compacted_source_recovery_turn_with_runtime(state, runtime).await? {
             return Ok(turn);
         }
         let started_at = Instant::now();
@@ -791,6 +789,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
         if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery").await {
             return;
         }
+        let mut recovery_runtime = CompactedSourceRecoveryRuntime::default();
         let mut next_turn = {
             let Some(_execution_lease) =
                 crate::maintenance_store::try_acquire_task_execution("summary_coverage_recovery")
@@ -813,6 +812,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                         result = SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
                             state.as_ref(),
                             startup_priority,
+                            &mut recovery_runtime,
                         ) => Some(result),
                     }
                 },
@@ -834,8 +834,21 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 }
             }
         };
+        // The initial pass establishes the runtime identity. The first scheduled retry always
+        // starts at the initial delay; only later turns participate in exponential backoff.
+        let _ = recovery_runtime.take_retry_reset();
+        let mut deferred_retry_delay = SUMMARY_COVERAGE_RECOVERY_RETRY_INITIAL;
         loop {
-            let delay = summary_coverage_recovery_next_turn_delay(next_turn);
+            let delay = summary_coverage_recovery_scheduler_delay(next_turn, deferred_retry_delay);
+            state.observability.set_performance(
+                PerformanceGauge::SummaryRecoveryRetryDelay,
+                delay.as_secs_f64(),
+            );
+            debug!(
+                next_turn = ?next_turn,
+                retry_delay_seconds = delay.as_secs_f64(),
+                "scheduled summary coverage recovery turn"
+            );
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(delay) => {}
@@ -861,9 +874,10 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 tokio::select! {
                     biased;
                     _ = state.shutdown.cancelled() => None,
-                    result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                    result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation_runtime(
                         state.as_ref(),
                         None,
+                        &mut recovery_runtime,
                     ) => Some(result),
                 }
             })
@@ -872,13 +886,26 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 return;
             };
             observation.finish_with_status(if result.is_ok() { "success" } else { "skipped" });
-            next_turn = match result {
+            let scheduled_next_turn = match result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {
                     warn!(error = ?error, "summary historical coverage recovery deferred");
                     SummaryCoverageRecoveryNextTurn::Idle
                 }
             };
+            let progress_or_identity_changed = recovery_runtime.take_retry_reset();
+            if progress_or_identity_changed
+                || scheduled_next_turn != SummaryCoverageRecoveryNextTurn::Deferred
+            {
+                deferred_retry_delay = SUMMARY_COVERAGE_RECOVERY_RETRY_INITIAL;
+            } else {
+                deferred_retry_delay = summary_coverage_recovery_retry_delay(deferred_retry_delay);
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(RecoveryDiagnostic::SummaryRecoveryRetry),
+                    1,
+                );
+            }
+            next_turn = scheduled_next_turn;
         }
     });
 }
@@ -1280,6 +1307,8 @@ async fn restore_compacted_summary_source_tail(state: &AppState) -> Result<bool>
 
 #[cfg(test)]
 mod compacted_source_recovery_budget_tests {
+    use sqlx::Execute;
+
     use super::*;
 
     fn candidate(id: i64, materialized_text_bytes: usize) -> CompactedSourceRecoveryCandidate {
@@ -1293,11 +1322,120 @@ mod compacted_source_recovery_budget_tests {
     }
 
     #[test]
+    fn tuple_cursor_filter_separates_occurred_at_and_id_bindings() {
+        let checkpoint = CompactedSourceRecoveryCheckpoint {
+            scope: SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE.to_string(),
+            format_version: 1,
+            time_zone: SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE.to_string(),
+            range_start: "2026-10-22 00:00:00".to_string(),
+            range_end: "2026-10-29 00:00:00".to_string(),
+            window_ranges_json: "[]".to_string(),
+            cursor_occurred_at: Some("2026-10-22 12:00:00".to_string()),
+            cursor_id: 100,
+            target_live_high_watermark_id: 1_000,
+            target_rollup_live_cursor: 0,
+            target_account_rollup_live_cursor: None,
+            target_manifest_high_watermark_id: None,
+            target_coverage_revision: 0,
+            target_account_coverage_revision: 0,
+            target_terminal_sequence: 0,
+            list_limit_max: 50,
+            processed_rows: 100,
+            state: "running".to_string(),
+            last_error_code: None,
+            last_error_message: None,
+        };
+        let start = Utc::now();
+        let end = start + chrono::Duration::hours(1);
+        let mut query =
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT id FROM codex_invocations WHERE ");
+        push_compacted_source_recovery_filter(
+            &mut query,
+            &checkpoint,
+            &[("previous7d".to_string(), start, end)],
+        )
+        .expect("build tuple cursor recovery filter");
+        let query = query.build();
+        assert!(
+            query.sql().contains("AND (occurred_at, id) > (?, ?) "),
+            "tuple cursor must bind occurred_at and id as separate SQL values: {}",
+            query.sql()
+        );
+    }
+
+    #[test]
+    fn recovery_runtime_keeps_adaptive_page_size_across_scheduler_turns() {
+        let mut runtime = CompactedSourceRecoveryRuntime::default();
+        runtime.halve_page_size();
+        runtime.mark_progress();
+
+        assert_eq!(
+            runtime.page_size,
+            SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE / 2
+        );
+        assert!(runtime.take_retry_reset());
+
+        runtime.mark_progress();
+        assert!(runtime.take_retry_reset());
+        assert_eq!(
+            runtime.page_size,
+            SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE / 2
+        );
+    }
+
+    #[test]
     fn page_selection_is_capped_at_512_rows() {
         let page = (1..=513).map(|id| candidate(id, 0)).collect();
         let (selected, completed) = select_compacted_source_recovery_candidates(page)
             .expect("select bounded recovery candidates");
         assert_eq!(selected.len(), SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE);
+        assert!(!completed);
+    }
+
+    #[test]
+    fn page_selection_honors_adaptive_row_limit() {
+        let page = CompactedSourceRecoveryCandidatePage {
+            keys: vec![
+                CompactedSourceRecoveryKey {
+                    id: 1,
+                    occurred_at: "2026-10-22 12:00:00".to_string(),
+                },
+                CompactedSourceRecoveryKey {
+                    id: 2,
+                    occurred_at: "2026-10-22 12:01:00".to_string(),
+                },
+            ],
+            candidates: vec![candidate(1, 0), candidate(2, 0)],
+        };
+        let (selected, cursor, completed) =
+            select_compacted_source_recovery_candidate_page(page, 1)
+                .expect("select adaptive recovery candidates");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, 1);
+        assert_eq!(cursor, Some(("2026-10-22 12:00:00".to_string(), 1)));
+        assert!(!completed);
+    }
+
+    #[test]
+    fn page_selection_keeps_live_boundary_at_cursor() {
+        let page = CompactedSourceRecoveryCandidatePage {
+            keys: vec![
+                CompactedSourceRecoveryKey {
+                    id: 1,
+                    occurred_at: "2026-10-22 12:00:00".to_string(),
+                },
+                CompactedSourceRecoveryKey {
+                    id: 2,
+                    occurred_at: "2026-10-22 12:01:00".to_string(),
+                },
+            ],
+            candidates: vec![candidate(1, 0)],
+        };
+        let (selected, cursor, completed) =
+            select_compacted_source_recovery_candidate_page(page, 512)
+                .expect("select recovery page around live boundary");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(cursor, Some(("2026-10-22 12:00:00".to_string(), 1)));
         assert!(!completed);
     }
 
@@ -1342,6 +1480,44 @@ mod compacted_source_recovery_budget_tests {
             error
                 .to_string()
                 .contains("bounded recovery materialization budget")
+        );
+    }
+
+    #[test]
+    fn deferred_recovery_uses_bounded_exponential_backoff() {
+        assert_eq!(
+            summary_coverage_recovery_retry_delay(Duration::from_secs(10)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            summary_coverage_recovery_retry_delay(Duration::from_secs(20)),
+            Duration::from_secs(40)
+        );
+        assert_eq!(
+            summary_coverage_recovery_retry_delay(Duration::from_secs(40)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            summary_coverage_recovery_retry_delay(Duration::from_secs(60)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Deferred,
+                Duration::from_secs(20),
+            ),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Immediate,
+                Duration::from_secs(20),
+            ),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Deferred),
+            Duration::from_secs(10)
         );
     }
 
@@ -1445,6 +1621,85 @@ struct CompactedSourceRecoveryCheckpoint {
     last_error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactedSourceRecoveryIdentity {
+    scope: String,
+    format_version: i64,
+    time_zone: String,
+    range_start: String,
+    range_end: String,
+    window_ranges_json: String,
+    target_live_high_watermark_id: i64,
+    target_rollup_live_cursor: i64,
+    target_account_rollup_live_cursor: Option<i64>,
+    target_manifest_high_watermark_id: Option<i64>,
+    target_coverage_revision: i64,
+    target_account_coverage_revision: i64,
+    target_terminal_sequence: i64,
+    list_limit_max: i64,
+}
+
+impl From<&CompactedSourceRecoveryCheckpoint> for CompactedSourceRecoveryIdentity {
+    fn from(checkpoint: &CompactedSourceRecoveryCheckpoint) -> Self {
+        Self {
+            scope: checkpoint.scope.clone(),
+            format_version: checkpoint.format_version,
+            time_zone: checkpoint.time_zone.clone(),
+            range_start: checkpoint.range_start.clone(),
+            range_end: checkpoint.range_end.clone(),
+            window_ranges_json: checkpoint.window_ranges_json.clone(),
+            target_live_high_watermark_id: checkpoint.target_live_high_watermark_id,
+            target_rollup_live_cursor: checkpoint.target_rollup_live_cursor,
+            target_account_rollup_live_cursor: checkpoint.target_account_rollup_live_cursor,
+            target_manifest_high_watermark_id: checkpoint.target_manifest_high_watermark_id,
+            target_coverage_revision: checkpoint.target_coverage_revision,
+            target_account_coverage_revision: checkpoint.target_account_coverage_revision,
+            target_terminal_sequence: checkpoint.target_terminal_sequence,
+            list_limit_max: checkpoint.list_limit_max,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CompactedSourceRecoveryRuntime {
+    page_size: usize,
+    identity: Option<CompactedSourceRecoveryIdentity>,
+    retry_reset: bool,
+}
+
+impl Default for CompactedSourceRecoveryRuntime {
+    fn default() -> Self {
+        Self {
+            page_size: SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+            identity: None,
+            retry_reset: false,
+        }
+    }
+}
+
+impl CompactedSourceRecoveryRuntime {
+    fn observe_checkpoint(&mut self, checkpoint: &CompactedSourceRecoveryCheckpoint) {
+        let identity = CompactedSourceRecoveryIdentity::from(checkpoint);
+        if self.identity.as_ref() != Some(&identity) {
+            self.identity = Some(identity);
+            self.page_size = SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE;
+            self.retry_reset = true;
+        }
+    }
+
+    fn halve_page_size(&mut self) {
+        self.page_size = (self.page_size / 2).max(1);
+    }
+
+    fn mark_progress(&mut self) {
+        self.retry_reset = true;
+    }
+
+    fn take_retry_reset(&mut self) -> bool {
+        std::mem::take(&mut self.retry_reset)
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct CompactedSourceRecoverySourceRow {
     id: i64,
@@ -1477,6 +1732,18 @@ struct CompactedSourceRecoveryCandidate {
     occurred_at: String,
     estimated_bytes: i64,
     error_message_bytes: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct CompactedSourceRecoveryKey {
+    id: i64,
+    occurred_at: String,
+}
+
+#[derive(Debug, Default)]
+struct CompactedSourceRecoveryCandidatePage {
+    keys: Vec<CompactedSourceRecoveryKey>,
+    candidates: Vec<CompactedSourceRecoveryCandidate>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -2099,36 +2366,39 @@ fn push_compacted_source_recovery_filter(
     query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
     windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
-) {
+) -> Result<()> {
+    let start = windows
+        .iter()
+        .map(|(_, start, _)| *start)
+        .min()
+        .ok_or_else(|| anyhow!("compacted source recovery has no scan windows"))?;
+    let end = windows
+        .iter()
+        .map(|(_, _, end)| *end)
+        .max()
+        .ok_or_else(|| anyhow!("compacted source recovery has no scan windows"))?;
     query
-        .push(INVOCATION_STATUS_NORMALIZED_SQL)
-        .push(" NOT IN ('running', 'pending') AND id <= ")
+        .push("occurred_at >= ")
+        .push_bind(crate::stats::db_occurred_at_lower_bound(start))
+        .push(" AND occurred_at < ")
+        .push_bind(crate::db_occurred_at_upper_bound(end))
+        .push(" AND id <= ")
         .push_bind(checkpoint.target_live_high_watermark_id)
-        .push(" AND (");
-    for (index, (_, start, end)) in windows.iter().enumerate() {
-        if index > 0 {
-            query.push(" OR ");
-        }
-        query
-            .push("(occurred_at >= ")
-            .push_bind(crate::stats::db_occurred_at_lower_bound(*start))
-            .push(" AND occurred_at < ")
-            .push_bind(crate::db_occurred_at_upper_bound(*end))
-            .push(")");
-    }
-    query.push(")");
+        .push(" ");
     if let Some(cursor_occurred_at) = checkpoint.cursor_occurred_at.as_deref() {
         query
-            .push(" AND (occurred_at > ")
+            .push("AND (occurred_at, id) > (")
             .push_bind(cursor_occurred_at.to_string())
-            .push(" OR (occurred_at = ")
-            .push_bind(cursor_occurred_at.to_string())
-            .push(" AND id > ")
+            .push(", ")
             .push_bind(checkpoint.cursor_id)
-            .push("))");
+            .push(") ");
     } else if checkpoint.cursor_id > 0 {
-        query.push(" AND id > ").push_bind(checkpoint.cursor_id);
+        query
+            .push("AND id > ")
+            .push_bind(checkpoint.cursor_id)
+            .push(" ");
     }
+    Ok(())
 }
 
 fn push_compacted_source_recovery_text_length(
@@ -2139,6 +2409,29 @@ fn push_compacted_source_recovery_text_length(
         .push(" + length(CAST(COALESCE(")
         .push(expression)
         .push(", '') AS BLOB))");
+}
+
+fn push_compacted_source_recovery_candidate_columns(
+    query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>,
+) {
+    query.push("SELECT id, occurred_at, (192");
+    for expression in [
+        "invoke_id",
+        "occurred_at",
+        "model",
+        INVOCATION_RESPONSE_MODEL_SQL,
+        INVOCATION_REASONING_EFFORT_SQL,
+        "status",
+        "error_message",
+        INVOCATION_FAILURE_KIND_SQL,
+        INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    ] {
+        push_compacted_source_recovery_text_length(query, expression);
+    }
+    query.push(
+        ") AS estimated_bytes, length(CAST(COALESCE(error_message, '') AS BLOB)) \
+         AS error_message_bytes FROM codex_invocations WHERE ",
+    );
 }
 
 async fn open_compacted_source_recovery_connection(
@@ -2194,31 +2487,12 @@ async fn load_compacted_source_recovery_candidates(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
     windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
+    page_size: usize,
     budget: Duration,
-) -> Result<Option<Vec<CompactedSourceRecoveryCandidate>>> {
+) -> Result<Option<CompactedSourceRecoveryCandidatePage>> {
     let started = Instant::now();
-    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT id, occurred_at, (192");
-    for expression in [
-        "invoke_id",
-        "occurred_at",
-        "model",
-        INVOCATION_RESPONSE_MODEL_SQL,
-        INVOCATION_REASONING_EFFORT_SQL,
-        "status",
-        "error_message",
-        INVOCATION_FAILURE_KIND_SQL,
-        INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
-    ] {
-        push_compacted_source_recovery_text_length(&mut query, expression);
-    }
-    query.push(
-        ") AS estimated_bytes, length(CAST(COALESCE(error_message, '') AS BLOB)) \
-        AS error_message_bytes FROM codex_invocations WHERE ",
-    );
-    push_compacted_source_recovery_filter(&mut query, checkpoint, windows);
-    query
-        .push(" ORDER BY occurred_at ASC, id ASC LIMIT ")
-        .push_bind(i64::try_from(SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE).unwrap_or(512));
+    let mut key_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+    push_compacted_source_recovery_key_page_query(&mut key_query, checkpoint, windows, page_size)?;
     let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
         state,
         budget.saturating_sub(started.elapsed()),
@@ -2235,7 +2509,60 @@ async fn load_compacted_source_recovery_candidates(
     }
     let result = tokio::time::timeout(
         remaining,
-        query
+        key_query
+            .build_query_as::<CompactedSourceRecoveryKey>()
+            .fetch_all(&mut connection),
+    )
+    .await;
+    let keys = match result {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(error)) => {
+            let error = anyhow!(error).context("load bounded compacted source recovery candidates");
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error)
+            {
+                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
+                    .await?;
+                return Ok(None);
+            } else {
+                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
+                    .await?;
+                return Err(error);
+            }
+        }
+        Err(_) => {
+            let _ =
+                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+            return Ok(None);
+        }
+    };
+    if keys.is_empty() {
+        if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
+            return Ok(None);
+        }
+        return Ok(Some(CompactedSourceRecoveryCandidatePage::default()));
+    }
+
+    let remaining = budget.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        return Ok(None);
+    }
+    let mut candidate_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+    push_compacted_source_recovery_candidate_columns(&mut candidate_query);
+    candidate_query.push(INVOCATION_STATUS_NORMALIZED_SQL);
+    candidate_query.push(" NOT IN ('running', 'pending') AND id IN (");
+    {
+        let mut separated = candidate_query.separated(", ");
+        for key in &keys {
+            separated.push_bind(key.id);
+        }
+        separated.push_unseparated(")");
+    }
+    let candidate_result = tokio::time::timeout(
+        remaining,
+        candidate_query
             .build_query_as::<CompactedSourceRecoveryCandidate>()
             .fetch_all(&mut connection),
     )
@@ -2243,10 +2570,14 @@ async fn load_compacted_source_recovery_candidates(
     if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
         return Ok(None);
     }
-    match result {
-        Ok(Ok(rows)) => Ok(Some(rows)),
+    match candidate_result {
+        Ok(Ok(candidates)) => Ok(Some(CompactedSourceRecoveryCandidatePage {
+            keys,
+            candidates,
+        })),
         Ok(Err(error)) => {
-            let error = anyhow!(error).context("load bounded compacted source recovery candidates");
+            let error =
+                anyhow!(error).context("load bounded compacted source recovery candidate metadata");
             if interrupted.load(Ordering::Acquire)
                 || Instant::now() >= deadline
                 || is_sqlite_contention(&error)
@@ -2258,6 +2589,23 @@ async fn load_compacted_source_recovery_candidates(
         }
         Err(_) => Ok(None),
     }
+}
+
+fn push_compacted_source_recovery_key_page_query(
+    query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>,
+    checkpoint: &CompactedSourceRecoveryCheckpoint,
+    windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
+    page_size: usize,
+) -> Result<()> {
+    query.push(
+        "SELECT id, occurred_at FROM codex_invocations INDEXED BY \
+         idx_codex_invocations_occurred_at_id WHERE ",
+    );
+    push_compacted_source_recovery_filter(query, checkpoint, windows)?;
+    query
+        .push(" ORDER BY occurred_at ASC, id ASC LIMIT ")
+        .push_bind(i64::try_from(page_size.max(1)).unwrap_or(1));
+    Ok(())
 }
 
 async fn load_compacted_source_recovery_source_rows(
@@ -2282,8 +2630,7 @@ async fn load_compacted_source_recovery_source_rows(
     }
     query
         .push(" AND id <= ")
-        .push_bind(checkpoint.target_live_high_watermark_id)
-        .push(" ORDER BY occurred_at ASC, id ASC");
+        .push_bind(checkpoint.target_live_high_watermark_id);
     let Some((mut connection, interrupted, deadline)) = open_compacted_source_recovery_connection(
         state,
         budget.saturating_sub(started.elapsed()),
@@ -2467,11 +2814,52 @@ fn add_compacted_source_row_contributions(
 fn select_compacted_source_recovery_candidates(
     page: Vec<CompactedSourceRecoveryCandidate>,
 ) -> Result<(Vec<CompactedSourceRecoveryCandidate>, bool)> {
-    let fetched_count = page.len();
+    let keys = page
+        .iter()
+        .map(|candidate| CompactedSourceRecoveryKey {
+            id: candidate.id,
+            occurred_at: candidate.occurred_at.clone(),
+        })
+        .collect();
+    let (selected, _cursor, completed) = select_compacted_source_recovery_candidate_page(
+        CompactedSourceRecoveryCandidatePage {
+            keys,
+            candidates: page,
+        },
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+    )?;
+    Ok((selected, completed))
+}
+
+fn select_compacted_source_recovery_candidate_page(
+    page: CompactedSourceRecoveryCandidatePage,
+    page_size: usize,
+) -> Result<(
+    Vec<CompactedSourceRecoveryCandidate>,
+    Option<(String, i64)>,
+    bool,
+)> {
+    let fetched_count = page.keys.len();
+    let candidates_by_id = page
+        .candidates
+        .into_iter()
+        .map(|candidate| (candidate.id, candidate))
+        .collect::<HashMap<_, _>>();
     let mut selected_bytes = 0usize;
-    let mut selected_rows = Vec::with_capacity(page.len());
-    for row in page {
-        if selected_rows.len() >= SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE {
+    let mut selected_rows = Vec::with_capacity(candidates_by_id.len().min(fetched_count));
+    let mut cursor = None;
+    let mut stopped_for_materialization_budget = false;
+    let mut stopped_for_unresolved_source_row = false;
+    for key in page.keys {
+        let Some(row) = candidates_by_id.get(&key.id) else {
+            // Running and pending source rows are not eligible for aggregation yet. Keep them at
+            // the page boundary so a later terminal transition remains visible to this recovery
+            // generation instead of being skipped by the tuple cursor.
+            stopped_for_unresolved_source_row = true;
+            break;
+        };
+        if selected_rows.len() >= page_size.max(1) {
+            stopped_for_materialization_budget = true;
             break;
         }
         let row_bytes = usize::try_from(row.estimated_bytes)
@@ -2492,27 +2880,33 @@ fn select_compacted_source_recovery_candidates(
             // An oversized raw row is admitted only when the bounded error-message projection
             // brings its materialized text back under the page budget. Other oversized fields
             // fail closed before they can be loaded into Rust.
-            selected_rows.push(row);
+            selected_rows.push(row.clone());
+            cursor = Some((key.occurred_at, key.id));
+            stopped_for_materialization_budget = true;
             break;
         }
         if !selected_rows.is_empty()
             && selected_bytes.saturating_add(row_bytes)
                 > SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES
         {
+            stopped_for_materialization_budget = true;
             break;
         }
         selected_bytes = selected_bytes.saturating_add(row_bytes);
-        selected_rows.push(row);
+        selected_rows.push(row.clone());
+        cursor = Some((key.occurred_at, key.id));
     }
-    let completed = fetched_count < SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE
-        && selected_rows.len() == fetched_count;
-    Ok((selected_rows, completed))
+    let completed = !stopped_for_materialization_budget
+        && !stopped_for_unresolved_source_row
+        && fetched_count < page_size.max(1);
+    Ok((selected_rows, cursor, completed))
 }
 
 async fn stage_compacted_source_recovery_page(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
     rows: &[CompactedSourceRecoverySourceRow],
+    cursor: Option<&(String, i64)>,
     windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
     completed: bool,
     transaction_budget: Duration,
@@ -2605,6 +2999,7 @@ async fn stage_compacted_source_recovery_page(
             state,
             checkpoint,
             rows,
+            cursor,
             windows,
             completed,
             transaction_started,
@@ -2789,6 +3184,7 @@ async fn stage_compacted_source_recovery_page_in_transaction(
     state: &AppState,
     checkpoint: &CompactedSourceRecoveryCheckpoint,
     rows: &[CompactedSourceRecoverySourceRow],
+    cursor: Option<&(String, i64)>,
     windows: &[(String, DateTime<Utc>, DateTime<Utc>)],
     completed: bool,
     transaction_started: Instant,
@@ -2941,7 +3337,6 @@ async fn stage_compacted_source_recovery_page_in_transaction(
         .context("prune compacted source recovery record identities")?;
     }
 
-    let last_row = rows.last();
     let next_state = if completed {
         "completed"
     } else if transaction_started.elapsed() >= SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET
@@ -2957,8 +3352,8 @@ async fn stage_compacted_source_recovery_page_in_transaction(
             processed_rows = processed_rows + ?3, state = ?4, last_error_code = NULL, \
             last_error_message = NULL, updated_at = datetime('now') WHERE scope = ?5",
     )
-    .bind(last_row.map(|row| row.occurred_at.clone()))
-    .bind(last_row.map(|row| row.id).unwrap_or_default())
+    .bind(cursor.map(|(occurred_at, _)| occurred_at.clone()))
+    .bind(cursor.map(|(_, id)| *id).unwrap_or_default())
     .bind(i64::try_from(rows.len()).context("compacted source recovery row count overflow")?)
     .bind(next_state)
     .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
@@ -3438,8 +3833,9 @@ async fn publish_compacted_source_recovery_snapshot_in_transaction(
     Ok(true)
 }
 
-async fn run_compacted_source_recovery_turn(
+async fn run_compacted_source_recovery_turn_with_runtime(
     state: &AppState,
+    runtime: &mut CompactedSourceRecoveryRuntime,
 ) -> Result<Option<SummaryCoverageRecoveryTurn>> {
     let started = Instant::now();
     let checkpoint = match tokio::time::timeout(
@@ -3465,6 +3861,7 @@ async fn run_compacted_source_recovery_turn(
     let Some(checkpoint) = checkpoint else {
         return Ok(None);
     };
+    runtime.observe_checkpoint(&checkpoint);
     let checkpoint_state = SummaryCompactedSourceRecoveryState::from_storage(&checkpoint.state);
     state
         .subscription_hub
@@ -3580,7 +3977,7 @@ async fn run_compacted_source_recovery_turn(
                 )
                 .await;
             return Ok(Some(SummaryCoverageRecoveryTurn {
-                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                 reservation: Some(
                     crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                 ),
@@ -3601,7 +3998,7 @@ async fn run_compacted_source_recovery_turn(
                     )
                     .await;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
-                    next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                     reservation: Some(
                         crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                     ),
@@ -3611,8 +4008,13 @@ async fn run_compacted_source_recovery_turn(
         let Some(checkpoint) = checkpoint else {
             return Ok(None);
         };
+        runtime.observe_checkpoint(&checkpoint);
         let windows = parse_compacted_source_recovery_windows(&checkpoint.window_ranges_json)?;
         if started.elapsed() >= SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET {
+            state.observability.count_performance(
+                PerformanceCounter::Recovery(RecoveryDiagnostic::SummaryRecoveryBudgetExhausted),
+                1,
+            );
             state
                 .subscription_hub
                 .set_summary_compacted_source_recovery_state(
@@ -3620,7 +4022,7 @@ async fn run_compacted_source_recovery_turn(
                 )
                 .await;
             return Ok(Some(SummaryCoverageRecoveryTurn {
-                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                 reservation: Some(
                     crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                 ),
@@ -3632,12 +4034,24 @@ async fn run_compacted_source_recovery_turn(
             state,
             &checkpoint,
             &windows,
+            runtime.page_size,
             remaining,
         )
         .await?
         {
             Some(candidates) => candidates,
             None => {
+                runtime.halve_page_size();
+                debug!(
+                    page_size = runtime.page_size,
+                    "halved compacted source recovery page size after bounded candidate read"
+                );
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(
+                        RecoveryDiagnostic::SummaryRecoveryBudgetExhausted,
+                    ),
+                    1,
+                );
                 let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
@@ -3647,15 +4061,20 @@ async fn run_compacted_source_recovery_turn(
                 )
                 .await?;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
-                    next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                     reservation: Some(
                         crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                     ),
                 }));
             }
         };
-        let (selected_candidates, completed) =
-            match select_compacted_source_recovery_candidates(candidates) {
+        let scanned_keys = candidates.keys.len();
+        state.observability.count_performance(
+            PerformanceCounter::Recovery(RecoveryDiagnostic::SummaryRecoveryScannedKeys),
+            scanned_keys as u64,
+        );
+        let (selected_candidates, cursor, completed) =
+            match select_compacted_source_recovery_candidate_page(candidates, runtime.page_size) {
                 Ok(selection) => selection,
                 Err(error) => {
                     let message = error.to_string();
@@ -3671,6 +4090,33 @@ async fn run_compacted_source_recovery_turn(
                     return Ok(None);
                 }
             };
+        debug!(
+            scanned_keys,
+            selected_terminal_rows = selected_candidates.len(),
+            cursor_advanced = cursor.is_some(),
+            completed,
+            "selected bounded compacted source recovery page"
+        );
+        if selected_candidates.is_empty() && cursor.is_none() && !completed {
+            // The first key in the page is still running or pending. There is no durable cursor
+            // progress to commit, so yield without issuing a no-op checkpoint write.
+            state
+                .subscription_hub
+                .set_summary_compacted_source_recovery_state(
+                    SummaryCompactedSourceRecoveryState::Deferred,
+                )
+                .await;
+            state.observability.count_performance(
+                PerformanceCounter::Recovery(
+                    RecoveryDiagnostic::SummaryRecoveryLiveBoundaryDeferred,
+                ),
+                1,
+            );
+            return Ok(Some(SummaryCoverageRecoveryTurn {
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                reservation: None,
+            }));
+        }
         let remaining =
             SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
         let selected_rows = match load_compacted_source_recovery_source_rows(
@@ -3683,6 +4129,17 @@ async fn run_compacted_source_recovery_turn(
         {
             Some(rows) => rows,
             None => {
+                runtime.halve_page_size();
+                debug!(
+                    page_size = runtime.page_size,
+                    "halved compacted source recovery page size after bounded source read"
+                );
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(
+                        RecoveryDiagnostic::SummaryRecoveryBudgetExhausted,
+                    ),
+                    1,
+                );
                 let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
@@ -3692,7 +4149,7 @@ async fn run_compacted_source_recovery_turn(
                 )
                 .await?;
                 return Ok(Some(SummaryCoverageRecoveryTurn {
-                    next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                     reservation: Some(
                         crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                     ),
@@ -3705,6 +4162,7 @@ async fn run_compacted_source_recovery_turn(
             state,
             &checkpoint,
             &selected_rows,
+            cursor.as_ref(),
             &windows,
             completed,
             transaction_budget,
@@ -3712,6 +4170,12 @@ async fn run_compacted_source_recovery_turn(
         .await
         {
             Err(error) if is_sqlite_contention(&error) => {
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(
+                        RecoveryDiagnostic::SummaryRecoveryContentionDeferred,
+                    ),
+                    1,
+                );
                 let _ = update_compacted_source_recovery_state_bounded(
                     state,
                     SummaryCompactedSourceRecoveryState::Deferred,
@@ -3739,18 +4203,41 @@ async fn run_compacted_source_recovery_turn(
             }
             Ok(outcome) => outcome,
         };
+        if let CompactedSourceRecoveryPageOutcome::Progress { deferred, .. } = outcome {
+            if deferred {
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(
+                        RecoveryDiagnostic::SummaryRecoveryBudgetExhausted,
+                    ),
+                    1,
+                );
+            } else {
+                if !selected_rows.is_empty() || completed {
+                    runtime.mark_progress();
+                }
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(
+                        RecoveryDiagnostic::SummaryRecoveryCommittedTerminalRows,
+                    ),
+                    selected_rows.len() as u64,
+                );
+                if cursor.is_some() {
+                    state.observability.count_performance(
+                        PerformanceCounter::Recovery(
+                            RecoveryDiagnostic::SummaryRecoveryCursorAdvanced,
+                        ),
+                        1,
+                    );
+                }
+            }
+        }
         if outcome == CompactedSourceRecoveryPageOutcome::Reset {
             let remaining =
                 SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET.saturating_sub(started.elapsed());
             match tokio::time::timeout(remaining, ensure_compacted_source_recovery(state)).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    state
-                        .subscription_hub
-                        .set_summary_compacted_source_recovery_state(
-                            SummaryCompactedSourceRecoveryState::Deferred,
-                        )
-                        .await;
+                Ok(result) => {
+                    result?;
+                    runtime.mark_progress();
                     return Ok(Some(SummaryCoverageRecoveryTurn {
                         next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
                         reservation: Some(
@@ -3759,13 +4246,22 @@ async fn run_compacted_source_recovery_turn(
                         ),
                     }));
                 }
+                Err(_) => {
+                    state
+                        .subscription_hub
+                        .set_summary_compacted_source_recovery_state(
+                            SummaryCompactedSourceRecoveryState::Deferred,
+                        )
+                        .await;
+                    return Ok(Some(SummaryCoverageRecoveryTurn {
+                        next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
+                        reservation: Some(
+                            crate::db_pressure::global_db_pressure_gate()
+                                .reserve_priority_background(),
+                        ),
+                    }));
+                }
             }
-            return Ok(Some(SummaryCoverageRecoveryTurn {
-                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
-                reservation: Some(
-                    crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
-                ),
-            }));
         }
         if outcome == CompactedSourceRecoveryPageOutcome::Stale {
             return Ok(Some(SummaryCoverageRecoveryTurn {
@@ -3798,7 +4294,7 @@ async fn run_compacted_source_recovery_turn(
                         )
                         .await;
                     return Ok(Some(SummaryCoverageRecoveryTurn {
-                        next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                        next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                         reservation: Some(
                             crate::db_pressure::global_db_pressure_gate()
                                 .reserve_priority_background(),
@@ -3807,10 +4303,15 @@ async fn run_compacted_source_recovery_turn(
                 }
             };
             if published {
+                runtime.mark_progress();
+                state.observability.count_performance(
+                    PerformanceCounter::Recovery(RecoveryDiagnostic::SummaryRecoveryPublication),
+                    1,
+                );
                 return Ok(None);
             }
             return Ok(Some(SummaryCoverageRecoveryTurn {
-                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                 reservation: Some(
                     crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                 ),
@@ -3826,7 +4327,7 @@ async fn run_compacted_source_recovery_turn(
             )
             .await?;
             return Ok(Some(SummaryCoverageRecoveryTurn {
-                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                 reservation: Some(
                     crate::db_pressure::global_db_pressure_gate().reserve_priority_background(),
                 ),
@@ -3855,11 +4356,24 @@ pub(crate) async fn run_compacted_source_recovery_one_page_for_test(
         state,
         &checkpoint,
         &windows,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
         SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET,
     )
     .await?
     .ok_or_else(|| anyhow!("test recovery candidate read exceeded its budget"))?;
-    let (selected_candidates, completed) = select_compacted_source_recovery_candidates(candidates)?;
+    let (selected_candidates, cursor, completed) = select_compacted_source_recovery_candidate_page(
+        candidates,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+    )?;
+    if selected_candidates.is_empty() && cursor.is_none() && !completed {
+        state
+            .subscription_hub
+            .set_summary_compacted_source_recovery_state(
+                SummaryCompactedSourceRecoveryState::Deferred,
+            )
+            .await;
+        return Ok(());
+    }
     let selected_rows = load_compacted_source_recovery_source_rows(
         state,
         &checkpoint,
@@ -3872,6 +4386,7 @@ pub(crate) async fn run_compacted_source_recovery_one_page_for_test(
         state,
         &checkpoint,
         &selected_rows,
+        cursor.as_ref(),
         &windows,
         completed,
         SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
@@ -3889,12 +4404,76 @@ pub(crate) async fn run_compacted_source_recovery_one_page_for_test(
 }
 
 #[cfg(test)]
+pub(crate) async fn explain_compacted_source_recovery_key_page_for_test(
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<String>> {
+    let parse_time = |value: &str| {
+        DateTime::parse_from_rfc3339(value)
+            .with_context(|| format!("parse test recovery plan time {value}"))
+            .map(|parsed| parsed.with_timezone(&Utc))
+    };
+    let checkpoint = CompactedSourceRecoveryCheckpoint {
+        scope: SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE.to_string(),
+        format_version: 1,
+        time_zone: SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE.to_string(),
+        range_start: "2026-10-01T00:00:00Z".to_string(),
+        range_end: "2026-10-08T00:00:00Z".to_string(),
+        window_ranges_json: "[]".to_string(),
+        cursor_occurred_at: Some("2026-10-02T00:00:00Z".to_string()),
+        cursor_id: 100,
+        target_live_high_watermark_id: 100_001,
+        target_rollup_live_cursor: 0,
+        target_account_rollup_live_cursor: None,
+        target_manifest_high_watermark_id: None,
+        target_coverage_revision: 0,
+        target_account_coverage_revision: 0,
+        target_terminal_sequence: 0,
+        list_limit_max: 512,
+        processed_rows: 0,
+        state: SummaryCompactedSourceRecoveryState::Running
+            .as_str()
+            .to_string(),
+        last_error_code: None,
+        last_error_message: None,
+    };
+    let windows = vec![
+        (
+            "today".to_string(),
+            parse_time("2026-10-01T00:00:00Z")?,
+            parse_time("2026-10-05T00:00:00Z")?,
+        ),
+        (
+            "yesterday".to_string(),
+            parse_time("2026-10-02T00:00:00Z")?,
+            parse_time("2026-10-06T00:00:00Z")?,
+        ),
+        (
+            "previous7d".to_string(),
+            parse_time("2026-10-01T00:00:00Z")?,
+            parse_time("2026-10-08T00:00:00Z")?,
+        ),
+    ];
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN QUERY PLAN ");
+    push_compacted_source_recovery_key_page_query(
+        &mut query,
+        &checkpoint,
+        &windows,
+        SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+    )?;
+    let plan: Vec<(i64, i64, i64, String)> = query.build_query_as().fetch_all(pool).await?;
+    Ok(plan.into_iter().map(|(_, _, _, detail)| detail).collect())
+}
+
+#[cfg(test)]
 pub(crate) async fn run_compacted_source_recovery_until_complete_for_test(
     state: &AppState,
 ) -> Result<()> {
     ensure_compacted_source_recovery(state).await?;
+    let mut runtime = CompactedSourceRecoveryRuntime::default();
     for _ in 0..128 {
-        let Some(turn) = run_compacted_source_recovery_turn(state).await? else {
+        let Some(turn) =
+            run_compacted_source_recovery_turn_with_runtime(state, &mut runtime).await?
+        else {
             let checkpoint = load_compacted_source_recovery_checkpoint(&state.pool).await?;
             if checkpoint.as_ref().is_some_and(|row| {
                 row.state == SummaryCompactedSourceRecoveryState::Failed.as_str()

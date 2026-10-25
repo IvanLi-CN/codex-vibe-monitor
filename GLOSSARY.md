@@ -116,6 +116,20 @@ _Avoid_: yesterday's timeline when Yesterday is selected for statistics.
 A daily view of global invocation counts, cost, or Token usage across 365 consecutive browser-local dates ending today.
 _Avoid_: six calendar months, a calendar controlled by the selected statistics range.
 
+## Performance Acceptance Language
+
+**Performance Acceptance**:
+A candidate-bound hosted experiment that measures runtime behavior and paired observability overhead under the project's fixed workload, hardware, and threshold contract. It produces a pass only when all required evidence is complete and comparable.
+_Avoid_: regular PR test, performance impression.
+
+**Candidate Ref**:
+A same-repository branch name or full commit SHA naming the source revision to be measured; a branch ref is resolved to one immutable commit before the run.
+_Avoid_: workflow ref when referring to the measured source.
+
+**Trusted Harness**:
+The trusted repository revision whose workflow and acceptance scripts orchestrate and validate a Performance Acceptance independently from the candidate runtime source.
+_Avoid_: candidate runtime source, measured code.
+
 ## Account Import Language
 
 **Upstream Account**:

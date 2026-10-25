@@ -149,7 +149,8 @@ pub(crate) use summary_projection_lifecycle::{
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    SummaryLiveTailReconciliationCheckpoint, load_summary_live_tail_reconciliation_checkpoint,
+    SummaryLiveTailReconciliationCheckpoint, explain_compacted_source_recovery_key_page_for_test,
+    load_summary_live_tail_reconciliation_checkpoint,
     note_summary_projection_boundary_archive_hydration,
     note_summary_projection_historical_identity_hydration,
     renew_summary_projection_freshness_if_generation_matches,
@@ -3667,10 +3668,6 @@ const SUMMARY_LIVE_TAIL_RECONCILIATION_QUEUE_WAIT: Duration = Duration::from_sec
 const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_QUEUE_WAIT: Duration = Duration::from_secs(30);
 const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_CONTINUATION_QUEUE_WAIT: Duration =
     Duration::from_secs(1);
-// A V2 page first becomes durable authority. Publishing that authority is intentionally less
-// frequent than page commits: replacing the immutable read model copies its bounded resident
-// preview, so publishing every page turns long historical recovery into copy-bound work.
-const SUMMARY_HISTORICAL_COVERAGE_OVERLAY_PUBLICATION_PAGE_BATCHES: usize = 16;
 // Keep each low-priority recovery turn long enough to amortize archive open/hash/decode setup
 // across several bounded pages. The per-page 64 MiB/400-ID limits and pressure permit remain
 // unchanged; this is a scheduler batch budget, not an HTTP or rolling freshness deadline.
@@ -35567,8 +35564,8 @@ mod request_compression_query_tests {
     fn summary_coverage_recovery_idle_cadence_waits_ten_seconds() {
         assert_eq!(
             summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Immediate),
-            Duration::ZERO,
-            "startup and pending recovery turns must remain immediate"
+            Duration::from_secs(1),
+            "committed recovery pages must yield for one second before the next admission"
         );
         assert_eq!(
             summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Idle),
