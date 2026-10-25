@@ -49,7 +49,7 @@ The runner reads the effective named steps from **each source's own** `ci-pr.yml
 | Any result                   | Timed out, failed, incomplete, or retried                                    | Fail; B scores 0                                                               |
 | Setup/infrastructure failure | Any result                                                                   | Invalid comparison; never reinterpret setup failure as an A workload timeout   |
 
-The performance decision does not itself certify coverage equivalence or PR readiness. In particular, replacing route-specific terminal/error/request assertions with a landmark check is not equivalent coverage, even if both test files pass. The manifest and report explicitly flag the current landmark-only Demo migration as unverified and list any target slow suite unchanged by the PR. Test counts such as 104 jsdom cells and 38 browser cells are declared scope, not a semantic coverage certificate. Do not claim completion while these implementation/review gaps remain.
+The performance decision does not itself certify coverage equivalence or PR readiness. The Demo jsdom matrix therefore asserts each route's terminal state for operational, attention, and empty scenes, each network-failure terminal state, the expected failed API or SSE request, and the absence of unhandled or 501 responses. The manifest and report still list any target slow suite unchanged by the PR; test counts such as 104 jsdom cells and 38 browser cells are scope checks, while the route assertions provide the semantic certificate. Do not claim completion while a required target suite remains unchanged or the semantic audit is false.
 
 ## Trigger, evidence and cleanup
 

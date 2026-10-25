@@ -27,6 +27,7 @@ const previousCss = globalThis.CSS;
 const previousGetBBox = SVGElement.prototype.getBBox;
 const unexpectedDemoApiResponses: string[] = [];
 const unhandledRequests: string[] = [];
+const failedDemoRequests: string[] = [];
 const server = setupServer(...apiHandlers);
 
 function RouteProbe() {
@@ -63,14 +64,12 @@ function renderRoute(path: string, scene: DemoScene) {
   });
 }
 
-function assertRouteLandmark(route: (typeof demoRoutes)[number], scene: DemoScene) {
+function expectRouteLandmark(route: (typeof demoRoutes)[number]) {
   if (route.path === "/#/account-pool/groups") {
     expect(
       host.querySelector('[data-testid="account-pool-groups-list"]') ??
         host.querySelector('[data-testid="account-pool-groups-empty"]') ??
-        (scene === "network-failure"
-          ? host.querySelector('[data-testid="account-pool-groups-error"]')
-          : null),
+        null,
       route.path,
     ).not.toBeNull();
     return;
@@ -88,36 +87,6 @@ function assertRouteLandmark(route: (typeof demoRoutes)[number], scene: DemoScen
     ).toBe(true);
     return;
   }
-  if (scene === "network-failure") {
-    const landmark =
-      route.landmark.kind === "testid"
-        ? (host.querySelector(`[data-testid="${route.landmark.value}"]`) ??
-          document.body.querySelector(`[data-testid="${route.landmark.value}"]`) ??
-          host.querySelector(
-            `[data-testid="${route.landmark.value.replace(/-list$/, "-error")}"]`,
-          ) ??
-          document.body.querySelector(
-            `[data-testid="${route.landmark.value.replace(/-list$/, "-error")}"]`,
-          ))
-        : Array.from(document.body.querySelectorAll("h1, h2, h3, h4, h5, h6")).find(
-            (heading) => heading.textContent?.trim() === route.landmark.value,
-          );
-    expect(
-      landmark ??
-        document.body.querySelector('[role="alert"]') ??
-        Array.from(document.body.querySelectorAll('[role="status"]')).find((element) =>
-          element.textContent?.includes("加载系统状态失败"),
-        ) ??
-        host.querySelector('[data-testid="dashboard-main-content"]') ??
-        (route.path === "/#/system"
-          ? Array.from(host.querySelectorAll("h1, h2, h3, h4, h5, h6")).find(
-              (heading) => heading.textContent?.trim() === "系统状态",
-            )
-          : null),
-      `${route.path} / ${scene}`,
-    ).not.toBeNull();
-    return;
-  }
   if (route.landmark.kind === "testid") {
     expect(
       host.querySelector(`[data-testid="${route.landmark.value}"]`) ??
@@ -132,6 +101,276 @@ function assertRouteLandmark(route: (typeof demoRoutes)[number], scene: DemoScen
     ),
     route.path,
   ).toBe(true);
+}
+
+function expectedNetworkFailurePath(path: string): string {
+  switch (path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route":
+      return "/events";
+    case "/#/stats":
+      return "/api/stats/errors";
+    case "/#/live":
+      return "/api/pool/model-routing-live";
+    case "/#/dashboard/invocations/demo-invocation-9002":
+      return "/api/invocations";
+    case "/#/records":
+      return "/api/invocations";
+    case "/#/account-pool":
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/transits":
+    case "/#/account-pool/pool":
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+    case "/#/account-pool/groups":
+      return "/api/pool/upstream-accounts";
+    case "/#/account-pool/maintenance-records":
+      return "/api/pool/upstream-account-events";
+    case "/#/system":
+    case "/#/system/status":
+      return "/api/system/status";
+    case "/#/system/performance":
+      return "/api/system/observability";
+    case "/#/system/tasks":
+      return "/api/system/managed-tasks";
+    case "/#/system/tasks/retention_archive":
+      return "/api/system/managed-tasks/retention_archive";
+    case "/#/system/prompt-cache":
+      return "/api/system/prompt-cache/materialization";
+    case "/#/system/models":
+    case "/#/system/proxy":
+    case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
+      return "/api/settings";
+    default:
+      throw new Error(`Missing network failure request contract for ${path}`);
+  }
+}
+
+function assertNetworkFailureState(route: (typeof demoRoutes)[number]) {
+  const bodyText = document.body.textContent ?? "";
+  switch (route.path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route":
+      expect(bodyText).toContain("当前无法获取调用明细");
+      return;
+    case "/#/dashboard/invocations/demo-invocation-9002":
+      expect(
+        document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]'),
+      ).not.toBeNull();
+      return;
+    case "/#/stats":
+      expect(host.querySelector('[data-testid="stats-error-distribution"]')?.textContent).toMatch(
+        /Request failed: 0|Failed to fetch/,
+      );
+      return;
+    case "/#/live":
+      expect(
+        host.querySelector('[data-testid="model-routing-live-panel"] [role="status"]')?.textContent,
+      ).toMatch(/Request failed: 0|Failed to fetch/);
+      return;
+    case "/#/records":
+      expect(host.querySelector('[data-testid="invocation-records-table-error"]')).not.toBeNull();
+      return;
+    case "/#/account-pool":
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/transits":
+    case "/#/account-pool/pool":
+      expect(
+        host.querySelector('[data-testid="upstream-accounts-table-error"]') ??
+          host.querySelector('[data-testid="upstream-accounts-grouped-error"]'),
+      ).not.toBeNull();
+      return;
+    case "/#/account-pool/groups":
+      expect(host.querySelector('[data-testid="account-pool-groups-error"]')).not.toBeNull();
+      return;
+    case "/#/account-pool/maintenance-records":
+      expect(host.querySelector('[data-testid="maintenance-records-error"]')).not.toBeNull();
+      return;
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+      expect(host.querySelector('[role="status"]')?.textContent).toMatch(
+        /Request failed: 0|Failed to fetch/,
+      );
+      return;
+    case "/#/system":
+    case "/#/system/status":
+      expect(bodyText).toMatch(/加载系统状态失败：/);
+      return;
+    case "/#/system/performance":
+      expect(bodyText).toContain("暂时无法加载观测状态。");
+      return;
+    case "/#/system/tasks":
+      expect(bodyText).toMatch(/任务目录不可用：/);
+      return;
+    case "/#/system/tasks/retention_archive":
+      expect(bodyText).toMatch(/任务观测不可用：/);
+      return;
+    case "/#/system/prompt-cache":
+      expect(host.querySelector('[data-testid="system-prompt-cache-error"]')).not.toBeNull();
+      return;
+    case "/#/system/models":
+      expect(host.querySelector('[role="alert"]')?.textContent).toMatch(
+        /Request failed: 0|Failed to fetch/,
+      );
+      return;
+    case "/#/system/proxy":
+    case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
+      expect(bodyText).toMatch(/设置请求失败：/);
+      return;
+  }
+}
+
+function assertRouteTerminalState(route: (typeof demoRoutes)[number], scene: DemoScene) {
+  if (scene === "network-failure") {
+    assertNetworkFailureState(route);
+    expect(failedDemoRequests).toContain(`GET ${expectedNetworkFailurePath(route.path)}`);
+    return;
+  }
+
+  expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+  switch (route.path) {
+    case "/#/":
+    case "/#/dashboard":
+    case "/#/not-a-route":
+      expect(host.querySelector('[data-testid="dashboard-activity-range-today"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="dashboard-working-conversations"]')).not.toBeNull();
+      if (scene === "empty") {
+        expect(host.textContent).toContain("最近 5 分钟内暂无终态调用");
+        expect(
+          host.querySelector('[data-testid="dashboard-working-conversations-grid"]'),
+        ).toBeNull();
+      } else {
+        expect(
+          host.querySelector('[data-testid="dashboard-working-conversations-grid"]'),
+        ).not.toBeNull();
+      }
+      return;
+    case "/#/dashboard/invocations/demo-invocation-9002":
+      expect(
+        scene === "empty"
+          ? document.body.querySelector('[data-testid="dashboard-invocation-detail-empty"]')
+          : document.body.querySelector(".invocation-detail-hero-surface"),
+        `${route.path} / ${scene}: ${host.textContent?.slice(-800) ?? ""}`,
+      ).not.toBeNull();
+      return;
+    case "/#/stats": {
+      const statsHeading = Array.from(host.querySelectorAll("h1, h2, h3, h4, h5, h6")).find(
+        (heading) => heading.textContent?.trim() === "统计",
+      );
+      expect(statsHeading).not.toBeUndefined();
+      let summaryPanel: Element | null = statsHeading ?? null;
+      for (let index = 0; index < 4 && summaryPanel; index += 1) {
+        summaryPanel = summaryPanel.parentElement;
+      }
+      const metrics = Array.from(summaryPanel?.querySelectorAll(".metric-value") ?? []);
+      expect(metrics.length).toBeGreaterThan(0);
+      const firstMetricCell = metrics[0]?.closest(".metric-cell");
+      const firstMetricValue = firstMetricCell?.querySelector(
+        '[data-adaptive-metric-measure-kind="full"]',
+      )?.textContent;
+      if (scene === "empty") {
+        expect(firstMetricValue?.trim()).toBe("0");
+      } else {
+        expect(firstMetricValue?.trim()).not.toBe("0");
+      }
+      return;
+    }
+    case "/#/live":
+      if (scene === "empty") {
+        expect(host.textContent).toContain("没有符合筛选条件的 API Key 模型路由状态。");
+        expect(host.querySelector('[data-testid="model-routing-gantt"]')).toBeNull();
+      } else {
+        expect(host.querySelector('[data-testid="model-routing-gantt"]')).not.toBeNull();
+      }
+      return;
+    case "/#/records":
+      expect(host.querySelector('[data-testid="invocation-records-table-loading"]')).toBeNull();
+      expect(host.querySelector('[data-testid="invocation-records-table-error"]')).toBeNull();
+      if (scene === "empty") {
+        expect(host.querySelector('[data-testid="invocation-records-table-empty"]')).not.toBeNull();
+      } else {
+        expect(host.querySelector('[data-testid="invocation-records-model"]')).not.toBeNull();
+      }
+      return;
+    case "/#/account-pool/groups":
+      expect(
+        host.querySelector(
+          scene === "empty"
+            ? '[data-testid="account-pool-groups-empty"]'
+            : '[data-testid="account-pool-groups-list"]',
+        ),
+      ).not.toBeNull();
+      return;
+    case "/#/account-pool":
+    case "/#/account-pool/upstream-accounts":
+    case "/#/account-pool/transits":
+    case "/#/account-pool/pool":
+      if (scene === "empty") {
+        expect(
+          host.querySelector('[data-testid="upstream-accounts-table-empty"]') ??
+            host.querySelector('[data-testid="upstream-accounts-grouped-empty"]'),
+        ).not.toBeNull();
+      } else {
+        expect(
+          host.querySelector('[data-testid="upstream-accounts-grouped-roster"]') ??
+            host.querySelector('[title="alpha@demo.invalid"]') ??
+            host.querySelector('[title="Aster"]'),
+        ).not.toBeNull();
+      }
+      return;
+    case "/#/account-pool/upstream-accounts/new?mode=apiKey":
+    case "/#/account-pool/upstream-accounts/new?mode=oauth":
+      expect(host.querySelector(".animate-spin")).toBeNull();
+      expect(host.querySelector('[role="status"]')).toBeNull();
+      expect(
+        host.querySelector(
+          `input[name="${route.path.endsWith("mode=apiKey") ? "apiKeyDisplayName" : "oauthDisplayName"}"]`,
+        ),
+      ).not.toBeNull();
+      return;
+    case "/#/account-pool/maintenance-records":
+      if (scene === "empty")
+        expect(host.querySelector('[data-testid="maintenance-records-empty"]')).not.toBeNull();
+      else expect(host.textContent).toContain("同步成功");
+      return;
+    case "/#/system":
+    case "/#/system/status":
+      expect(host.querySelector('[data-testid="system-status-layout"]')).not.toBeNull();
+      return;
+    case "/#/system/performance":
+      expect(host.querySelector('[aria-label="Grafana"]')).not.toBeNull();
+      return;
+    case "/#/system/tasks":
+      expect(host.querySelector("[data-task-catalog-row]")).not.toBeNull();
+      return;
+    case "/#/system/tasks/retention_archive":
+      expect(host.querySelector('[data-testid="task-workload-panels"]')).not.toBeNull();
+      return;
+    case "/#/system/prompt-cache":
+      expect(
+        host.querySelector('[data-testid="system-prompt-cache"] [role="switch"]'),
+      ).not.toBeNull();
+      return;
+    case "/#/system/models":
+      expect(host.textContent).toMatch(/\d+ 个模型/);
+      return;
+    case "/#/system/settings":
+    case "/#/settings":
+    case "/#/settings/legacy":
+      expect(host.querySelector(".settings-page")?.textContent).toContain("代理配置");
+      return;
+    case "/#/system/proxy":
+      expect(host.querySelector(".settings-page")?.textContent).toContain("正向代理路由");
+      return;
+    default:
+      expectRouteLandmark(route);
+  }
 }
 
 describe("Web Demo route matrix", () => {
@@ -197,6 +436,16 @@ describe("Web Demo route matrix", () => {
     });
     cleanupFetch = installDemoFetchFallback(handleDemoRequest);
     cleanupEventSource = installDemoEventSource();
+    const createDemoEventSource = window.__CVM_DEMO_CREATE_EVENT_SOURCE__;
+    if (createDemoEventSource) {
+      window.__CVM_DEMO_CREATE_EVENT_SOURCE__ = (path) => {
+        const source = createDemoEventSource(path);
+        source.addEventListener("error", () => {
+          failedDemoRequests.push(`GET ${new URL(path, window.location.href).pathname}`);
+        });
+        return source;
+      };
+    }
     const fallbackFetch = window.fetch;
     window.fetch = async (input, init) => {
       const request =
@@ -206,6 +455,7 @@ describe("Web Demo route matrix", () => {
       const response = await fallbackFetch(input, init);
       const pathname = new URL(request.url).pathname;
       if (demoModel.snapshot.scene === "network-failure" && pathname.startsWith("/api/")) {
+        failedDemoRequests.push(`${request.method} ${pathname}`);
         throw new TypeError("Failed to fetch");
       }
       if (pathname.startsWith("/api/") && response.status === 501) {
@@ -216,6 +466,7 @@ describe("Web Demo route matrix", () => {
     cleanupFetchAudit = () => {
       window.fetch = fallbackFetch;
       unexpectedDemoApiResponses.length = 0;
+      failedDemoRequests.length = 0;
     };
   });
 
@@ -272,9 +523,10 @@ describe("Web Demo route matrix", () => {
     for (const { route, scene } of demoSemanticMatrix) {
       unexpectedDemoApiResponses.length = 0;
       unhandledRequests.length = 0;
+      failedDemoRequests.length = 0;
       renderRoute(route.path, scene);
       const assertCurrentRoute = () => {
-        assertRouteLandmark(route, scene);
+        assertRouteTerminalState(route, scene);
         expect(host.querySelector("[data-testid=demo-route-probe]")?.textContent).toBe(
           route.expectedPath,
         );

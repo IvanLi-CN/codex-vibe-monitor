@@ -151,8 +151,9 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertIn("--workers=2", phases[5].command)
         self.assertIn("--project=timeline-capacity", phases[5].command)
 
-    def test_known_landmark_only_migration_is_not_a_coverage_certificate(self):
-        self.assertFalse(MODULE.demo_coverage_audit(MODULE.ROOT)["verified"])
+    def test_demo_route_matrix_requires_terminal_and_request_contracts(self):
+        audit = MODULE.demo_coverage_audit(MODULE.ROOT)
+        self.assertTrue(audit["verified"], audit["issues"])
 
     def test_timeline_wait_tuning_is_the_only_normalized_e2e_change(self):
         baseline = subprocess.check_output(

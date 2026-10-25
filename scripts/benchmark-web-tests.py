@@ -336,18 +336,25 @@ def skip_inventory(source: Path) -> list[str]:
 
 
 def demo_coverage_audit(source: Path) -> dict:
-    """Fail closed on the known landmark-only migration; counts do not prove semantics."""
+    """Require route terminal states and expected failed-request contracts, not landmarks alone."""
     integration = source / "web/src/demo/demo-route.integration.test.tsx"
     issues = []
     if integration.is_file():
         text = integration.read_text()
-        # This specific implementation accepts loading/error landmarks in place of the
-        # old route-specific terminal state and failed-request assertions. It needs a
-        # semantic review, not an automatically fabricated 104-cell certificate.
-        if "assertRouteLandmark" in text:
-            issues.append("Demo migration uses landmark-only assertions; route terminal states and expected failed requests are not proven equivalent")
-        else:
-            issues.append("Changed Demo integration requires an explicit semantic coverage audit before performance acceptance")
+        required_markers = (
+            "assertRouteTerminalState",
+            "expectedNetworkFailurePath",
+            "failedDemoRequests",
+            'expect(unhandledRequests, `${route.path} / ${scene}`).toEqual([])',
+        )
+        missing = [marker for marker in required_markers if marker not in text]
+        if missing:
+            issues.append(
+                "Demo integration is missing semantic terminal/request assertions: "
+                + ", ".join(missing)
+            )
+    else:
+        issues.append("Demo route integration test is missing")
     return {"verified": not issues, "issues": issues}
 
 
