@@ -283,7 +283,8 @@ jobs:
         run: |
           set -euo pipefail
           started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          mkdir -p "$RUNNER_TEMP/cvm-cargo" "$RUNNER_TEMP/cvm-rust-target" "$RUNNER_TEMP/observability-build/rust"
+          root="$RUNNER_TEMP/observability-build/rust"
+          mkdir -p "$RUNNER_TEMP/cvm-cargo" "$RUNNER_TEMP/cvm-rust-target" "$root/context/app/target/release"
           docker run --rm \
             --platform linux/amd64 \
             -v "$PWD/candidate:/workspace" \
@@ -303,18 +304,18 @@ jobs:
               cp /target/release/codex-vibe-monitor /out/codex-vibe-monitor
               python3 scripts/export-observability-symbols.py --binary /target/release/codex-vibe-monitor --output /out/symbols --revision "$APP_GIT_REVISION"
             '
-          printf '%s\n' 'FROM scratch' 'COPY codex-vibe-monitor /app/target/release/codex-vibe-monitor' > "$RUNNER_TEMP/observability-build/rust/Dockerfile"
-          docker buildx build --platform linux/amd64 --load --tag "cvm-observability-rust:$CANDIDATE" "$RUNNER_TEMP/observability-build/rust"
-          docker save "cvm-observability-rust:$CANDIDATE" | gzip -1 > "$RUNNER_TEMP/observability-build/rust/component.tar.gz"
+          cp "$root/codex-vibe-monitor" "$root/context/app/target/release/codex-vibe-monitor"
+          cp -R "$root/symbols" "$root/context/symbols"
+          tar -C "$root/context" -czf "$root/component.tar.gz" .
           finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" CACHE_HIT="$CACHE_HIT" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           from datetime import datetime
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'rust'
           archive=root/'component.tar.gz'
-          image=json.loads(subprocess.check_output(['docker','image','inspect','cvm-observability-rust:'+os.environ['CANDIDATE']],text=True))[0]
           elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
-          card={'schema':'cvm-performance-build-component-v1','component':'rust','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'hit' if os.environ['CACHE_HIT']=='true' else 'miss','save':'pending','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'imageId':image['Id']}
+          archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          card={'schema':'cvm-performance-build-component-v1','component':'rust','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'hit' if os.environ['CACHE_HIT']=='true' else 'miss','save':'pending','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'contextType':'local','contextPath':'context'}
           (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
           PY
 
@@ -325,7 +326,8 @@ jobs:
         run: |
           set -euo pipefail
           started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          mkdir -p "$RUNNER_TEMP/cvm-bun" "$RUNNER_TEMP/observability-build/web"
+          root="$RUNNER_TEMP/observability-build/web"
+          mkdir -p "$RUNNER_TEMP/cvm-bun" "$root/context/app/web"
           docker run --rm \
             --platform linux/amd64 \
             -v "$PWD/candidate:/workspace" \
@@ -338,18 +340,17 @@ jobs:
               sh ../scripts/production-build.sh web
               cp -R dist /out/dist
             '
-          printf '%s\n' 'FROM scratch' 'COPY dist /app/web/dist' > "$RUNNER_TEMP/observability-build/web/Dockerfile"
-          docker buildx build --platform linux/amd64 --load --tag "cvm-observability-web:$CANDIDATE" "$RUNNER_TEMP/observability-build/web"
-          docker save "cvm-observability-web:$CANDIDATE" | gzip -1 > "$RUNNER_TEMP/observability-build/web/component.tar.gz"
+          cp -R "$root/dist" "$root/context/app/web/dist"
+          tar -C "$root/context" -czf "$root/component.tar.gz" .
           finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" CACHE_HIT="$CACHE_HIT" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           from datetime import datetime
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'web'
           archive=root/'component.tar.gz'
-          image=json.loads(subprocess.check_output(['docker','image','inspect','cvm-observability-web:'+os.environ['CANDIDATE']],text=True))[0]
           elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
-          card={'schema':'cvm-performance-build-component-v1','component':'web','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'hit' if os.environ['CACHE_HIT']=='true' else 'miss','save':'pending','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'imageId':image['Id']}
+          archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          card={'schema':'cvm-performance-build-component-v1','component':'web','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'hit' if os.environ['CACHE_HIT']=='true' else 'miss','save':'pending','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'contextType':'local','contextPath':'context'}
           (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
           PY
 
@@ -359,25 +360,25 @@ jobs:
           set -euo pipefail
           # Assemble the production runtime-base context.
           started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          mkdir -p "$RUNNER_TEMP/observability-build/runtime-base"
+          root="$RUNNER_TEMP/observability-build/runtime-base"
+          mkdir -p "$root"
           docker buildx build \
             --platform linux/amd64 \
             --target runtime-base \
-            --load \
-            --tag "cvm-observability-runtime-base:$CANDIDATE" \
+            --output "type=oci,dest=$root/component.tar" \
             --cache-from "type=gha,scope=observability-performance-v2-runtime-base-${{ needs.observability-performance-resolve.outputs.runtime_cache_key }}" \
             --cache-to "type=gha,scope=observability-performance-v2-runtime-base-${{ needs.observability-performance-resolve.outputs.runtime_cache_key }},mode=max,ignore-error=true,timeout=60s" \
             candidate
-          docker save "cvm-observability-runtime-base:$CANDIDATE" | gzip -1 > "$RUNNER_TEMP/observability-build/runtime-base/component.tar.gz"
+          gzip -1 "$root/component.tar"
           finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           from datetime import datetime
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'runtime-base'
           archive=root/'component.tar.gz'
-          image=json.loads(subprocess.check_output(['docker','image','inspect','cvm-observability-runtime-base:'+os.environ['CANDIDATE']],text=True))[0]
           elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
-          card={'schema':'cvm-performance-build-component-v1','component':'runtime-base','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'buildkit','save':'best-effort','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'imageId':image['Id']}
+          archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          card={'schema':'cvm-performance-build-component-v1','component':'runtime-base','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'buildkit','save':'best-effort','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'contextType':'oci-layout','contextPath':'oci'}
           (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
           PY
 
@@ -491,7 +492,20 @@ jobs:
           assert card['buildIdentity']==os.environ['BUILD_IDENTITY']
           assert hashlib.sha256((root/'component.tar.gz').read_bytes()).hexdigest()==card['archiveSha256']
           PY
-            docker load --input "$root/component.tar.gz"
+            case "$component" in
+              rust|web)
+                test "$(jq -r .contextType "$root/component.json")" = local
+                mkdir -p "$root/context"
+                tar -xzf "$root/component.tar.gz" -C "$root/context"
+                test -f "$root/context/app/target/release/codex-vibe-monitor" || test -d "$root/context/app/web/dist"
+                ;;
+              runtime-base)
+                test "$(jq -r .contextType "$root/component.json")" = oci-layout
+                mkdir -p "$root/oci"
+                tar -xzf "$root/component.tar.gz" -C "$root/oci"
+                test -f "$root/oci/index.json" -a -f "$root/oci/oci-layout"
+                ;;
+            esac
           done
 
       - name: Start image build clock
@@ -512,9 +526,9 @@ jobs:
             APP_GIT_REVISION=${{ needs.observability-performance-resolve.outputs.candidate }}
             APP_EFFECTIVE_VERSION=${{ needs.observability-performance-resolve.outputs.app_effective_version }}
           build-contexts: |
-            rust-builder=docker-image://cvm-observability-rust:${{ needs.observability-performance-resolve.outputs.candidate }}
-            web-builder=docker-image://cvm-observability-web:${{ needs.observability-performance-resolve.outputs.candidate }}
-            runtime-base=docker-image://cvm-observability-runtime-base:${{ needs.observability-performance-resolve.outputs.candidate }}
+            rust-builder=type=local,src=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
+            web-builder=type=local,src=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-web/context
+            runtime-base=oci-layout://${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-runtime-base/oci
           cache-from: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }}
           cache-to: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }},mode=max,ignore-error=true,timeout=60s
 

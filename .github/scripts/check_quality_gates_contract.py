@@ -437,7 +437,12 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         require("APP_GIT_REVISION" in str(build_with.get("build-args", "")), f"{workflow_path} image must bind APP_GIT_REVISION")
     auto_build_with = require_mapping(uses_step_config(image, "Assemble production image from verified contexts", "docker/build-push-action@v7", workflow_path).get("with"), f"{workflow_path}.auto-build.with")
     contexts = str(auto_build_with.get("build-contexts", ""))
-    require(all(context in contexts for context in ("rust-builder=", "web-builder=", "runtime-base=")), f"{workflow_path} auto image must consume all producer contexts")
+    require(
+        "rust-builder=type=local,src=" in contexts
+        and "web-builder=type=local,src=" in contexts
+        and "runtime-base=oci-layout://" in contexts,
+        f"{workflow_path} auto image must consume verified local and OCI producer contexts",
+    )
     canonical_with = require_mapping(uses_step_config(image, "Build canonical production image", "docker/build-push-action@v7", workflow_path).get("with"), f"{workflow_path}.canonical-build.with")
     require("build-contexts" not in canonical_with, f"{workflow_path} canonical path must not consume producer contexts")
     image_upload = uses_step_config(image, "Upload performance candidate image", "actions/upload-artifact@v7", workflow_path)
