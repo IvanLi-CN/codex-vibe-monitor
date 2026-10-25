@@ -249,6 +249,32 @@ mod retention_write_budget_tests {
     }
 
     #[test]
+    fn retention_write_budget_uses_actual_write_hold_duration() {
+        const OPERATION: &str = "retention_test_write_hold_budget";
+        let mut health = RetentionWriteHealthState::default();
+        assert!(!observe_retention_write_commit_with_hold(
+            &mut health,
+            OPERATION,
+            "normal",
+            4,
+            4 * 256,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_millis(251),
+            Duration::ZERO,
+            Some(Duration::from_millis(1)),
+            None,
+            0,
+            0,
+        ));
+        assert_eq!(
+            retention_adaptive_candidate_limit_from_state(&mut health, 64, OPERATION),
+            5
+        );
+        assert_eq!(health.snapshot.state, "healthy");
+    }
+
+    #[test]
     fn retention_micro_batch_keeps_a_single_oversized_row_losslessly() {
         let selected =
             take_retention_micro_batch(vec![2 * RETENTION_WRITE_MAX_BYTES, 128], |value| *value);

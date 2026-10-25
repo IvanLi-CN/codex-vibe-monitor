@@ -317,10 +317,42 @@ pub(crate) async fn invocation_archive_candidate_selection_for_test(
 }
 
 struct ArchiveSourceIdentityProof {
-    cleanup: TempSqliteCleanup,
-    _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
-    proof_path: PathBuf,
+    resources: std::sync::Arc<tokio::sync::Mutex<Option<ArchiveSourceIdentityProofResources>>>,
     spec: ArchiveTableSpec,
+}
+
+struct ArchiveSourceIdentityProofResources {
+    connection: Option<SqliteConnection>,
+    cleanup: Option<TempSqliteCleanup>,
+    _work_owner_file: Option<crate::maintenance::archive::TaskWorkOwner>,
+    proof_path: PathBuf,
+}
+
+impl Drop for ArchiveSourceIdentityProofResources {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        let cleanup = self.cleanup.take();
+        let work_owner_file = self._work_owner_file.take();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // Runtime teardown cannot acknowledge native drain. Keep every ownership part
+            // through process exit instead of advertising release.
+            std::mem::forget(connection);
+            std::mem::forget(cleanup);
+            std::mem::forget(work_owner_file);
+            return;
+        };
+        drop(handle.spawn(async move {
+            let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+            crate::maintenance::with_file_phase_permit(file_phase, async move {
+                let _ = connection.close().await;
+                drop(cleanup);
+                drop(work_owner_file);
+            })
+            .await;
+        }));
+    }
 }
 
 fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
@@ -392,9 +424,14 @@ impl ArchiveSourceIdentityProof {
         open_archive_identity_connection_and_close(proof_path.clone(), file_phase, remaining)
             .await?;
         Ok(Self {
-            cleanup,
-            _work_owner_file: work_owner_file,
-            proof_path,
+            resources: std::sync::Arc::new(tokio::sync::Mutex::new(Some(
+                ArchiveSourceIdentityProofResources {
+                    connection: None,
+                    cleanup: Some(cleanup),
+                    _work_owner_file: Some(work_owner_file),
+                    proof_path,
+                },
+            ))),
             spec,
         })
     }
@@ -402,7 +439,7 @@ impl ArchiveSourceIdentityProof {
     async fn identity(&self, ids: &[i64]) -> Result<String> {
         let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
         let spec = self.spec;
-        let proof_path = self.proof_path.clone();
+        let resources = std::sync::Arc::clone(&self.resources);
         let ids = ids.to_vec();
         let operation_deadline = retention_archive_file_operation_deadline();
         let remaining = operation_deadline.saturating_duration_since(Instant::now());
@@ -410,48 +447,60 @@ impl ArchiveSourceIdentityProof {
             return Err(retention_archive_file_operation_budget_exhausted());
         }
         spawn_file_phase_task(file_phase, async move {
-            let mut connection = tokio::time::timeout(remaining, async {
-                open_archive_sqlite_connection(&proof_path).await
-            })
-            .await
-            .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
-            let remaining = operation_deadline.saturating_duration_since(Instant::now());
-            let result = if remaining.is_zero() {
-                Err(retention_archive_file_operation_budget_exhausted())
-            } else if spec.dataset == "codex_invocations" {
-                match tokio::time::timeout(
-                    remaining,
-                    invocation_archive_source_identity_sha256(
-                        &mut connection,
-                        InvocationArchiveIdentityDatabase::Main,
-                        &ids,
-                    ),
-                )
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            if resources.connection.is_none() {
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
+                })
                 .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
-                }
-            } else {
-                match tokio::time::timeout(
-                    remaining,
-                    archive_table_source_identity_sha256(&mut connection, spec, "main", &ids),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else if spec.dataset == "codex_invocations" {
+                    match tokio::time::timeout(
+                        remaining,
+                        invocation_archive_source_identity_sha256(
+                            connection,
+                            InvocationArchiveIdentityDatabase::Main,
+                            &ids,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                } else {
+                    match tokio::time::timeout(
+                        remaining,
+                        archive_table_source_identity_sha256(connection, spec, "main", &ids),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
                 }
             };
-            match connection.close().await {
-                Ok(()) => result,
-                Err(close_error) => match result {
-                    Ok(_) => Err(anyhow::Error::new(close_error)
-                        .context("close archive source identity proof")),
-                    Err(error) => Err(error.context(format!(
-                        "close archive source identity proof: {close_error}"
-                    ))),
-                },
+            match result {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    // A cancelled SQLx future may leave the connection in an unknown state. Do
+                    // not carry it into another selected chunk after a proof read failed. The
+                    // cleanup guard and work owner follow the connection through this drain.
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
             }
         })
         .await
@@ -460,55 +509,65 @@ impl ArchiveSourceIdentityProof {
     async fn has_exact_ids(&self, ids: &[i64], expected_count: i64) -> Result<bool> {
         let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
         let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
-        let proof_path = self.proof_path.clone();
+        let resources = std::sync::Arc::clone(&self.resources);
         let operation_deadline = retention_archive_file_operation_deadline();
         let remaining = operation_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(retention_archive_file_operation_budget_exhausted());
         }
         spawn_file_phase_task(file_phase, async move {
-            let mut connection = tokio::time::timeout(remaining, async {
-                open_archive_sqlite_connection(&proof_path).await
-            })
-            .await
-            .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
-            let remaining = operation_deadline.saturating_duration_since(Instant::now());
-            let result = if remaining.is_zero() {
-                Err(retention_archive_file_operation_budget_exhausted())
-            } else {
-                match tokio::time::timeout(remaining, async {
-                    let archive_row_count =
-                        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
-                            .fetch_one(&mut connection)
-                            .await
-                            .context("count rows in archive source identity proof")?;
-                    let selected_count = sqlx::query_scalar::<_, i64>(
-                        "SELECT COUNT(*) FROM main.codex_invocations
-                         WHERE id IN (SELECT value FROM json_each(?1))",
-                    )
-                    .bind(ids_json)
-                    .fetch_one(&mut connection)
-                    .await
-                    .context("count selected rows in archive source identity proof")?;
-                    Ok::<bool, anyhow::Error>(
-                        archive_row_count == expected_count && selected_count == expected_count,
-                    )
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            if resources.connection.is_none() {
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
                 })
                 .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else {
+                    match tokio::time::timeout(remaining, async {
+                        let archive_row_count = sqlx::query_scalar::<_, i64>(
+                            "SELECT COUNT(*) FROM main.codex_invocations",
+                        )
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("count rows in archive source identity proof")?;
+                        let selected_count = sqlx::query_scalar::<_, i64>(
+                            "SELECT COUNT(*) FROM main.codex_invocations
+                             WHERE id IN (SELECT value FROM json_each(?1))",
+                        )
+                        .bind(ids_json)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("count selected rows in archive source identity proof")?;
+                        Ok::<bool, anyhow::Error>(
+                            archive_row_count == expected_count && selected_count == expected_count,
+                        )
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
                 }
             };
-            match connection.close().await {
-                Ok(()) => result,
-                Err(close_error) => match result {
-                    Ok(_) => Err(anyhow::Error::new(close_error)
-                        .context("close archive source identity proof")),
-                    Err(error) => Err(error.context(format!(
-                        "close archive source identity proof: {close_error}"
-                    ))),
-                },
+            match result {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
             }
         })
         .await
@@ -516,12 +575,36 @@ impl ArchiveSourceIdentityProof {
 
     async fn close(self) -> Result<()> {
         let file_phase = acquire_file_phase_permit("archive_identity_proof_close").await?;
+        let resources = std::sync::Arc::clone(&self.resources);
         spawn_file_phase_task(file_phase, async move {
-            drop(self);
+            let mut resources = resources.lock().await;
+            if let Some(mut resources) = resources.take()
+                && let Some(connection) = resources.connection.take()
+            {
+                connection.close().await?;
+            }
             Ok(())
         })
         .await
     }
+}
+
+async fn close_archive_identity_proof_resources(
+    resources: &mut Option<ArchiveSourceIdentityProofResources>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let Some(mut resources) = resources.take() else {
+        return error;
+    };
+    if let Some(connection) = resources.connection.take()
+        && let Err(close_error) = connection.close().await
+    {
+        return error.context(format!(
+            "close archive source identity proof after read failure: {close_error}"
+        ));
+    }
+    drop(resources);
+    error
 }
 
 async fn open_archive_identity_connection_and_close(
@@ -1207,9 +1290,11 @@ pub(crate) async fn prune_old_invocation_details(
                 #[cfg(test)]
                 batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
                     .await;
+                let commit_started_at = Instant::now();
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
+                let commit_elapsed = commit_started_at.elapsed();
                 drop(commit_phase);
                 if let Err(error) = commit_result {
                     let cleanup_error = transaction_resources.rollback_and_close().await;
@@ -1226,34 +1311,32 @@ pub(crate) async fn prune_old_invocation_details(
                 }
                 transaction_resources.mark_transaction_finished();
                 let raw_deletion_plan = commit.raw_deletion_plan;
-                let breached = retention_record_commit_with_reference_check!(
-                    "invocation_detail_prune",
-                    admission_mode,
-                    group.len(),
-                    group
-                        .iter()
-                        .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
-                        .sum(),
-                    prepare_elapsed,
-                    lock_wait,
-                    commit.commit_started.duration_since(execute_started),
-                    commit.commit_started.elapsed(),
-                    commit.raw_reference_check_elapsed,
-                    p1_waiter_count,
-                    usize::from(candidate_remaining_hint),
-                );
                 rows_pruned += group.len();
                 committed_rows += group.len();
                 workload::record_owner_processed_count("invocation_detail_prune", group.len());
                 recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Err(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
+                let breached = transaction_resources
+                    .return_to_pool_and_record_commit(RetentionWriteCommit {
+                        operation: "invocation_detail_prune",
+                        admission_mode,
+                        rows: group.len(),
+                        estimated_bytes: group
+                            .iter()
+                            .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
+                            .sum(),
+                        prepare_elapsed,
+                        lock_wait,
+                        execute_elapsed: commit.commit_started.duration_since(execute_started),
+                        commit_elapsed,
+                        write_hold_elapsed: None,
+                        raw_reference_check_elapsed: commit.raw_reference_check_elapsed,
+                        p1_waiter_count,
+                        candidate_remaining_hint: usize::from(candidate_remaining_hint),
+                    })
+                    .await
+                    .context("failed to return retention transaction connection to pool")?;
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if !raw_deletion_plan.paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
@@ -1877,7 +1960,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     upsert_invocation_rollups(tx.as_mut(), &group).await?;
                     // The file fence is released between chunks. Recheck pages and manifest in
                     // the source transaction after any admission wait or concurrent rewrite.
-                    store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
+                    crate::validate_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof)
+                        .await?;
                     if chunk_index == 0 {
                         mark_archive_batch_historical_rollups_materialized_tx(
                             tx.as_mut(),
@@ -1945,6 +2029,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             &archive_outcome.file_path,
                         )
                         .await?;
+                        // Manifest publication invalidates the pre-publication proof. Store the
+                        // final marker only after that state transition has completed.
+                        store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
                     }
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
@@ -1984,9 +2071,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 #[cfg(test)]
                 batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
                     .await;
+                let commit_started_at = Instant::now();
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
+                let commit_elapsed = commit_started_at.elapsed();
                 drop(commit_phase);
                 if let Err(error) = commit_result {
                     let cleanup_error = transaction_resources.rollback_and_close().await;
@@ -2005,38 +2094,36 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 prompt_cache_keys.extend(commit.prompt_cache_keys);
                 let raw_deletion_plan = commit.raw_deletion_plan;
                 workload::record_processed_count(group.len());
-                let breached = retention_record_commit_with_reference_check!(
-                    "invocation_archive",
-                    admission_mode,
-                    group.len(),
-                    group
-                        .iter()
-                        .map(|candidate| {
-                            candidate
-                                .payload
-                                .as_deref()
-                                .map_or(256, |payload| payload.len())
-                        })
-                        .sum(),
-                    prepare_elapsed,
-                    lock_wait,
-                    commit.commit_started.duration_since(execute_started),
-                    commit.commit_started.elapsed(),
-                    commit.raw_reference_check_elapsed,
-                    p1_waiter_count,
-                    usize::from(candidate_remaining_hint),
-                );
                 rows_archived += group.len();
                 committed_rows += group.len();
                 recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Err(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
+                let breached = transaction_resources
+                    .return_to_pool_and_record_commit(RetentionWriteCommit {
+                        operation: "invocation_archive",
+                        admission_mode,
+                        rows: group.len(),
+                        estimated_bytes: group
+                            .iter()
+                            .map(|candidate| {
+                                candidate
+                                    .payload
+                                    .as_deref()
+                                    .map_or(256, |payload| payload.len())
+                            })
+                            .sum(),
+                        prepare_elapsed,
+                        lock_wait,
+                        execute_elapsed: commit.commit_started.duration_since(execute_started),
+                        commit_elapsed,
+                        write_hold_elapsed: None,
+                        raw_reference_check_elapsed: commit.raw_reference_check_elapsed,
+                        p1_waiter_count,
+                        candidate_remaining_hint: usize::from(candidate_remaining_hint),
+                    })
+                    .await
+                    .context("failed to return retention transaction connection to pool")?;
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if !raw_deletion_plan.paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
@@ -2630,9 +2717,11 @@ pub(crate) async fn archive_timestamped_dataset(
                 #[cfg(test)]
                 batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
                     .await;
+                let commit_started_at = Instant::now();
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
+                let commit_elapsed = commit_started_at.elapsed();
                 drop(commit_phase);
                 if let Err(error) = commit_result {
                     let cleanup_error = transaction_resources.rollback_and_close().await;
@@ -2660,19 +2749,6 @@ pub(crate) async fn archive_timestamped_dataset(
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 let raw_deletion_plan = commit.raw_deletion_plan;
-                let breached = retention_record_commit_with_reference_check!(
-                    "timestamped_archive",
-                    admission_mode,
-                    group.len(),
-                    group.len().saturating_mul(256),
-                    prepare_elapsed,
-                    lock_wait,
-                    commit.commit_started.duration_since(execute_started),
-                    commit.commit_started.elapsed(),
-                    commit.raw_reference_check_elapsed,
-                    p1_waiter_count,
-                    usize::from(candidate_remaining_hint),
-                );
                 workload::record_owner_processed_count(
                     if spec.dataset == "pool_upstream_request_attempts" {
                         "pool_upstream_attempt_archive"
@@ -2681,21 +2757,33 @@ pub(crate) async fn archive_timestamped_dataset(
                     },
                     group.len(),
                 );
+                rows_archived += group.len();
+                committed_rows += group.len();
+                recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Err(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
+                let breached = transaction_resources
+                    .return_to_pool_and_record_commit(RetentionWriteCommit {
+                        operation: "timestamped_archive",
+                        admission_mode,
+                        rows: group.len(),
+                        estimated_bytes: group.len().saturating_mul(256),
+                        prepare_elapsed,
+                        lock_wait,
+                        execute_elapsed: commit.commit_started.duration_since(execute_started),
+                        commit_elapsed,
+                        write_hold_elapsed: None,
+                        raw_reference_check_elapsed: commit.raw_reference_check_elapsed,
+                        p1_waiter_count,
+                        candidate_remaining_hint: usize::from(candidate_remaining_hint),
+                    })
+                    .await
+                    .context("failed to return retention transaction connection to pool")?;
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if spec.dataset == "pool_upstream_request_attempts" {
                     if !raw_deletion_plan.paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;
                     }
-                    rows_archived += group.len();
-                    committed_rows += group.len();
                     let removed =
                         delete_proxy_raw_paths(raw_deletion_plan, config.database_path.parent())?;
                     raw_files_removed += removed;
@@ -2704,11 +2792,7 @@ pub(crate) async fn archive_timestamped_dataset(
                         removed,
                     );
                     batch_observation.raw_files_removed(removed);
-                } else {
-                    rows_archived += group.len();
-                    committed_rows += group.len();
                 }
-                recovery_diagnostic.committed(group.len());
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;

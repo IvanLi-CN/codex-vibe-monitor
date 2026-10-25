@@ -90,6 +90,13 @@ pub(crate) async fn acquire_file_phase_permit(operation: &'static str) -> Result
     .context("acquire shared maintenance file phase permit")
 }
 
+pub(crate) async fn acquire_file_phase_permit_for_cleanup() -> FilePhasePermit {
+    if let Some(permit) = try_current_file_phase_permit() {
+        return permit;
+    }
+    global_file_phase_gate().acquire().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

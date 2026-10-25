@@ -865,18 +865,12 @@ pub(super) async fn prepare_summary_proof(
         return Err(error);
     }
     transaction_resources.mark_transaction_finished();
-    transaction_resources
-        .return_to_pool()
+    let archive_lock = transaction_resources
+        .return_to_pool_retaining_archive_fence()
         .await
-        .context("return summary manifest transaction connection to pool")?;
+        .context("return summary manifest transaction connection while retaining archive fence")?;
     // Summary pages are persisted by the monthly writer exactly once. This phase only validates
     // the published artifact and the already durable page set before granting deletion authority.
-    let archive_lock = retention_archive_file_try_lock(archive_path)?;
-    if sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())?
-        != outcome.sha256
-    {
-        bail!("summary archive artifact changed before semantic proof");
-    }
     let proof = prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?;
     if persist_summary_proof(pool, &proof).await?.is_none() {
         drop(archive_lock);
