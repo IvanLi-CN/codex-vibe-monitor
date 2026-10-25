@@ -1859,14 +1859,19 @@ async fn materialize_timeline_snapshot(
 
     if !runtime_records.is_empty() {
         observation.begin_account_resolution();
-        let runtime_resolution_result = hydrate_timeline_accounts(
-            &state.pool,
-            &mut runtime_records,
-            source_scope,
-            snapshot_id,
-            attempt_snapshot_id,
-            true,
-        )
+        let runtime_resolution_result = async {
+            let mut runtime_transaction = state.pool.begin().await?;
+            hydrate_timeline_accounts_on_connection(
+                &mut runtime_transaction,
+                &mut runtime_records,
+                source_scope,
+                snapshot_id,
+                attempt_snapshot_id,
+                true,
+            )
+            .await?;
+            runtime_transaction.commit().await.map_err(ApiError::from)
+        }
         .await;
         observation.finish_account_resolution();
         runtime_resolution_result?;
@@ -2334,7 +2339,6 @@ async fn hydrate_timeline_accounts(
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
     attempt_snapshot_id: i64,
-    preserve_valid_runtime_account: bool,
 ) -> Result<(), ApiError> {
     let mut connection = pool.acquire().await?;
     hydrate_timeline_accounts_on_connection(
@@ -2343,7 +2347,7 @@ async fn hydrate_timeline_accounts(
         source_scope,
         snapshot_id,
         attempt_snapshot_id,
-        preserve_valid_runtime_account,
+        false,
     )
     .await
 }
@@ -3444,7 +3448,6 @@ mod tests {
             InvocationSourceScope::ProxyOnly,
             snapshot_id,
             attempt_snapshot_id,
-            false,
         )
         .await
         .expect("hydrate snapshot records");
