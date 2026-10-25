@@ -586,7 +586,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
     const page = await context.newPage();
     try {
       await startCapacityDashboard(page, viewport, true);
-      console.log(`[timeline-capacity] dense ${name}: dashboard ready`);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
       await instrumentTimelineFetch(page);
 
@@ -652,7 +651,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       const timelineControls = page.getByTestId("dashboard-invocation-timeline").locator("button");
       await expect(timelineControls).toHaveCount(4);
       const triggerDenseRefresh = async (releaseCountBefore: number) => {
-        console.log(`[timeline-capacity] dense ${name}: refresh active wait`);
         await expect
           .poll(
             () =>
@@ -664,7 +662,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBe(0);
-        console.log(`[timeline-capacity] dense ${name}: refresh active wait complete`);
         const traversalCountBefore = await page.evaluate(
           () =>
             (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
@@ -676,11 +673,9 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
           diagnostics.nextTraversalDelayMs = delayMs;
         }, DENSE_TRAVERSAL_DELAY_MS);
-        console.log(`[timeline-capacity] dense ${name}: refresh click`);
         // The capacity fixture anchors records at requestEnd - 15 minutes; lengthening the
         // window keeps the synthetic dense records in range across both refreshes.
         await timelineControls.nth(1).click();
-        console.log(`[timeline-capacity] dense ${name}: refresh click complete`);
         await expect
           .poll(
             () =>
@@ -692,7 +687,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBeGreaterThan(traversalCountBefore);
-        console.log(`[timeline-capacity] dense ${name}: traversal started`);
         await expect
           .poll(() =>
             page.evaluate(
@@ -702,7 +696,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             ),
           )
           .toBeGreaterThan(releaseCountBefore);
-        console.log(`[timeline-capacity] dense ${name}: snapshot released`);
         await expect
           .poll(
             () =>
@@ -714,61 +707,42 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBe(0);
-        console.log(`[timeline-capacity] dense ${name}: refresh active zero`);
         await expect(page.getByTestId("dashboard-invocation-timeline-lanes")).toHaveAttribute(
           "data-total-calls",
           "550",
         );
-        console.log(`[timeline-capacity] dense ${name}: refresh count asserted`);
         await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
-        console.log(`[timeline-capacity] dense ${name}: refresh state asserted`);
       };
-      console.log(`[timeline-capacity] dense ${name}: first refresh`);
       await triggerDenseRefresh(beforeRefresh.releaseCount);
-      console.log(`[timeline-capacity] dense ${name}: first refresh complete`);
       const releaseCountAfterFirstRefresh = await page.evaluate(
         () =>
           (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
             ?.releasedSnapshots ?? 0,
       );
-      console.log(`[timeline-capacity] dense ${name}: second refresh`);
       await triggerDenseRefresh(releaseCountAfterFirstRefresh);
-      console.log(`[timeline-capacity] dense ${name}: second refresh complete`);
 
       const refreshedLanes = page.getByTestId("dashboard-invocation-timeline-lanes");
-      console.log(`[timeline-capacity] dense ${name}: lanes visible check`);
       await expect(refreshedLanes).toBeVisible();
-      console.log(`[timeline-capacity] dense ${name}: lanes visible`);
       await expect(refreshedLanes).toHaveAttribute("data-total-calls", "550");
-      console.log(`[timeline-capacity] dense ${name}: lanes count asserted`);
       await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
-      console.log(`[timeline-capacity] dense ${name}: state asserted`);
-      console.log(`[timeline-capacity] dense ${name}: virtualization check`);
       await expectVisibleCallsAreVirtualized(page, 550);
-      console.log(`[timeline-capacity] dense ${name}: virtualization asserted`);
-      console.log(`[timeline-capacity] dense ${name}: animation frame wait`);
       await page.evaluate(
         () =>
           new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
           ),
       );
-      console.log(`[timeline-capacity] dense ${name}: animation frame wait complete`);
       const refreshEnd = await page.evaluate(() => performance.now());
-      console.log(`[timeline-capacity] dense ${name}: refresh end read`);
       const diagnostics = await page.evaluate(
         () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
       );
-      console.log(`[timeline-capacity] dense ${name}: diagnostics read`);
       const refreshLongTasks = (diagnostics?.longTasks ?? []).filter(
         (task) =>
           task.startTime < refreshEnd &&
           task.startTime + task.duration > beforeRefresh.refreshStart,
       );
       const maxRefreshLongTaskMs = Math.max(0, ...refreshLongTasks.map((task) => task.duration));
-      console.log(`[timeline-capacity] dense ${name}: screenshot start`);
       const screenshot = await page.screenshot();
-      console.log(`[timeline-capacity] dense ${name}: screenshot complete`);
       const evidence = {
         viewport: name,
         timelineMountMaxLongTaskMs,
@@ -782,14 +756,12 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         timelineHttpFailures: diagnostics?.timelineHttpFailures ?? 0,
         sseLiveMessages: diagnostics?.sseLiveMessageCount ?? 0,
       };
-      console.log(`[timeline-capacity] dense ${name}: evidence write start`);
       await writeFile(testInfo.outputPath(`timeline-dense-${name}.png`), screenshot);
       await writeFile(
         testInfo.outputPath(`timeline-dense-${name}-diagnostics.json`),
         JSON.stringify(evidence, null, 2),
         "utf8",
       );
-      console.log(`[timeline-capacity] dense ${name}: evidence files written`);
       await testInfo.attach(`timeline-dense-${name}`, {
         body: screenshot,
         contentType: "image/png",
@@ -798,7 +770,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         body: JSON.stringify(evidence, null, 2),
         contentType: "application/json",
       });
-      console.log(`[timeline-capacity] dense ${name}: evidence attached`);
       expect(diagnostics?.traversalStarts.length).toBeGreaterThanOrEqual(2);
       expect(diagnostics?.releasedSnapshots).toBe(diagnostics?.traversalStarts.length);
       expect(diagnostics?.maxActiveTraversals).toBe(1);
@@ -809,11 +780,8 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       expect(diagnostics?.timelineHttpFailures).toBe(0);
       expect(timelineMountMaxLongTaskMs).toBeLessThan(200);
       expect(maxRefreshLongTaskMs).toBeLessThan(200);
-      console.log(`[timeline-capacity] dense ${name}: assertions complete`);
     } finally {
-      console.log(`[timeline-capacity] dense ${name}: closing context`);
       await context.close();
-      console.log(`[timeline-capacity] dense ${name}: context closed`);
     }
   }
 });
