@@ -329,6 +329,37 @@ class OracleTests(unittest.TestCase):
             _verify_summary_proof(connection, 1, "a" * 64, "/unused")
         connection.close()
 
+    def test_live_mirror_invocation_manifest_is_not_an_authoritative_archive(self) -> None:
+        for database in (self.database, self.template_database):
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "CREATE TABLE codex_invocations(invoke_id TEXT NOT NULL,occurred_at TEXT NOT NULL,raw_response TEXT NOT NULL)"
+            )
+            connection.commit()
+            connection.close()
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO archive_batches(dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind) "
+            "VALUES('codex_invocations',?,?,?,?, 'completed','active',NULL,'live_mirror')",
+            (MONTH, "/unused", "a" * 64, 0),
+        )
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(AcceptanceError, "no active completed codex_invocations manifests"):
+            verify_dataset(
+                self.database,
+                self.archive_root,
+                "invocations",
+                set(),
+                0,
+                0,
+                self.scratch,
+                template_database=self.template_database,
+                seed_ids=set(),
+                added_attempt_invocations={},
+                cutoff=f"{MONTH}-01 00:00:00",
+            )
+
     def test_summary_semantic_proof_is_recomputed_from_pages_and_replay_hashes(self) -> None:
         connection = sqlite3.connect(self.database)
         connection.executescript(

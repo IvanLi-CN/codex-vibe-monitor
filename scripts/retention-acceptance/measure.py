@@ -1070,8 +1070,11 @@ def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, in
                 "required_converted_rows": required_converted,
                 "missing": [],
             }
+            source_kind_clause = " AND summary_source_kind='authoritative'" if name == "invocations" else ""
             manifests = connection.execute(
-                "SELECT id,file_path,sha256 FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL",
+                "SELECT id,file_path,sha256 FROM archive_batches "
+                "WHERE dataset=? AND status='completed' AND cleanup_state='active' "
+                f"AND superseded_by IS NULL{source_kind_clause}",
                 (dataset,),
             ).fetchall()
             dataset_status["manifest_count"] = len(manifests)

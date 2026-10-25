@@ -280,8 +280,12 @@ def verify_dataset(
         required = {"id", "dataset", "month_key", "file_path", "sha256", "row_count", "status", "cleanup_state", "superseded_by"}
         if not required.issubset(manifest_columns):
             raise AcceptanceError(f"production archive manifest schema is incomplete for {dataset}")
+        source_kind_clause = " AND summary_source_kind='authoritative'" if dataset == "codex_invocations" else ""
         manifests = connection.execute(
-            "SELECT id,dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL ORDER BY month_key,file_path,id",
+            "SELECT id,dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind FROM archive_batches "
+            f"WHERE dataset=? AND status='completed' AND cleanup_state='active' "
+            f"AND superseded_by IS NULL{source_kind_clause} "
+            "ORDER BY month_key,file_path,id",
             (dataset,),
         ).fetchall()
         if not manifests:
