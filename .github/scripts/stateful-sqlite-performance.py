@@ -41,15 +41,9 @@ WALL_RE = re.compile(
     r"replay=(?P<replay>cold|warm) shard=(?P<shard>[12]) "
     r"wall_ms=(?P<wall>[0-9]+) exit_code=(?P<exit>[0-9]+)$"
 )
-SETUP_PHASES = {
-    "file_template_copy",
-    "file_pool_connect",
-    "file_schema_initialize",
-    "fixture_materialization",
-    "fixture_pool_connect",
-    "schema_template_restore",
-    "fixture_state_build",
-}
+# The file-backed fixture span encloses the leaf setup spans. Use only the
+# outer span for the gate so setup work cannot be counted more than once.
+SETUP_PHASES = {"file_state_setup"}
 PHASE_REQUIREMENTS = {
     TARGETS[0]: {
         "required": {
@@ -114,22 +108,37 @@ def median(values: list[int]) -> int:
     return int(statistics.median(values))
 
 
-def parse_log(path: Path) -> dict[str, dict[str, list[int]]]:
+def parse_log(path: Path) -> tuple[dict[str, dict[str, list[int]]], dict[str, int]]:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     events: dict[str, dict[str, list[int]]] = {}
+    marker_counts: dict[str, int] = {}
     current_target: str | None = None
-    for line in lines:
+    active_marker_target: str | None = None
+    for line_number, line in enumerate(lines, start=1):
         target_end_marker = TARGET_END_MARKER_RE.search(line)
         if target_end_marker is not None:
-            if current_target == target_end_marker.group("target"):
-                current_target = None
+            ended_target = target_end_marker.group("target")
+            if active_marker_target != ended_target:
+                raise ValueError(
+                    f"unmatched timing target end marker in {path.name}:{line_number}"
+                )
+            active_marker_target = None
+            current_target = None
             continue
         target_start_marker = TARGET_START_MARKER_RE.search(line)
         if target_start_marker is not None:
             marker_target = target_start_marker.group("target")
+            if active_marker_target is not None:
+                raise ValueError(f"nested timing target marker in {path.name}:{line_number}")
+            active_marker_target = marker_target
+            marker_counts[marker_target] = marker_counts.get(marker_target, 0) + 1
             current_target = marker_target if marker_target in TARGETS else None
             continue
         if "stderr ───" in line:
+            if active_marker_target is not None:
+                raise ValueError(
+                    f"timing target marker crosses stderr block in {path.name}:{line_number}"
+                )
             current_target = None
             continue
         if "stdout ───" in line:
@@ -143,29 +152,38 @@ def parse_log(path: Path) -> dict[str, dict[str, list[int]]]:
         events.setdefault(current_target, {}).setdefault(phase, []).append(
             int(match.group("elapsed"))
         )
-    return events
+    if active_marker_target is not None:
+        raise ValueError(f"unclosed timing target marker in {path.name}")
+    return events, marker_counts
 
 
 def collect_replay(root: Path, ref: str, replay: str) -> dict[str, dict[str, list[int]]]:
     events: dict[str, dict[str, list[int]]] = {}
+    marker_totals: dict[str, int] = {}
     for shard in ("1", "2"):
         path = root / "logs" / ref / replay / f"shard-{shard}.log"
         if not path.is_file():
             raise ValueError(f"missing replay log: {ref}/{replay}/shard-{shard}")
-        for target, phases in parse_log(path).items():
+        parsed_events, marker_counts = parse_log(path)
+        for target, phases in parsed_events.items():
             existing = events.setdefault(target, {})
             for phase, values in phases.items():
                 existing.setdefault(phase, []).extend(values)
+        for target, count in marker_counts.items():
+            marker_totals[target] = marker_totals.get(target, 0) + count
     missing = []
     for target in TARGETS:
         phases = events.get(target, {})
         requirements = PHASE_REQUIREMENTS[target]
+        marker_count = marker_totals.get(target, 0)
         missing_required = sorted(requirements["required"] - phases.keys())
         missing_setup = bool(requirements["setup_any"]) and not requirements["setup_any"].intersection(
             phases
         )
-        if missing_required or missing_setup:
+        if marker_count != 1 or missing_required or missing_setup:
             detail = []
+            if marker_count != 1:
+                detail.append(f"target_markers={marker_count},expected=1")
             if missing_required:
                 detail.append("required=" + ",".join(missing_required))
             if missing_setup:
