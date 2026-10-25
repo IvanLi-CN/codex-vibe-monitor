@@ -1,9 +1,10 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "current-head-review-pending",
+  "status": "implementation-evidence-carrier-review-pending",
   "candidate_head_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
   "implementation_commit": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
+  "record_scope": "Stable implementation-evidence carrier. Final PR head, CI, review, and merge facts are read from live PR #1191 and are not inferred from this carrier.",
   "active_base_sha": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
   "base_ref": "main",
   "pr_number": 1191,
@@ -28,7 +29,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::page_selection_honors_adaptive_row_limit"
         ],
-        "status": "current-head PR checks run 40208077877 passed; the bounded tuple-seek and materialization assertions remain required"
+        "status": "Implementation evidence is anchored to the code candidate; final-head CI for merge is read from live PR #1191"
       },
       {
         "id": "A2",
@@ -38,7 +39,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
         ],
-        "status": "current-head PR checks run 40208077877 passed; exact restart, oracle, and generation-fenced publication assertions remain required"
+        "status": "Implementation evidence is anchored to the code candidate; final-head CI for merge is read from live PR #1191"
       },
       {
         "id": "A3",
@@ -48,7 +49,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "current-head PR checks run 40208077877 passed; scheduler release, backoff, and adaptive-page assertions remain required"
+        "status": "Implementation evidence is anchored to the code candidate; final-head CI for merge is read from live PR #1191"
       },
       {
         "id": "A4",
@@ -59,7 +60,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "current-head PR checks run 40208077877 passed; API, system-status, and diagnostic compatibility remain required"
+        "status": "Implementation evidence is anchored to the code candidate; final-head CI for merge is read from live PR #1191"
       },
       {
         "id": "A5",
@@ -79,7 +80,7 @@
           "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "pending: current-head PR checks run 40208077877 passed; fresh Tier 4 review remains required before Step 5C"
+        "status": "pending: this carrier is not proof of final-head validation; live PR checks and fresh Tier 4 review are required before Step 5C"
       }
     ]
   },
@@ -143,33 +144,16 @@
   "visual_evidence": [],
   "visual_evidence_owner_confirmation": "not_applicable",
   "execution_evidence": {
-    "ci_run": "40206215471",
-    "head_sha": "5aa38e4d640ddd44ee6981856327ea35ae53cf62",
-    "current_head_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
-    "stale_after_rebase": true,
-    "passed_lanes": [
-      "Backend Test Archive Producer",
-      "Backend Tests (Archive / File I/O)",
-      "Backend Tests (Lightweight)",
-      "Backend Tests (Representative Scale)",
-      "Backend Tests (Stateful SQLite shard 1/2)",
-      "Backend Tests (Stateful SQLite shard 2/2)",
-      "Backend Tests (Stateful SQLite)",
-      "Build Artifacts",
-      "Docs & Web Demo Build",
-      "Front-end Tests",
-      "Lint & Format Check",
-      "PR E2E Test Producer",
-      "PR Smoke Artifact Producer",
-      "Records Overlay E2E",
-      "Repository Tooling Checks",
-      "Retention Migration Validation",
-      "Review Policy Gate",
-      "Storybook Accessibility Tests",
-      "Validate PR labels"
-    ],
+    "record_scope": "Stable implementation-evidence carrier; final-head execution evidence is external live PR evidence.",
+    "implementation_candidate_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
+    "ci_run": "none",
+    "head_sha": "none",
+    "current_head_sha": "none",
+    "stale_after_rebase": false,
+    "passed_lanes": [],
     "failed_lanes": [],
     "pending_lanes": [
+      "Live PR current-head checks",
       "Tier 4 formal review"
     ],
     "performance_acceptance": {

@@ -108,7 +108,7 @@
   },
   "delivery_context": {
     "candidate_head_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
-    "candidate_validation_status": "current-head-review-pending",
+    "candidate_validation_status": "implementation-evidence-carrier-review-pending",
     "active_base_sha": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
