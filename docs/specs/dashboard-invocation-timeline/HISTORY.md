@@ -12,7 +12,9 @@
 
 ## Related Changes
 
-- None
+- The live refresh path now retains a completed self-consistent older-window snapshot while coalescing one follow-up for the latest viewport; persisted materialization uses a timeline-specific source projection and batched account fallback without changing the public endpoint or snapshot contract. Runtime overlay records, the live revision, and source watermarks are captured once, while subsequent runtime revisions are coalesced into the next scheduled traversal instead of invalidating the current response. Source pages use short read transactions, and client-side incomplete traversals retain their `asOf` cursor until TTL rather than releasing it before recovery.
+- The live timeline now remains mounted across a local-midnight window advance, while account and natural-day context changes retain their explicit loading reset. Runtime account hydration shares the bounded source transaction with persisted rows, account filtering selects the latest valid attempt with indexed per-key lookups, and materialization keeps the ADR 0044 page-level consistency boundary without a global live-change abort gate. Materialization summaries retain cancellation-safe phase timings for capture, source connection/transaction, lock, SQL, in-memory work, and publication diagnosis.
+- Current-head performance evidence for source-equivalent docs-only candidate `5547897f4e821ad7bf8b4d7ddffbd16adb6ea163` passed on an Agent VM: 20 global snapshots over 7,000 rows measured p95 11,978 ms, and 20 account snapshots over 3,500 rows measured p95 7,403 ms; EXPLAIN confirmed indexed bounded source, deduplication, and account-fallback paths.
 
 ## References
 
