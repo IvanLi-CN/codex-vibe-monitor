@@ -36,6 +36,63 @@ WALL_RE = re.compile(
     r"wall_ms=(?P<wall>[0-9]+) exit_code=(?P<exit>[0-9]+)$"
 )
 EXCLUDED_FROM_SETUP = {"production_operation", "production_spawn", "explicit_wait", "cleanup", "whole_test"}
+PHASE_REQUIREMENTS = {
+    TARGETS[0]: {
+        "required": {
+            "whole_test",
+            "file_state_setup",
+            "file_pool_connect",
+            "fixture_state_build",
+            "production_spawn",
+            "explicit_wait",
+            "production_operation",
+            "cleanup",
+        },
+        "setup_any": {"file_template_copy", "file_schema_initialize"},
+    },
+    TARGETS[1]: {
+        "required": {
+            "whole_test",
+            "file_state_setup",
+            "file_pool_connect",
+            "fixture_state_build",
+            "explicit_wait",
+            "production_operation",
+            "cleanup",
+        },
+        "setup_any": {"file_template_copy", "file_schema_initialize"},
+    },
+    TARGETS[2]: {
+        "required": {
+            "whole_test",
+            "file_state_setup",
+            "file_pool_connect",
+            "fixture_state_build",
+            "production_operation",
+            "cleanup",
+        },
+        "setup_any": {"file_template_copy", "file_schema_initialize"},
+    },
+    TARGETS[3]: {
+        "required": {"whole_test", "production_operation", "cleanup"},
+        "setup_any": set(),
+    },
+    TARGETS[4]: {
+        "required": {"whole_test", "explicit_wait", "production_operation", "cleanup"},
+        "setup_any": set(),
+    },
+    TARGETS[5]: {
+        "required": {
+            "whole_test",
+            "file_state_setup",
+            "file_pool_connect",
+            "fixture_state_build",
+            "production_operation",
+            "cleanup",
+        },
+        "setup_any": {"file_template_copy", "file_schema_initialize"},
+    },
+}
 
 
 def median(values: list[int]) -> int:
@@ -86,9 +143,23 @@ def collect_replay(root: Path, ref: str, replay: str) -> dict[str, dict[str, lis
             existing = events.setdefault(target, {})
             for phase, values in phases.items():
                 existing.setdefault(phase, []).extend(values)
-    missing = [target for target in TARGETS if "whole_test" not in events.get(target, {})]
+    missing = []
+    for target in TARGETS:
+        phases = events.get(target, {})
+        requirements = PHASE_REQUIREMENTS[target]
+        missing_required = sorted(requirements["required"] - phases.keys())
+        missing_setup = bool(requirements["setup_any"]) and not requirements["setup_any"].intersection(
+            phases
+        )
+        if missing_required or missing_setup:
+            detail = []
+            if missing_required:
+                detail.append("required=" + ",".join(missing_required))
+            if missing_setup:
+                detail.append("setup_any=" + ",".join(sorted(requirements["setup_any"])))
+            missing.append(f"{target} ({'; '.join(detail)})")
     if missing:
-        raise ValueError(f"missing whole_test timing for {ref}/{replay}: {', '.join(missing)}")
+        raise ValueError(f"incomplete phase timing for {ref}/{replay}: {', '.join(missing)}")
     return events
 
 
@@ -223,8 +294,8 @@ def build_card(
         "baseline_reference_sha": baseline_reference_sha,
         "baseline_source_sha": baseline_source_sha,
         "candidate_sha": candidate_sha,
-        "baseline_mode": "candidate archive with allowlisted file fixtures forced to fresh schema",
-        "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads",
+        "baseline_mode": "baseline archive with fresh file fixtures; candidate archive with allowlisted current-schema file fixtures",
+        "runner": "GitHub-hosted ubuntu-24.04; separate baseline/candidate archives; 6 nextest threads",
         "replay_order": ["cold", "warm"],
         "thresholds": {
             "minimum_setup_improvements": 4,
