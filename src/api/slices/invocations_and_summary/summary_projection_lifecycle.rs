@@ -201,7 +201,7 @@ fn summary_coverage_recovery_retry_delay(current: Duration) -> Duration {
         .min(SUMMARY_COVERAGE_RECOVERY_RETRY_MAX)
 }
 
-fn summary_coverage_recovery_scheduler_delay(
+pub(crate) fn summary_coverage_recovery_scheduler_delay(
     next_turn: SummaryCoverageRecoveryNextTurn,
     deferred_retry_delay: Duration,
 ) -> Duration {
