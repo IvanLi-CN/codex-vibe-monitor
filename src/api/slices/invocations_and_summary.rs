@@ -141,12 +141,6 @@ pub(crate) use summary_recovery::{
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
-    refresh_summary_snapshots_with_test_deadline,
-};
-
-#[cfg(test)]
-pub(crate) use summary_projection_lifecycle::{
     SummaryLiveTailReconciliationCheckpoint, load_summary_live_tail_reconciliation_checkpoint,
     note_summary_projection_boundary_archive_hydration,
     note_summary_projection_historical_identity_hydration,
@@ -157,6 +151,11 @@ pub(crate) use summary_projection_lifecycle::{
     store_summary_live_tail_reconciliation_checkpoint,
     summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
     summary_coverage_recovery_requires_second_v2_turn,
+};
+#[cfg(test)]
+pub(crate) use summary_projection_lifecycle::{
+    hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
+    refresh_summary_snapshots_with_test_deadline,
 };
 
 pub(crate) use invocation_query::{

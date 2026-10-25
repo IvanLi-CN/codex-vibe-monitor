@@ -1079,7 +1079,6 @@ async fn proxy_only_working_conversation_live_aggregate_keeps_mixed_source_proxy
     )
     .await
     .expect("proxy-only working conversation aggregate should succeed");
-
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert_eq!(row.prompt_cache_key, "mixed-working-key");
@@ -1087,14 +1086,12 @@ async fn proxy_only_working_conversation_live_aggregate_keeps_mixed_source_proxy
     assert_eq!(row.total_tokens, 120);
     assert!((row.total_cost - 0.12).abs() < 1e-9);
 }
-
 #[tokio::test]
 async fn health_check_reports_starting_until_startup_is_ready() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),
     )
     .await;
-
     state.startup_ready.store(false, Ordering::Release);
     let response = health_check(State(state.clone())).await.into_response();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1102,7 +1099,6 @@ async fn health_check_reports_starting_until_startup_is_ready() {
         .await
         .expect("read health body");
     assert_eq!(std::str::from_utf8(&body).expect("utf8 body"), "starting");
-
     state.startup_ready.store(true, Ordering::Release);
     let response = health_check(State(state)).await.into_response();
     assert_eq!(response.status(), StatusCode::OK);
@@ -1135,7 +1131,6 @@ async fn http_readiness_is_published_before_prompt_cache_materialization_complet
             .await
             .expect("check pending prompt-cache materialization")
     );
-
     state.startup_ready.store(false, Ordering::Release);
     let hydration_handle =
         publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
@@ -1150,7 +1145,6 @@ async fn http_readiness_is_published_before_prompt_cache_materialization_complet
             .await
             .expect("readiness must not imply prompt-cache materialization completion")
     );
-
     state.shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(1), hydration_handle)
         .await
@@ -1158,7 +1152,6 @@ async fn http_readiness_is_published_before_prompt_cache_materialization_complet
         .expect("startup hydration should join after readiness test shutdown");
     state.pool.close().await;
 }
-
 #[tokio::test]
 async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure() {
     let _whole_test = test_timing_span("whole_test");
@@ -1183,14 +1176,14 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     }
     let builder = reqwest::Client::builder().no_proxy(); // Setup outside readiness timing.
     let client = builder.build().expect("local readiness client");
-    let hydration_handle = {
-        let _spawn = test_timing_span("production_spawn");
+    let hydration_handle = crate::test_timed!(
+        "production_spawn",
         publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
             state.clone(),
             Instant::now(),
             Duration::from_secs(4),
         )
-    };
+    );
     let health = tokio::time::timeout(
         Duration::from_millis(250),
         client.get(format!("http://{addr}/health")).send(),
@@ -1209,24 +1202,19 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
         .expect("hot-read endpoint should return its unavailable contract");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
-
-    {
-        let _wait = test_timing_span("explicit_wait");
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
+    timed_test_phase("explicit_wait", tokio::time::sleep(Duration::from_secs(5))).await;
     assert!(
         !hydration_handle.is_finished(),
         "the background worker retries after its bounded hydration attempt times out"
     );
-
     drop(held_connections);
-    {
-        let _operation = test_timing_span("production_operation");
+    crate::test_timed!(
+        "production_operation",
         tokio::time::timeout(Duration::from_secs(5), hydration_handle)
             .await
             .expect("background startup hydration should recover after SQLite pressure clears")
-            .expect("background startup hydration task should join");
-    }
+            .expect("background startup hydration task should join")
+    );
 
     for endpoint in ["/api/stats/summary?window=today", "/api/system/status"] {
         let response = reqwest::get(format!("http://{addr}{endpoint}"))
@@ -1234,7 +1222,6 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
             .expect("hydrated hot-read endpoint should respond");
         assert_eq!(response.status(), StatusCode::OK);
     }
-
     state.shutdown.cancel();
     server_handle
         .await
@@ -1242,7 +1229,6 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     state.pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
-
 #[tokio::test]
 async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
     let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
@@ -1254,7 +1240,6 @@ async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
         .subscription_hub
         .try_lock_summary_projection_refresh()
         .expect("hold the summary maintenance refresh lock");
-
     let hydration_handle =
         publish_http_readiness_and_spawn_hot_read_hydration(state.clone(), Instant::now());
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1271,13 +1256,11 @@ async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
         !hydration_handle.is_finished(),
         "startup hydration must retry instead of treating a coalesced summary refresh as complete"
     );
-
     drop(refresh_guard);
     tokio::time::timeout(Duration::from_secs(3), hydration_handle)
         .await
         .expect("startup hydration should retry after the in-flight refresh releases")
         .expect("startup hydration task should join after the retry");
-
     state.pool.close().await;
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -1509,25 +1492,21 @@ async fn summary_startup_hydration_publishes_bounded_fallback_under_sqlite_press
                 .expect("saturate sqlite pool before summary hydration"),
         );
     }
-
     let hydration_state = state.clone();
     let hydration = tokio::spawn(async move {
         hydrate_summary_snapshots_with_deadline(hydration_state.as_ref(), Duration::from_secs(4))
             .await
     });
-    {
-        let _wait = test_timing_span("explicit_wait");
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
+    timed_test_phase("explicit_wait", tokio::time::sleep(Duration::from_secs(5))).await;
     drop(held_connections);
-    {
-        let _operation = test_timing_span("production_operation");
+    crate::test_timed!(
+        "production_operation",
         tokio::time::timeout(Duration::from_secs(20), hydration)
             .await
             .expect("summary hydration must finish its bounded fallback after pressure clears")
             .expect("join summary hydration fallback")
-            .expect("summary hydration fallback should publish without an internal error");
-    }
+            .expect("summary hydration fallback should publish without an internal error")
+    );
     assert!(
         state.subscription_hub.summary_projection().await.is_some(),
         "saturated SQLite pool should still publish the bounded recent fallback"
@@ -1555,16 +1534,18 @@ async fn system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline()
         );
     }
 
-    let result = {
-        let _operation = test_timing_span("production_operation");
+    let result = crate::test_timed!(
+        "production_operation",
         tokio::time::timeout(
             Duration::from_secs(5),
             hydrate_system_status_snapshot(state.as_ref()),
         )
         .await
         .expect("system status hydration must finish its bounded attempt under SQLite pressure")
-        .expect_err("saturated SQLite pool should fail the bounded system status hydration attempt")
-    };
+        .expect_err(
+            "saturated SQLite pool should fail the bounded system status hydration attempt"
+        )
+    );
     assert!(
         result.to_string().contains("exceeded"),
         "system status hydration should report its finite refresh deadline: {result:#}"
@@ -1914,7 +1895,6 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_task_history_s
     state.pool.close().await;
     let _ = fs::remove_dir_all(&temp_dir);
 }
-
 #[tokio::test]
 async fn background_startup_hourly_rollup_bootstrap_retries_coordinator_contention_promptly() {
     let state = test_state_from_config(test_config(), false).await;

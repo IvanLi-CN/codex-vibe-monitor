@@ -2310,16 +2310,16 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
         .expect("acquire sqlite write lock");
 
     let started = Instant::now();
-    let summary = {
-        let _operation = test_timing_span("production_operation");
+    let summary = crate::test_timed!("production_operation", {
         let pool_for_task = pool.clone();
         let backfill_task =
             tokio::spawn(async move { run_backfill_with_retry(&pool_for_task, None).await });
 
-        {
-            let _wait = test_timing_span("explicit_wait");
-            tokio::time::sleep(Duration::from_millis(120)).await;
-        }
+        timed_test_phase(
+            "explicit_wait",
+            tokio::time::sleep(Duration::from_millis(120)),
+        )
+        .await;
         sqlx::query("COMMIT")
             .execute(&mut lock_conn)
             .await
@@ -2329,7 +2329,7 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
             .await
             .expect("join backfill task")
             .expect("backfill should succeed after retry")
-    };
+    });
     assert!(
         started.elapsed() >= Duration::from_millis(50),
         "expected retry delay to be applied"

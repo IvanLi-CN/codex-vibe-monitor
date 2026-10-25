@@ -21792,12 +21792,12 @@ async fn restart_schema_refreshes_existing_objects_across_primed_pool_connection
     }
     drop(connections);
 
-    {
-        let _operation = test_timing_span("production_operation");
+    crate::test_timed!(
+        "production_operation",
         crate::ensure_schema(&pool)
             .await
-            .expect("restart schema initialization must refresh existing schema objects");
-    }
+            .expect("restart schema initialization must refresh existing schema objects")
+    );
 
     let trigger_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement'",

@@ -15,4 +15,4 @@ pub(crate) use tokio::sync::Notify;
 
 mod timing;
 
-pub(crate) use timing::test_timing_span;
+pub(crate) use timing::{test_timing_span, timed_test_phase};
