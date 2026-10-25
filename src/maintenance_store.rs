@@ -188,7 +188,7 @@ pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     )
 }
 
-fn is_retention_owner_v2_task(key: &str) -> bool {
+pub(crate) fn is_retention_owner_v2_task(key: &str) -> bool {
     RETENTION_OWNER_V2_TASKS.contains(&key)
 }
 
@@ -492,6 +492,9 @@ pub(crate) struct TaskExecutionSummary {
     pub(crate) trigger_kind: String,
     pub(crate) attempted_at: String,
     pub(crate) actual_started_at: Option<String>,
+    pub(crate) actual_finished_at: Option<String>,
+    pub(crate) execution_duration_ms: Option<i64>,
+    pub(crate) scheduler_wait_ms: Option<i64>,
     pub(crate) finished_at: Option<String>,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) status: String,
@@ -626,6 +629,11 @@ pub(crate) struct TaskRun {
     pub(crate) id: i64,
     pub(crate) trigger_kind: String,
     pub(crate) started_at: String,
+    pub(crate) execution_uid: Option<String>,
+    pub(crate) actual_started_at: Option<String>,
+    pub(crate) actual_finished_at: Option<String>,
+    pub(crate) execution_duration_ms: Option<i64>,
+    pub(crate) scheduler_wait_ms: Option<i64>,
     pub(crate) finished_at: Option<String>,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) status: String,
@@ -724,8 +732,12 @@ struct TaskRunRow {
     id: i64,
     trigger_kind: String,
     started_at: String,
+    execution_uid: Option<String>,
+    actual_started_at: Option<String>,
+    actual_finished_at: Option<String>,
     finished_at: Option<String>,
     duration_ms: Option<i64>,
+    actual_duration_ms: Option<i64>,
     status: String,
     summary: Option<String>,
     processed_count: Option<i64>,
@@ -2290,10 +2302,17 @@ fn task_progress_from_row(row: TaskProgressRow) -> TaskProgress {
 }
 
 fn task_run_from_row(row: TaskRunRow) -> TaskRun {
+    let scheduler_wait_ms =
+        scheduler_wait_duration_ms(&row.started_at, row.actual_started_at.as_deref());
     TaskRun {
         id: row.id,
         trigger_kind: row.trigger_kind,
         started_at: row.started_at,
+        execution_uid: row.execution_uid,
+        actual_started_at: row.actual_started_at,
+        actual_finished_at: row.actual_finished_at,
+        execution_duration_ms: row.actual_duration_ms.map(|value| value.max(0)),
+        scheduler_wait_ms,
         finished_at: row.finished_at,
         duration_ms: row.duration_ms,
         status: row.status,
@@ -2307,6 +2326,13 @@ fn task_run_from_row(row: TaskRunRow) -> TaskRun {
             .details
             .and_then(|value| serde_json::from_str(&value).ok()),
     }
+}
+
+fn scheduler_wait_duration_ms(requested_at: &str, actual_started_at: Option<&str>) -> Option<i64> {
+    let requested_at = crate::stats::parse_to_utc_datetime(requested_at)?;
+    let actual_started_at = crate::stats::parse_to_utc_datetime(actual_started_at?)?;
+    let elapsed_ms = (actual_started_at - requested_at).num_milliseconds();
+    (elapsed_ms >= 0).then_some(elapsed_ms)
 }
 
 pub(crate) fn managed_startup_backfill_suffix(task_name: &str) -> Option<&'static str> {
@@ -3299,8 +3325,8 @@ impl MaintenanceStore {
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64)
                         .bind(status).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
-                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','pool_upstream_attempt_archive','forward_proxy_attempt_archive','invocation_detail_prune','quota_snapshot_compaction','model_route_expiry','task_run_history_cleanup','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
-                        .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
+                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=? WHERE execution_uid=? AND actual_started_at IS NOT NULL")
+                        .bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
                         .execute(&mut *transaction).await?;
                 }
                 crate::task_timeline::TimelineEvent::ExecutionResourcesPending { id } => {
@@ -5471,13 +5497,19 @@ impl MaintenanceStore {
         .await?
         .into_iter()
         .map(|row| {
+            let scheduler_wait_ms =
+                scheduler_wait_duration_ms(&row.started_at, row.actual_started_at.as_deref());
+            let finished_at = row.actual_finished_at.clone().or(row.finished_at);
             let summary = TaskExecutionSummary {
                 execution_uid: row.execution_uid,
                 run_id: row.id,
                 trigger_kind: row.trigger_kind,
                 attempted_at: row.started_at,
                 actual_started_at: row.actual_started_at,
-                finished_at: row.actual_finished_at.or(row.finished_at),
+                actual_finished_at: row.actual_finished_at,
+                execution_duration_ms: row.actual_duration_ms.map(|value| value.max(0)),
+                scheduler_wait_ms,
+                finished_at,
                 // Legacy duration_ms may include dispatcher wait; only the observer-owned
                 // field proves the actual execution interval.
                 duration_ms: row.actual_duration_ms,
@@ -5543,7 +5575,7 @@ impl MaintenanceStore {
         };
         let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,next_inspection_at,next_catchup_at,catchup_state,stages FROM managed_task_progress WHERE task_key=?")
             .bind(task_key).fetch_optional(&self.pool).await?.map(task_progress_from_row);
-        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 100")
+        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,execution_uid,actual_started_at,actual_finished_at,finished_at,duration_ms,actual_duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 100")
             .bind(task_key).fetch_all(&self.pool).await?.into_iter().map(task_run_from_row).collect();
         let retention_backlog_trend = if task_key == "retention_archive" {
             Some(self.retention_backlog_trend(Utc::now()).await?)
@@ -6406,7 +6438,7 @@ mod tests {
         let ends = [
             crate::task_timeline::TimelineEvent::ExecutionFinished {
                 id: "execution-one".to_string(),
-                finished_at: timestamp(6),
+                finished_at: timestamp(60),
                 duration_ms: 5_000,
                 status: "failed".to_string(),
             },
@@ -6416,7 +6448,7 @@ mod tests {
             },
         ];
         store
-            .write_timeline_batch("session-one", &ends, 2, &timestamp(7), false)
+            .write_timeline_batch("session-one", &ends, 2, &timestamp(61), false)
             .await
             .expect("write execution and deferral finishes");
         let actual_fields: (String, i64, String, i64) = sqlx::query_as(
@@ -7747,6 +7779,32 @@ mod tests {
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
     }
 
+    #[test]
+    fn scheduler_wait_duration_requires_ordered_parseable_timestamps() {
+        assert_eq!(
+            super::scheduler_wait_duration_ms(
+                "2026-10-03T00:00:00.000Z",
+                Some("2026-10-03T00:22:40.000Z"),
+            ),
+            Some(1_360_000)
+        );
+        assert_eq!(
+            super::scheduler_wait_duration_ms(
+                "2026-10-03T00:00:00.000Z",
+                Some("2026-10-02T23:59:59.000Z"),
+            ),
+            None
+        );
+        assert_eq!(
+            super::scheduler_wait_duration_ms("not-a-timestamp", Some("2026-10-03T00:00:01Z")),
+            None
+        );
+        assert_eq!(
+            super::scheduler_wait_duration_ms("2026-10-03T00:00:00.000Z", None),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn decorates_root_and_backfill_tasks_with_effective_policy_and_capability() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -7758,11 +7816,12 @@ mod tests {
         seed_tasks(&pool).await.expect("seed maintenance tasks");
         sqlx::query(
             "INSERT INTO managed_task_runs
-             (task_key,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,
+             (task_key,trigger_kind,started_at,execution_uid,actual_started_at,finished_at,actual_finished_at,
               duration_ms,actual_duration_ms,status,error_detail)
              VALUES('retention_archive','manual','2026-10-03T00:00:00.000Z',
-                    '2026-10-03T00:00:05.000Z','2026-10-03T00:00:07.000Z',
-                    '2026-10-03T00:00:06.000Z',777,2,'failed','committed failure')",
+                    'execution-retention-1',
+                    '2026-10-03T00:22:40.000Z','2026-10-03T00:31:01.000Z',
+                    '2026-10-03T00:31:00.000Z',777,500000,'failed','committed failure')",
         )
         .execute(&pool)
         .await
@@ -7815,11 +7874,57 @@ mod tests {
         assert_eq!(latest.attempted_at, "2026-10-03T00:00:00.000Z");
         assert_eq!(
             latest.actual_started_at.as_deref(),
-            Some("2026-10-03T00:00:05.000Z")
+            Some("2026-10-03T00:22:40.000Z")
         );
-        assert_eq!(latest.duration_ms, Some(2));
+        assert_eq!(
+            latest.actual_finished_at.as_deref(),
+            Some("2026-10-03T00:31:00.000Z")
+        );
+        assert_eq!(latest.execution_duration_ms, Some(500_000));
+        assert_eq!(latest.scheduler_wait_ms, Some(1_360_000));
+        assert_eq!(latest.duration_ms, Some(500_000));
         assert_eq!(latest.result, "failed");
         assert_eq!(latest.reason.as_deref(), Some("committed failure"));
+        assert_eq!(
+            latest.execution_uid.as_deref(),
+            Some("execution-retention-1")
+        );
+        let retention_detail = store
+            .detail("retention_archive")
+            .await
+            .expect("load retention task detail")
+            .expect("retention task detail");
+        let retention_run = retention_detail
+            .recent_runs
+            .first()
+            .expect("retention task run");
+        assert_eq!(
+            retention_run.execution_uid.as_deref(),
+            Some("execution-retention-1")
+        );
+        assert_eq!(
+            retention_run.actual_started_at.as_deref(),
+            Some("2026-10-03T00:22:40.000Z")
+        );
+        assert_eq!(
+            retention_run.actual_finished_at.as_deref(),
+            Some("2026-10-03T00:31:00.000Z")
+        );
+        assert_eq!(retention_run.execution_duration_ms, Some(500_000));
+        assert_eq!(retention_run.scheduler_wait_ms, Some(1_360_000));
+        assert_eq!(retention_run.duration_ms, Some(777));
+        let latest_json = serde_json::to_value(latest).expect("serialize latest execution");
+        assert_eq!(latest_json["actualFinishedAt"], "2026-10-03T00:31:00.000Z");
+        assert_eq!(latest_json["executionDurationMs"], 500_000);
+        assert_eq!(latest_json["schedulerWaitMs"], 1_360_000);
+        let retention_run_json =
+            serde_json::to_value(retention_run).expect("serialize detail execution");
+        assert_eq!(
+            retention_run_json["actualFinishedAt"],
+            "2026-10-03T00:31:00.000Z"
+        );
+        assert_eq!(retention_run_json["executionDurationMs"], 500_000);
+        assert_eq!(retention_run_json["schedulerWaitMs"], 1_360_000);
         let status_without_run = tasks
             .iter()
             .find(|task| task.task_key == "system_status_snapshot")

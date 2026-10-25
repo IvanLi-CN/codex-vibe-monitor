@@ -1731,7 +1731,7 @@ pub(crate) async fn finish_system_task_run_reliably(
                 SystemTaskStatus::Failed => "error",
                 _ => "skipped",
             },
-            handle.started_at.elapsed(),
+            Some(handle.started_at.elapsed()),
         );
     }
     if let Some(observation) = handle.observation.as_ref() {

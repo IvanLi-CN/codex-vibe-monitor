@@ -40,6 +40,12 @@ async fn ownership_manual_materialization_start_preserves_paused_schedule() {
 #[tokio::test]
 async fn ownership_settlement_serializes_deferred_finalization_from_timeline_writer() {
     let directory = make_temp_test_dir("maintenance-settlement-timeline-interleaving");
+    let fixture_started_at = Utc::now() - chrono::Duration::minutes(1);
+    let started_at = format_utc_iso_millis(fixture_started_at);
+    let execution_started_at =
+        format_utc_iso_millis(fixture_started_at + chrono::Duration::milliseconds(100));
+    let finished_at =
+        format_utc_iso_millis(fixture_started_at + chrono::Duration::milliseconds(900));
     let options = SqliteConnectOptions::new()
         .filename(directory.join("maintenance.sqlite"))
         .create_if_missing(true)
@@ -53,16 +59,11 @@ async fn ownership_settlement_serializes_deferred_finalization_from_timeline_wri
     let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
     store.initialize_schema_for_test().await.unwrap();
     let run_id = store
-        .begin_run(
-            "invocation_identity_cleanup",
-            "2026-10-23T00:00:00.000Z",
-            "manual",
-            None,
-        )
+        .begin_run("invocation_identity_cleanup", &started_at, "manual", None)
         .await
         .unwrap();
     store
-        .start_timeline_session("settlement-interleaving", "2026-10-23T00:00:00.000Z")
+        .start_timeline_session("settlement-interleaving", &started_at)
         .await
         .unwrap();
     store
@@ -74,11 +75,11 @@ async fn ownership_settlement_serializes_deferred_finalization_from_timeline_wri
                 title: "清理调用身份".to_string(),
                 trigger_kind: "manual".to_string(),
                 execution_class: Some("maintenance_legacy".to_string()),
-                started_at: "2026-10-23T00:00:00.100Z".to_string(),
+                started_at: execution_started_at.clone(),
                 managed_run_id: Some(run_id),
             }],
             0,
-            "2026-10-23T00:00:00.100Z",
+            &execution_started_at,
             false,
         )
         .await
@@ -86,12 +87,13 @@ async fn ownership_settlement_serializes_deferred_finalization_from_timeline_wri
 
     let hooks = store.install_settlement_interleaving_hooks();
     let finish_store = store.clone();
+    let finish_at = finished_at.clone();
     let finish_task = tokio::spawn(async move {
         finish_store
             .finish_run_with_observation(
                 run_id,
                 "success",
-                "2026-10-23T00:00:01.000Z",
+                &finish_at,
                 900,
                 Some("已完成"),
                 None,
@@ -110,12 +112,12 @@ async fn ownership_settlement_serializes_deferred_finalization_from_timeline_wri
                 "settlement-interleaving",
                 &[crate::task_timeline::TimelineEvent::ExecutionFinished {
                     id: "settlement-execution".to_string(),
-                    finished_at: "2026-10-23T00:00:01.000Z".to_string(),
+                    finished_at: finished_at.clone(),
                     duration_ms: 900,
                     status: "success".to_string(),
                 }],
                 0,
-                "2026-10-23T00:00:01.000Z",
+                &finished_at,
                 false,
             )
             .await
@@ -640,6 +642,91 @@ async fn ownership_task_history_cleanup_is_bounded_and_dry_run_is_read_only() {
         .await
         .unwrap();
     assert_eq!(after, 6);
+}
+
+#[tokio::test]
+async fn retention_owner_preview_and_admission_defer_use_real_owner_classification() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("owner-preview-classification").await;
+    let account_id = 8_901_i64;
+    let timestamp = format_utc_iso_millis(Utc::now());
+    sqlx::query(
+        "INSERT INTO pool_upstream_accounts (id, kind, provider, display_name, status, enabled, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+    )
+    .bind(account_id)
+    .bind("api_key")
+    .bind("test")
+    .bind("Owner classification test")
+    .bind("active")
+    .bind(true)
+    .bind(&timestamp)
+    .execute(&pool)
+    .await
+    .expect("seed model route account");
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, last_seen_at) VALUES (?1, ?2, ?3)",
+    )
+    .bind(account_id)
+    .bind("gpt-owner-classification")
+    .bind("2000-01-01T00:00:00.000Z")
+    .execute(&pool)
+    .await
+    .expect("seed expired model route");
+
+    let preview = crate::maintenance::run_retention_owner_task(
+        &pool,
+        &config,
+        "model_route_expiry",
+        true,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("run model route dry-run owner");
+    assert_eq!(preview.discovered, 1);
+    assert_eq!(preview.selected, 1);
+    assert_eq!(preview.committed, 0);
+    assert_eq!(preview.completion, "complete");
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE account_id=?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count preview routes");
+    assert_eq!(remaining, 1);
+
+    let deferred = crate::maintenance::retention_test_with_work_budget(
+        Duration::ZERO,
+        crate::maintenance::run_retention_owner_task(
+            &pool,
+            &config,
+            "model_route_expiry",
+            false,
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("run model route deferred owner");
+    assert_eq!(deferred.discovered, 1);
+    assert_eq!(deferred.selected, 0);
+    assert_eq!(deferred.committed, 0);
+    assert_eq!(deferred.completion, "deferred");
+    assert_eq!(
+        deferred.wait_reason.as_deref(),
+        Some("retention_work_budget")
+    );
+
+    let remaining_after_defer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE account_id=?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count deferred routes");
+    assert_eq!(remaining_after_defer, 1);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
