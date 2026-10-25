@@ -171,7 +171,8 @@ jobs:
         continue-on-error: true
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
-          CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+          CARGO_HOME: /opt/stateful-sqlite-performance-work/cargo-home
+          CANDIDATE_WORK_ROOT: /opt/stateful-sqlite-performance-work
           CANDIDATE_USER: stateful-sqlite-test
           PATH: ${{ steps.toolchain.outputs.path }}
           RUSTC: ${{ steps.toolchain.outputs.rustc }}
@@ -183,19 +184,24 @@ jobs:
           LD_PRELOAD: ""
         run: |
           set -euo pipefail
-          mkdir -p "$EVIDENCE_ROOT/cargo-home"
-          repo="$GITHUB_WORKSPACE/candidate"
-          trusted_repo="$GITHUB_WORKSPACE/trusted"
+          sudo install -d -m 755 "$CANDIDATE_WORK_ROOT"
+          repo="$CANDIDATE_WORK_ROOT/candidate-source"
+          trusted_repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+          sudo cp -a "$GITHUB_WORKSPACE/candidate" "$repo"
+          sudo install -d -m 755 "$trusted_repo"
+          sudo cp -a "$GITHUB_WORKSPACE/trusted/." "$trusted_repo/"
+          sudo chown -R root:root "$repo" "$trusted_repo"
+          sudo chmod -R a+rX "$repo" "$trusted_repo"
           ref_root="$EVIDENCE_ROOT/candidate"
           mkdir -p "$ref_root"
-          archive="$ref_root/backend-tests.tar.zst"
-          extract="$ref_root/archive-extract"
-          build_target="$ref_root/build-target"
-          test ! -e "$extract"
-          mkdir "$extract"
-          mkdir -p "$build_target"
+          artifact_root="$CANDIDATE_WORK_ROOT/archive"
+          sudo install -d -m 755 "$artifact_root"
+          archive="$artifact_root/backend-tests.tar.zst"
+          extract="$artifact_root/archive-extract"
+          build_target="$artifact_root/build-target"
+          sudo install -d -m 755 "$extract" "$build_target" "$CARGO_HOME"
           touch "$archive"
-          sudo chown -R "$CANDIDATE_USER" "$EVIDENCE_ROOT/cargo-home" "$build_target" "$archive"
+          sudo chown -R "$CANDIDATE_USER" "$CARGO_HOME" "$build_target" "$archive" "$extract"
           set +e
           (
             cd "$repo"
@@ -211,8 +217,9 @@ jobs:
           sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
           set -e
           test "$status" -eq 0
-          extract_cargo_home="$EVIDENCE_ROOT/extract-cargo-home"
-          mkdir -p "$extract_cargo_home"
+          extract_cargo_home="$CANDIDATE_WORK_ROOT/extract-cargo-home"
+          sudo install -d -m 755 "$extract_cargo_home"
+          sudo chown -R "$CANDIDATE_USER" "$extract_cargo_home"
           sudo chown -R "$CANDIDATE_USER" "$extract" "$extract_cargo_home"
           set +e
           sudo -u "$CANDIDATE_USER" env \
@@ -251,13 +258,25 @@ jobs:
           clean: true
           persist-credentials: false
 
+      - name: Prepare read-only replay harness
+        if: steps.archives.outcome == 'success'
+        env:
+          CANDIDATE_WORK_ROOT: /opt/stateful-sqlite-performance-work
+        run: |
+          set -euo pipefail
+          trusted_repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+          sudo cp -a "$GITHUB_WORKSPACE/trusted/." "$trusted_repo/"
+          sudo chown -R root:root "$trusted_repo"
+          sudo chmod -R a+rX "$trusted_repo"
+
       - name: Run cold and warm Stateful SQLite replays
         id: replays
         if: steps.archives.outcome == 'success'
         continue-on-error: true
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
-          CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+          CARGO_HOME: /opt/stateful-sqlite-performance-work/cargo-home
+          CANDIDATE_WORK_ROOT: /opt/stateful-sqlite-performance-work
           CANDIDATE_USER: stateful-sqlite-test
           PATH: ${{ steps.toolchain.outputs.path }}
           RUSTC: ${{ steps.toolchain.outputs.rustc }}
@@ -283,13 +302,12 @@ jobs:
                 *) ref_names=(candidate control) ;;
               esac
               for ref_name in "${ref_names[@]}"; do
-                repo="$GITHUB_WORKSPACE/trusted"
-                archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
-                workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
-                replay_target="$EVIDENCE_ROOT/$ref_name/replay-target"
-                replay_tmp="$EVIDENCE_ROOT/$ref_name/tmp"
-                mkdir -p "$workspace"
-                mkdir -p "$replay_target" "$replay_tmp"
+                repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+                archive_dir="$CANDIDATE_WORK_ROOT/archive/archive-extract"
+                workspace="$CANDIDATE_WORK_ROOT/$ref_name/test-workspace"
+                replay_target="$CANDIDATE_WORK_ROOT/$ref_name/replay-target"
+                replay_tmp="$CANDIDATE_WORK_ROOT/$ref_name/tmp"
+                sudo install -d -m 755 "$workspace" "$replay_target" "$replay_tmp"
                 sudo chown -R "$CANDIDATE_USER" "$workspace" "$replay_target" "$replay_tmp"
                 log="$EVIDENCE_ROOT/logs/$ref_name/$replay/shard-$shard.log"
                 mkdir -p "$(dirname "$log")"
@@ -361,13 +379,12 @@ jobs:
                 target_index="${setup_target_indices[$target_position]}"
                 target_filter="${setup_target_filters[$target_position]}"
                 target_name="${setup_target_names[$target_position]}"
-                repo="$GITHUB_WORKSPACE/trusted"
-                archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
-                workspace="$EVIDENCE_ROOT/$ref_name/target-workspace/$replay/setup-$target_index"
-                replay_target="$EVIDENCE_ROOT/$ref_name/target-replay-target"
-                replay_tmp="$EVIDENCE_ROOT/$ref_name/target-tmp"
-                mkdir -p "$workspace"
-                mkdir -p "$replay_target" "$replay_tmp"
+                repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+                archive_dir="$CANDIDATE_WORK_ROOT/archive/archive-extract"
+                workspace="$CANDIDATE_WORK_ROOT/$ref_name/target-workspace/$replay/setup-$target_index"
+                replay_target="$CANDIDATE_WORK_ROOT/$ref_name/target-replay-target"
+                replay_tmp="$CANDIDATE_WORK_ROOT/$ref_name/target-tmp"
+                sudo install -d -m 755 "$workspace" "$replay_target" "$replay_tmp"
                 sudo chown -R "$CANDIDATE_USER" "$workspace" "$replay_target" "$replay_tmp"
                 log="$EVIDENCE_ROOT/logs/$ref_name/$replay/setup-$target_index.log"
                 mkdir -p "$(dirname "$log")"
