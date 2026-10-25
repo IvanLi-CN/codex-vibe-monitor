@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 240
     steps:
       - name: Validate candidate revision input
+        id: validate_input
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
@@ -111,6 +112,8 @@ jobs:
             printf 'rustc=%s\n' "$(rustc --version)"
             printf 'cargo_nextest=%s\n' "$(cargo-nextest --version)"
           } > "$EVIDENCE_ROOT/runner-context.txt"
+          echo "safe_path=$PATH" >> "$GITHUB_OUTPUT"
+          echo "python_bin=$(command -v python3)" >> "$GITHUB_OUTPUT"
           echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
           echo "trusted_harness_sha=$trusted_harness_sha" >> "$GITHUB_OUTPUT"
 
@@ -150,6 +153,14 @@ jobs:
 
       - name: Refresh trusted harness before replay
         if: steps.archives.outcome == 'success'
+        env:
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.trusted_harness_sha }}
@@ -165,6 +176,13 @@ jobs:
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
         run: |
           set -euo pipefail
           wall_file="$EVIDENCE_ROOT/wall-times.txt"
@@ -304,7 +322,15 @@ jobs:
           exit "$overall_status"
 
       - name: Refresh trusted harness before acceptance gate
-        if: always()
+        if: ${{ always() && steps.validate_input.outcome == 'success' }}
+        env:
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.trusted_harness_sha }}
@@ -315,16 +341,24 @@ jobs:
 
       - name: Generate empirical acceptance card
         id: acceptance
-        if: always()
+        if: ${{ always() && steps.validate_input.outcome == 'success' }}
         continue-on-error: true
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CANDIDATE_SHA: ${{ steps.revisions.outputs.candidate_sha }}
           TRUSTED_HARNESS_SHA: ${{ steps.revisions.outputs.trusted_harness_sha }}
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+          PYTHON_BIN: ${{ steps.revisions.outputs.python_bin }}
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT/evidence"
-          python3 trusted/.github/scripts/stateful-sqlite-performance.py \
+          "$PYTHON_BIN" trusted/.github/scripts/stateful-sqlite-performance.py \
             --root "$EVIDENCE_ROOT" \
             --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
             --target-wall-file "$EVIDENCE_ROOT/target-wall-times.txt" \
