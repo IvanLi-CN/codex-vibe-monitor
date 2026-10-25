@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-25T12:25:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a8f0b446d1dc6366203873e04c81711aaf56cb7e",
+  "pr_number": 1203,
+  "pr_title": "fix(api): include network bucket at boundary",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "e4fbd13ddb7f4d3c87b369a8407803100c55e6cb",
+  "type_label": "type:skip"
+}
