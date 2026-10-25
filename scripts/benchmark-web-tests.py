@@ -41,7 +41,7 @@ E2E_READINESS_OVERLAY = (
     (
         "web/tests/e2e/records-filter-overlay.spec.ts",
         'await page.goto("/#/records");',
-        'await page.goto("/#/records", { waitUntil: "networkidle" });',
+        'await page.goto("/#/records", { waitUntil: "networkidle" });\n  await page.reload({ waitUntil: "networkidle" });',
     ),
     (
         "web/tests/e2e/dashboard-working-conversations-layout.spec.ts",
@@ -49,7 +49,7 @@ E2E_READINESS_OVERLAY = (
         'await page.goto("/#/dashboard", { waitUntil: "networkidle" });',
     ),
 )
-E2E_READINESS_OVERLAY_NAME = "e2e-first-navigation-readiness-v1"
+E2E_READINESS_OVERLAY_NAME = "e2e-first-navigation-readiness-v2"
 
 
 def digest(value: object) -> str:

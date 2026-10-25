@@ -179,7 +179,7 @@ class ExecutionContractTests(unittest.TestCase):
         path = MODULE.ROOT / "web/tests/e2e/records-filter-overlay.spec.ts"
         tuned = baseline.replace(
             'await page.goto("/#/records");',
-            'await page.goto("/#/records", { waitUntil: "networkidle" });',
+            'await page.goto("/#/records", { waitUntil: "networkidle" });\n  await page.reload({ waitUntil: "networkidle" });',
         )
         self.assertEqual(
             MODULE.normalize_approved_e2e_performance_change(path, baseline),
@@ -198,7 +198,9 @@ class ExecutionContractTests(unittest.TestCase):
                 "web/tests/e2e/records-filter-overlay.spec.ts",
                 "web/tests/e2e/dashboard-working-conversations-layout.spec.ts",
             ])
-            self.assertIn('await page.goto("/#/records", { waitUntil: "networkidle" });', target.read_text())
+            patched = target.read_text()
+            self.assertIn('await page.goto("/#/records", { waitUntil: "networkidle" });', patched)
+            self.assertIn('await page.reload({ waitUntil: "networkidle" });', patched)
 
     def test_timeline_wait_tuning_is_still_normalized(self):
         baseline = subprocess.check_output(
