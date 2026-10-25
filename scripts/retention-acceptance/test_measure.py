@@ -25,7 +25,12 @@ from contract import (
     DATASETS,
     TRIAL_EXECUTION_ORDER,
 )
-from fixture import CONTROLLED_TASK_KEYS, prepare_competitor, seed_parallel_work_coverage
+from fixture import (
+    CONTROLLED_TASK_KEYS,
+    _history_timestamp,
+    prepare_competitor,
+    seed_parallel_work_coverage,
+)
 from measure import (
     OwnedContainerLedger,
     cleanup_budget,
@@ -51,6 +56,13 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_fixture_history_timestamps_match_retention_local_time_contract(self) -> None:
+        timestamp = _history_timestamp("2026-10-24 00:00:00", 0)
+
+        self.assertEqual(timestamp, "2026-09-01 00:00:00")
+        self.assertNotIn("T", timestamp)
+        self.assertNotIn("Z", timestamp)
+
     def test_task_state_snapshot_missing_database_is_non_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             snapshot = task_state_snapshot(Path(temporary) / "missing.sqlite")

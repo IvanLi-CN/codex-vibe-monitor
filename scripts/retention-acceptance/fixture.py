@@ -40,7 +40,9 @@ def _history_timestamp(cutoff: str, index: int) -> str:
     last_day = (date(next_month_year, next_month, 1) - timedelta(days=1)).day
     day = 1 + (index * 17 + index // 97) % last_day
     second = (index * 7919) % 86_400
-    return f"{first.replace(day=day):%Y-%m-%d}T{second // 3600:02d}:{second // 60 % 60:02d}:{second % 60:02d}.000Z"
+    # Retention archive grouping treats occurred_at as Shanghai-local naive time,
+    # matching the production SQLite field contract.
+    return f"{first.replace(day=day):%Y-%m-%d} {second // 3600:02d}:{second // 60 % 60:02d}:{second % 60:02d}"
 
 
 def _payload(dataset: str, index: int) -> str:
