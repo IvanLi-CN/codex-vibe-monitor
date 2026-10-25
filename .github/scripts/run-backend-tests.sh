@@ -27,10 +27,6 @@ retaining the profile's schema-template and workspace contract.
 When --partition is set, pass one deterministic cargo-nextest hash partition to
 the selected profile. The value must be hash:N/M with 1 <= N <= M.
 
-BACKEND_TEST_DISABLE_SCHEMA_TEMPLATE=1 skips the selected profile's current-schema
-template preparation. This is reserved for performance A/B runs that compare the
-same test archive with and without the template optimization.
-
 BACKEND_TEST_ARCHIVE_FILE_IO_THREADS controls Archive/File I/O concurrency and
 defaults to 4.
 EOF
@@ -358,12 +354,6 @@ run_nextest() {
 
 prepare_schema_template() {
   local selected_profile="$1"
-  case "${BACKEND_TEST_DISABLE_SCHEMA_TEMPLATE:-}" in
-    1|true|TRUE|yes|YES)
-      echo "backend_test_${selected_profile//-/_}_schema_template=disabled"
-      return 0
-      ;;
-  esac
   cleanup_schema_template
   schema_template_dir="$(mktemp -d "$backend_test_workspace/${selected_profile}-schema.XXXXXX")"
   local template_path="$schema_template_dir/current-schema.db"

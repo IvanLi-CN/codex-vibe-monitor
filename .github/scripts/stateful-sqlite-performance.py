@@ -222,7 +222,7 @@ def build_card(
         "baseline_reference_sha": baseline_reference_sha,
         "baseline_source_sha": baseline_source_sha,
         "candidate_sha": candidate_sha,
-        "baseline_mode": "candidate archive with current-schema template disabled",
+        "baseline_mode": "candidate archive with allowlisted file fixtures forced to fresh schema",
         "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads",
         "replay_order": ["cold", "warm"],
         "thresholds": {

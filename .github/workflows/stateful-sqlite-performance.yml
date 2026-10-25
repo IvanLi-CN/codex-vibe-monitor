@@ -158,7 +158,7 @@ jobs:
                   NEXTEST_SUCCESS_OUTPUT=final
                 )
                 if [ "$ref_name" = baseline ]; then
-                  replay_env+=(BACKEND_TEST_DISABLE_SCHEMA_TEMPLATE=1)
+                  replay_env+=(CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH=1)
                 fi
                 start_ms="$(date +%s%3N)"
                 set +e

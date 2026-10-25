@@ -1825,7 +1825,7 @@ pub(crate) async fn file_backed_test_state_from_current_schema(
     file_backed_test_state_with_busy_timeout_and_template(
         prefix,
         busy_timeout,
-        current_stateful_schema_template_path(),
+        current_stateful_file_fixture_schema_template_path(prefix),
     )
     .await
 }

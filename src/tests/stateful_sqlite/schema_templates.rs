@@ -7,6 +7,8 @@ use std::str::FromStr;
 
 pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH";
+pub(crate) const STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH_ENV: &str =
+    "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH";
 pub(crate) const LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH";
 pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
@@ -21,6 +23,16 @@ pub(crate) fn current_profile_schema_template_path() -> Option<PathBuf> {
 
 pub(crate) fn current_stateful_schema_template_path() -> Option<PathBuf> {
     std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV).map(PathBuf::from)
+}
+
+pub(crate) fn current_stateful_file_fixture_schema_template_path(_prefix: &str) -> Option<PathBuf> {
+    let force_fresh = std::env::var(STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH_ENV)
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    if force_fresh {
+        None
+    } else {
+        current_stateful_schema_template_path()
+    }
 }
 
 fn current_test_state_schema_template_path() -> Option<PathBuf> {
