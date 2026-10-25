@@ -53,8 +53,8 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The implementation candidate changes no public or persistent representation. The previous validation was invalidated by a required linear rebase onto main 9c8c8aeac7a40728a36b4159a51c8416465b4a64; current-head CI, Tier 4 review, and empirical acceptance must be refreshed. Local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
-      "verified_at": "2026-10-25T00:00:00Z",
+      "reasoning": "The implementation candidate changes no public or persistent representation. Current-head PR CI and migration lanes passed after the required linear rebase onto main 9c8c8aeac7a40728a36b4159a51c8416465b4a64. Empirical acceptance remains blocked because the candidate-bound budget classifier could not establish hardware comparability (`cpuModel` was incompatible), the existing harness does not seed the planned summary-recovery workload, and fresh Tier 4 review after the rebase is not recorded. Local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
+      "verified_at": "2026-10-25T14:52:50Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-    "candidate_validation_status": "current-head-validation-pending",
+    "candidate_head_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+    "candidate_validation_status": "current-head-validation-blocked",
     "active_base_sha": "9c8c8aeac7a40728a36b4159a51c8416465b4a64",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 5167cd51; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 5c3d6181dbd49da6e2d23987cd3df6ee064a65c5 onto current main 9c8c8aeac7a40728a36b4159a51c8416465b4a64, producing implementation candidate 316385432289ce108d218e5aa9f60edbd5dc6435. Prior CI, formal review, migration, and performance evidence is stale; fresh current-head validation is required before Step 5C.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 9c8c8aea; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 5c3d6181dbd49da6e2d23987cd3df6ee064a65c5 onto current main 9c8c8aeac7a40728a36b4159a51c8416465b4a64, producing implementation candidate 316385432289ce108d218e5aa9f60edbd5dc6435. Current-head PR CI run 40202137523 and migration lanes pass; performance run 40202278852 is blocked by unavailable hardware comparability evidence, and fresh Tier 4 review remains unrecorded before Step 5C.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }
