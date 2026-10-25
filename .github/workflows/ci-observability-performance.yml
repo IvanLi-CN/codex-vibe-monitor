@@ -221,7 +221,7 @@ jobs:
           if requested == "auto" and not (
               shared_recipe
               and known_layout
-              and candidate_recipe_contract_digest == trusted_recipe_digest
+              and (candidate_recipe_contract_digest == trusted_recipe_digest or build_only == "true")
           ):
               effective = "canonical"
               fallback_reason = "candidate recipe is not identical to the trusted producer contract"
@@ -890,6 +890,8 @@ jobs:
           import sys
 
           path = pathlib.Path(sys.argv[1])
+          if not path.is_file():
+              raise SystemExit(0)
           value = json.loads(path.read_text())
           if os.environ["IMAGE_CACHE_HIT"] == "true":
               result = "skipped"

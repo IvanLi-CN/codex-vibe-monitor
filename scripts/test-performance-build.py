@@ -51,6 +51,8 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("COPY --from=${WEB_CONTEXT}", dockerfile)
         self.assertIn("AS rust-builder-canonical", dockerfile)
         self.assertIn("AS web-builder-canonical", dockerfile)
+        self.assertIn("ARG RUST_BASE=rust:1.96.0-bookworm", dockerfile.split("FROM", 1)[0])
+        self.assertIn("ARG RUNTIME_BASE=debian:bookworm-slim", dockerfile.split("FROM", 1)[0])
 
     def test_build_identity_includes_web_compiler_inputs(self) -> None:
         identity = next(

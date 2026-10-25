@@ -5,9 +5,11 @@
 ARG RUST_CONTEXT=rust-builder-canonical
 ARG WEB_CONTEXT=web-builder-canonical
 ARG RUNTIME_CONTEXT=runtime-base-builder
+ARG BUN_BASE=oven/bun:1.3.14-alpine
+ARG RUST_BASE=rust:1.96.0-bookworm
+ARG RUNTIME_BASE=debian:bookworm-slim
 
 # Stage 1: build the web assets
-ARG BUN_BASE=oven/bun:1.3.14-alpine
 FROM ${BUN_BASE} AS web-builder-canonical
 WORKDIR /app/web
 
@@ -23,7 +25,6 @@ RUN sh /usr/local/bin/production-build.sh web
 # Stage 2: build the Rust binary
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
 # otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
-ARG RUST_BASE=rust:1.96.0-bookworm
 FROM ${RUST_BASE} AS rust-builder-canonical
 WORKDIR /app
 
@@ -57,7 +58,6 @@ COPY --from=symbol-builder /symbols /symbols
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
 # The app defaults to `XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
 # a real Xray-core binary, subscription validation for share links (vmess/vless/trojan/ss) fails.
-ARG RUNTIME_BASE=debian:bookworm-slim
 FROM ${RUNTIME_BASE} AS xray-downloader
 ARG XRAY_CORE_VERSION=26.2.6
 ARG TARGETARCH
