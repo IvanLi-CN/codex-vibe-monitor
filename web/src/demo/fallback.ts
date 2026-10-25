@@ -12,19 +12,26 @@ function isDemoApiRequest(request: Request) {
 
 export function installDemoFetchFallback(
   handleDemoRequest: (request: Request) => Promise<Response>,
-) {
-  if (typeof window === "undefined") return;
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
 
   const demoWindow = window as DemoFallbackWindow;
-  if (demoWindow[DEMO_FETCH_FALLBACK_KEY]) return;
+  if (demoWindow[DEMO_FETCH_FALLBACK_KEY]) return () => undefined;
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request && init == null ? input : new Request(input, init);
+    const request =
+      input instanceof Request && init == null
+        ? input
+        : new Request(new URL(input.toString(), window.location.href), init);
     if (isDemoApiRequest(request)) {
       return handleDemoRequest(request);
     }
     return originalFetch(input, init);
   };
   demoWindow[DEMO_FETCH_FALLBACK_KEY] = true;
+  return () => {
+    window.fetch = originalFetch;
+    delete demoWindow[DEMO_FETCH_FALLBACK_KEY];
+  };
 }
