@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1191 implementation candidate c7208893d8b94d20b086d5c447256943490fb454; prior Linux CI, migration evidence, and formal review belong to the superseded pre-rebase head, while current-head validation and empirical acceptance remain required.",
+      "to_program_version": "PR #1191 implementation candidate c72088935b13e35807566ad77db70a3b497a6519; prior Linux CI, migration evidence, and formal review belong to the superseded pre-rebase head, while current-head validation and empirical acceptance remain required.",
       "direct_major_skips_supported": false
     }
   },
@@ -159,13 +159,13 @@
   },
   "pending_execution_evidence": [
     {
-      "candidate_head_sha": "c7208893d8b94d20b086d5c447256943490fb454",
+      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
       "reason": "PR #1191 was rebased after its previous candidate-bound empirical acceptance classified performance evidence as blocked: functional scenarios passed, p95 passed, but metrics-mode CPU windows exceeded the stability limit and the observed CPU increase exceeded budget. The old evidence cannot authorize the rebased candidate; no threshold relaxation is authorized by the plan."
     }
   ],
   "execution_evidence": {
     "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
-      "candidate_head_sha": "c7208893d8b94d20b086d5c447256943490fb454",
+      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
     "stateful_and_migration_profiles_passed": true,
     "formal_review_passed": true,
     "performance_acceptance": {
@@ -180,13 +180,13 @@
     }
   },
   "delivery_context": {
-    "candidate_head_sha": "c7208893d8b94d20b086d5c447256943490fb454",
+    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
     "candidate_validation_status": "pr-rebased-validation-required",
     "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
     "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c7208893d8b94d20b086d5c447256943490fb454; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
     "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }
