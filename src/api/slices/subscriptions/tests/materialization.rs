@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::collections::HashMap;
 #[tokio::test]
 async fn network_timeseries_topics_keep_live_snapshot_worker_active() {
     let hub = Arc::new(SubscriptionHub::new());
@@ -146,6 +147,74 @@ async fn cold_network_only_slice_materializes_without_sqlite() {
         "unchanged network revisions must not serialize a topic",
     );
     assert_eq!(delivery_after.network_timeseries.payload_clone_count, 0);
+}
+
+#[tokio::test]
+async fn initial_network_timeseries_materializes_live_bucket_at_fractional_boundary() {
+    let state = crate::tests::test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    state
+        .proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+        .expect("bind network cache");
+    let now = Utc
+        .with_ymd_and_hms(2026, 10, 25, 10, 50, 0)
+        .single()
+        .expect("valid boundary time")
+        + ChronoDuration::milliseconds(451);
+    state.dashboard_network_speed_cache.record_request_bytes(
+        "fractional-boundary-network",
+        "2026-10-25 18:50:00",
+        None,
+        Some("api.openai.com"),
+        512,
+        now,
+    );
+    let params = DashboardNetworkTimeseriesQuery {
+        range: "today".to_string(),
+        time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+        upstream_account_id: None,
+    };
+    let response = build_dashboard_network_timeseries_response_at(state.as_ref(), &params, now)
+        .await
+        .expect("build initial network timeseries");
+    let live_point = response
+        .points
+        .iter()
+        .find(|point| point.is_live_bucket)
+        .cloned()
+        .expect("initial today response should contain the current live bucket");
+    assert_eq!(live_point.bucket_start, "2026-10-25T10:50:00Z");
+    assert_eq!(live_point.upload_bytes, 512);
+
+    let network = DashboardNetworkProjectionSlice {
+        revision: 1,
+        network_live_bucket: Some(live_point.clone()),
+        network_realtime_rate: None,
+        accounts: Vec::new(),
+        recent: DashboardRecentNetworkWindowResponse {
+            range_start: response.range_start.clone(),
+            range_end: response.range_end.clone(),
+            window_seconds: DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS,
+            sample_seconds: 1,
+            is_warming_up: false,
+            points: Vec::new(),
+        },
+        current_snapshot: DashboardActivityCurrentSnapshot::default(),
+        current_snapshot_by_account: HashMap::new(),
+    };
+    let materializer = DashboardTopicMaterializer::NetworkTimeseries {
+        base: Arc::new(response),
+        upstream_account_id: None,
+    };
+    assert!(
+        materializer
+            .revision(0, None, Some(&network), None)
+            .is_some(),
+        "a live point in the initial base must allow the first network projection revision"
+    );
 }
 
 #[tokio::test]
