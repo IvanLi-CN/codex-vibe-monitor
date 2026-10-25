@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 35,
+    "inventory_entries": 43,
     "suppression_entries": 126
   },
   "loc_targets": {
@@ -121,10 +121,58 @@
       "next_module_workstream": "Split schema migration and maintenance fixtures by raw codecs, manifest setup, and observability snapshots."
     },
     {
-      "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+      "path": "src/tests/stateful_sqlite/invocation_list_queries_and_filters.rs",
       "role": "test_helper",
-      "line_budget": 9997,
-      "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
+      "line_budget": 1242,
+      "next_module_workstream": "Maintain the completed invocation-list query and filter responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/invocation_summary_suggestions_and_stats.rs",
+      "role": "test_helper",
+      "line_budget": 1689,
+      "next_module_workstream": "Maintain the completed summary, suggestion, statistics, and timing responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_binding_and_affinity.rs",
+      "role": "test_helper",
+      "line_budget": 2052,
+      "next_module_workstream": "Maintain the completed prompt-cache binding and affinity responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_conversation_reads.rs",
+      "role": "test_helper",
+      "line_budget": 678,
+      "next_module_workstream": "Maintain the completed prompt-cache conversation-read and failure-classification boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_materialization_and_allocator.rs",
+      "role": "test_helper",
+      "line_budget": 1294,
+      "next_module_workstream": "Maintain the completed prompt-cache materialization, allocator, and recovery boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_schema_migration_contracts.rs",
+      "role": "test_helper",
+      "line_budget": 498,
+      "next_module_workstream": "Maintain the completed prompt-cache schema migration and policy contract boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_sticky_runtime.rs",
+      "role": "test_helper",
+      "line_budget": 1182,
+      "next_module_workstream": "Maintain the completed prompt-cache sticky runtime and model-scoped routing boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_capture_and_invocation_queries.rs",
+      "role": "test_helper",
+      "line_budget": 495,
+      "next_module_workstream": "Maintain the completed proxy capture and invocation-query foundation boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/schema_retirement_and_historical_fixtures.rs",
+      "role": "test_helper",
+      "line_budget": 841,
+      "next_module_workstream": "Maintain the completed schema retirement and historical fixture compatibility boundary below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
