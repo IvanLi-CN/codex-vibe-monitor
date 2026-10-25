@@ -53,7 +53,7 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The implementation candidate changes no public or persistent representation. The current head is linearly rebased onto main dff0b88dc00681720acfaa9103c8ddbba84d3325 and its PR checks pass. Acceptance re-audit concluded that generic observability A/B and hardware comparability are not applicable merge gates because the harness does not seed the Summary recovery workload and this follow-up makes no relative production-performance claim. Exactness, query-plan, representative-scale, SQLite contention, and scheduler-budget evidence remain required; fresh Tier 4 review after the rebase is still pending. Local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
+      "reasoning": "The implementation candidate changes no public or persistent representation. This record does not assert final-head CI or review; those facts are read from live PR #1191. Acceptance re-audit concluded that generic observability A/B and hardware comparability are not applicable merge gates because the harness does not seed the Summary recovery workload and this follow-up makes no relative production-performance claim. Exactness, query-plan, representative-scale, SQLite contention, and scheduler-budget evidence remain required. Local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
       "verified_at": "2026-10-25T14:52:50Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
@@ -97,7 +97,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "PR #1191: th/summary-recovery-query-fairness@f1d13534a4d6f96999110c4443eeb43e780b93e0",
+      "PR #1191: th/summary-recovery-query-fairness@19b657b3662a1613a759ad80242e4ffb18a347ba",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
+    "candidate_head_sha": "19b657b3662a1613a759ad80242e4ffb18a347ba",
     "candidate_validation_status": "implementation-evidence-carrier-review-pending",
-    "active_base_sha": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
+    "active_base_sha": "0542af458161992d94ecc7d6236ddf9c553202ac",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main dff0b88d; the topic adds no merge commit or unrelated base change.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base 9c8c8aeac7a40728a36b4159a51c8416465b4a64 onto current main dff0b88dc00681720acfaa9103c8ddbba84d3325, producing implementation commit f1d13534a4d6f96999110c4443eeb43e780b93e0. Current-head PR checks and fresh Tier 4 review are required after the rebase. Acceptance re-audit removed the inapplicable generic observability A/B comparison from the merge gate; a Summary-specific relative-performance load test remains a separate follow-up.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0542af45; the topic adds no merge commit or unrelated base change.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base dff0b88dc00681720acfaa9103c8ddbba84d3325 onto current main 0542af458161992d94ecc7d6236ddf9c553202ac, producing implementation candidate commit 19b657b3662a1613a759ad80242e4ffb18a347ba. Final-head PR checks and fresh Tier 4 review are required after the rebase. Acceptance re-audit removed the inapplicable generic observability A/B comparison from the merge gate; a Summary-specific relative-performance load test remains a separate follow-up.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }
