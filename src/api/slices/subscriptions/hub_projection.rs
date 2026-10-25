@@ -720,7 +720,6 @@ impl SubscriptionHub {
     ) -> Result<CachedSubscriptionTopic, ApiError> {
         self.refresh_topic_with_now(state, topic, emit_live, None)
             .await
-            .map(|cached| cached.expect("unguarded topic refresh should always commit"))
     }
 
     async fn refresh_topic_with_now(

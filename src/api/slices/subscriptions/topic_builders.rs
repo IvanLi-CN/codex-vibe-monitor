@@ -387,14 +387,13 @@ impl SubscriptionTopic {
                 time_zone,
                 upstream_account_id,
             } => {
-                let response = build_dashboard_network_timeseries_response_at(
-                    state.as_ref(),
-                    &DashboardNetworkTimeseriesQuery {
+                let Json(response) = fetch_dashboard_network_timeseries(
+                    State(state),
+                    Query(DashboardNetworkTimeseriesQuery {
                         range: range.clone(),
                         time_zone: Some(time_zone.clone()),
                         upstream_account_id: *upstream_account_id,
-                    },
-                    now,
+                    }),
                 )
                 .await?;
                 Ok(serde_json::to_value(response)?)
