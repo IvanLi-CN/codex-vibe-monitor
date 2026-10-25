@@ -212,6 +212,7 @@ jobs:
             sudo -u "$CANDIDATE_USER" env \
               HOME="/home/$CANDIDATE_USER" \
               PATH="$PATH" \
+              RUSTC="$RUSTC" \
               CARGO_HOME="$CARGO_HOME" \
               CARGO_TARGET_DIR="$build_target" \
               cargo nextest archive --locked --all-features \
@@ -226,16 +227,19 @@ jobs:
           sudo chown -R "$CANDIDATE_USER" "$extract_cargo_home"
           sudo chown -R "$CANDIDATE_USER" "$extract" "$extract_cargo_home"
           set +e
-          sudo -u "$CANDIDATE_USER" env \
-            HOME="/home/$CANDIDATE_USER" \
-            PATH="$PATH" \
-            RUSTC="$RUSTC" \
-            CARGO_HOME="$extract_cargo_home" \
-            cargo-nextest nextest run \
-            --archive-file "$archive" \
-            --extract-to "$extract" \
-            --workspace-remap "$trusted_repo" \
-            --no-run > "$ref_root/archive-extract.log" 2>&1
+          (
+            cd "$trusted_repo"
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              PATH="$PATH" \
+              RUSTC="$RUSTC" \
+              CARGO_HOME="$extract_cargo_home" \
+              cargo-nextest nextest run \
+              --archive-file "$archive" \
+              --extract-to "$extract" \
+              --workspace-remap "$trusted_repo" \
+              --no-run
+          ) > "$ref_root/archive-extract.log" 2>&1
           status=$?
           sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
           set -e
