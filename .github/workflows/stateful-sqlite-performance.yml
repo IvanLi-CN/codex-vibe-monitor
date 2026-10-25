@@ -229,6 +229,9 @@ jobs:
           sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
           set -e
           test "$status" -eq 0
+          sudo chown -R root:root "$archive" "$extract"
+          sudo chmod a+r "$archive"
+          sudo chmod -R a+rX "$extract"
 
       - name: Refresh trusted harness before replay
         if: steps.archives.outcome == 'success'
