@@ -130,6 +130,8 @@ jobs:
       - name: Prepare read-only Rust toolchain for candidate user
         id: toolchain
         env:
+          CANDIDATE_USER: stateful-sqlite-test
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           TOOL_ROOT: ${{ runner.temp }}/stateful-sqlite-tools
         run: |
           set -euo pipefail
@@ -145,6 +147,23 @@ jobs:
           sudo chown -R root:root "$TOOL_ROOT"
           echo "path=$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" >> "$GITHUB_OUTPUT"
           echo "rustc=$TOOL_ROOT/sysroot/bin/rustc" >> "$GITHUB_OUTPUT"
+          {
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
+              RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
+              rustc --version
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
+              RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
+              cargo --version
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
+              RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
+              cargo-nextest --version
+          } > "$EVIDENCE_ROOT/candidate-toolchain.txt"
 
       - name: Build and extract candidate test archive
         id: archives
@@ -193,11 +212,22 @@ jobs:
           test "$status" -eq 0
           extract_cargo_home="$EVIDENCE_ROOT/extract-cargo-home"
           mkdir -p "$extract_cargo_home"
-          CARGO_HOME="$extract_cargo_home" cargo-nextest nextest run \
+          sudo chown -R "$CANDIDATE_USER" "$extract" "$extract_cargo_home"
+          set +e
+          sudo -u "$CANDIDATE_USER" env \
+            HOME="/home/$CANDIDATE_USER" \
+            PATH="$PATH" \
+            RUSTC="$RUSTC" \
+            CARGO_HOME="$extract_cargo_home" \
+            cargo-nextest nextest run \
             --archive-file "$archive" \
             --extract-to "$extract" \
             --workspace-remap "$trusted_repo" \
             --no-run > "$ref_root/archive-extract.log" 2>&1
+          status=$?
+          sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
+          set -e
+          test "$status" -eq 0
 
       - name: Refresh trusted harness before replay
         if: steps.archives.outcome == 'success'
@@ -263,6 +293,7 @@ jobs:
                   CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
                   HOME="/home/$CANDIDATE_USER"
                   PATH="$PATH"
+                  RUSTC="$RUSTC"
                   BACKEND_TEST_WORKSPACE="$workspace"
                   CARGO_HOME="$CARGO_HOME"
                   CARGO_TARGET_DIR="$replay_target"
@@ -340,6 +371,7 @@ jobs:
                   CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
                   HOME="/home/$CANDIDATE_USER"
                   PATH="$PATH"
+                  RUSTC="$RUSTC"
                   BACKEND_TEST_WORKSPACE="$workspace"
                   CARGO_HOME="$CARGO_HOME"
                   CARGO_TARGET_DIR="$replay_target"
@@ -403,7 +435,7 @@ jobs:
           sanitized_root="$EVIDENCE_ROOT/sanitized"
           rm -rf "$sanitized_root"
           mkdir -p "$sanitized_root/logs"
-          for file in revisions.txt runner-context.txt wall-times.txt target-wall-times.txt replay-failures.txt; do
+          for file in revisions.txt runner-context.txt candidate-toolchain.txt wall-times.txt target-wall-times.txt replay-failures.txt; do
             if [ -f "$EVIDENCE_ROOT/$file" ]; then
               cp "$EVIDENCE_ROOT/$file" "$sanitized_root/$file"
             fi
