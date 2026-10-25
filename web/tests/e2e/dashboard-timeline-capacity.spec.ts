@@ -673,7 +673,9 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
           diagnostics.nextTraversalDelayMs = delayMs;
         }, DENSE_TRAVERSAL_DELAY_MS);
-        await timelineControls.first().click();
+        // The capacity fixture anchors records at requestEnd - 15 minutes; lengthening the
+        // window keeps the synthetic dense records in range across both refreshes.
+        await timelineControls.nth(1).click();
         await expect
           .poll(
             () =>
