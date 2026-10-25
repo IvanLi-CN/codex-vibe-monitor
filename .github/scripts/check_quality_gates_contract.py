@@ -562,7 +562,17 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
 
     require(report.get("name") == "Observability Performance Build Report" and report.get("needs") == ["observability-performance-resolve", "observability-performance-producer", "observability-performance-image"] and "always()" in str(report.get("if", "")) and "needs.observability-performance-resolve.result == 'success'" in str(report.get("if", "")) and "needs.observability-performance-image.result == 'success'" not in str(report.get("if", "")) and report.get("timeout-minutes") == 5, f"{workflow_path} build report job metadata drifted")
     timestamps = step_config(report, "Collect Actions job timestamps", workflow_path)
-    require("gh run view" in str(timestamps.get("run", "")) and "--json jobs" in str(timestamps.get("run", "")) and require_mapping(timestamps.get("env"), "Actions timestamp collection env").get("GH_TOKEN") == "${{ github.token }}", f"{workflow_path} build report must collect read-only Actions job timestamps")
+    timestamp_run = str(timestamps.get("run", ""))
+    require(
+        "gh run view" in timestamp_run
+        and "--json jobs" in timestamp_run
+        and "check-runs?per_page=100" in timestamp_run
+        and "created_at" in timestamp_run
+        and "started_at" in timestamp_run
+        and "completed_at" in timestamp_run
+        and require_mapping(timestamps.get("env"), "Actions timestamp collection env").get("GH_TOKEN") == "${{ github.token }}",
+        f"{workflow_path} build report must collect read-only Actions job and check-run timestamps",
+    )
     report_step = step_config(report, "Generate build report", workflow_path)
     report_checkout = step_config(report, "Checkout build-only report generator from candidate", workflow_path)
     require(

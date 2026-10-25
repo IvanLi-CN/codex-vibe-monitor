@@ -1161,24 +1161,38 @@ jobs:
         run: |
           set -euo pipefail
           gh run view "$RUN_ID" --repo "$REPOSITORY" --json jobs > "$RUNNER_TEMP/actions-jobs.json"
-          REPOSITORY="$REPOSITORY" python3 - "$RUNNER_TEMP/actions-jobs.json" <<'PY'
+          gh api "repos/$REPOSITORY/commits/$CANDIDATE/check-runs?per_page=100" > "$RUNNER_TEMP/actions-check-runs.json"
+          REPOSITORY="$REPOSITORY" CANDIDATE="$CANDIDATE" python3 - "$RUNNER_TEMP/actions-jobs.json" "$RUNNER_TEMP/actions-check-runs.json" <<'PY'
           import json
           import os
           import pathlib
-          import subprocess
           import sys
 
-          path = pathlib.Path(sys.argv[1])
-          payload = json.loads(path.read_text())
+          jobs_path = pathlib.Path(sys.argv[1])
+          checks_path = pathlib.Path(sys.argv[2])
+          payload = json.loads(jobs_path.read_text())
+          checks_payload = json.loads(checks_path.read_text())
+          checks = checks_payload.get("check_runs")
+          if not isinstance(checks, list):
+              raise SystemExit("Actions check-runs payload did not contain check_runs")
+
           for job in payload.get("jobs", []):
-              database_id = job.get("databaseId")
-              if not database_id:
+              name = job.get("name")
+              if not name:
                   continue
-              check = json.loads(subprocess.check_output([
-                  "gh", "api", f"repos/{os.environ['REPOSITORY']}/check-runs/{database_id}"
-              ], text=True))
-              job["createdAt"] = check.get("created_at")
-          path.write_text(json.dumps(payload))
+              matches = [
+                  check for check in checks
+                  if check.get("name") == name
+                  and check.get("started_at") == job.get("startedAt")
+                  and check.get("completed_at") == job.get("completedAt")
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"unable to match one check-run for {name!r} on {os.environ['CANDIDATE']}: "
+                      f"matches={len(matches)}"
+                  )
+              job["createdAt"] = matches[0].get("created_at")
+          jobs_path.write_text(json.dumps(payload))
           PY
 
       - name: Generate build report
