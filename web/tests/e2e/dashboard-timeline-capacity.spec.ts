@@ -450,6 +450,14 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
     const traversalCountBeforeDelay = initialDesktopDiagnostics?.traversalStarts.length ?? 0;
     const liveMessageCountBeforeRevision = initialDesktopDiagnostics?.sseLiveMessageCount ?? 0;
     const revisionTriggerCountBeforeRevision = initialDesktopDiagnostics?.demoRevisionTriggers ?? 0;
+    const initialRangeEnds = await Promise.all(
+      pages.map((clientPage) =>
+        clientPage
+          .getByTestId("dashboard-invocation-timeline-lanes")
+          .getAttribute("data-range-end"),
+      ),
+    );
+    expect(initialRangeEnds.every((rangeEnd) => rangeEnd != null && rangeEnd !== "")).toBe(true);
     await page.evaluate(() => {
       const diagnostics = (window as TimelineDiagnosticsWindow)
         .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
@@ -531,6 +539,14 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
         (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
           ?.releasedSnapshots ?? 0,
     );
+    await Promise.all(
+      pages.map(async (clientPage, index) => {
+        const lanes = clientPage.getByTestId("dashboard-invocation-timeline-lanes");
+        await expect(lanes).toBeVisible();
+        await expect(clientPage.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
+        await expect(lanes).toHaveAttribute("data-range-end", initialRangeEnds[index]!);
+      }),
+    );
     expect(releasesDuringDelayedRefresh).toBe(releaseCountBeforeDelay);
     await expect
       .poll(
@@ -543,6 +559,20 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
         { timeout: 45_000 },
       )
       .toBeGreaterThan(releaseCountBeforeDelay);
+    await Promise.all(
+      pages.map((clientPage, index) =>
+        expect
+          .poll(
+            () =>
+              clientPage
+                .getByTestId("dashboard-invocation-timeline-lanes")
+                .getAttribute("data-range-end")
+                .then((rangeEnd) => (rangeEnd ? Date.parse(rangeEnd) : 0)),
+            { timeout: 45_000 },
+          )
+          .toBeGreaterThan(Date.parse(initialRangeEnds[index]!)),
+      ),
+    );
     const elapsedBeforeSteadyState = Date.now() - startedAt;
     await new Promise<void>((resolve) => {
       setTimeout(resolve, Math.max(0, CAPACITY_SCENARIO_DURATION_MS - elapsedBeforeSteadyState));
