@@ -49,11 +49,13 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   ranges; a request in another reporting zone does not reinterpret the staged
   rows and remains generic unavailable until a matching range is prepared.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
-  the key query first returns only the bounded `(occurred_at, id)` page, then one
-  page-materialization query restricted to those keys computes status/JSON
-  classification and byte estimates while returning the necessary source fields.
-  Raw `payload` is neither materialized nor charged against the page budget, and
-  the selected candidates are converted in memory without a second source reread.
+  the key query first returns only the bounded `(occurred_at, id)` page, then a
+  bounded read snapshot restricted to those keys computes terminal status,
+  failure classification, and byte estimates once. Selection happens before a
+  final query materializes only the selected necessary source fields and bounded
+  error text, reusing the snapshot metadata. Raw `payload` is neither materialized
+  nor charged against the page budget, and concurrent metadata backfill cannot
+  make the selected materialization exceed the estimate snapshot.
   Key-page reads, page staging, and publication use dedicated SQLite connections whose native
   busy-timeout and progress handler share the remaining recovery deadline. The
   page byte budget is 8 MiB, the
