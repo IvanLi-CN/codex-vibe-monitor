@@ -175,6 +175,51 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
         "        .toBeGreaterThan(beforeRefresh.releaseCount);\n",
         "        .toBeGreaterThan(beforeRefresh.releaseCount + 1);\n",
     )
+    text = re.sub(
+        r"\n      const timelineControls = page\n.*?\n      await expectVisibleCallsAreVirtualized\(page, 550\);\n",
+        """      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () =>
+                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                  ?.activeTraversals ?? 0,
+            ),
+          { timeout: 45_000 },
+        )
+        .toBe(1);
+
+      const refreshedLanes = page.getByTestId("dashboard-invocation-timeline-lanes");
+      await expect(refreshedLanes).toBeVisible();
+      await expect(refreshedLanes).toHaveAttribute("data-total-calls", "550");
+      await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
+      await expectVisibleCallsAreVirtualized(page, 550);
+
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () =>
+                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                  ?.releasedSnapshots ?? 0,
+            ),
+          { timeout: 35_000 },
+        )
+        .toBeGreaterThan(beforeRefresh.releaseCount + 1);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                ?.activeTraversals ?? 0,
+          ),
+        )
+        .toBe(0);
+""",
+        text,
+        count=1,
+        flags=re.DOTALL,
+    )
     text = text.replace("const LIVE_REFRESH_TIMER_GUARD_MS = 50;\n", "")
     text = text.replace(
         """      await page.addInitScript((minimumRefreshIntervalMs) => {

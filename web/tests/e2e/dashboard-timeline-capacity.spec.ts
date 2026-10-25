@@ -578,15 +578,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
     try {
-      await page.addInitScript((minimumRefreshIntervalMs) => {
-        const nativeSetTimeout = window.setTimeout.bind(window);
-        window.setTimeout = ((...args: Parameters<typeof window.setTimeout>) => {
-          const [handler, timeout, ...rest] = args;
-          const acceleratedTimeout =
-            typeof timeout === "number" && timeout >= minimumRefreshIntervalMs ? 0 : timeout;
-          return nativeSetTimeout(handler, acceleratedTimeout, ...rest);
-        }) as typeof window.setTimeout;
-      }, MINIMUM_REFRESH_INTERVAL_MS);
       await startCapacityDashboard(page, viewport, true);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
       await instrumentTimelineFetch(page);
@@ -649,44 +640,60 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           ),
         )
         .toBeGreaterThan(beforeRefresh.liveMessages);
-      await expect
-        .poll(
-          () =>
+
+      const timelineControls = page.getByTestId("dashboard-invocation-timeline").locator("button");
+      await expect(timelineControls).toHaveCount(4);
+      const triggerDenseRefresh = async (releaseCountBefore: number) => {
+        await page.evaluate((delayMs) => {
+          const diagnostics = (window as TimelineDiagnosticsWindow)
+            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+          diagnostics.nextTraversalDelayMs = delayMs;
+        }, DENSE_TRAVERSAL_DELAY_MS);
+        await timelineControls.first().click();
+        await expect
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.activeTraversals ?? 0,
+              ),
+            { timeout: 15_000 },
+          )
+          .toBe(1);
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                  ?.releasedSnapshots ?? 0,
+            ),
+          )
+          .toBeGreaterThan(releaseCountBefore);
+        await expect
+          .poll(() =>
             page.evaluate(
               () =>
                 (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
                   ?.activeTraversals ?? 0,
             ),
-          { timeout: 45_000 },
-        )
-        .toBe(1);
+          )
+          .toBe(0);
+      };
+      await triggerDenseRefresh(beforeRefresh.releaseCount);
+      const releaseCountAfterFirstRefresh = await page.evaluate(
+        () =>
+          (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+            ?.releasedSnapshots ?? 0,
+      );
+      await triggerDenseRefresh(releaseCountAfterFirstRefresh);
 
       const refreshedLanes = page.getByTestId("dashboard-invocation-timeline-lanes");
       await expect(refreshedLanes).toBeVisible();
       await expect(refreshedLanes).toHaveAttribute("data-total-calls", "550");
       await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
       await expectVisibleCallsAreVirtualized(page, 550);
-
-      await expect
-        .poll(
-          () =>
-            page.evaluate(
-              () =>
-                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.releasedSnapshots ?? 0,
-            ),
-          { timeout: 35_000 },
-        )
-        .toBeGreaterThan(beforeRefresh.releaseCount);
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                ?.activeTraversals ?? 0,
-          ),
-        )
-        .toBe(0);
       await page.evaluate(
         () =>
           new Promise<void>((resolve) =>
