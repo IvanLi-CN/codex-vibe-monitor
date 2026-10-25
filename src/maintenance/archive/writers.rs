@@ -125,6 +125,11 @@ pub(super) fn sync_published_archive_file(final_file_path: &Path) -> Result<()> 
 }
 
 fn publish_prepared_archive_file(temporary_file_path: &Path, final_file_path: &Path) -> Result<()> {
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return Err(super::super::retention::retention_write_deferred(
+            "archive_publish_file",
+        ));
+    };
     let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     match fs::hard_link(temporary_file_path, final_file_path) {
         Ok(()) => fs::remove_file(temporary_file_path).with_context(|| {
@@ -422,16 +427,21 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
+            let file_phase = super::super::acquire_file_phase_permit(
+                "archive_public_id_predecessor_verify",
+            )
+            .await?;
             let _archive_lock = super::super::retention::retention_archive_file_lock_async(
                 &archive_path,
             )
             .await?;
-            if !archive_path.is_file()
-                || sha256_hex_file_with_deadline(
+            let predecessor_matches = archive_path.is_file()
+                && sha256_hex_file_with_deadline(
                     &archive_path,
                     super::super::retention::retention_archive_file_operation_deadline(),
-                )? != expected_existing_sha256
-            {
+                )? == expected_existing_sha256;
+            drop(file_phase);
+            if !predecessor_matches {
                 return Err(anyhow::anyhow!(
                     "pool archive identity verification failed before public-id backfill"
                 ));
@@ -553,6 +563,12 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 remove_temp_sqlite_artifacts(&temp_gzip_path);
                 continue;
             }
+            let Some(file_phase) = super::super::try_acquire_file_phase_permit() else {
+                tx.rollback().await?;
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_public_id_file_phase",
+                ));
+            };
             if had_existing_file {
                 fs::rename(&archive_path, &backup_path).with_context(|| {
                     format!(
@@ -601,6 +617,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 }
                 return Err(error);
             }
+            drop(file_phase);
             remove_temp_sqlite_artifacts(&work_path);
 
             if let Err(error) = sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
@@ -610,12 +627,20 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 .await
             {
                 tx.rollback().await?;
+                let Some(compensation_file_phase) =
+                    super::super::try_acquire_file_phase_permit()
+                else {
+                    return Err(anyhow::Error::new(error).context(
+                        "archive public-id backfill compensation deferred while the file phase is busy",
+                    ));
+                };
                 let _ = fs::remove_file(&archive_path);
                 if had_existing_file {
                     let _ = fs::rename(&backup_path, &archive_path);
                 } else {
                     let _ = fs::remove_file(&backup_path);
                 }
+                drop(compensation_file_phase);
                 return Err(error.into());
             }
             if let Err(error) = tx.commit().await {
@@ -626,7 +651,13 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             committed_cursor_id = batch.id;
             committed_scanned_batches = summary.scanned_batches;
             committed_updated_rows = summary.updated_rows;
+            let Some(cleanup_file_phase) = super::super::try_acquire_file_phase_permit() else {
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_public_id_cleanup",
+                ));
+            };
             let _ = fs::remove_file(&backup_path);
+            drop(cleanup_file_phase);
             let _ = sqlx::query(
                 "UPDATE archive_batches SET replacement_staged_path = NULL
                  WHERE id = ?1 AND replacement_staged_path = ?2",
@@ -1141,16 +1172,19 @@ async fn archive_rows_into_month_batch_with_snapshots(
 
     writer_observation.advance(MonthlyWriterPhase::Deflate);
     if archive_content_unchanged {
+        let file_phase = super::super::acquire_file_phase_permit("archive_unchanged_stage").await?;
         if let Err(err) = fs::hard_link(&final_path, &temp_gzip_path).with_context(|| {
             format!(
                 "failed to retain unchanged archive artifact {}",
                 final_path.display()
             )
         }) {
+            drop(file_phase);
             remove_temp_sqlite_artifacts(&work_path);
             remove_temp_sqlite_artifacts(&temp_gzip_path);
             return Err(err);
         }
+        drop(file_phase);
     } else if let Err(err) =
         deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await
     {
@@ -1242,9 +1276,12 @@ async fn archive_rows_into_month_batch_with_snapshots(
         }
     }
     writer_observation.advance(MonthlyWriterPhase::Cleanup);
-    let cleanup_complete = match fs::remove_file(&work_path) {
-        Ok(()) => true,
-        Err(error) => error.kind() == ErrorKind::NotFound,
+    let cleanup_complete = match super::super::try_acquire_file_phase_permit() {
+        Some(_file_phase) => match fs::remove_file(&work_path) {
+            Ok(()) => true,
+            Err(error) => error.kind() == ErrorKind::NotFound,
+        },
+        None => false,
     };
     writer_observation.finish(if cleanup_complete {
         "completed"

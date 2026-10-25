@@ -405,6 +405,9 @@ pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
     if crate::is_archive_file_operation_active(path) {
         return;
     }
+    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
+        return;
+    };
     remove_temp_sqlite_artifacts_unchecked(path);
 }
 

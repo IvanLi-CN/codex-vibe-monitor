@@ -434,6 +434,33 @@ pub(crate) async fn acquire_raw_compression_fence(
 }
 
 pub(crate) async fn maybe_compress_proxy_raw_path(
+    pool: &Pool<Sqlite>,
+    invocation_id: i64,
+    field_name: &str,
+    raw_path: Option<&str>,
+    codec: RawCompressionCodec,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<RawCompressionFileOutcome> {
+    let Some(file_phase) = try_acquire_file_phase_permit() else {
+        return Err(retention_write_deferred("raw_compression_file"));
+    };
+    with_file_phase_permit(
+        file_phase,
+        maybe_compress_proxy_raw_path_with_file_phase(
+            pool,
+            invocation_id,
+            field_name,
+            raw_path,
+            codec,
+            raw_path_fallback_root,
+            dry_run,
+        ),
+    )
+    .await
+}
+
+async fn maybe_compress_proxy_raw_path_with_file_phase(
     _pool: &Pool<Sqlite>,
     invocation_id: i64,
     field_name: &str,
@@ -856,6 +883,9 @@ pub(crate) fn delete_exact_proxy_raw_path(
     let Some(raw_path) = raw_path else {
         return Ok(());
     };
+    let Some(_file_phase) = try_acquire_file_phase_permit() else {
+        return Err(retention_write_deferred("raw_compression_delete"));
+    };
     let raw_path = raw_path.to_string_lossy();
     for candidate in resolved_raw_path_candidates(&raw_path, raw_path_fallback_root) {
         match fs::remove_file(&candidate) {
@@ -982,6 +1012,9 @@ pub(crate) async fn filter_unreferenced_proxy_raw_paths(
     };
     let mut locked_parents = std::collections::BTreeSet::new();
     for path in candidates {
+        let Some(file_phase) = try_acquire_file_phase_permit() else {
+            return Err(retention_write_deferred("raw_deletion_plan_file_verify"));
+        };
         let existing_paths = resolved_raw_path_read_candidates(&path, fallback_root)
             .into_iter()
             .filter(|candidate| {
@@ -1032,6 +1065,7 @@ pub(crate) async fn filter_unreferenced_proxy_raw_paths(
                 });
             }
         }
+        drop(file_phase);
         let mut referenced = 0;
         for ledger_path in raw_path_ledger_aliases(&path, fallback_root) {
             referenced = sqlx::query_scalar::<_, i64>(

@@ -2,6 +2,7 @@ use super::*;
 
 mod archive;
 mod cli;
+mod file_phase;
 mod hourly_rollups;
 mod ownership;
 mod parallel_work_rollups;
@@ -13,6 +14,7 @@ mod startup_prep;
 
 pub(crate) use archive::*;
 pub(crate) use cli::*;
+pub(crate) use file_phase::*;
 pub(crate) use hourly_rollups::*;
 pub(crate) use ownership::*;
 pub(crate) use parallel_work_rollups::*;

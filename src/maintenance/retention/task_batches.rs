@@ -319,7 +319,7 @@ pub(crate) async fn invocation_archive_candidate_selection_for_test(
 struct ArchiveSourceIdentityProof {
     cleanup: TempSqliteCleanup,
     _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
-    connection: Option<SqliteConnection>,
+    proof_path: PathBuf,
     spec: ArchiveTableSpec,
 }
 
@@ -350,6 +350,11 @@ fn archive_identity_proof_load_cancelled(error: &anyhow::Error) -> bool {
 
 impl ArchiveSourceIdentityProof {
     async fn load(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_load").await?;
+        with_file_phase_permit(file_phase, Self::load_with_file_phase(path, spec)).await
+    }
+
+    async fn load_with_file_phase(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
         // The writer/publication path already proves the returned artifact digest. The first
         // source admission revalidates that digest under the archive fence; this local copy only
         // supplies per-chunk identity data and must not replace that final recheck.
@@ -382,91 +387,158 @@ impl ArchiveSourceIdentityProof {
         if remaining.is_zero() {
             return Err(retention_archive_file_operation_budget_exhausted());
         }
+        let file_phase = try_current_file_phase_permit()
+            .context("archive identity proof load lost its file phase permit")?;
+        open_archive_identity_connection_and_close(proof_path.clone(), file_phase, remaining)
+            .await?;
+        Ok(Self {
+            cleanup,
+            _work_owner_file: work_owner_file,
+            proof_path,
+            spec,
+        })
+    }
+
+    async fn identity(&self, ids: &[i64]) -> Result<String> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let spec = self.spec;
+        let proof_path = self.proof_path.clone();
+        let ids = ids.to_vec();
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        spawn_file_phase_task(file_phase, async move {
+            let mut connection = tokio::time::timeout(remaining, async {
+                open_archive_sqlite_connection(&proof_path).await
+            })
+            .await
+            .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+            let remaining = operation_deadline.saturating_duration_since(Instant::now());
+            let result = if remaining.is_zero() {
+                Err(retention_archive_file_operation_budget_exhausted())
+            } else if spec.dataset == "codex_invocations" {
+                match tokio::time::timeout(
+                    remaining,
+                    invocation_archive_source_identity_sha256(
+                        &mut connection,
+                        InvocationArchiveIdentityDatabase::Main,
+                        &ids,
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                }
+            } else {
+                match tokio::time::timeout(
+                    remaining,
+                    archive_table_source_identity_sha256(&mut connection, spec, "main", &ids),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                }
+            };
+            match connection.close().await {
+                Ok(()) => result,
+                Err(close_error) => match result {
+                    Ok(_) => Err(anyhow::Error::new(close_error)
+                        .context("close archive source identity proof")),
+                    Err(error) => Err(error.context(format!(
+                        "close archive source identity proof: {close_error}"
+                    ))),
+                },
+            }
+        })
+        .await
+    }
+
+    async fn has_exact_ids(&self, ids: &[i64], expected_count: i64) -> Result<bool> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
+        let proof_path = self.proof_path.clone();
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        spawn_file_phase_task(file_phase, async move {
+            let mut connection = tokio::time::timeout(remaining, async {
+                open_archive_sqlite_connection(&proof_path).await
+            })
+            .await
+            .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+            let remaining = operation_deadline.saturating_duration_since(Instant::now());
+            let result = if remaining.is_zero() {
+                Err(retention_archive_file_operation_budget_exhausted())
+            } else {
+                match tokio::time::timeout(remaining, async {
+                    let archive_row_count =
+                        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
+                            .fetch_one(&mut connection)
+                            .await
+                            .context("count rows in archive source identity proof")?;
+                    let selected_count = sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM main.codex_invocations
+                         WHERE id IN (SELECT value FROM json_each(?1))",
+                    )
+                    .bind(ids_json)
+                    .fetch_one(&mut connection)
+                    .await
+                    .context("count selected rows in archive source identity proof")?;
+                    Ok::<bool, anyhow::Error>(
+                        archive_row_count == expected_count && selected_count == expected_count,
+                    )
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                }
+            };
+            match connection.close().await {
+                Ok(()) => result,
+                Err(close_error) => match result {
+                    Ok(_) => Err(anyhow::Error::new(close_error)
+                        .context("close archive source identity proof")),
+                    Err(error) => Err(error.context(format!(
+                        "close archive source identity proof: {close_error}"
+                    ))),
+                },
+            }
+        })
+        .await
+    }
+
+    async fn close(self) -> Result<()> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_close").await?;
+        spawn_file_phase_task(file_phase, async move {
+            drop(self);
+            Ok(())
+        })
+        .await
+    }
+}
+
+async fn open_archive_identity_connection_and_close(
+    proof_path: PathBuf,
+    file_phase: FilePhasePermit,
+    remaining: Duration,
+) -> Result<()> {
+    spawn_file_phase_task(file_phase, async move {
         let connection = tokio::time::timeout(remaining, async {
             open_archive_sqlite_connection(&proof_path).await
         })
         .await
         .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
-        Ok(Self {
-            cleanup,
-            _work_owner_file: work_owner_file,
-            connection: Some(connection),
-            spec,
-        })
-    }
-
-    async fn identity(&mut self, ids: &[i64]) -> Result<String> {
-        let connection = self
-            .connection
-            .as_mut()
-            .context("archive source identity proof connection is closed")?;
-        let remaining =
-            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(retention_archive_file_operation_budget_exhausted());
-        }
-        let result = if self.spec.dataset == "codex_invocations" {
-            tokio::time::timeout(
-                remaining,
-                invocation_archive_source_identity_sha256(
-                    connection,
-                    InvocationArchiveIdentityDatabase::Main,
-                    ids,
-                ),
-            )
-            .await
-            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
-        } else {
-            tokio::time::timeout(
-                remaining,
-                archive_table_source_identity_sha256(connection, self.spec, "main", ids),
-            )
-            .await
-            .map_err(|_| retention_archive_file_operation_budget_exhausted())?
-        }?;
-        Ok(result)
-    }
-
-    async fn has_exact_ids(&mut self, ids: &[i64], expected_count: i64) -> Result<bool> {
-        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
-        let connection = self
-            .connection
-            .as_mut()
-            .context("archive source identity proof connection is closed")?;
-        let remaining =
-            retention_archive_file_operation_deadline().saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(retention_archive_file_operation_budget_exhausted());
-        }
-        tokio::time::timeout(remaining, async {
-            let archive_row_count =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
-                    .fetch_one(&mut *connection)
-                    .await
-                    .context("count rows in archive source identity proof")?;
-            let selected_count = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM main.codex_invocations
-                 WHERE id IN (SELECT value FROM json_each(?1))",
-            )
-            .bind(ids_json)
-            .fetch_one(&mut *connection)
-            .await
-            .context("count selected rows in archive source identity proof")?;
-            Ok::<bool, anyhow::Error>(
-                archive_row_count == expected_count && selected_count == expected_count,
-            )
-        })
-        .await
-        .map_err(|_| retention_archive_file_operation_budget_exhausted())?
-    }
-
-    async fn close(mut self) -> Result<()> {
-        if let Some(connection) = self.connection.take() {
-            connection.close().await?;
-        }
-        let _ = &self.cleanup;
+        connection.close().await?;
         Ok(())
-    }
+    })
+    .await
 }
 
 struct ReusableTaskMonthArchive {
@@ -566,7 +638,7 @@ async fn reuse_task_month_archive_if_proven(
 
     // A durable Summary proof makes the published artifact reusable. The source admission
     // below still rechecks the file digest while holding the archive fence before deletion.
-    let mut identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
+    let identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
         Ok(proof) => proof,
         Err(_) => return Ok(None),
     };
@@ -927,7 +999,7 @@ pub(crate) async fn prune_old_invocation_details(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let mut archive_identity_proof =
+            let archive_identity_proof =
                 match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await
                 {
@@ -1456,7 +1528,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             } else {
                 None
             };
-            let (archive_outcome, proof, mut archive_identity_proof, prepare_elapsed) =
+            let (archive_outcome, proof, archive_identity_proof, prepare_elapsed) =
                 if let Some(reusable_archive) = reusable_archive {
                     let elapsed = prepare_started.elapsed();
                     batch_observation.archive_writer_finished(elapsed);
@@ -2254,7 +2326,7 @@ pub(crate) async fn archive_timestamped_dataset(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let mut archive_identity_proof =
+            let archive_identity_proof =
                 match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await
                 {
