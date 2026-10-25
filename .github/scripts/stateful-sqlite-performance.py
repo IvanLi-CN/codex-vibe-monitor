@@ -243,6 +243,7 @@ def build_card(
     root: Path,
     control_source_sha: str,
     candidate_sha: str,
+    trusted_harness_sha: str,
     wall: dict[tuple[str, str, str], int],
     replay_failures: list[str],
 ) -> dict[str, object]:
@@ -341,6 +342,7 @@ def build_card(
         "acceptance": "pass" if accepted else "fail",
         "control_source_sha": control_source_sha,
         "candidate_sha": candidate_sha,
+        "trusted_harness_sha": trusted_harness_sha,
         "comparison": "same candidate source and archive; control forces fresh schema for allowlisted file-backed fixtures, candidate uses the current-schema template",
         "control_mode": "candidate archive with allowlisted file-backed fixtures forced to fresh schema",
         "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads; interleaved control/candidate pairs",
@@ -387,6 +389,7 @@ def markdown_card(card: dict[str, object]) -> str:
         "",
         f"- Control source: `{card['control_source_sha']}`",
         f"- Candidate: `{card['candidate_sha']}`",
+        f"- Trusted harness: `{card['trusted_harness_sha']}`",
         f"- Comparison: {card['comparison']}",
         f"- Control mode: {card['control_mode']}",
         f"- Runner: {card['runner']}",
@@ -459,6 +462,7 @@ def main() -> int:
     parser.add_argument("--wall-file", type=Path, required=True)
     parser.add_argument("--control-source-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument("--trusted-harness-sha", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
 
@@ -468,6 +472,7 @@ def main() -> int:
             args.root,
             args.control_source_sha,
             args.candidate_sha,
+            args.trusted_harness_sha,
             wall,
             replay_failures,
         )
