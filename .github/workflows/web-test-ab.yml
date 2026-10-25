@@ -123,17 +123,18 @@ jobs:
           if-no-files-found: error
 
   measure-phase:
-    name: Frontend A/B ${{ matrix.group }} / ${{ matrix.phase }}
+    name: Frontend A/B ${{ matrix.phase }} (same runner)
     needs: prepare
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        group: [A, B]
         phase: [unit, pwa, storybook-a11y, docs-demo-pages, e2e-pr, e2e-main, tooling-contracts]
-    # Each phase is a real independent hosted job. The script's 180-second
-    # process deadline remains the acceptance budget; this job timeout is the
-    # existing measurement-job ceiling for checkout and artifact handling.
+    # A and B are deliberately paired in one hosted job and run sequentially.
+    # This is the control variable: both groups observe the same runner CPU,
+    # memory, kernel, Bun, Chromium, and filesystem state without contention.
+    # The script's 180-second process deadline remains the acceptance budget;
+    # this job timeout is the existing measurement-job ceiling.
     timeout-minutes: 25
     steps:
       - name: Checkout measurement harness
@@ -146,8 +147,16 @@ jobs:
       - name: Checkout A
         uses: actions/checkout@v7
         with:
-          ref: ${{ matrix.group == 'A' && inputs.baseline_sha || inputs.candidate_sha }}
-          path: ${{ matrix.group }}
+          ref: ${{ inputs.baseline_sha }}
+          path: A
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout B
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: B
           fetch-depth: 0
           persist-credentials: false
 
@@ -174,25 +183,33 @@ jobs:
           fi
           tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab"
 
-      - name: Run one independent workload with a hard deadline
+      - name: Run paired workloads with independent hard deadlines
         env:
-          GROUP: ${{ matrix.group }}
           PHASE: ${{ matrix.phase }}
           BASELINE: ${{ inputs.baseline_sha }}
           CANDIDATE: ${{ inputs.candidate_sha }}
         run: |
-          if [ "$GROUP" = "A" ]; then SOURCE_SHA="$BASELINE"; else SOURCE_SHA="$CANDIDATE"; fi
+          set -uo pipefail
+          set +e
           python3 harness/scripts/benchmark-web-tests.py phase \
-            --group "$GROUP" --phase "$PHASE" \
-            --source-src "$PWD/$GROUP" --source-sha "$SOURCE_SHA" \
+            --group A --phase "$PHASE" \
+            --source-src "$PWD/A" --source-sha "$BASELINE" \
             --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
             --output "$RUNNER_TEMP/web-test-ab"
+          a_status=$?
+          python3 harness/scripts/benchmark-web-tests.py phase \
+            --group B --phase "$PHASE" \
+            --source-src "$PWD/B" --source-sha "$CANDIDATE" \
+            --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
+            --output "$RUNNER_TEMP/web-test-ab"
+          b_status=$?
+          exit $(( a_status || b_status ))
 
       - name: Upload phase evidence including failures
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: web-test-ab-phase-${{ matrix.group }}-${{ matrix.phase }}-${{ github.run_id }}
+          name: web-test-ab-phase-${{ matrix.phase }}-${{ github.run_id }}
           path: ${{ runner.temp }}/web-test-ab/results
           retention-days: 1
           if-no-files-found: error

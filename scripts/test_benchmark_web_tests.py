@@ -26,8 +26,10 @@ def manifest():
 def group(name, seconds=100, status="passed"):
     case = {"file": "src/real.test.tsx", "name": "keeps behavior", "status": "passed"}
     browser = {"success": True, "cases": [{"file": "demo-runtime.spec.ts", "name": "real route", "passed": True}]}
+    environment = {"runner": "same machine", "bun": "1.3.14"}
     return {"group": name, "sha": name.lower() * 40, "manifest_digest": "frozen",
-            "environment": {"runner": "same machine", "bun": "1.3.14"},
+            "environment": environment,
+            "phase_environments": {phase: dict(environment) for phase in MODULE.WORKLOAD},
             "wall_seconds": seconds, "status": status, "score": int(status == "passed"),
             "phases": [{"name": phase, "status": "passed", "wall_seconds": 1} for phase in MODULE.WORKLOAD],
             "reports": {"success": True, "unit": {"cases": [case]}, "storybook": {"cases": [case]},
@@ -84,7 +86,9 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(result["total_wall_seconds"], 601)
 
     def test_source_manifest_and_environment_must_match(self):
-        for key, value in (("sha", "wrong"), ("group", "A"), ("manifest_digest", "different"), ("environment", {"runner": "different"})):
+        for key, value in (("sha", "wrong"), ("group", "A"), ("manifest_digest", "different"),
+                           ("environment", {"runner": "different"}),
+                           ("phase_environments", {"unit": {"runner": "different"}})):
             b = group("B", 50)
             b[key] = value
             self.assertEqual(MODULE.compare(group("A"), b, manifest())["reason"], "incomparable_identity_or_environment")
@@ -285,12 +289,18 @@ class WorkflowTests(unittest.TestCase):
             checkouts = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
             self.assertEqual([step["with"]["path"] for step in checkouts],
                              {"prepare": ["harness", "A", "B"],
-                              "measure-phase": ["harness", "${{ matrix.group }}"],
+                              "measure-phase": ["harness", "A", "B"],
                               "aggregate": ["harness"]}[job_id])
             self.assertTrue(all(step["with"]["persist-credentials"] is False for step in checkouts))
             self.assertNotIn("continue-on-error", job)
-        self.assertEqual(workflow["jobs"]["measure-phase"]["strategy"]["matrix"]["group"], ["A", "B"])
         self.assertEqual(workflow["jobs"]["measure-phase"]["strategy"]["matrix"]["phase"], list(MODULE.WORKLOAD))
+        paired = next(step["run"] for step in workflow["jobs"]["measure-phase"]["steps"]
+                      if step["name"] == "Run paired workloads with independent hard deadlines")
+        self.assertIn("--group A", paired)
+        self.assertIn("--group B", paired)
+        self.assertIn("a_status=$?", paired)
+        self.assertIn("b_status=$?", paired)
+        self.assertIn("exit $(( a_status || b_status ))", paired)
         prepare = workflow["jobs"]["prepare"]["steps"]
         pack = next(step["run"] for step in prepare if step["name"] == "Install identical dependency surface without building or testing")
         self.assertIn('tar -cf "$RUNNER_TEMP/web-test-ab-browsers.tar"', pack)

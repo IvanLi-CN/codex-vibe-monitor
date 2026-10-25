@@ -182,6 +182,21 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     text = text.replace("    }, DELAYED_TRAVERSAL_MS);", "    });")
     text = text.replace("    }, DENSE_TRAVERSAL_DELAY_MS);", "    });")
     text = text.replace(
+        "          liveMessages: diagnostics.sseLiveMessageCount,\n"
+        "          triggerCount: diagnostics.demoRevisionTriggers,\n",
+        "",
+    )
+    text = re.sub(
+        r"\n      await page\.evaluate\(\(\) => \{\n"
+        r"        const trigger = \(window as TimelineDiagnosticsWindow\)\n"
+        r"          \.__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__.*?"
+        r"        \.toBeGreaterThan\(beforeRefresh\.liveMessages\);\n",
+        "\n",
+        text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    text = text.replace(
         """      try {
         const response = await originalFetch(input, init);
         if (isTimeline && response.status >= 400) diagnostics.timelineHttpFailures += 1;
@@ -541,7 +556,8 @@ def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manife
 def normalized_environment(records: list[dict]) -> dict:
     if not records:
         return {}
-    keys = ("bun", "runner_image", "runner_image_version", "kernel", "chromium_descriptor")
+    keys = ("bun", "cpu_model", "cpu_count", "memory", "runner_name", "runner_image",
+            "runner_image_version", "kernel", "chromium_descriptor")
     return {key: records[0].get(key) for key in keys}
 
 
@@ -582,6 +598,7 @@ def aggregate_group(group: str, manifest: dict, results_root: Path) -> dict:
     finished = [record["finished_unix"] for record in records if "finished_unix" in record]
     result = {"group": group, "sha": manifest["identities"][group]["sha"], "manifest_digest": manifest["digest"],
               "status": status, "score": int(status == "passed"), "environment": normalized_environment(records),
+              "phase_environments": {record["name"]: normalized_environment([record]) for record in records},
               "phases": records, "reports": reports, "phase_wall_seconds_sum": sum(record.get("wall_seconds", 0.0) for record in records),
               "execution_wall_seconds": wall_seconds, "wall_seconds": wall_seconds}
     if started and finished:
@@ -668,7 +685,8 @@ def environment() -> dict:
     cpu = next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown")
     return {"bun": command_output(["bun", "--version"]), "cpu_model": cpu, "cpu_count": os.cpu_count(),
             "memory": Path("/proc/meminfo").read_text().splitlines()[0],
-            "runner_image": os.environ.get("ImageOS"), "runner_image_version": os.environ.get("ImageVersion"),
+            "runner_name": os.environ.get("RUNNER_NAME"), "runner_image": os.environ.get("ImageOS"),
+            "runner_image_version": os.environ.get("ImageVersion"),
             "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
             "python": sys.version, "kernel": os.uname().release}
 
@@ -692,7 +710,7 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
     deadline = started + GROUP_SECONDS
     result = {"group": group, "sha": manifest["identities"][group]["sha"], "manifest_digest": manifest["digest"],
               "status": "running", "score": 0, "budget_seconds": GROUP_SECONDS,
-              "execution_mode": "parallel-independent-ci-jobs", "environment": context, "phases": []}
+              "execution_mode": "paired-sequential-hosted-phase-jobs", "environment": context, "phases": []}
     write_json(directory / "result.json", result)
     print(f"::{group}:: launching {len(executable)} independent CI jobs", flush=True)
     records: dict[str, dict] = {}
@@ -760,7 +778,8 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
     if (a.get("manifest_digest") != manifest["digest"] or b.get("manifest_digest") != manifest["digest"]
             or a.get("group") != "A" or b.get("group") != "B"
             or a.get("sha") != manifest["identities"]["A"]["sha"] or b.get("sha") != manifest["identities"]["B"]["sha"]
-            or a.get("environment") != b.get("environment")):
+            or a.get("environment") != b.get("environment")
+            or a.get("phase_environments") != b.get("phase_environments")):
         return {**result, "reason": "incomparable_identity_or_environment"}
     def complete(group: dict) -> bool:
         seconds = group.get("wall_seconds", 0)

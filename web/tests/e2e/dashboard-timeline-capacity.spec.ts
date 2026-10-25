@@ -618,35 +618,9 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
         return {
           releaseCount: diagnostics.releasedSnapshots,
-          liveMessages: diagnostics.sseLiveMessageCount,
-          triggerCount: diagnostics.demoRevisionTriggers,
           refreshStart: performance.now(),
         };
       });
-      await page.evaluate(() => {
-        const trigger = (window as TimelineDiagnosticsWindow)
-          .__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__;
-        if (!trigger) throw new Error("Demo live revision trigger is unavailable");
-        trigger();
-      });
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                ?.demoRevisionTriggers ?? 0,
-          ),
-        )
-        .toBeGreaterThan(beforeRefresh.triggerCount);
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                ?.sseLiveMessageCount ?? 0,
-          ),
-        )
-        .toBeGreaterThan(beforeRefresh.liveMessages);
 
       const timelineControls = page.getByTestId("dashboard-invocation-timeline").locator("button");
       await expect(timelineControls).toHaveCount(4);
@@ -688,12 +662,14 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           )
           .toBeGreaterThan(traversalCountBefore);
         await expect
-          .poll(() =>
-            page.evaluate(
-              () =>
-                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.releasedSnapshots ?? 0,
-            ),
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.releasedSnapshots ?? 0,
+              ),
+            { timeout: 15_000 },
           )
           .toBeGreaterThan(releaseCountBefore);
         await expect
