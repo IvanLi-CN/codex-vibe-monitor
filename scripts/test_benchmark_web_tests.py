@@ -203,6 +203,21 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertIn("/new/output/results/A/unit/reports/unit.json", phase.command)
         self.assertNotIn("/old/", phase.command)
 
+    def test_paired_browser_phases_use_disjoint_ports_for_a_and_b(self):
+        phase = MODULE.Phase(
+            "e2e-main",
+            "bun run dev -- --port 60080\nE2E_BASE_URL=http://127.0.0.1:60083\nE2E_DEMO_BASE_URL=http://127.0.0.1:60084",
+        )
+        baseline = MODULE.rebase_phase(phase, Path("/old"), Path("/new/A"), "A")
+        candidate = MODULE.rebase_phase(phase, Path("/old"), Path("/new/B"), "B")
+        self.assertIn("--port 60280", baseline.command)
+        self.assertIn("127.0.0.1:60283", baseline.command)
+        self.assertIn("127.0.0.1:60284", baseline.command)
+        self.assertIn("--port 60480", candidate.command)
+        self.assertIn("127.0.0.1:60483", candidate.command)
+        self.assertIn("127.0.0.1:60484", candidate.command)
+        self.assertNotEqual(baseline.command, candidate.command)
+
     def test_aggregate_group_requires_every_phase_and_uses_max_wall_time(self):
         data = manifest()
         with tempfile.TemporaryDirectory() as temporary:

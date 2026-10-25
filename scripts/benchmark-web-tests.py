@@ -487,10 +487,23 @@ def isolate_phase_sources(source: Path, phases_to_run: list[Phase], root: Path) 
 
 def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phase:
     command = phase.command.replace(str(source), str(isolated))
+    group_port_offset = 0 if group == "A" else 200
     if phase.name == "e2e-pr":
-        ports = {"60080": "60180", "60083": "60183", "60084": "60184", "60085": "60185"}
+        port_base = 60180 + group_port_offset
+        ports = {
+            "60080": str(port_base),
+            "60083": str(port_base + 3),
+            "60084": str(port_base + 4),
+            "60085": str(port_base + 5),
+        }
     elif phase.name == "e2e-main":
-        ports = {"60080": "60280", "60083": "60283", "60084": "60284", "60085": "60285"}
+        port_base = 60280 + group_port_offset
+        ports = {
+            "60080": str(port_base),
+            "60083": str(port_base + 3),
+            "60084": str(port_base + 4),
+            "60085": str(port_base + 5),
+        }
     else:
         ports = {}
     for old, new in ports.items():
