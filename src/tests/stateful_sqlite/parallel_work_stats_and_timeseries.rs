@@ -23058,6 +23058,16 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         .await
         .expect("publish initial exact paged-boundary snapshot");
 
+    // Warm the archive-sized rolling build with an explicit setup budget. The interleaved
+    // identity check below must use the production rolling deadline after this preparation.
+    refresh_summary_snapshots_with_test_deadline(
+        state.as_ref(),
+        SummaryProjectionBuildMode::Rolling,
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("prepare the rolling archive projection before the production deadline check");
+
     sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
         .execute(&state.pool)
         .await
@@ -23114,14 +23124,9 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             .expect("commit legacy manifest replacement");
     });
     // This test exercises archive identity revalidation after a complete boundary admission.
-    // Its 4,097-manifest fixture can exceed the production rolling freshness deadline on a cold
-    // runner before reaching the interleave gate, so use a test-only deadline for this control.
-    let hydration = refresh_summary_snapshots_with_test_deadline(
-        state.as_ref(),
-        SummaryProjectionBuildMode::Rolling,
-        Duration::from_secs(30),
-    )
-    .await;
+    let hydration =
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
+            .await;
     replacement.await.expect("run legacy manifest replacement");
     clear_summary_projection_test_interleave();
     let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");
