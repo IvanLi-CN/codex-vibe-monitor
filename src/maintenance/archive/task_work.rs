@@ -31,11 +31,15 @@ impl Drop for TaskWorkOwner {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 drop(file);
+                crate::maintenance::remove_temp_archive_file_operation_artifacts_unchecked(
+                    &work_path,
+                );
                 let _ = fs::remove_file(owner_path);
             });
             return;
         }
         drop(file);
+        crate::maintenance::remove_temp_archive_file_operation_artifacts_unchecked(&self.work_path);
         let _ = fs::remove_file(&self.path);
     }
 }
