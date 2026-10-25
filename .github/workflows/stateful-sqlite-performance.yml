@@ -358,7 +358,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT/evidence"
-          "$PYTHON_BIN" trusted/.github/scripts/stateful-sqlite-performance.py \
+          "$PYTHON_BIN" -I trusted/.github/scripts/stateful-sqlite-performance.py \
             --root "$EVIDENCE_ROOT" \
             --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
             --target-wall-file "$EVIDENCE_ROOT/target-wall-times.txt" \
@@ -395,6 +395,13 @@ jobs:
           ARCHIVES_OUTCOME: ${{ steps.archives.outcome }}
           REPLAYS_OUTCOME: ${{ steps.replays.outcome }}
           ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
         run: |
           set -euo pipefail
           test "$ARCHIVES_OUTCOME" = success
