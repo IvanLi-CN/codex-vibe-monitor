@@ -219,8 +219,9 @@ workflow 必须从 `main` 的 trusted revision 执行，以 `github.sha` 作为 
 候选 checkout 只用于构建隔离镜像和记录身份，测量、分类、汇总脚本都从 trusted checkout
 执行。每个分支记录 trusted harness SHA、candidate SHA、trusted/candidate harness digest，
 汇总器拒绝 harness 漂移并要求合并后用新的 `main` harness 显式复测。
-仅 build-only 资格运行允许候选参与构建，但 build-report 生成器仍从 trusted checkout 读取；
-它不启动测量、预算汇总或性能通过卡，不能作为 trusted harness 或预算证据。
+仅 build-only 资格运行允许候选参与构建，并从 candidate checkout 使用兼容的 build-report
+生成器描述资格运行；该报告不是预算或正式性能证据。它不启动测量、预算汇总或性能通过卡，
+不能作为 trusted harness 或预算证据。正式模式仍从 trusted checkout 读取生成器。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
 默认 5 req/s、3 次独立 runner 配对、每窗口 60 秒与 60 秒预热，三轮轮换模式顺序，每窗口须完成 300/300 请求；保留原始窗口及配对比值 CV ≤5%、CPU 非饱和、无尾部积压以及 CPU/完成请求与成功请求 p95 增幅 ≤5% 的门槛。三轮必须记录不同的 `runnerIdentity`、对应的 `runnerScope=parallel-pair-*` 和五项硬件字段，不能筛掉失败分支。
 资源准入不满足时标记 unavailable；窗口不稳定时不输出已接受的增幅结论。

@@ -5,8 +5,9 @@
   替代。producer/image 的执行、阶段、传输、缓存和镜像 ready 时间仍必须真实且完整。
 
 - 2026-10-26：明确 build-only 的 pre-merge 报告来源隔离：实现分支可验证自身构建产物，
-  但 build report 生成器始终来自 trusted `main`，候选不能伪造构建证据；build-only 不启动
-  workload、预算汇总或性能通过卡，正式性能模式继续使用同一 trusted 生成器。
+  并仅在资格模式使用 candidate-compatible 的 build report 生成器描述该运行；该报告不是
+  预算或正式性能证据。build-only 不启动 workload、预算汇总或性能通过卡，正式性能模式仍
+  使用 trusted `main` 生成器。
 
 - 2026-10-26：修复完整镜像 cache restore/save 的路径规范差异，避免相同 build identity 因
   cache version 不一致产生假 miss；质量合同现在严格要求两处路径相同。build report 通过只读

@@ -583,14 +583,23 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         report_checkout.get("with", {}).get("repository") == "${{ github.repository }}"
         and report_checkout.get("with", {}).get("ref") == "${{ needs.observability-performance-resolve.outputs.trusted_ref }}"
         and report_checkout.get("with", {}).get("path") == "trusted",
-        f"{workflow_path} build reports must use the trusted generator in every mode",
+        f"{workflow_path} formal build reports must use the trusted generator",
+    )
+    candidate_report_checkout = uses_step_config(report, "Checkout candidate report generator (build-only)", "actions/checkout@v7", workflow_path)
+    require(
+        candidate_report_checkout.get("if") == "env.BUILD_ONLY == 'true'"
+        and candidate_report_checkout.get("with", {}).get("repository") == "${{ github.repository }}"
+        and candidate_report_checkout.get("with", {}).get("ref") == "${{ needs.observability-performance-resolve.outputs.candidate }}"
+        and candidate_report_checkout.get("with", {}).get("path") == "candidate-report",
+        f"{workflow_path} build-only reports must use the candidate-compatible generator only in qualification mode",
     )
     report_run = str(report_step.get("run", ""))
     require(
         "observability-build-report.py" in report_run
         and "report_root" in report_run
         and 'report_root="$PWD/trusted"' in report_run
-        and "candidate-report" not in report_run
+        and 'report_root="$PWD/candidate-report"' in report_run
+        and 'if [ "$BUILD_ONLY" = "true" ]' in report_run
         and "--build-identity" in report_run
         and "--run-started" in report_run
         and "--jobs-json" in report_run

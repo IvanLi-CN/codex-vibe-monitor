@@ -77,9 +77,9 @@ trusted `main`，候选只作为隔离镜像运行时代码和身份 checkout。
 重试和 candidate-controlled harness 都不再启动或改变验收。普通 PR 与 merge queue
 事件不会默认消耗长时 runner。继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR
 smoke artifact producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
-build-only 为实现分支资格验证例外：它允许候选代码参与构建，但 build-report 生成器始终
-使用 trusted `main` 的版本，避免候选伪造构建证据；该模式跳过 workload、预算汇总和性能
-通过卡，正式模式使用同一 trusted 生成器。
+build-only 为实现分支资格验证例外：它允许候选代码参与构建，并使用 candidate-compatible
+的 build-report 生成器描述资格运行；该报告明确不是预算或正式性能证据。该模式跳过
+workload、预算汇总和性能通过卡；正式模式仍只使用 trusted `main` 的生成器。
 本次请求生命周期 PR 的就绪判断不宣称该预算已验证；预算结论留给显式启动的专项运行。
 普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
 当 GitHub-hosted runner 因明确的资源压力无法提供有效测量时，验收步骤保留非零结果并由分类器将该辅助 job 收口为中性；`empirical-card.json` 仍为 `unavailable`，原始压力证据仍上传，功能/设置/证据错误和预算超标继续失败。

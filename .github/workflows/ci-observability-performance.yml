@@ -1130,6 +1130,15 @@ jobs:
           path: trusted
           persist-credentials: false
 
+      - name: Checkout candidate report generator (build-only)
+        if: env.BUILD_ONLY == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.observability-performance-resolve.outputs.candidate }}
+          path: candidate-report
+          persist-credentials: false
+
       - name: Download producer reports
         if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true' && needs.observability-performance-producer.result == 'success'
         uses: actions/download-artifact@v7
@@ -1220,6 +1229,7 @@ jobs:
             args+=(--workflow-failure)
           fi
           report_root="$PWD/trusted"
+          if [ "$BUILD_ONLY" = "true" ]; then report_root="$PWD/candidate-report"; fi
           test -f "$report_root/scripts/observability-build-report.py"
           python3 "$report_root/scripts/observability-build-report.py" "${args[@]}"
 
