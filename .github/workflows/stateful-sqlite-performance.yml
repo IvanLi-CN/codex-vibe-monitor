@@ -253,6 +253,12 @@ jobs:
           sudo chown -R root:root "$archive" "$extract"
           sudo chown root:root "$artifact_root"
           sudo chmod 755 "$artifact_root"
+          test ! -L "$archive"
+          if sudo find "$extract" -type l -print -quit | grep -q .; then
+            echo "archive extraction produced a symlink" >&2
+            exit 65
+          fi
+          sudo chmod -R a-w "$archive" "$extract"
           sudo chmod a+r "$archive"
           sudo chmod -R a+rX "$extract"
 
