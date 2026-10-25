@@ -169,8 +169,21 @@ def _archive_path(database: Path, archive_root: Path, stored_path: str, dataset:
     except ValueError as error:
         raise AcceptanceError("archive manifest escaped the configured archive root") from error
     parts = relative.parts
-    expected = (dataset, month_key[:4], f"{dataset}-{month_key}.sqlite.gz")
-    if parts != expected or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_key):
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_key):
+        raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
+    legacy_month_path = parts == (dataset, month_key[:4], f"{dataset}-{month_key}.sqlite.gz")
+    segment_path = False
+    if dataset == "codex_invocations" and len(parts) == 5:
+        segment_path = (
+            parts[:3] == (dataset, month_key[:4], month_key[5:])
+            and re.fullmatch(r"0[1-9]|[12][0-9]|3[01]", parts[3]) is not None
+            and re.fullmatch(
+                r"part-[0-9a-f]{16}-[0-9a-f]{16}-[0-9a-f]{16}\.sqlite\.gz",
+                parts[4],
+            )
+            is not None
+        )
+    if not legacy_month_path and not segment_path:
         raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
     if resolved.suffixes[-2:] != [".sqlite", ".gz"]:
         raise AcceptanceError("archive artifact is not a gzip SQLite file")

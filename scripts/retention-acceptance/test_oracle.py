@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from contract import AcceptanceError, sha256_json
-from oracle import _verify_summary_proof, verify_dataset
+from oracle import _archive_path, _verify_summary_proof, verify_dataset
 
 
 DATASET = "pool_upstream_request_attempts"
@@ -183,6 +183,20 @@ class OracleTests(unittest.TestCase):
         )
         result = self.verify({"seed-archived", "seed-live"})
         self.assertEqual(result["converted_rows"], 1)
+
+    def test_invocation_segment_v1_archive_path_maps_into_the_trial_volume(self) -> None:
+        part_name = "part-0000000000000001-0000000000000001-0123456789abcdef.sqlite.gz"
+        path = self.archive_root / "codex_invocations" / "2026" / "08" / "12" / part_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"segment")
+        resolved = _archive_path(
+            self.database,
+            self.archive_root,
+            f"/srv/app/data/archives/codex_invocations/2026/08/12/{part_name}",
+            "codex_invocations",
+            MONTH,
+        )
+        self.assertEqual(resolved, path.resolve())
 
     def test_archive_full_row_content_must_match_the_pristine_source(self) -> None:
         path = self.make_archive(
