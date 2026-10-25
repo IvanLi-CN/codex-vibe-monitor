@@ -6,43 +6,63 @@ use tokio::sync::Mutex;
 
 use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId};
 use crate::storage::core::{
-    AdmissionDecision, AuthorityManifestStore, AuthorityPublication, BackendKind, MigrationState,
-    MigrationStatus, ModuleAuthority, ModuleAuthorityManifest, ModuleGenerationGate, ModuleLease,
-    StorageModule, StoragePools, validate_transaction_leases,
+    AdmissionDecision, AuthorityManifestStore, AuthorityPublication, AuthorityRecoveryContext,
+    AuthorityRecoveryRecord, BackendKind, MigrationState, MigrationStatus, ModuleAuthority,
+    ModuleAuthorityManifest, ModuleGenerationGate, ModuleLease, StorageModule, StoragePools,
+    validate_transaction_leases,
 };
 
-#[derive(Default)]
 struct TestAuthorityStore {
     manifest: Mutex<Option<ModuleAuthorityManifest>>,
+    recovery: Mutex<Option<AuthorityRecoveryRecord>>,
+    publication: Mutex<AuthorityPublication>,
+}
+
+impl Default for TestAuthorityStore {
+    fn default() -> Self {
+        Self {
+            manifest: Mutex::new(None),
+            recovery: Mutex::new(None),
+            publication: Mutex::new(AuthorityPublication::Committed),
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl AuthorityManifestStore for TestAuthorityStore {
     async fn load_authority_manifest(
         &self,
-        module: StorageModule,
-    ) -> Result<Option<ModuleAuthorityManifest>> {
-        Ok(self
-            .manifest
-            .lock()
-            .await
-            .as_ref()
-            .filter(|manifest| manifest.module == module)
-            .cloned())
+        _module: StorageModule,
+    ) -> Result<AuthorityRecoveryRecord> {
+        if let Some(recovery) = self.recovery.lock().await.clone() {
+            return Ok(recovery);
+        }
+        Ok(self.manifest.lock().await.as_ref().cloned().map_or(
+            AuthorityRecoveryRecord::NeverMigrated {
+                installation_id: "test-installation".into(),
+                source_identity: "test-source".into(),
+            },
+            AuthorityRecoveryRecord::Manifest,
+        ))
     }
 
     async fn publish_authority_manifest(
         &self,
         manifest: &ModuleAuthorityManifest,
     ) -> Result<AuthorityPublication> {
+        let publication = *self.publication.lock().await;
+        if publication != AuthorityPublication::Committed {
+            return Ok(publication);
+        }
         *self.manifest.lock().await = Some(manifest.clone());
-        Ok(AuthorityPublication::Committed)
+        Ok(publication)
     }
 }
 
 fn authority_manifest(generation: u64, backend: BackendKind) -> ModuleAuthorityManifest {
     ModuleAuthorityManifest {
         installation_id: "test-installation".into(),
+        source_identity: "test-source".into(),
         module: StorageModule::TrafficArchive,
         authority: ModuleAuthority {
             backend,
@@ -51,6 +71,29 @@ fn authority_manifest(generation: u64, backend: BackendKind) -> ModuleAuthorityM
         source_watermark: 42,
         target_identity: "test-target".into(),
     }
+}
+
+fn recovery_context() -> AuthorityRecoveryContext {
+    AuthorityRecoveryContext {
+        installation_id: "test-installation".into(),
+        source_identity: "test-source".into(),
+        target_identity: "test-target".into(),
+        source_watermark: 42,
+    }
+}
+
+async fn wait_for_admission_closed(gate: &ModuleGenerationGate) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            match gate.acquire(StorageModule::TrafficArchive).await {
+                Ok(lease) => drop(lease),
+                Err(_) => break,
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -233,7 +276,7 @@ async fn generation_gate_drains_old_leases_before_publishing_authority() {
             )
             .await
     });
-    tokio::task::yield_now().await;
+    wait_for_admission_closed(&gate).await;
     assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
     drop(old);
     switch.await.unwrap().unwrap();
@@ -265,7 +308,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
             )
             .await
     });
-    tokio::task::yield_now().await;
+    wait_for_admission_closed(&gate).await;
     let second_gate = gate.clone();
     let second = tokio::spawn(async move {
         second_gate
@@ -277,7 +320,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
             )
             .await
     });
-    tokio::task::yield_now().await;
+    wait_for_admission_closed(&gate).await;
     drop(old);
     let _ = first.await.unwrap();
     let _ = second.await.unwrap();
@@ -309,7 +352,7 @@ async fn cancelling_switch_waiter_does_not_cancel_authority_transition() {
             )
             .await
     });
-    tokio::task::yield_now().await;
+    wait_for_admission_closed(&gate).await;
     assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
     waiter.abort();
     drop(old);
@@ -350,10 +393,91 @@ async fn generation_gate_recovers_authority_from_durable_manifest() {
             generation: 1,
         },
     );
-    gate.recover_authority(store.as_ref()).await.unwrap();
+    gate.recover_authority(store.as_ref(), &recovery_context())
+        .await
+        .unwrap();
     let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     assert_eq!(current.lease.authority.backend, BackendKind::Postgres);
     assert_eq!(current.lease.authority.generation, 4);
+}
+
+#[tokio::test]
+async fn generation_gate_rejects_foreign_authority_manifest() {
+    let store = Arc::new(TestAuthorityStore::default());
+    let mut manifest = authority_manifest(4, BackendKind::Postgres);
+    manifest.installation_id = "another-installation".into();
+    *store.manifest.lock().await = Some(manifest);
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+
+    assert!(
+        gate.recover_authority(store.as_ref(), &recovery_context())
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn indeterminate_authority_publication_stays_closed_until_recovery() {
+    let store = Arc::new(TestAuthorityStore::default());
+    *store.publication.lock().await = AuthorityPublication::Indeterminate;
+    let publisher: Arc<dyn AuthorityManifestStore> = store.clone();
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    assert!(
+        gate.switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest(2, BackendKind::Postgres),
+            std::time::Duration::from_secs(1),
+            publisher,
+        )
+        .await
+        .is_err()
+    );
+    *store.recovery.lock().await = Some(AuthorityRecoveryRecord::Indeterminate);
+    assert!(
+        gate.recover_authority(store.as_ref(), &recovery_context())
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn rejected_authority_publication_reopens_the_source_authority() {
+    let store = Arc::new(TestAuthorityStore::default());
+    *store.publication.lock().await = AuthorityPublication::NotCommitted;
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    assert!(
+        gate.switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest(2, BackendKind::Postgres),
+            std::time::Duration::from_secs(1),
+            store,
+        )
+        .await
+        .is_err()
+    );
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.backend, BackendKind::Sqlite);
+    assert_eq!(current.lease.authority.generation, 1);
 }
 
 #[tokio::test]
@@ -386,7 +510,7 @@ async fn storage_transaction_holds_generation_lease_until_commit() {
             )
             .await
     });
-    tokio::task::yield_now().await;
+    wait_for_admission_closed(&gate).await;
     assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
     transaction.commit().await.unwrap();
     switch.await.unwrap().unwrap();

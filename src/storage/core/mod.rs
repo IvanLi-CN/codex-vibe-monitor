@@ -33,10 +33,30 @@ pub(crate) struct ModuleAuthority {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleAuthorityManifest {
     pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
     pub(crate) module: StorageModule,
     pub(crate) authority: ModuleAuthority,
     pub(crate) source_watermark: i64,
     pub(crate) target_identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthorityRecoveryContext {
+    pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
+    pub(crate) source_watermark: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AuthorityRecoveryRecord {
+    /// The durable store confirms this installation has never cut over this module.
+    NeverMigrated {
+        installation_id: String,
+        source_identity: String,
+    },
+    Manifest(ModuleAuthorityManifest),
+    Indeterminate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,8 +84,8 @@ enum StorageTransactionBackend {
 }
 
 pub(crate) struct StorageTransaction {
-    backend: StorageTransactionBackend,
-    _lease: ModuleGenerationLease,
+    backend: Option<StorageTransactionBackend>,
+    lease: Option<ModuleGenerationLease>,
 }
 
 impl StoragePools {
@@ -80,22 +100,83 @@ impl StoragePools {
             }
         };
         Ok(StorageTransaction {
-            backend,
-            _lease: lease,
+            backend: Some(backend),
+            lease: Some(lease),
         })
     }
 }
 
+#[derive(Clone, Copy)]
+enum TransactionCompletion {
+    Commit,
+    Rollback,
+}
+
+async fn complete_transaction(
+    backend: StorageTransactionBackend,
+    completion: TransactionCompletion,
+) -> Result<()> {
+    match (backend, completion) {
+        (StorageTransactionBackend::Sqlite(transaction), TransactionCompletion::Commit) => {
+            transaction.commit().await?;
+        }
+        (StorageTransactionBackend::Postgres(transaction), TransactionCompletion::Commit) => {
+            transaction.commit().await?;
+        }
+        (StorageTransactionBackend::Sqlite(transaction), TransactionCompletion::Rollback) => {
+            transaction.rollback().await?;
+        }
+        (StorageTransactionBackend::Postgres(transaction), TransactionCompletion::Rollback) => {
+            transaction.rollback().await?;
+        }
+    }
+    Ok(())
+}
+
 impl StorageTransaction {
-    pub(crate) async fn commit(self) -> Result<()> {
-        let Self { backend, _lease } = self;
-        match backend {
-            StorageTransactionBackend::Sqlite(transaction) => {
-                transaction.commit().await.map_err(Into::into)
-            }
-            StorageTransactionBackend::Postgres(transaction) => {
-                transaction.commit().await.map_err(Into::into)
-            }
+    pub(crate) async fn commit(mut self) -> Result<()> {
+        let Some(backend) = self.backend.take() else {
+            bail!("storage transaction is already complete");
+        };
+        let lease = self.lease.take();
+        tokio::spawn(async move {
+            let result = complete_transaction(backend, TransactionCompletion::Commit).await;
+            drop(lease);
+            result
+        })
+        .await??;
+        Ok(())
+    }
+
+    pub(crate) async fn rollback(mut self) -> Result<()> {
+        let Some(backend) = self.backend.take() else {
+            bail!("storage transaction is already complete");
+        };
+        let lease = self.lease.take();
+        tokio::spawn(async move {
+            let result = complete_transaction(backend, TransactionCompletion::Rollback).await;
+            drop(lease);
+            result
+        })
+        .await??;
+        Ok(())
+    }
+}
+
+impl Drop for StorageTransaction {
+    fn drop(&mut self) {
+        let Some(backend) = self.backend.take() else {
+            return;
+        };
+        let lease = self.lease.take();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = complete_transaction(backend, TransactionCompletion::Rollback).await;
+                drop(lease);
+            });
+        } else {
+            drop(backend);
+            drop(lease);
         }
     }
 }
@@ -254,24 +335,50 @@ impl ModuleGenerationGate {
     pub(crate) async fn recover_authority(
         &self,
         metadata: &dyn AuthorityManifestStore,
+        expected: &AuthorityRecoveryContext,
     ) -> Result<()> {
         let _switch = self.0.switching.lock().await;
         self.0.state.lock().await.accepting = false;
         if self.0.active.load(Ordering::Acquire) != 0 {
             bail!("cannot recover module authority while generation leases are active");
         }
-        if let Some(manifest) = metadata.load_authority_manifest(self.0.module).await? {
-            if manifest.module != self.0.module {
-                bail!("recovered authority manifest belongs to another module");
+        match metadata.load_authority_manifest(self.0.module).await? {
+            AuthorityRecoveryRecord::NeverMigrated {
+                installation_id,
+                source_identity,
+            } => {
+                if installation_id != expected.installation_id
+                    || source_identity != expected.source_identity
+                {
+                    bail!("no-cutover recovery marker belongs to another installation or source");
+                }
+                if self.0.state.lock().await.authority.backend != BackendKind::Sqlite {
+                    bail!("missing authority manifest cannot restore a PostgreSQL-selected module");
+                }
             }
-            let mut state = self.0.state.lock().await;
-            if manifest.authority.generation < state.authority.generation
-                || (manifest.authority.generation == state.authority.generation
-                    && manifest.authority.backend != state.authority.backend)
-            {
-                bail!("recovered module authority manifest regresses the selected generation");
+            AuthorityRecoveryRecord::Manifest(manifest) => {
+                if manifest.module != self.0.module
+                    || manifest.installation_id != expected.installation_id
+                    || manifest.source_identity != expected.source_identity
+                    || manifest.target_identity != expected.target_identity
+                    || manifest.source_watermark != expected.source_watermark
+                {
+                    bail!(
+                        "recovered authority manifest does not match the active migration identity"
+                    );
+                }
+                let mut state = self.0.state.lock().await;
+                if manifest.authority.generation < state.authority.generation
+                    || (manifest.authority.generation == state.authority.generation
+                        && manifest.authority.backend != state.authority.backend)
+                {
+                    bail!("recovered module authority manifest regresses the selected generation");
+                }
+                state.authority = manifest.authority;
             }
-            state.authority = manifest.authority;
+            AuthorityRecoveryRecord::Indeterminate => {
+                bail!("module authority recovery is indeterminate; admission remains closed");
+            }
         }
         self.reopen_admission().await;
         Ok(())
@@ -366,7 +473,7 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
     async fn load_authority_manifest(
         &self,
         module: StorageModule,
-    ) -> Result<Option<ModuleAuthorityManifest>>;
+    ) -> Result<AuthorityRecoveryRecord>;
     async fn publish_authority_manifest(
         &self,
         manifest: &ModuleAuthorityManifest,
