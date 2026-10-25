@@ -36,6 +36,7 @@ from measure import (
     run_command,
     run_foreground,
     start_container,
+    wait_for_task_evidence,
 )
 
 
@@ -49,6 +50,57 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_task_evidence_drain_uses_remaining_phase_budget(self) -> None:
+        valid_runs = [
+            {
+                "task_key": "retention_archive",
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "actual_started_at": (
+                    "2026-10-25T00:00:02Z" if trigger_kind == "catchup" else "2026-10-25T00:00:00Z"
+                ),
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+            }
+            for trigger_kind in ("schedule", "catchup")
+        ] + [
+            {
+                "task_key": "pool_upstream_attempt_archive",
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "actual_started_at": (
+                    "2026-10-25T00:00:02Z" if trigger_kind == "catchup" else "2026-10-25T00:00:00Z"
+                ),
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+            }
+            for trigger_kind in ("schedule", "catchup")
+        ] + [
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "interval",
+                "status": "success",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 512,
+            }
+        ]
+        with (
+            patch("measure.remaining_budget", return_value=120),
+            patch("measure.time.monotonic", side_effect=[0, 0, 31]),
+            patch("measure.time.sleep"),
+            patch("measure.task_runs", side_effect=[[], valid_runs]),
+            patch("measure.task_owners_idle", return_value=True),
+            patch("measure.archive_proofs_ready", return_value=True),
+        ):
+            result = wait_for_task_evidence(
+                Path("main.sqlite"),
+                Path("maintenance.sqlite"),
+                "2026-10-24 00:00:00",
+                {"invocations": 81, "pool_upstream_attempts": 97},
+                0,
+            )
+
+        self.assertEqual(result, valid_runs)
+
     def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "coverage.sqlite"

@@ -1010,9 +1010,12 @@ def wait_for_task_evidence(
     cutoff: str,
     added_counts: dict[str, int],
     started: float,
-    timeout_seconds: float = 30,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
-    deadline = time.monotonic() + min(timeout_seconds, remaining_budget(started))
+    available = remaining_budget(started)
+    deadline = time.monotonic() + (
+        available if timeout_seconds is None else min(timeout_seconds, available)
+    )
     latest: list[dict[str, Any]] = []
     last_error: AcceptanceError | None = None
     while time.monotonic() < deadline:
