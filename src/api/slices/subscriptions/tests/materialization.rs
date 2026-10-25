@@ -149,6 +149,130 @@ async fn cold_network_only_slice_materializes_without_sqlite() {
 }
 
 #[tokio::test]
+async fn initial_network_timeseries_materializes_live_bucket_at_fractional_boundary() {
+    let state = crate::tests::test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    state
+        .proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+        .expect("bind network cache");
+    let hub = state.subscription_hub.clone();
+    let now = Utc
+        .with_ymd_and_hms(2026, 10, 25, 10, 50, 0)
+        .single()
+        .expect("valid boundary time")
+        + ChronoDuration::milliseconds(451);
+    state.dashboard_network_speed_cache.record_request_bytes(
+        "fractional-boundary-network",
+        "2026-10-25 18:50:00",
+        None,
+        Some("api.openai.com"),
+        512,
+        now,
+    );
+    let topic = SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+        range: "today".to_string(),
+        time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+        upstream_account_id: None,
+    };
+    let topic_key = topic.cache_key().expect("network topic key");
+    let prepared = hub
+        .prepare_connection_at(state.clone(), vec![topic.descriptor()], Vec::new(), now)
+        .await
+        .expect("prepare initial network subscription");
+    let initial_payload = prepared
+        .initial
+        .first()
+        .expect("initial network subscription frame")
+        .frame
+        .payload_value();
+    let initial_live_point = initial_payload
+        .get("points")
+        .and_then(Value::as_array)
+        .and_then(|points| {
+            points.iter().find(|point| {
+                point
+                    .get("isLiveBucket")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+        })
+        .expect("initial today frame should contain the current live bucket");
+    assert_eq!(
+        initial_live_point
+            .get("bucketStart")
+            .and_then(Value::as_str),
+        Some("2026-10-25T10:50:00Z")
+    );
+    assert_eq!(
+        initial_live_point
+            .get("uploadBytes")
+            .and_then(Value::as_i64),
+        Some(512)
+    );
+
+    let (cursor_before, live_point) = {
+        let guard = hub.state.lock().await;
+        let cached = guard.topics.get(&topic_key).expect("cached network topic");
+        let DashboardTopicMaterializer::NetworkTimeseries { base, .. } = cached
+            .dashboard_materializer
+            .as_ref()
+            .expect("network materializer")
+        else {
+            panic!("expected network timeseries materializer");
+        };
+        let live_point = base
+            .points
+            .iter()
+            .find(|point| point.is_live_bucket)
+            .cloned()
+            .expect("cached initial base should contain the current live bucket");
+        (cached.cursor, live_point)
+    };
+    assert_eq!(live_point.bucket_start, "2026-10-25T10:50:00Z");
+    assert_eq!(live_point.upload_bytes, 512);
+
+    let _lease = hub
+        .register_test_topic_name("dashboard.network-timeseries.window")
+        .await;
+    state.pool.close().await;
+    let network = DashboardNetworkProjectionSlice {
+        revision: 1,
+        network_live_bucket: Some(live_point.clone()),
+        network_realtime_rate: None,
+        accounts: Vec::new(),
+        recent: DashboardRecentNetworkWindowResponse {
+            range_start: String::new(),
+            range_end: String::new(),
+            window_seconds: DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS,
+            sample_seconds: 1,
+            is_warming_up: false,
+            points: Vec::new(),
+        },
+        current_snapshot: DashboardActivityCurrentSnapshot::default(),
+        current_snapshot_by_account: Default::default(),
+    };
+    hub.handle_internal_broadcast(
+        state,
+        BroadcastPayload::DashboardNetworkSlice {
+            slice: Box::new(network),
+        },
+    )
+    .await;
+    let cached = hub
+        .state
+        .lock()
+        .await
+        .topics
+        .get(&topic_key)
+        .cloned()
+        .expect("cached network topic after materialization");
+    assert_eq!(cached.cursor, cursor_before + 1);
+}
+
+#[tokio::test]
 async fn terminal_slice_materializes_activity_without_speculative_summary() {
     let state = crate::tests::test_state_with_openai_base(
         Url::parse("http://127.0.0.1:9").expect("valid test URL"),

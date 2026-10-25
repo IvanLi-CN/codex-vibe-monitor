@@ -29294,10 +29294,30 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
     Query(params): Query<DashboardNetworkTimeseriesQuery>,
 ) -> Result<Json<DashboardNetworkTimeseriesResponse>, ApiError> {
     let started_at = Instant::now();
+    let response =
+        build_dashboard_network_timeseries_response_at(state.as_ref(), &params, Utc::now()).await?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    tracing::debug!(
+        endpoint = "/api/stats/dashboard-network-timeseries",
+        range = %params.range,
+        upstream_account_id = params.upstream_account_id,
+        bucket_count = response.points.len(),
+        elapsed_ms,
+        "dashboard network timeseries completed"
+    );
+
+    Ok(Json(response))
+}
+
+pub(crate) async fn build_dashboard_network_timeseries_response_at(
+    state: &AppState,
+    params: &DashboardNetworkTimeseriesQuery,
+    now: DateTime<Utc>,
+) -> Result<DashboardNetworkTimeseriesResponse, ApiError> {
     validate_dashboard_network_timeseries_range(params.range.as_str())?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let range_window =
-        resolve_range_window(params.range.as_str(), reporting_tz).map_err(ApiError::from)?;
+    let range_window = resolve_range_window_at(params.range.as_str(), reporting_tz, now)
+        .map_err(ApiError::from)?;
     let range = ExactUtcRange {
         start: range_window.start,
         end: range_window.end,
@@ -29367,7 +29387,7 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
             > range.start;
     if include_live_bucket {
         let live_bucket = load_dashboard_network_open_bucket_snapshot(
-            state.as_ref(),
+            state,
             source_scope,
             range.end,
             params.upstream_account_id,
@@ -29389,7 +29409,9 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
             .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS);
     let mut points = Vec::new();
     let mut bucket_epoch_second = first_bucket_epoch_second;
-    while bucket_epoch_second < range.end.timestamp() {
+    // Compare the complete bucket start with the subsecond range end so the current bucket is
+    // emitted even during the first fractional second after a bucket boundary.
+    loop {
         let bucket_start = Utc
             .timestamp_opt(bucket_epoch_second, 0)
             .single()
@@ -29420,24 +29442,14 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
         bucket_epoch_second = bucket_epoch_second.saturating_add(DASHBOARD_NETWORK_BUCKET_SECONDS);
     }
 
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    tracing::debug!(
-        endpoint = "/api/stats/dashboard-network-timeseries",
-        range = %params.range,
-        upstream_account_id = params.upstream_account_id,
-        bucket_count = points.len(),
-        elapsed_ms,
-        "dashboard network timeseries completed"
-    );
-
-    Ok(Json(DashboardNetworkTimeseriesResponse {
-        range: params.range,
+    Ok(DashboardNetworkTimeseriesResponse {
+        range: params.range.clone(),
         range_start: format_utc_iso_precise(range.start),
         range_end: format_utc_iso_precise(range.end),
         snapshot_id: range.end.timestamp_millis(),
         bucket_seconds: DASHBOARD_NETWORK_BUCKET_SECONDS,
         points,
-    }))
+    })
 }
 
 pub(crate) async fn fetch_upstream_account_activity(
