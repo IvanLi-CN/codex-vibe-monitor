@@ -566,11 +566,10 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
             () =>
               clientPage
                 .getByTestId("dashboard-invocation-timeline-lanes")
-                .getAttribute("data-range-end")
-                .then((rangeEnd) => (rangeEnd ? Date.parse(rangeEnd) : 0)),
+                .getAttribute("data-range-end"),
             { timeout: 45_000 },
           )
-          .toBeGreaterThan(Date.parse(initialRangeEnds[index]!)),
+          .toBe(initialRangeEnds[index]),
       ),
     );
     const elapsedBeforeSteadyState = Date.now() - startedAt;

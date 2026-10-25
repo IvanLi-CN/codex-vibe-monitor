@@ -2499,6 +2499,8 @@ mod tests {
     use chrono::TimeZone;
     use sqlx::Connection;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+    use std::io::{self, Write};
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[test]
     fn invocation_timeline_accepts_scope_aliases() {
@@ -2926,9 +2928,51 @@ mod tests {
         );
     }
 
+    #[derive(Clone)]
+    struct TimelineSummaryLogBuffer {
+        bytes: Arc<StdMutex<Vec<u8>>>,
+    }
+
+    struct TimelineSummaryLogWriter {
+        bytes: Arc<StdMutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for TimelineSummaryLogBuffer {
+        type Writer = TimelineSummaryLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TimelineSummaryLogWriter {
+                bytes: Arc::clone(&self.bytes),
+            }
+        }
+    }
+
+    impl Write for TimelineSummaryLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     #[ignore = "manual performance evidence; run with --ignored --nocapture"]
     async fn timeline_materialization_performance_evidence() {
+        let summary_bytes = Arc::new(StdMutex::new(Vec::new()));
+        let summary_subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(TimelineSummaryLogBuffer {
+                bytes: Arc::clone(&summary_bytes),
+            })
+            .finish();
+        let _summary_subscriber_guard = tracing::subscriber::set_default(summary_subscriber);
         let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
         reset_timeline_snapshot_cleanup_cursor_for_test();
         reset_timeline_snapshot_release_queue_for_test();
@@ -3182,6 +3226,62 @@ mod tests {
                 p95 <= 15_000,
                 "{scope} materialization p95 exceeded 15 seconds"
             );
+        }
+
+        let summary_log = String::from_utf8(
+            summary_bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
+        .expect("timeline summary log must be UTF-8");
+        let summary_lines = summary_log
+            .lines()
+            .filter(|line| line.contains("invocation timeline materialization summary"))
+            .collect::<Vec<_>>();
+        assert!(
+            summary_lines
+                .iter()
+                .filter(|line| line.contains("scope=\"global\""))
+                .count()
+                >= 20,
+            "expected at least 20 global materialization summaries: {summary_lines:?}"
+        );
+        assert!(
+            summary_lines
+                .iter()
+                .filter(|line| line.contains("scope=\"account\""))
+                .count()
+                >= 20,
+            "expected at least 20 account materialization summaries: {summary_lines:?}"
+        );
+        for line in summary_lines {
+            assert!(
+                line.contains("outcome=\"success\""),
+                "summary outcome missing: {line}"
+            );
+            for field in [
+                "elapsed_ms=",
+                "lock_wait_ms=",
+                "source_pages=",
+                "scanned_source_rows=",
+                "materialized_rows=",
+                "source_query_ms=",
+                "account_resolution_ms=",
+                "publish_batches=",
+                "published_rows=",
+            ] {
+                assert!(
+                    line.contains(field),
+                    "summary field {field} missing: {line}"
+                );
+            }
+            for sensitive_field in ["upstream_account_id", "payload", "snapshot_token"] {
+                assert!(
+                    !line.contains(sensitive_field),
+                    "summary must not contain {sensitive_field}: {line}"
+                );
+            }
         }
 
         for _ in 0..8 {
