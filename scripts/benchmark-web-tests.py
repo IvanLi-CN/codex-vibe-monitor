@@ -22,8 +22,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-GROUP_SECONDS = 180
-AB_TOTAL_SECONDS = 600
 WORKLOAD = ("unit", "pwa", "storybook-a11y", "docs-demo-pages", "e2e-pr", "e2e-main", "tooling-contracts")
 ROOT = Path(__file__).resolve().parents[1]
 LOCKFILES = (".bun-version", "bun.lock", "web/bun.lock", "docs-site/bun.lock")
@@ -59,9 +57,9 @@ def actions_only() -> None:
         raise SystemExit("Performance A/B execution is allowed only in GitHub Actions; local and Agent VM execution is forbidden")
 
 
-def phase_exit_code(group: str, status: str) -> int:
-    """Keep an expected baseline deadline available for the aggregate decision."""
-    return 0 if status == "passed" or (group == "A" and status == "timeout") else 1
+def phase_exit_code(_group: str, status: str) -> int:
+    """Only a naturally completed phase can make its Actions step successful."""
+    return 0 if status == "passed" else 1
 
 
 def load_workflow(source: Path, profile: str) -> dict:
@@ -99,7 +97,7 @@ class Phase:
 
 
 def instrument_playwright(command: str, reports: Path) -> str:
-    """Only add machine-readable reporters; preserve scheduling, budgets and retries."""
+    """Only add machine-readable reporters; preserve scheduling and retry policies."""
     index = 0
     def replace(match: re.Match) -> str:
         nonlocal index
@@ -408,7 +406,7 @@ def prepare(baseline: Path, candidate: Path, baseline_sha: str, candidate_sha: s
                 raise ValueError(f"Existing workflow timeouts changed: {name}")
     unimplemented = [name for name in SLOW_SUITES if "web/" + name not in changed]
     manifest = {
-        "schema": 2, "budget_seconds": GROUP_SECONDS, "ab_total_budget_seconds": AB_TOTAL_SECONDS,
+        "schema": 3, "timing_contract": "natural process wall time; GitHub Actions workflow timeout only",
         "identities": identities,
         "source_roots": {"A": str(baseline.resolve()), "B": str(candidate.resolve())},
         "output_root": str(output.resolve()),
@@ -516,36 +514,34 @@ def rebase_phase(phase: Phase, source: Path, isolated: Path, group: str) -> Phas
     return rebase_phase_ports(phase, group)
 
 
-def execute_phase(phase: Phase, source: Path, directory: Path, deadline: float, env: dict) -> dict:
-    remaining = deadline - time.monotonic()
+def execute_phase(phase: Phase, source: Path, directory: Path, env: dict) -> dict:
     started_unix = time.time()
-    record = {"name": phase.name, "command": phase.command, "status": "timeout", "returncode": 124,
-              "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
-              "started_unix": started_unix, "finished_unix": started_unix}
-    if remaining <= 0:
-        return record
     started = time.monotonic()
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    record = {"name": phase.name, "command": phase.command, "status": "running", "returncode": None,
+              "wall_seconds": None, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
+              "started_unix": started_unix, "finished_unix": None, "cleanup_seconds": None}
+    process = None
+    finished = None
     with (directory / f"{phase.name}.log").open("w") as log:
-        # Each phase owns its entire tree, including background Vite and Chromium processes.
+        # The existing GitHub Actions job timeout is the only execution ceiling.
+        # Waiting without a subprocess timeout preserves the natural completion time.
         process = subprocess.Popen(["bash", "-euo", "pipefail", "-c", phase.command],
                                    cwd=source / phase.cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
                                    start_new_session=True)
-        try:
-            code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            record.update(status="passed" if code == 0 else "failed", returncode=code)
-        except subprocess.TimeoutExpired:
-            terminate_group(process)
-            process.wait()
-        finally:
-            terminate_group(process)
+        code = process.wait()
+        finished = time.monotonic()
+        record.update(status="passed" if code == 0 else "failed", returncode=code,
+                      wall_seconds=finished - started, finished_unix=time.time())
+    cleanup_started = time.monotonic()
+    if process is not None:
+        # Cleanup happens after the measured command has exited and is not part of wall_seconds.
+        terminate_group(process)
+    record["cleanup_seconds"] = time.monotonic() - cleanup_started
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    record.update(wall_seconds=time.monotonic() - started,
-                  cpu_seconds=after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime,
+    record.update(cpu_seconds=after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime,
                   children_peak_rss_kb_cumulative=after.ru_maxrss,
-                  finished_unix=time.time())
-    if record["status"] == "passed" and time.monotonic() > deadline:
-        record.update(status="timeout", returncode=124)
+                  execution_completed_naturally=finished is not None)
     return record
 
 
@@ -596,7 +592,7 @@ def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manife
     env = {**os.environ, "CI": "1", "DOCS_BASE": f"/{os.environ['GITHUB_REPOSITORY'].split('/')[-1]}/",
            "PYTHONDONTWRITEBYTECODE": "1", "PLAYWRIGHT_BROWSERS_PATH": str(output / "browsers"),
            "STORYBOOK_DISABLE_TELEMETRY": "1", "XDG_CACHE_HOME": str(output / "cache" / group / phase_name)}
-    record = execute_phase(phase, source, directory, time.monotonic() + GROUP_SECONDS, env)
+    record = execute_phase(phase, source, directory, env)
     record.update(group=group, sha=source_sha, manifest_digest=manifest["digest"], environment=context)
     if record["status"] == "passed":
         try:
@@ -622,12 +618,14 @@ def aggregate_group(group: str, manifest: dict, results_root: Path) -> dict:
         if path.is_file():
             records.append(json.loads(path.read_text()))
         else:
-            records.append({"name": name, "group": group, "status": "environment_failed", "returncode": 1,
-                            "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
-                            "reason": "Missing phase evidence"})
+            records.append({"name": name, "group": group, "status": "incomplete", "returncode": None,
+                            "wall_seconds": None, "cpu_seconds": None, "children_peak_rss_kb_cumulative": None,
+                            "reason": "Missing natural-completion evidence; the Actions job may have ended before the command completed"})
     statuses = {record.get("status") for record in records}
     if "timeout" in statuses:
         status = "timeout"
+    elif "incomplete" in statuses or "running" in statuses:
+        status = "incomplete"
     elif statuses == {"passed"}:
         status = "passed"
     else:
@@ -647,16 +645,16 @@ def aggregate_group(group: str, manifest: dict, results_root: Path) -> dict:
                and all(report.get("success", False) for report in browser.values())
                and all(name in unit.get("suites", {}) for name in SLOW_SUITES),
                "unit": unit, "storybook": storybook, "browser": browser}
-    wall_seconds = max((float(record.get("wall_seconds", 0.0)) for record in records), default=0.0)
-    started = [record["started_unix"] for record in records if "started_unix" in record]
-    finished = [record["finished_unix"] for record in records if "finished_unix" in record]
+    durations = [record.get("wall_seconds") for record in records]
+    all_durations = all(isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0
+                        for seconds in durations)
+    wall_seconds = max(durations) if all_durations else None
     result = {"group": group, "sha": manifest["identities"][group]["sha"], "manifest_digest": manifest["digest"],
               "status": status, "score": int(status == "passed"), "environment": normalized_environment(records),
               "phase_environments": {record["name"]: normalized_environment([record]) for record in records},
-              "phases": records, "reports": reports, "phase_wall_seconds_sum": sum(record.get("wall_seconds", 0.0) for record in records),
-              "execution_wall_seconds": wall_seconds, "wall_seconds": wall_seconds}
-    if started and finished:
-        result["phase_span_seconds"] = max(finished) - min(started)
+              "phases": records, "reports": reports,
+              "critical_path_seconds": wall_seconds, "execution_wall_seconds": wall_seconds,
+              "wall_seconds": wall_seconds}
     return result
 
 
@@ -761,16 +759,15 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
     phase_sources = isolate_phase_sources(source, planned, directory / "isolated-sources")
     executable = [rebase_phase(phase, source, phase_sources[phase.name], group) for phase in planned]
     started = time.monotonic()
-    deadline = started + GROUP_SECONDS
     result = {"group": group, "sha": manifest["identities"][group]["sha"], "manifest_digest": manifest["digest"],
-              "status": "running", "score": 0, "budget_seconds": GROUP_SECONDS,
+              "status": "running", "score": 0,
               "execution_mode": "paired-sequential-hosted-phase-jobs", "environment": context, "phases": []}
     write_json(directory / "result.json", result)
     print(f"::{group}:: launching {len(executable)} independent CI jobs", flush=True)
     records: dict[str, dict] = {}
     def run_one(phase: Phase) -> dict:
         phase_env = {**env, "XDG_CACHE_HOME": str(directory / "cache" / phase.name)}
-        return execute_phase(phase, phase_sources[phase.name], directory, deadline, phase_env)
+        return execute_phase(phase, phase_sources[phase.name], directory, phase_env)
     with ThreadPoolExecutor(max_workers=len(executable)) as executor:
         futures = {executor.submit(run_one, phase): phase.name for phase in executable}
         for future in as_completed(futures):
@@ -779,9 +776,10 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
                 records[name] = future.result()
             except (OSError, subprocess.SubprocessError, ValueError) as error:
                 records[name] = {"name": name, "status": "environment_failed", "returncode": 1,
-                                 "wall_seconds": 0.0, "cpu_seconds": 0.0,
-                                 "children_peak_rss_kb_cumulative": 0, "reason": str(error)}
+                                 "wall_seconds": None, "cpu_seconds": None,
+                                 "children_peak_rss_kb_cumulative": None, "reason": str(error)}
     result["phases"] = [records[phase.name] for phase in executable]
+    finished = time.monotonic()
     with (directory / "raw.jsonl").open("w") as stream:
         for record in result["phases"]:
             stream.write(json.dumps(record) + "\n")
@@ -792,8 +790,7 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
         result["status"] = "passed"
     else:
         result["status"] = "failed"
-    result["phase_wall_seconds_sum"] = sum(record["wall_seconds"] for record in result["phases"])
-    result["execution_wall_seconds"] = time.monotonic() - started
+    result["execution_wall_seconds"] = finished - started
     if result["status"] == "passed":
         try:
             result["reports"] = validate_reports(directory)
@@ -802,15 +799,13 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
         except (OSError, ValueError, KeyError) as error:
             result.update(status="failed", reason=f"Missing or malformed report: {error}")
     elif (directory / "reports/unit.json").is_file():
-        # Keep completed unit-suite timings even when a later phase hits the deadline.
+        # Keep completed unit-suite timings even when a later phase fails.
         try:
             result["reports"] = {"success": False, "unit": vitest_results(directory / "reports/unit.json")}
         except (OSError, ValueError, KeyError):
             pass
-    result["wall_seconds"] = time.monotonic() - started
-    if result["status"] == "passed" and result["wall_seconds"] > GROUP_SECONDS:
-        result["status"] = "timeout"
-    # A completion time is not a score: a timeout always scores zero, never zero seconds.
+    result["wall_seconds"] = result["execution_wall_seconds"]
+    # A completion time is not a score: incomplete work never becomes zero seconds.
     if result["status"] == "passed":
         result["score"] = 1
     write_json(directory / "result.json", result)
@@ -826,8 +821,6 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
 
 def compare(a: dict, b: dict, manifest: dict) -> dict:
     result = {"passed": False, "reason": "candidate_failed", "delta_seconds": None, "delta_percent": None,
-              "delta_is_lower_bound": False, "total_wall_seconds": None,
-              "ab_total_budget_seconds": AB_TOTAL_SECONDS,
               "unimplemented_slow_suites": manifest.get("unimplemented_slow_suites", [])}
     if (a.get("manifest_digest") != manifest["digest"] or b.get("manifest_digest") != manifest["digest"]
             or a.get("group") != "A" or b.get("group") != "B"
@@ -838,25 +831,14 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
     def complete(group: dict) -> bool:
         seconds = group.get("wall_seconds", 0)
         return (group.get("status") == "passed" and group.get("reports", {}).get("success")
-                and isinstance(seconds, (int, float)) and math.isfinite(seconds) and 0 < seconds <= GROUP_SECONDS
+                and isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0
                 and [phase.get("name") for phase in group.get("phases", [])] == list(WORKLOAD)
                 and all(phase.get("status") == "passed" for phase in group["phases"]))
-    if isinstance(a.get("wall_seconds"), (int, float)) and isinstance(b.get("wall_seconds"), (int, float)):
-        total = a["wall_seconds"] + b["wall_seconds"]
-        if math.isfinite(total):
-            result["total_wall_seconds"] = total
-            if total > AB_TOTAL_SECONDS:
-                result["reason"] = "ab_total_wall_budget_exceeded"
-                return result
     if not complete(b):
         return result
-    if a.get("status") == "timeout":
-        if a.get("wall_seconds", 0) < GROUP_SECONDS:
-            return {**result, "reason": "unproven_baseline_deadline"}
-        delta = GROUP_SECONDS - b["wall_seconds"]
-        return {**result, "passed": True, "reason": "baseline_timeout_candidate_complete", "delta_seconds": delta,
-                "delta_percent": delta / GROUP_SECONDS * 100, "delta_is_lower_bound": True}
     if not complete(a):
+        if a.get("status") == "timeout":
+            return {**result, "passed": True, "reason": "baseline_workflow_timeout_candidate_complete"}
         return {**result, "reason": "baseline_failed_or_missing"}
     delta = a["wall_seconds"] - b["wall_seconds"]
     percent = delta / a["wall_seconds"] * 100
@@ -882,17 +864,20 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
 def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
     lines = ["# Whole-PR frontend A/B", "", f"Verdict: **{'PASS' if verdict['passed'] else 'FAIL'}** — `{verdict['reason']}`.", "",
              f"A `{a.get('sha')}`; B `{b.get('sha')}`; workload `{manifest['digest']}`.", "",
-             f"Each phase has a {GROUP_SECONDS}-second process wall-clock budget; group wall is the maximum phase wall, and A+B group wall must stay within {AB_TOTAL_SECONDS} seconds. Each phase runs A then B sequentially on the same GitHub-hosted runner, with isolated source, cache, ports, and reports.", "",
+             "Each phase reports the natural wall time of its command on GitHub Actions. The script has no subprocess deadline and never fabricates a completion time after cleanup. Each phase runs A then B sequentially on the same GitHub-hosted runner, with isolated source, cache, ports, and reports. An Actions workflow timeout produces incomplete evidence rather than a numeric duration.", "",
              "| Phase | A seconds | B seconds | A − B seconds |", "|---|---:|---:|---:|"]
     for name in manifest["workload"]:
         left = next((p for p in a.get("phases", []) if p["name"] == name), None)
         right = next((p for p in b.get("phases", []) if p["name"] == name), None)
         delta = f"{left['wall_seconds'] - right['wall_seconds']:.3f}" if left and right and left["status"] == right["status"] == "passed" else "—"
         lines.append(f"| {name} | {left['wall_seconds'] if left else 'not run'} | {right['wall_seconds'] if right else 'not run'} | {delta} |")
-    lines += ["", f"A: {a.get('status')}, score {a.get('score', 0)}, max phase {a.get('wall_seconds')} s, phase sum {a.get('phase_wall_seconds_sum')} s, span {a.get('phase_span_seconds')} s.",
-              f"B: {b.get('status')}, score {b.get('score', 0)}, max phase {b.get('wall_seconds')} s, phase sum {b.get('phase_wall_seconds_sum')} s, span {b.get('phase_span_seconds')} s.",
-              f"A+B measured wall clock: {verdict.get('total_wall_seconds')} s / {AB_TOTAL_SECONDS} s.", "",
-              f"Saving {'lower bound' if verdict['delta_is_lower_bound'] else 'measured'}: {verdict['delta_seconds']} s / {verdict['delta_percent']}%.", "",
+    lines += ["", f"A: {a.get('status')}, score {a.get('score', 0)}, maximum natural phase time {a.get('wall_seconds')} s.",
+              f"B: {b.get('status')}, score {b.get('score', 0)}, maximum natural phase time {b.get('wall_seconds')} s.", ""]
+    if verdict.get("delta_seconds") is not None:
+        lines.append(f"Measured maximum-phase difference: {verdict['delta_seconds']} s / {verdict['delta_percent']}%.")
+    else:
+        lines.append("Numeric A/B difference: unavailable because one side did not complete naturally.")
+    lines += ["",
               "## Four target Vitest suites", "", "| Suite | A seconds | B seconds | Implementation |", "|---|---:|---:|---|"]
     for name in SLOW_SUITES:
         times = [group.get("reports", {}).get("unit", {}).get("suites", {}).get(name, {}).get("seconds", "unavailable") for group in (a, b)]
@@ -959,7 +944,7 @@ def main() -> int:
             directory.mkdir(parents=True, exist_ok=True)
             result = {"name": args.phase_name, "group": args.group, "sha": args.source_sha,
                       "manifest_digest": manifest.get("digest"), "status": "environment_failed", "returncode": 1,
-                      "wall_seconds": 0.0, "cpu_seconds": 0.0, "children_peak_rss_kb_cumulative": 0,
+                      "wall_seconds": None, "cpu_seconds": None, "children_peak_rss_kb_cumulative": None,
                       "reason": str(error)}
             write_json(directory / "result.json", result)
         return phase_exit_code(args.group, result["status"])

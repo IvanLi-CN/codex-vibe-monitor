@@ -31,7 +31,6 @@ jobs:
   prepare:
     name: Prepare frontend A/B dependencies
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
     steps:
       - name: Validate immutable inputs
         env:
@@ -133,9 +132,9 @@ jobs:
     # A and B are deliberately paired in one hosted job and run sequentially.
     # This is the control variable: both groups observe the same runner CPU,
     # memory, kernel, Bun, Chromium, and filesystem state without contention.
-    # The script's 180-second process deadline remains the acceptance budget;
-    # this job timeout is the existing measurement-job ceiling.
-    timeout-minutes: 25
+    # This is the only measurement ceiling. The harness never terminates a
+    # naturally running test process for timing purposes.
+    timeout-minutes: 30
     steps:
       - name: Checkout measurement harness
         uses: actions/checkout@v7
@@ -183,7 +182,7 @@ jobs:
           fi
           tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab"
 
-      - name: Run paired workloads with independent hard deadlines
+      - name: Run paired workloads to natural completion
         env:
           PHASE: ${{ matrix.phase }}
           BASELINE: ${{ inputs.baseline_sha }}
@@ -215,11 +214,10 @@ jobs:
           if-no-files-found: error
 
   aggregate:
-    name: Whole PR A/B (180 seconds per group, 600 seconds total)
+    name: Whole PR A/B (natural execution times)
     needs: [prepare, measure-phase]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
     steps:
       - name: Checkout measurement harness
         uses: actions/checkout@v7

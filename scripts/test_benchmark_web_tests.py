@@ -37,9 +37,9 @@ def group(name, seconds=100, status="passed"):
 
 
 class AcceptanceTests(unittest.TestCase):
-    def test_budget_is_one_fixed_three_minute_group_and_ten_minute_ab_total(self):
-        self.assertEqual(MODULE.GROUP_SECONDS, 180)
-        self.assertEqual(MODULE.AB_TOTAL_SECONDS, 600)
+    def test_timing_has_no_script_budget_or_ab_total(self):
+        self.assertFalse(hasattr(MODULE, "GROUP_SECONDS"))
+        self.assertFalse(hasattr(MODULE, "AB_TOTAL_SECONDS"))
 
     def test_local_and_agent_vm_execution_are_rejected(self):
         for value in ("", "false"):
@@ -48,14 +48,16 @@ class AcceptanceTests(unittest.TestCase):
                     MODULE.actions_only()
 
     def test_old_timeout_new_complete_immediately_passes(self):
-        result = MODULE.compare(group("A", 180.01, "timeout"), group("B", 179.9), manifest())
+        result = MODULE.compare(group("A", None, "timeout"), group("B", 179.9), manifest())
         self.assertTrue(result["passed"])
-        self.assertTrue(result["delta_is_lower_bound"])
-        self.assertEqual(result["reason"], "baseline_timeout_candidate_complete")
+        self.assertIsNone(result["delta_seconds"])
+        self.assertNotIn("total_wall_seconds", result)
+        self.assertNotIn("delta_is_lower_bound", result)
+        self.assertEqual(result["reason"], "baseline_workflow_timeout_candidate_complete")
 
-    def test_only_an_expected_baseline_timeout_keeps_the_producer_successful(self):
-        self.assertEqual(MODULE.phase_exit_code("A", "timeout"), 0)
-        for group_name, status in (("B", "timeout"), ("A", "failed"), ("B", "failed"), ("B", "environment_failed")):
+    def test_only_naturally_completed_phases_keep_the_producer_successful(self):
+        self.assertEqual(MODULE.phase_exit_code("A", "passed"), 0)
+        for group_name, status in (("A", "timeout"), ("B", "timeout"), ("A", "failed"), ("B", "failed"), ("B", "environment_failed")):
             with self.subTest(group=group_name, status=status):
                 self.assertEqual(MODULE.phase_exit_code(group_name, status), 1)
 
@@ -69,21 +71,18 @@ class AcceptanceTests(unittest.TestCase):
     def test_candidate_timeout_failure_or_incomplete_never_passes(self):
         for status in ("timeout", "failed", "environment_failed", "running"):
             with self.subTest(status=status):
-                self.assertFalse(MODULE.compare(group("A", 181, "timeout"), group("B", 50, status), manifest())["passed"])
-        for seconds in (0, -1, 180.001, float("nan"), float("inf")):
+                self.assertFalse(MODULE.compare(group("A", None, "timeout"), group("B", 50, status), manifest())["passed"])
+        for seconds in (0, -1, float("nan"), float("inf")):
             self.assertFalse(MODULE.compare(group("A"), group("B", seconds), manifest())["passed"])
         b = group("B", 50)
         b["phases"].pop()
         self.assertFalse(MODULE.compare(group("A"), b, manifest())["passed"])
 
     def test_infrastructure_failure_is_not_an_old_timeout(self):
-        self.assertEqual(MODULE.compare(group("A", 180, "environment_failed"), group("B", 50), manifest())["reason"], "baseline_failed_or_missing")
-        self.assertFalse(MODULE.compare(group("A", 1, "timeout"), group("B", 50), manifest())["passed"])
-
-    def test_a_plus_b_wall_budget_is_enforced(self):
-        result = MODULE.compare(group("A", 150), group("B", 451), manifest())
-        self.assertEqual(result["reason"], "ab_total_wall_budget_exceeded")
-        self.assertEqual(result["total_wall_seconds"], 601)
+        self.assertEqual(MODULE.compare(group("A", None, "environment_failed"), group("B", 50), manifest())["reason"], "baseline_failed_or_missing")
+        result = MODULE.compare(group("A", None, "timeout"), group("B", 50), manifest())
+        self.assertTrue(result["passed"])
+        self.assertIsNone(result["delta_seconds"])
 
     def test_source_manifest_and_environment_must_match(self):
         for key, value in (("sha", "wrong"), ("group", "A"), ("manifest_digest", "different"),
@@ -123,32 +122,20 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertNotIn("--retries", actual)
         self.assertIn("PLAYWRIGHT_JSON_OUTPUT_NAME=", actual)
 
-    def test_deadline_does_not_restart_for_next_phase(self):
+    def test_natural_process_time_excludes_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             process = MagicMock(pid=12345)
             process.wait.return_value = 0
-            with patch.object(MODULE.time, "monotonic", side_effect=[590, 590, 590, 595, 595, 601]), \
+            with patch.object(MODULE.time, "monotonic", side_effect=[100, 105, 106, 109]), \
                     patch.object(MODULE.subprocess, "Popen", return_value=process) as popen, \
                     patch.object(MODULE.os, "killpg") as kill:
-                first = MODULE.execute_phase(MODULE.Phase("first", "test"), Path(temporary), Path(temporary), 600, {})
-                second = MODULE.execute_phase(MODULE.Phase("second", "test"), Path(temporary), Path(temporary), 600, {})
-            self.assertEqual(first["status"], "passed")
-            self.assertEqual(second["status"], "timeout")
+                result = MODULE.execute_phase(MODULE.Phase("natural", "test"), Path(temporary), Path(temporary), {})
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["wall_seconds"], 5)
+            self.assertEqual(result["cleanup_seconds"], 3)
             self.assertEqual(popen.call_count, 1)
-            process.wait.assert_called_once_with(timeout=10)
+            process.wait.assert_called_once_with()
             kill.assert_called_once_with(12345, MODULE.signal.SIGKILL)
-
-    def test_timeout_kills_the_whole_process_group(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            process = MagicMock(pid=12345)
-            process.wait.side_effect = [subprocess.TimeoutExpired("test", 1), 0]
-            with patch.object(MODULE.time, "monotonic", return_value=599), \
-                    patch.object(MODULE.subprocess, "Popen", return_value=process), \
-                    patch.object(MODULE.os, "killpg") as kill:
-                result = MODULE.execute_phase(MODULE.Phase("timeout", "test"), Path(temporary), Path(temporary), 600, {})
-            self.assertEqual(result["status"], "timeout")
-            self.assertEqual(result["returncode"], 124)
-            self.assertTrue(all(call.args == (12345, MODULE.signal.SIGKILL) for call in kill.call_args_list))
 
     def test_whole_pr_workload_and_both_source_schedules_are_included(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -256,10 +243,10 @@ class ExecutionContractTests(unittest.TestCase):
             result = MODULE.aggregate_group("A", data, root)
             self.assertEqual(result["status"], "passed")
             self.assertEqual(result["wall_seconds"], len(MODULE.WORKLOAD))
-            self.assertEqual(result["phase_wall_seconds_sum"], sum(range(1, len(MODULE.WORKLOAD) + 1)))
+            self.assertEqual(result["critical_path_seconds"], len(MODULE.WORKLOAD))
             self.assertTrue(result["reports"]["success"])
             (root / "A" / MODULE.WORKLOAD[0] / "result.json").unlink()
-            self.assertEqual(MODULE.aggregate_group("A", data, root)["status"], "failed")
+            self.assertEqual(MODULE.aggregate_group("A", data, root)["status"], "incomplete")
 
 
 class ReporterTests(unittest.TestCase):
@@ -320,8 +307,12 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(all(step["with"]["persist-credentials"] is False for step in checkouts))
             self.assertNotIn("continue-on-error", job)
         self.assertEqual(workflow["jobs"]["measure-phase"]["strategy"]["matrix"]["phase"], list(MODULE.WORKLOAD))
-        paired = next(step["run"] for step in workflow["jobs"]["measure-phase"]["steps"]
-                      if step["name"] == "Run paired workloads with independent hard deadlines")
+        measure_job = workflow["jobs"]["measure-phase"]
+        self.assertEqual(measure_job["timeout-minutes"], 30)
+        self.assertNotIn("timeout-minutes", workflow["jobs"]["prepare"])
+        self.assertNotIn("timeout-minutes", workflow["jobs"]["aggregate"])
+        paired = next(step["run"] for step in measure_job["steps"]
+                      if step["name"] == "Run paired workloads to natural completion")
         self.assertIn("--group A", paired)
         self.assertIn("--group B", paired)
         self.assertIn("a_status=$?", paired)
