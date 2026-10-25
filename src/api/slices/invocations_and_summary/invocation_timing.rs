@@ -11,9 +11,10 @@ pub(crate) fn latest_pool_attempt_phase_sql_at_snapshot(
     let attempt_snapshot_predicate = attempt_snapshot_id
         .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
         .unwrap_or_default();
+    let attempt_source = pool_attempt_source_sql("attempt", attempt_snapshot_id.is_some());
     format!(
         "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
-            FROM pool_upstream_request_attempts AS attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
+            FROM {attempt_source} \
            WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
              AND attempt.occurred_at = {invocation_ref}.occurred_at \
              {attempt_snapshot_predicate} \
@@ -32,7 +33,7 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
         final_pool_attempt_timing_evidence_sql(attempt_ref, invocation_ref, "first_token_ms");
     format!(
         "CASE WHEN {attempt_ref}.id = (SELECT final_attempt.id \
-           FROM pool_upstream_request_attempts AS final_attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
+           FROM pool_upstream_request_attempts AS final_attempt \
            WHERE final_attempt.invoke_id = {attempt_ref}.invoke_id \
              AND final_attempt.occurred_at = {attempt_ref}.occurred_at \
              AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
@@ -62,16 +63,18 @@ pub(crate) fn final_pool_invocation_timing_sql_at_snapshot(
     let attempt_snapshot_predicate = attempt_snapshot_id
         .map(|snapshot_id| format!(" AND final_attempt.id <= {snapshot_id}"))
         .unwrap_or_default();
+    let final_attempt_source =
+        pool_attempt_source_sql("final_attempt", attempt_snapshot_id.is_some());
     format!(
         "CASE WHEN NOT EXISTS (SELECT 1 \
-           FROM pool_upstream_request_attempts AS final_attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
+           FROM {final_attempt_source} \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
             {attempt_snapshot_predicate}) \
            OR COALESCE((SELECT CASE \
              WHEN ({final_attempt_evidence_sql}) THEN 1 \
              ELSE 0 END \
-           FROM pool_upstream_request_attempts AS final_attempt INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt \
+           FROM {final_attempt_source} \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
             {attempt_snapshot_predicate} \
@@ -80,6 +83,16 @@ pub(crate) fn final_pool_invocation_timing_sql_at_snapshot(
            LIMIT 1), 0) = 1 \
         THEN CASE WHEN {timing_sql} THEN {invocation_ref}.{column} END END"
     )
+}
+
+fn pool_attempt_source_sql(alias: &str, use_invoke_attempt_index: bool) -> String {
+    if use_invoke_attempt_index {
+        format!(
+            "pool_upstream_request_attempts AS {alias} INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt"
+        )
+    } else {
+        format!("pool_upstream_request_attempts AS {alias}")
+    }
 }
 
 pub(crate) fn invocation_timing_sql_for_source(
