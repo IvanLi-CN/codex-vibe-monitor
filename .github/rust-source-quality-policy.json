@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 43,
+    "inventory_entries": 47,
     "suppression_entries": 126
   },
   "loc_targets": {
@@ -175,10 +175,34 @@
       "next_module_workstream": "Maintain the completed schema retirement and historical fixture compatibility boundary below the test-helper target."
     },
     {
-      "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
+      "path": "src/tests/stateful_sqlite/oauth_failure_diagnostics_and_terminal_streams.rs",
       "role": "test_helper",
-      "line_budget": 3869,
-      "next_module_workstream": "Split OAuth route rewrite/timeout fixtures by request preparation, response, and failure paths."
+      "line_budget": 1092,
+      "next_module_workstream": "Maintain the completed OAuth failure diagnostics, terminal-stream, retry, and persistence fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_response_rewrite_and_replay.rs",
+      "role": "test_helper",
+      "line_budget": 509,
+      "next_module_workstream": "Maintain the completed OAuth file-backed response rewrite, passthrough, replay-analysis, and sticky-projection fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_route_support_and_binding.rs",
+      "role": "test_helper",
+      "line_budget": 712,
+      "next_module_workstream": "Maintain the completed OAuth request-body, sticky-binding, route-preparation, and forwarding-observability fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_timeout_and_stream_lifecycle.rs",
+      "role": "test_helper",
+      "line_budget": 941,
+      "next_module_workstream": "Maintain the completed OAuth timeout, handshake, first-chunk, header, and stream-lifecycle fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/sticky_key_queries_and_prompt_cache_views.rs",
+      "role": "test_helper",
+      "line_budget": 623,
+      "next_module_workstream": "Maintain the completed sticky-key query, activity-window, recent-invocation, limit, and prompt-cache view fixtures below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
@@ -735,10 +759,10 @@
       "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
     },
     {
-      "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
+      "path": "src/tests/stateful_sqlite/oauth_failure_diagnostics_and_terminal_streams.rs",
       "kind": "allow",
       "declaration": "#[allow(deprecated)]",
-      "reason": "Retain this targeted allow for the compatibility call sites in src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs; remove it when the listed module workstream removes the deprecated boundary."
+      "reason": "Retain this targeted allow for the compatibility call site in src/tests/stateful_sqlite/oauth_failure_diagnostics_and_terminal_streams.rs; remove it when the listed module workstream removes the deprecated boundary."
     },
     {
       "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
