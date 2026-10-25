@@ -219,6 +219,11 @@ def prepare_competitor(
                 maintenance.execute(f"DELETE FROM {table}")
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+        if "maintenance_owner_retry_state" in table_names:
+            maintenance.execute(
+                f"DELETE FROM maintenance_owner_retry_state WHERE task_key IN ({placeholders})",
+                CONTROLLED_TASK_KEYS,
+            )
         maintenance.execute(
             f"UPDATE managed_tasks "
             f"SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
