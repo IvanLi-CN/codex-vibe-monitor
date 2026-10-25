@@ -51,6 +51,10 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   and oracle run on the target commit in PR/Main CI. Release relies on that
   successful CI Main result and runtime-image smoke, never an external receipt
   or production-copy path.
+- Empirical acceptance is fail-closed: unstable measurement windows or a
+  threshold failure block release evidence and must be recorded against the
+  candidate; the threshold may not be relaxed and an unstable run may not be
+  silently relabeled as passed.
 - A published rolling Projection may consume only a continuous in-memory
   Summary Delta Journal or durable Summary Source Change Journal tail through
   `RollingDelta`. Pre-enqueue registration is not readable; only a matching
