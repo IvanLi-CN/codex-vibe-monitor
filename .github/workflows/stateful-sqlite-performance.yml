@@ -321,9 +321,10 @@ jobs:
           done
           exit "$overall_status"
 
-      - name: Refresh trusted harness before acceptance gate
+      - name: Sanitize timing evidence
         if: ${{ always() && steps.validate_input.outcome == 'success' }}
         env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           PATH: ${{ steps.revisions.outputs.safe_path }}
           BASH_ENV: /dev/null
           ENV: /dev/null
@@ -331,13 +332,92 @@ jobs:
           PYTHONHOME: ""
           NODE_OPTIONS: ""
           LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          sanitized_root="$EVIDENCE_ROOT/sanitized"
+          rm -rf "$sanitized_root"
+          mkdir -p "$sanitized_root/logs"
+          for file in revisions.txt runner-context.txt wall-times.txt target-wall-times.txt replay-failures.txt; do
+            if [ -f "$EVIDENCE_ROOT/$file" ]; then
+              cp "$EVIDENCE_ROOT/$file" "$sanitized_root/$file"
+            fi
+          done
+          if [ -d "$EVIDENCE_ROOT/logs" ]; then
+            while IFS= read -r -d '' source; do
+              relative="${source#"$EVIDENCE_ROOT/logs/"}"
+              destination="$sanitized_root/logs/$relative"
+              mkdir -p "$(dirname "$destination")"
+              grep -E 'stateful-test-timing (target_start=|target_end=|phase=[a-z0-9_]+ elapsed_ms=[0-9]+)' "$source" \
+                > "$destination" || true
+            done < <(find "$EVIDENCE_ROOT/logs" -type f -print0)
+          fi
+
+      - name: Upload replay evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stateful-sqlite-performance-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stateful-sqlite-performance/sanitized
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report replay outcome
+        if: always()
+        env:
+          ARCHIVES_OUTCOME: ${{ steps.archives.outcome }}
+          REPLAYS_OUTCOME: ${{ steps.replays.outcome }}
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          test "$ARCHIVES_OUTCOME" = success
+          test "$REPLAYS_OUTCOME" = success
+
+  acceptance:
+    name: Trusted Stateful SQLite empirical acceptance
+    needs: measure
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate trusted acceptance inputs
+        id: validate_input
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_HARNESS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$WORKFLOW_REF" in
+            refs/heads/main|refs/heads/th/stateful-sqlite-performance-harness) ;;
+            *) exit 64 ;;
+          esac
+          test "$TRUSTED_HARNESS_SHA" = "$WORKFLOW_SHA"
+          test "$TRUSTED_HARNESS_SHA" != "$CANDIDATE_SHA"
+
+      - name: Checkout trusted acceptance harness
+        if: steps.validate_input.outcome == 'success'
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.trusted_harness_sha }}
           path: trusted
           fetch-depth: 1
-          clean: true
           persist-credentials: false
+
+      - name: Download replay evidence
+        if: ${{ always() && steps.validate_input.outcome == 'success' }}
+        uses: actions/download-artifact@v7
+        with:
+          name: stateful-sqlite-performance-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stateful-sqlite-performance
 
       - name: Generate empirical acceptance card
         id: acceptance
@@ -345,20 +425,18 @@ jobs:
         continue-on-error: true
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
-          CANDIDATE_SHA: ${{ steps.revisions.outputs.candidate_sha }}
-          TRUSTED_HARNESS_SHA: ${{ steps.revisions.outputs.trusted_harness_sha }}
-          PATH: ${{ steps.revisions.outputs.safe_path }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
           BASH_ENV: /dev/null
           ENV: /dev/null
           PYTHONPATH: ""
           PYTHONHOME: ""
           NODE_OPTIONS: ""
           LD_PRELOAD: ""
-          PYTHON_BIN: ${{ steps.revisions.outputs.python_bin }}
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT/evidence"
-          "$PYTHON_BIN" -I trusted/.github/scripts/stateful-sqlite-performance.py \
+          python3 -I trusted/.github/scripts/stateful-sqlite-performance.py \
             --root "$EVIDENCE_ROOT" \
             --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
             --target-wall-file "$EVIDENCE_ROOT/target-wall-times.txt" \
@@ -373,17 +451,12 @@ jobs:
           fi
           exit "$status"
 
-      - name: Upload sanitized acceptance evidence
+      - name: Upload acceptance card
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: stateful-sqlite-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/stateful-sqlite-performance/revisions.txt
-            ${{ runner.temp }}/stateful-sqlite-performance/runner-context.txt
-            ${{ runner.temp }}/stateful-sqlite-performance/wall-times.txt
-            ${{ runner.temp }}/stateful-sqlite-performance/target-wall-times.txt
-            ${{ runner.temp }}/stateful-sqlite-performance/replay-failures.txt
             ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.json
             ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.md
           if-no-files-found: warn
@@ -392,10 +465,8 @@ jobs:
       - name: Enforce empirical acceptance
         if: always()
         env:
-          ARCHIVES_OUTCOME: ${{ steps.archives.outcome }}
-          REPLAYS_OUTCOME: ${{ steps.replays.outcome }}
+          MEASURE_RESULT: ${{ needs.measure.result }}
           ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
-          PATH: ${{ steps.revisions.outputs.safe_path }}
           BASH_ENV: /dev/null
           ENV: /dev/null
           PYTHONPATH: ""
@@ -404,6 +475,5 @@ jobs:
           LD_PRELOAD: ""
         run: |
           set -euo pipefail
-          test "$ARCHIVES_OUTCOME" = success
-          test "$REPLAYS_OUTCOME" = success
+          test "$MEASURE_RESULT" = success
           test "$ACCEPTANCE_OUTCOME" = success
