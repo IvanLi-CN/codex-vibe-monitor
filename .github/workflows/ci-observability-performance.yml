@@ -1225,7 +1225,7 @@ jobs:
           if [ "$BUILD_ONLY" = "true" ]; then args+=(--build-only); fi
           if [ "$IMAGE_RESULT" != "success" ]; then
             args+=(--workflow-failure)
-          elif [ "$PRODUCER_RESULT" != "success" ] && [ "$COMPLETE_IMAGE_CACHE_HIT" != "true" ]; then
+          elif [ "$BUILD_PATH" = "auto" ] && [ "$PRODUCER_RESULT" != "success" ] && [ "$COMPLETE_IMAGE_CACHE_HIT" != "true" ]; then
             args+=(--workflow-failure)
           fi
           report_root="$PWD/trusted"

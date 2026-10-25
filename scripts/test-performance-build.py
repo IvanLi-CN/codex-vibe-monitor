@@ -395,6 +395,17 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["status"], "failed")
             self.assertIn("workflow dependency result was not successful", value["validationErrors"])
 
+    def test_canonical_build_only_treats_skipped_producers_as_expected(self) -> None:
+        report_step = next(
+            step for step in self.workflow["jobs"]["observability-performance-build-report"]["steps"]
+            if step["name"] == "Generate build report"
+        )
+        run = report_step["run"]
+        self.assertIn(
+            'elif [ "$BUILD_PATH" = "auto" ] && [ "$PRODUCER_RESULT" != "success" ]',
+            run,
+        )
+
     def test_build_report_rejects_corrupt_component_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

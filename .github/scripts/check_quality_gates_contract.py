@@ -605,6 +605,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and "--jobs-json" in report_run
         and "--workflow-failure" in report_run
         and "COMPLETE_IMAGE_CACHE_HIT" in report_run
+        and 'BUILD_PATH" = "auto"' in report_run
         and "PRODUCER_RESULT" in report_run,
         f"{workflow_path} build report must bind identity, measured Actions timings and distinguish expected producer skips from failures",
     )
