@@ -75,7 +75,7 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(result["passed"], expected)
                 self.assertEqual(result["delta_seconds"], a - b)
 
-    def test_natural_baseline_retry_only_recovery_is_measured_and_explicit(self):
+    def test_natural_baseline_retry_only_does_not_pass(self):
         baseline = group("A", 100, "failed")
         baseline["reports"]["success"] = False
         baseline["reports"]["retry_only"] = True
@@ -83,10 +83,9 @@ class AcceptanceTests(unittest.TestCase):
         baseline["phases"][0]["status"] = "failed"
         baseline["phases"] = [{**phase, "execution_completed_naturally": True} for phase in baseline["phases"]]
         result = MODULE.compare(baseline, group("B", 90), manifest())
-        self.assertTrue(result["passed"])
-        self.assertEqual(result["reason"], "baseline_retry_only_candidate_complete")
-        self.assertEqual(result["delta_seconds"], 10)
-        self.assertEqual(result["baseline_retry_cases"], [{"name": "old flaky case"}])
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "baseline_failed_or_missing")
+        self.assertIsNone(result["delta_seconds"])
 
     def test_candidate_timeout_failure_or_incomplete_never_passes(self):
         for status in ("timeout", "failed", "environment_failed", "running"):
@@ -172,7 +171,36 @@ class ExecutionContractTests(unittest.TestCase):
         audit = MODULE.demo_coverage_audit(MODULE.ROOT)
         self.assertTrue(audit["verified"], audit["issues"])
 
-    def test_timeline_wait_tuning_is_the_only_normalized_e2e_change(self):
+    def test_measurement_readiness_overlay_is_normalized_without_changing_assertions(self):
+        baseline = subprocess.check_output(
+            ["git", "show", "76beb053ac529bde47961dddb1e14b4d176700f8:web/tests/e2e/records-filter-overlay.spec.ts"],
+            text=True,
+        )
+        path = MODULE.ROOT / "web/tests/e2e/records-filter-overlay.spec.ts"
+        tuned = baseline.replace(
+            'await page.goto("/#/records");',
+            'await page.goto("/#/records", { waitUntil: "networkidle" });',
+        )
+        self.assertEqual(
+            MODULE.normalize_approved_e2e_performance_change(path, baseline),
+            MODULE.normalize_approved_e2e_performance_change(path, tuned),
+        )
+        self.assertNotEqual(baseline, tuned)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            target = source / "web/tests/e2e/records-filter-overlay.spec.ts"
+            dashboard = source / "web/tests/e2e/dashboard-working-conversations-layout.spec.ts"
+            target.parent.mkdir(parents=True)
+            target.write_text(baseline)
+            dashboard.write_text('await page.goto("/#/dashboard");\n')
+            self.assertEqual(MODULE.apply_e2e_readiness_overlay(source), [
+                "web/tests/e2e/records-filter-overlay.spec.ts",
+                "web/tests/e2e/dashboard-working-conversations-layout.spec.ts",
+            ])
+            self.assertIn('await page.goto("/#/records", { waitUntil: "networkidle" });', target.read_text())
+
+    def test_timeline_wait_tuning_is_still_normalized(self):
         baseline = subprocess.check_output(
             ["git", "show", "76beb053ac529bde47961dddb1e14b4d176700f8:web/tests/e2e/dashboard-timeline-capacity.spec.ts"],
             text=True,

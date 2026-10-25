@@ -37,6 +37,19 @@ E2E_SPECS = (
     "dashboard-working-conversations-layout.spec.ts",
     "dashboard-render-performance.spec.ts", "dashboard-timeline-capacity.spec.ts",
 )
+E2E_READINESS_OVERLAY = (
+    (
+        "web/tests/e2e/records-filter-overlay.spec.ts",
+        'await page.goto("/#/records");',
+        'await page.goto("/#/records", { waitUntil: "networkidle" });',
+    ),
+    (
+        "web/tests/e2e/dashboard-working-conversations-layout.spec.ts",
+        'await page.goto("/#/dashboard");',
+        'await page.goto("/#/dashboard", { waitUntil: "networkidle" });',
+    ),
+)
+E2E_READINESS_OVERLAY_NAME = "e2e-first-navigation-readiness-v1"
 
 
 def digest(value: object) -> str:
@@ -155,11 +168,10 @@ def test_files(source: Path) -> list[str]:
 
 def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     """Ignore only reviewed execution-only tuning while hashing test coverage."""
-    if path.name == "dashboard-working-conversations-layout.spec.ts":
-        text = text.replace(
-            'await page.goto("/#/dashboard", { waitUntil: "networkidle" });',
-            'await page.goto("/#/dashboard");',
-        )
+    for relative, before, after in E2E_READINESS_OVERLAY:
+        if path.as_posix().endswith(relative):
+            text = text.replace(after, before)
+            break
     if path.name != "dashboard-timeline-capacity.spec.ts":
         return text
     text = re.sub(
@@ -336,6 +348,20 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     return text
 
 
+def apply_e2e_readiness_overlay(source: Path) -> list[str]:
+    """Apply the identical cold-navigation readiness fix to both measured sources."""
+    applied: list[str] = []
+    for relative, before, after in E2E_READINESS_OVERLAY:
+        path = source / relative
+        text = path.read_text()
+        if after not in text:
+            if before not in text:
+                raise ValueError(f"Readiness overlay target is not recognized: {relative}")
+            path.write_text(text.replace(before, after))
+        applied.append(relative)
+    return applied
+
+
 def fixture_inventory(source: Path) -> dict:
     """Freeze unchanged input chunks and specs so deleting tests cannot manufacture a win."""
     paths = list((source / "web/src/pages/account-pool").glob("*.txt"))
@@ -408,7 +434,7 @@ def prepare(baseline: Path, candidate: Path, baseline_sha: str, candidate_sha: s
                 raise ValueError(f"Existing workflow timeouts changed: {name}")
     unimplemented = [name for name in SLOW_SUITES if "web/" + name not in changed]
     manifest = {
-        "schema": 3, "timing_contract": "natural process wall time; GitHub Actions workflow timeout only",
+        "schema": 4, "timing_contract": "natural process wall time; GitHub Actions workflow timeout only",
         "identities": identities,
         "source_roots": {"A": str(baseline.resolve()), "B": str(candidate.resolve())},
         "output_root": str(output.resolve()),
@@ -419,7 +445,12 @@ def prepare(baseline: Path, candidate: Path, baseline_sha: str, candidate_sha: s
         "unimplemented_slow_suites": unimplemented,
         "demo_coverage_audit": demo_coverage_audit(candidate),
         "declared_demo_cells": {"semantic": 104, "baseline_browser": 104, "candidate_jsdom": 104, "candidate_browser": 38},
-        "cache_policy": "independent fresh source/build caches; no prebuild, warmup or automatic repeat",
+        "cache_policy": "independent fresh source/build caches; no prebuild or automatic repeat",
+        "measurement_overlays": [{
+            "name": E2E_READINESS_OVERLAY_NAME,
+            "files": [relative for relative, _, _ in E2E_READINESS_OVERLAY],
+            "purpose": "Apply the same first-navigation readiness condition to A and B so cold Vite transforms do not consume existing 5-second visibility assertions.",
+        }],
     }
     manifest["digest"] = digest(manifest)
     write_json(output / "manifest.json", manifest)
@@ -598,13 +629,15 @@ def run_phase(group: str, source: Path, source_sha: str, phase_name: str, manife
     phase = next((candidate for candidate in planned if candidate.name == phase_name), None)
     if phase is None:
         raise ValueError(f"Manifest is missing phase {group}/{phase_name}")
+    applied_overlays = apply_e2e_readiness_overlay(source) if phase_name in ("e2e-pr", "e2e-main") else []
     phase = materialize_phase(phase, manifest, group, source, directory)
     phase = rebase_phase_ports(phase, group)
     env = {**os.environ, "CI": "1", "DOCS_BASE": f"/{os.environ['GITHUB_REPOSITORY'].split('/')[-1]}/",
            "PYTHONDONTWRITEBYTECODE": "1", "PLAYWRIGHT_BROWSERS_PATH": str(output / "browsers"),
            "STORYBOOK_DISABLE_TELEMETRY": "1", "XDG_CACHE_HOME": str(output / "cache" / group / phase_name)}
     record = execute_phase(phase, source, directory, env)
-    record.update(group=group, sha=source_sha, manifest_digest=manifest["digest"], environment=context)
+    record.update(group=group, sha=source_sha, manifest_digest=manifest["digest"], environment=context,
+                  measurement_overlays=applied_overlays)
     if record["status"] == "passed":
         try:
             record["report"] = phase_report(phase_name, directory)
@@ -876,20 +909,12 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
                 and [phase.get("name") for phase in group.get("phases", [])] == list(WORKLOAD)
                 and all(phase.get("status") == "passed" and phase.get("execution_completed_naturally") is not False
                         for phase in group["phases"]))
-    def retry_only_complete(group: dict) -> bool:
-        seconds = group.get("wall_seconds", 0)
-        return (group.get("status") == "failed" and group.get("reports", {}).get("retry_only") is True
-                and isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0
-                and [phase.get("name") for phase in group.get("phases", [])] == list(WORKLOAD)
-                and all(phase.get("execution_completed_naturally") is True
-                        and phase.get("status") in ("passed", "failed") for phase in group["phases"]))
     if not complete(b):
         return result
     if not complete(a):
         if a.get("status") == "timeout":
             return {**result, "passed": True, "reason": "baseline_workflow_timeout_candidate_complete"}
-        if not retry_only_complete(a):
-            return {**result, "reason": "baseline_failed_or_missing"}
+        return {**result, "reason": "baseline_failed_or_missing"}
     delta = a["wall_seconds"] - b["wall_seconds"]
     percent = delta / a["wall_seconds"] * 100
     # Compare common semantic test identities, allowing the explicit Demo execution-layer migration.
@@ -907,8 +932,7 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
         new_cases = {(Path(c["file"]).name, c["name"]) for c in b["reports"]["browser"][profile]["cases"]}
         if not old_cases <= new_cases:
             return {**result, "reason": f"candidate_removed_{profile}_browser_tests"}
-    reason = "baseline_retry_only_candidate_complete" if retry_only_complete(a) else "improvement_threshold"
-    return {**result, "passed": delta >= 5 and percent >= 10, "reason": reason,
+    return {**result, "passed": delta >= 5 and percent >= 10, "reason": "improvement_threshold",
             "delta_seconds": delta, "delta_percent": percent,
             "baseline_retry_cases": a.get("reports", {}).get("retry_cases", [])}
 
@@ -933,8 +957,6 @@ def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
         lines.append(f"Measured maximum-phase difference: {verdict['delta_seconds']} s / {verdict['delta_percent']}%.")
     else:
         lines.append("Numeric A/B difference: unavailable because one side did not complete naturally.")
-    if verdict.get("reason") == "baseline_retry_only_candidate_complete":
-        lines += ["", "Baseline completed naturally but had retry-only browser failures; it is not reported as green. Candidate completed with strict reports. The measured difference includes the baseline retry cost and is a stability-recovery observation, not an all-green A/B sample."]
     lines += ["",
               "## Four target Vitest suites", "", "| Suite | A seconds | B seconds | Implementation |", "|---|---:|---:|---|"]
     for name in SLOW_SUITES:
