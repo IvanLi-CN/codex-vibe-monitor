@@ -2,18 +2,18 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-validation-pending",
-  "candidate_head_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
-  "implementation_commit": "f531330a63651682f84b31f04faf22dab3f637fd",
-  "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+  "candidate_head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+  "implementation_commit": "ea19e98097aa854ec4b84903173f442125bb814e",
+  "active_base_sha": "9616191de308ccf21b6085ebd2fffaa6fb825b61",
   "base_ref": "main",
   "pr_number": 1191,
   "candidate_branch": "th/summary-recovery-query-fairness",
   "base_sync": {
-    "previous_base_sha": "b1c523815090218499954e719b1b356b60d933cd",
+    "previous_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
     "merge_commit_sha": null,
     "merge_strategy": "linear-rebase-to-current-main",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
+    "mainline_scope": "The implementation candidate is linearly rebased onto current main 9616191d; no merge commit or unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
@@ -28,7 +28,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::page_selection_honors_adaptive_row_limit"
         ],
-        "status": "pending current-head Stateful SQLite CI for f531330a; prior evidence is bound to 91979138"
+        "status": "pending current-head Stateful SQLite CI for ea19e980; prior evidence is bound to f531330a"
       },
       {
         "id": "A2",
@@ -38,7 +38,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
         ],
-        "status": "pending current-head Stateful SQLite CI for f531330a; prior evidence is bound to 91979138"
+        "status": "pending current-head Stateful SQLite CI for ea19e980; prior evidence is bound to f531330a"
       },
       {
         "id": "A3",
@@ -48,7 +48,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "pending current-head resource-profile CI for f531330a; prior evidence is bound to 91979138"
+        "status": "pending current-head resource-profile CI for ea19e980; prior evidence is bound to f531330a"
       },
       {
         "id": "A4",
@@ -59,7 +59,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "pending current-head compatibility lanes for f531330a; prior evidence is bound to 91979138"
+        "status": "pending current-head compatibility lanes for ea19e980; prior evidence is bound to f531330a"
       },
       {
         "id": "A5",
@@ -69,7 +69,7 @@
           "Observability Performance Budget",
           "GitHub CI candidate-bound evidence artifact"
         ],
-        "status": "pending: candidate-bound run 40186552529 is queued for f531330a; the previous 40181030908 result is stale and the existing observability harness does not seed the planned summary-recovery fixture"
+        "status": "pending: rebase invalidated the cancelled f531330a run; a new candidate-bound run for ea19e980 is required, and the existing observability harness does not seed the planned summary-recovery fixture"
       },
       {
         "id": "A6",
@@ -79,7 +79,7 @@
           "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "blocked pending current-head CI, empirical recovery evidence, and Tier 4 formal review for f531330a"
+        "status": "blocked pending current-head CI, empirical recovery evidence, and Tier 4 formal review for ea19e980"
       }
     ]
   },
@@ -112,16 +112,16 @@
     "required": true,
     "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
     "status": "pending-current-head-performance-evidence",
-    "candidate_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
-    "previous_candidate_sha": "91979138a0e9037bf8623ebe8d63855d2baceb5a",
+    "candidate_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+    "previous_candidate_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
     "contract_digest": "2a3e47d2afc022281681956e95a566e57fcece92aaddb25308d387c0289b13bf",
     "scenario_set_digest": "91e15552313348ade24b539822c79c92a495f0a5b3b51e2fdf84c3963c3d9694",
-    "evidence_locator": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40186552529/attempts/1",
+    "evidence_locator": "pending-current-head-candidate-performance-run",
     "failure": {
       "status": "pending",
-      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40186552529",
+      "run": null,
       "job": "Observability Acceptance (serial bundle)",
-      "measured_candidate_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
+      "measured_candidate_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
       "stale_after_rebase": false,
       "fixture_coverage": "The existing observability harness exercises isolated proxy and observability traffic but does not seed the planned summary-recovery fixture; a passing result will not by itself certify recovery-page performance.",
       "policy": "Do not use the prior candidate-bound result to authorize this head; require a valid current-head certificate and the planned summary-recovery evidence before Step 5C."
@@ -133,7 +133,7 @@
     "production": "No production database copy, backup, deployment, restart, rollback, observation, or mutable external write is authorized by this record."
   },
   "local_validation": {
-    "validated_commit": "f531330a63651682f84b31f04faf22dab3f637fd",
+    "validated_commit": "ea19e98097aa854ec4b84903173f442125bb814e",
     "stale_after_rebase": false,
     "passed": [
       "cargo fmt --all -- --check",
@@ -152,9 +152,9 @@
   "visual_evidence": [],
   "visual_evidence_owner_confirmation": "not_applicable",
   "execution_evidence": {
-    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40186536566",
-    "head_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
-    "current_head_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
+    "ci_run": "pending-current-head-ci-run",
+    "head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+    "current_head_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
     "stale_after_rebase": false,
     "passed_lanes": [],
     "pending_lanes": [
@@ -177,10 +177,10 @@
       "Build Artifacts"
     ],
     "performance_acceptance": {
-      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40186552529",
+      "run": null,
       "artifact": null,
-      "candidate_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
-      "current_candidate_sha": "f531330a63651682f84b31f04faf22dab3f637fd",
+      "candidate_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
+      "current_candidate_sha": "ea19e98097aa854ec4b84903173f442125bb814e",
       "status": "pending",
       "stale_after_rebase": false,
       "functional_scenarios_passed": null,
