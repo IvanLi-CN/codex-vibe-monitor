@@ -143,6 +143,7 @@ jobs:
           install -d -m 755 "$TOOL_ROOT"
           sudo install -d -m 755 "$TOOL_ROOT/bin"
           sudo cp -a "$sysroot" "$TOOL_ROOT/sysroot"
+          sudo chmod -R a+rX "$TOOL_ROOT/sysroot"
           sudo install -m 755 "$nextest_bin" "$TOOL_ROOT/bin/cargo-nextest"
           sudo chown -R root:root "$TOOL_ROOT"
           echo "path=$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" >> "$GITHUB_OUTPUT"
