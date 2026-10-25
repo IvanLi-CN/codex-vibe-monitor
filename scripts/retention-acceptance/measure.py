@@ -40,6 +40,7 @@ from contract import (
     AcceptanceError,
     parse_time,
     sha256_bytes,
+    task_run_is_accepted_terminal,
     validate_evidence,
 )
 from fixture import populate_template, prepare_competitor, shanghai_cutoff
@@ -916,7 +917,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
+            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
@@ -936,6 +937,8 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "updated_count": row["updated_count"],
                 "committed_work": released if row["task_key"] == "raw_orphan_sweep" else (row["processed_count"] or row["updated_count"] or 0),
                 "details": detail,
+                "error_detail": row["error_detail"],
+                "completion": row["completion"],
             })
         return result
     finally:
@@ -1111,7 +1114,7 @@ def wait_for_task_evidence(
 def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if row.get("actual_finished_at") is not None and row.get("status") == "success":
+        if row.get("actual_finished_at") is not None and task_run_is_accepted_terminal(row):
             by_key.setdefault(row["task_key"], []).append(row)
     for key in (DATASETS[name]["task_key"] for name in DATASETS):
         runs = by_key.get(key, [])

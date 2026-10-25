@@ -87,6 +87,48 @@ def parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
+    """Accept legacy partial status only when the selected batch was fully committed."""
+    if row.get("status") == "success":
+        return True
+    if row.get("status") != "skipped" or row.get("completion") != "partial":
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    if details.get("result") not in (None, "partial"):
+        return False
+    if details.get("fatalError") is not None or details.get("errorChain") is not None:
+        return False
+    if details.get("timeoutCount", 0) != 0:
+        return False
+    scope = details.get("selectedScope")
+    if not isinstance(scope, dict):
+        return False
+    selected = scope.get("selected")
+    committed = scope.get("committed")
+    if (
+        not isinstance(selected, int)
+        or isinstance(selected, bool)
+        or selected <= 0
+        or not isinstance(committed, int)
+        or isinstance(committed, bool)
+        or committed != selected
+    ):
+        return False
+    batches = details.get("archiveBatches")
+    if not isinstance(batches, list) or not batches:
+        return False
+    return all(
+        isinstance(batch, dict)
+        and batch.get("batchRows") == batch.get("committedRows")
+        and batch.get("timeoutCount", 0) == 0
+        for batch in batches
+    )
+
+
 def _number(value: Any, message: str) -> float:
     _require(
         isinstance(value, (int, float))
@@ -216,7 +258,10 @@ def _validate_task_runs(
         finished = parse_time(row.get("actual_finished_at"))
         _require(finished >= started, "task run has an inverted execution interval")
         _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
-        _require(row.get("status") == "success", f"background task {key} did not finish successfully")
+        _require(
+            task_run_is_accepted_terminal(row),
+            f"background task {key} did not finish successfully or fully commit its selected batch",
+        )
         work = row.get("committed_work")
         _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
