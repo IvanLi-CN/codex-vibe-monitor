@@ -100,6 +100,13 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
         .map(SubscriptionTopic::from_descriptor)
         .collect::<Result<Vec<_>, _>>()
         .expect("dashboard topology topics");
+    let process_started_epoch_second = state
+        .dashboard_network_speed_cache
+        .process_started_at_utc()
+        .timestamp();
+    while Utc::now().timestamp() <= process_started_epoch_second.saturating_add(1) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     let first_response = topic_sse_stream(
         State(state.clone()),
         Query(dashboard_runtime_topology_stream_query(1)),
@@ -166,13 +173,6 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
         );
     }
     spawn_subscription_broadcast_listener(state.clone());
-    let process_started_epoch_second = state
-        .dashboard_network_speed_cache
-        .process_started_at_utc()
-        .timestamp();
-    while Utc::now().timestamp() <= process_started_epoch_second.saturating_add(1) {
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
     state
         .proxy_runtime_invocations
         .reset_dashboard_topology_counters();
