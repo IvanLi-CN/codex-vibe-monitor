@@ -329,6 +329,10 @@ def app_environment() -> dict[str, str]:
     }
 
 
+def host_container_user() -> str:
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 def start_container(
     tag: str,
     data_dir: Path,
@@ -353,6 +357,8 @@ def start_container(
     )
     command = [
         "docker", "run", "--detach", "--name", name,
+        # Keep bind-mounted SQLite and archive files writable by host-side fixture steps.
+        "--user", host_container_user(),
         *owned.docker_label_arguments(name),
         "--cpus", str(CPU_LIMIT),
         "--memory", str(MEMORY_BYTES),

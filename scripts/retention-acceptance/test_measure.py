@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -155,6 +156,10 @@ class MeasurementBudgetTests(unittest.TestCase):
                     )
 
                 self.assertEqual(result, "a" * 64)
+                self.assertEqual(
+                    command_seen[0][command_seen[0].index("--user") + 1],
+                    f"{os.getuid()}:{os.getgid()}",
+                )
                 self.assertEqual(docker_labels(command_seen[0]), owned.record(name)["identity_labels"])
                 identity = owned.record(name)["identity_labels"]
                 self.assertEqual(identity[CONTAINER_RUN_ID_LABEL], run_id)
