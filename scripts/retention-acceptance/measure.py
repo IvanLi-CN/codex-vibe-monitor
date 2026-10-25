@@ -1055,18 +1055,28 @@ def competitor_file_oracle(raw_dir: Path) -> dict[str, Any]:
     }
 
 
-def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
+def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, int]) -> dict[str, Any]:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
+        datasets: dict[str, dict[str, Any]] = {}
         for name, definition in DATASETS.items():
             dataset = definition["manifest_dataset"]
             table = definition["table"]
+            required_converted = math.ceil(10 * added_counts[name])
+            dataset_status: dict[str, Any] = {
+                "dataset": dataset,
+                "manifest_count": 0,
+                "converted_rows": None,
+                "required_converted_rows": required_converted,
+                "missing": [],
+            }
             manifests = connection.execute(
                 "SELECT id,file_path,sha256 FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL",
                 (dataset,),
             ).fetchall()
+            dataset_status["manifest_count"] = len(manifests)
             if not manifests:
-                return False
+                dataset_status["missing"].append("completed active archive manifest")
             if name == "invocations":
                 targets = {"invocation_rollup_hourly", "upstream_account_stats_hourly", "upstream_account_usage_breakdown_hourly"}
                 for archive_id, file_path, manifest_sha in manifests:
@@ -1075,13 +1085,14 @@ def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, in
                         (archive_id, manifest_sha),
                     ).fetchone()
                     if proof is None:
-                        return False
+                        dataset_status["missing"].append(f"summary proof:{archive_id}")
+                        continue
                     pages = connection.execute(
                         "SELECT COUNT(*) FROM summary_archive_snapshot WHERE archive_batch_id=? AND manifest_sha256=? AND format_version=2",
                         (archive_id, manifest_sha),
                     ).fetchone()[0]
                     if pages != proof[0]:
-                        return False
+                        dataset_status["missing"].append(f"summary pages:{archive_id}:{pages}/{proof[0]}")
                     replayed = {
                         row[0]
                         for row in connection.execute(
@@ -1089,18 +1100,28 @@ def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, in
                             (dataset, file_path, manifest_sha),
                         )
                     }
-                    if not targets.issubset(replayed):
-                        return False
+                    missing_targets = sorted(targets - replayed)
+                    if missing_targets:
+                        dataset_status["missing"].append(f"replay:{archive_id}:{','.join(missing_targets)}")
             identity_column = definition["identity_column"]
             converted = definition["seed_rows"] - connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE {identity_column} LIKE 'retention-seed-%' AND occurred_at < ?",
                 (cutoff,),
             ).fetchone()[0]
-            if converted < math.ceil(10 * added_counts[name]):
-                return False
-        return True
+            dataset_status["converted_rows"] = converted
+            if converted < required_converted:
+                dataset_status["missing"].append(f"source conversion:{converted}/{required_converted}")
+            datasets[name] = dataset_status
+        return {
+            "ready": all(not dataset["missing"] for dataset in datasets.values()),
+            "datasets": datasets,
+        }
     finally:
         connection.close()
+
+
+def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
+    return archive_proof_status(database, cutoff, added_counts)["ready"]
 
 
 def wait_for_task_evidence(
@@ -1136,7 +1157,11 @@ def wait_for_task_evidence(
             last_error = error
         time.sleep(0.5)
     if last_error is not None:
-        raise AcceptanceError(f"production task/evidence drain timed out: {last_error}") from last_error
+        proof_status = archive_proof_status(main_db, cutoff, added_counts)
+        raise AcceptanceError(
+            "production task/evidence drain timed out: "
+            f"{last_error}; archive_proof_status={json.dumps(proof_status, sort_keys=True)}"
+        ) from last_error
     validate_task_snapshot(latest)
     raise AcceptanceError("production task/evidence drain timed out")
 
