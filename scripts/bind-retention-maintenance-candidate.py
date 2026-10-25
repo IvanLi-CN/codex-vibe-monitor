@@ -16,6 +16,11 @@ CARRIER_FILES = frozenset(
         "docs/adr/assets/retention-maintenance-task-ownership/version-impact-record.json",
     }
 )
+# Progress documentation also changes in normal future candidates. Only edits to
+# the bound evidence records claim the special historical carrier identity.
+CARRIER_RECORD_FILES = CARRIER_FILES - {
+    "docs/specs/retention-maintenance-task-ownership/IMPLEMENTATION.md"
+}
 
 
 def git(*arguments: str) -> str:
@@ -51,7 +56,7 @@ def carrier_candidate(commit: str, code_candidate: str) -> tuple[str, set[str]] 
     if commit_parent is None:
         return None
     files = changed_files(commit_parent, commit)
-    if not files & CARRIER_FILES:
+    if not files & CARRIER_RECORD_FILES:
         return None
     if commit_parent != code_candidate:
         raise SystemExit(
