@@ -536,6 +536,32 @@ async fn assert_compacted_source_recovery_total(
 }
 
 #[tokio::test]
+async fn compacted_source_recovery_key_page_uses_production_builder() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let details = crate::api::explain_compacted_source_recovery_key_page_for_test(&state.pool)
+        .await
+        .expect("explain bounded compacted source key page");
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("COVERING INDEX idx_codex_invocations_occurred_at_id")),
+        "key page must use the covering occurred_at,id index: {details:?}"
+    );
+    assert!(
+        details.iter().all(|detail| {
+            !detail.contains("MULTI-INDEX OR")
+                && !detail.contains("USE TEMP B-TREE")
+                && !detail.contains("SCAN codex_invocations")
+        }),
+        "key page must not use a multi-index plan, global scan, or temporary sort: {details:?}"
+    );
+    state.pool.close().await;
+}
+
+#[tokio::test]
 async fn compacted_source_recovery_matches_window_and_account_oracle() {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -655,6 +681,16 @@ async fn compacted_source_recovery_rescans_target_row_that_becomes_terminal_afte
     run_compacted_source_recovery_one_page_for_test(state.as_ref())
         .await
         .expect("complete the page that excludes the running row");
+    let deferred_checkpoint = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT processed_rows, cursor_occurred_at
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read deferred live-boundary checkpoint");
+    assert_eq!(deferred_checkpoint, (0, None));
     sqlx::query(
         "UPDATE codex_invocations
             SET status = 'success', total_tokens = 23, cost = 2.5
@@ -717,6 +753,26 @@ async fn compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_afte
     assert_eq!(first_checkpoint.1, 512);
     assert!(first_checkpoint.2 > 0);
     assert_eq!(first_checkpoint.3.as_deref(), Some(occurred_at.as_str()));
+    sqlx::query(
+        "UPDATE summary_compacted_source_recovery_checkpoint
+            SET format_version = 1, state = 'deferred', last_error_code = NULL,
+                last_error_message = NULL
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .execute(&state.pool)
+    .await
+    .expect("seed persisted format-1 deferred checkpoint");
+    let persisted_checkpoint = sqlx::query_as::<_, (i64, String)>(
+        "SELECT format_version, state
+           FROM summary_compacted_source_recovery_checkpoint
+          WHERE scope = ?1",
+    )
+    .bind(SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read persisted format-1 deferred checkpoint");
+    assert_eq!(persisted_checkpoint, (1, "deferred".to_string()));
     let first_total = sqlx::query_scalar::<_, i64>(
         "SELECT total_count
            FROM summary_compacted_source_recovery_aggregate
