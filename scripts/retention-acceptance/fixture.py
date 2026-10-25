@@ -15,6 +15,8 @@ from contract import COMPETITOR_FILE_COUNT, COMPETITOR_TASK, DATASETS, RETENTION
 CONTROLLED_TASK_KEYS = tuple(
     [DATASETS[name]["task_key"] for name in DATASETS] + [COMPETITOR_TASK]
 )
+SHANGHAI = timezone(timedelta(hours=8))
+PARALLEL_WORK_COVERAGE_DAYS = 30
 
 
 def shanghai_cutoff(now: datetime | None = None) -> str:
@@ -123,6 +125,31 @@ def _filter_record(connection: sqlite3.Connection, table: str, record: dict[str,
     return selected
 
 
+def seed_parallel_work_coverage(connection: sqlite3.Connection, cutoff: str) -> None:
+    cutoff_local = datetime.fromisoformat(cutoff).replace(tzinfo=SHANGHAI)
+    current_local_date = cutoff_local.date() + timedelta(days=RETENTION_DAYS)
+    keep_start_local = datetime.combine(
+        current_local_date - timedelta(days=PARALLEL_WORK_COVERAGE_DAYS),
+        datetime.min.time(),
+        tzinfo=SHANGHAI,
+    )
+    keep_start_epoch = int(keep_start_local.astimezone(timezone.utc).timestamp())
+    cutoff_epoch = int(cutoff_local.astimezone(timezone.utc).timestamp())
+    rows = [
+        (hour_start_epoch, source_scope, 1, 0)
+        for hour_start_epoch in range(keep_start_epoch, cutoff_epoch, 3_600)
+        for source_scope in ("all", "proxy_only")
+    ]
+    connection.executemany(
+        """
+        INSERT OR REPLACE INTO parallel_work_hourly_coverage
+            (hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
 def populate_template(database: Path, cutoff: str, budget_check: Callable[[], float] | None = None) -> str:
     hasher = hashlib.sha256()
     timeout = min(30.0, budget_check()) if budget_check is not None else 30.0
@@ -145,6 +172,7 @@ def populate_template(database: Path, cutoff: str, budget_check: Callable[[], fl
                     rows.append(_filter_record(connection, table, record, columns))
                     _record_fingerprint(hasher, name, identity, occurred_at, payload)
                 _insert_many(connection, table, rows)
+        seed_parallel_work_coverage(connection, cutoff)
         connection.commit()
     except BaseException:
         connection.rollback()

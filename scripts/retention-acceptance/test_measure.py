@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import shutil
@@ -24,7 +25,7 @@ from contract import (
     DATASETS,
     TRIAL_EXECUTION_ORDER,
 )
-from fixture import CONTROLLED_TASK_KEYS, prepare_competitor
+from fixture import CONTROLLED_TASK_KEYS, prepare_competitor, seed_parallel_work_coverage
 from measure import (
     OwnedContainerLedger,
     cleanup_budget,
@@ -48,6 +49,39 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "coverage.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE parallel_work_hourly_coverage (
+                        hour_start_epoch INTEGER NOT NULL,
+                        source_scope TEXT NOT NULL,
+                        minute_keys_complete INTEGER NOT NULL,
+                        hourly_scalar_complete INTEGER NOT NULL,
+                        PRIMARY KEY (hour_start_epoch, source_scope)
+                    )
+                    """
+                )
+                seed_parallel_work_coverage(connection, "2026-10-24 00:00:00")
+                rows = connection.execute(
+                    """
+                    SELECT hour_start_epoch, source_scope, minute_keys_complete
+                    FROM parallel_work_hourly_coverage
+                    ORDER BY hour_start_epoch, source_scope
+                    """
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(rows), 29 * 24 * 2)
+        self.assertEqual({row[1] for row in rows}, {"all", "proxy_only"})
+        self.assertEqual({row[2] for row in rows}, {1})
+        self.assertEqual(rows[0][0], int(datetime(2026, 9, 24, 16, tzinfo=timezone.utc).timestamp()))
+        self.assertEqual(rows[-1][0], int(datetime(2026, 10, 23, 15, tzinfo=timezone.utc).timestamp()))
+
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
