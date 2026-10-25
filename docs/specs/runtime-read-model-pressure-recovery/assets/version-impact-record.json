@@ -97,7 +97,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "PR #1191: th/summary-recovery-query-fairness@c7208893d8b94d20b086d5c447256943490fb454",
+      "PR #1191: th/summary-recovery-query-fairness@c72088935b13e35807566ad77db70a3b497a6519",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "c7208893d8b94d20b086d5c447256943490fb454",
+    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
     "candidate_validation_status": "pr-rebased-validation-required",
     "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
     "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c7208893d8b94d20b086d5c447256943490fb454; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }
