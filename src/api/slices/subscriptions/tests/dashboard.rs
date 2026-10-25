@@ -100,11 +100,20 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
         .map(SubscriptionTopic::from_descriptor)
         .collect::<Result<Vec<_>, _>>()
         .expect("dashboard topology topics");
+    // Keep the initial live bucket visible in the timeseries base and the fixture sample in a
+    // completed realtime second for the recent-window materializer.
+    let network_fixture_min_bucket_age_seconds =
+        DASHBOARD_NETWORK_REALTIME_SAMPLE_SECONDS.saturating_add(1);
     let process_started_epoch_second = state
         .dashboard_network_speed_cache
         .process_started_at_utc()
         .timestamp();
-    while Utc::now().timestamp() <= process_started_epoch_second.saturating_add(1) {
+    while {
+        let now_epoch_second = Utc::now().timestamp();
+        now_epoch_second <= process_started_epoch_second.saturating_add(1)
+            || now_epoch_second.rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS)
+                < network_fixture_min_bucket_age_seconds
+    } {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     let first_response = topic_sse_stream(
@@ -280,7 +289,14 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
         "terminal rebase must clear dirty bases and refresh the parallel materializer",
     );
     drop(guard);
-    let network_observed_at = Utc::now();
+    while Utc::now()
+        .timestamp()
+        .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS)
+        < network_fixture_min_bucket_age_seconds
+    {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let network_observed_at = Utc::now() - ChronoDuration::seconds(1);
     state.dashboard_network_speed_cache.record_request_bytes(
         "dashboard-runtime-topology-network",
         &occurred_at,
