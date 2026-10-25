@@ -191,18 +191,6 @@ struct SummaryCoverageRecoveryTurn {
     reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
 }
 
-pub(crate) fn summary_coverage_recovery_next_turn_delay(
-    next_turn: SummaryCoverageRecoveryNextTurn,
-) -> Duration {
-    match next_turn {
-        // A committed page is progress, but it must still yield to request and maintenance
-        // work before the next recovery admission.
-        SummaryCoverageRecoveryNextTurn::Immediate => Duration::from_secs(1),
-        SummaryCoverageRecoveryNextTurn::Deferred => SUMMARY_COVERAGE_RECOVERY_RETRY_INITIAL,
-        SummaryCoverageRecoveryNextTurn::Idle => SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
-    }
-}
-
 const SUMMARY_COVERAGE_RECOVERY_PROGRESS_YIELD: Duration = Duration::from_secs(1);
 const SUMMARY_COVERAGE_RECOVERY_RETRY_INITIAL: Duration = Duration::from_secs(10);
 const SUMMARY_COVERAGE_RECOVERY_RETRY_MAX: Duration = Duration::from_secs(60);
@@ -391,7 +379,7 @@ impl SummaryCoverageRecoverySupervisor {
         // hand a fresh reservation back to this function and immediately chain another turn while
         // retaining the execution lease. The caller drops the returned turn at this boundary, so
         // any reservation created by legacy branches is released before the next scheduler tick.
-        let turn = match Self::run_once(state, reservation, true, true, runtime).await {
+        let turn = match Self::run_once(state, reservation, true, runtime).await {
             Ok(turn) => turn,
             Err(error)
                 if error
@@ -417,7 +405,6 @@ impl SummaryCoverageRecoverySupervisor {
     async fn run_once(
         state: &AppState,
         reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
-        _drain_startup_coverage: bool,
         publish_overlay: bool,
         runtime: &mut CompactedSourceRecoveryRuntime,
     ) -> Result<SummaryCoverageRecoveryTurn> {
@@ -1534,10 +1521,6 @@ mod compacted_source_recovery_budget_tests {
                 Duration::from_secs(20),
             ),
             Duration::from_secs(1)
-        );
-        assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Deferred),
-            Duration::from_secs(10)
         );
     }
 
