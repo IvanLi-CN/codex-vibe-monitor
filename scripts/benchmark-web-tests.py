@@ -103,8 +103,10 @@ def instrument_playwright(command: str, reports: Path) -> str:
         nonlocal index
         index += 1
         report = shlex.quote(str(reports / f"playwright-{index}.json"))
+        # JSON is the only additional reporter needed for acceptance parsing;
+        # failure diagnostics remain in Playwright's existing test-results output.
         return (f"PLAYWRIGHT_JSON_OUTPUT_NAME={report} bun run test:e2e -- "
-                "--reporter=list,json,html " + match.group(1))
+                "--reporter=list,json " + match.group(1))
     return re.sub(r"bun run test:e2e -- ([^\n]+)", replace, command)
 
 
