@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -26,6 +27,7 @@ from measure import (
     cleanup_budget,
     cleanup_named_container,
     cleanup_path_if_safe,
+    observed_attempt_states,
     remaining_budget,
     run_command,
     run_foreground,
@@ -43,6 +45,45 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_observed_attempt_states_counts_rows_from_five_column_query(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "attempts.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE pool_upstream_request_attempts (
+                        id INTEGER PRIMARY KEY,
+                        attempt_public_id TEXT NOT NULL,
+                        invoke_id TEXT NOT NULL,
+                        attempt_index INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        finished_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO pool_upstream_request_attempts
+                        (attempt_public_id, invoke_id, attempt_index, status, finished_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    ("attempt-1", "invoke-1", 1, "success", "2026-10-25T00:00:00Z"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            states = observed_attempt_states(
+                database,
+                [{"invoke_id": "invoke-1", "sequence": 0}],
+                retry_count=0,
+                started=time.monotonic(),
+            )
+
+            self.assertEqual(states[0]["attempt_public_id"], "attempt-1")
+            self.assertEqual(states[0]["invoke_id"], "invoke-1")
+
     def test_foreground_driver_lifecycle_uses_unique_trial_names_on_one_ledger(self) -> None:
         run_id = "123456abcdef"
         owned = OwnedContainerLedger()
