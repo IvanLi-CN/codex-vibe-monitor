@@ -2,18 +2,18 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-validation-blocked",
-  "candidate_head_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
-  "implementation_commit": "316385432289ce108d218e5aa9f60edbd5dc6435",
-  "active_base_sha": "9c8c8aeac7a40728a36b4159a51c8416465b4a64",
+  "candidate_head_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
+  "implementation_commit": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
+  "active_base_sha": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
   "base_ref": "main",
   "pr_number": 1191,
   "candidate_branch": "th/summary-recovery-query-fairness",
   "base_sync": {
-    "previous_base_sha": "5167cd514f2efa30f2322e5407a754f8b7c56022",
+    "previous_base_sha": "9c8c8aeac7a40728a36b4159a51c8416465b4a64",
     "merge_commit_sha": null,
     "merge_strategy": "linear-rebase-to-current-main",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "The implementation candidate is linearly rebased onto current main 9c8c8aea; no merge commit or unrelated base merge is included.",
+    "mainline_scope": "The implementation candidate is linearly rebased onto current main dff0b88d; the topic adds no merge commit or unrelated base change.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
@@ -28,7 +28,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::page_selection_honors_adaptive_row_limit"
         ],
-        "status": "passed on current-head PR CI run 40202137523 (head 63df0f52); Stateful SQLite and representative-scale lanes completed successfully"
+        "status": "previous candidate carrier CI run 40206215471 passed; current-head refresh run 40207761057 is queued after the linear rebase"
       },
       {
         "id": "A2",
@@ -38,7 +38,7 @@
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
           "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
         ],
-        "status": "passed on current-head PR CI run 40202137523 (head 63df0f52); Stateful SQLite lanes completed successfully"
+        "status": "previous candidate carrier CI run 40206215471 passed; current-head refresh run 40207761057 is queued after the linear rebase"
       },
       {
         "id": "A3",
@@ -48,7 +48,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "passed on current-head PR CI run 40202137523 (head 63df0f52); Archive/File I/O and backend resource lanes completed successfully"
+        "status": "previous candidate carrier CI run 40206215471 passed; current-head refresh run 40207761057 is queued after the linear rebase"
       },
       {
         "id": "A4",
@@ -59,7 +59,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "passed on current-head PR CI run 40202137523 (head 63df0f52); API, migration, status, and diagnostics lanes completed successfully"
+        "status": "previous candidate carrier CI run 40206215471 passed; current-head refresh run 40207761057 is queued after the linear rebase"
       },
       {
         "id": "A5",
@@ -79,7 +79,7 @@
           "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "blocked: current-head PR CI run 40202137523 passed, but empirical performance evidence is unavailable and fresh Tier 4 review after the required rebase is not recorded; the candidate cannot enter Step 5C"
+        "status": "blocked: current-head refresh run 40207761057 is pending after the linear rebase; empirical performance evidence remains unavailable and fresh Tier 4 review is not recorded, so the candidate cannot enter Step 5C"
       }
     ]
   },
@@ -112,7 +112,7 @@
     "required": true,
     "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
     "status": "blocked-hardware-comparability-evidence",
-    "candidate_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+    "candidate_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
     "previous_candidate_sha": "642b49641f16e04a403fd57612c16f3914985b98",
     "contract_digest": "2a3e47d2afc022281681956e95a566e57fcece92aaddb25308d387c0289b13bf",
     "scenario_set_digest": "91e15552313348ade24b539822c79c92a495f0a5b3b51e2fdf84c3963c3d9694",
@@ -122,7 +122,7 @@
       "run": "40202278852",
       "job": "Observability Performance Budget (121201735134)",
       "measured_candidate_sha": "63df0f52179224b97072f6f51952e67c617f9ac2",
-      "stale_after_rebase": false,
+      "stale_after_rebase": true,
       "fixture_coverage": "The existing observability harness exercises isolated proxy and observability traffic but does not seed the planned summary-recovery fixture; a passing result will not by itself certify recovery-page performance.",
       "failure_reason": "The budget classifier failed closed with hardware comparability evidence unavailable because default-observability-ab reported incompatible cpuModel. The runtime and pair-0/pair-1/pair-2 workload lanes completed successfully, but the empirical card is unavailable and cannot certify the performance budget.",
       "artifacts": [
@@ -168,10 +168,11 @@
   "visual_evidence": [],
   "visual_evidence_owner_confirmation": "not_applicable",
   "execution_evidence": {
-    "ci_run": "40202137523",
-    "head_sha": "63df0f52179224b97072f6f51952e67c617f9ac2",
-    "current_head_sha": "63df0f52179224b97072f6f51952e67c617f9ac2",
-    "stale_after_rebase": false,
+    "ci_run": "40206215471",
+    "head_sha": "5aa38e4d640ddd44ee6981856327ea35ae53cf62",
+    "current_head_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
+    "stale_after_rebase": true,
+    "pending_ci_run": "40207761057",
     "passed_lanes": [
       "Backend Test Archive Producer",
       "Backend Tests (Archive / File I/O)",
@@ -202,10 +203,10 @@
     "performance_acceptance": {
       "run": "40202278852",
       "artifact": "observability-acceptance-40202278852-1 (12603276164)",
-      "candidate_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
-      "current_candidate_sha": "63df0f52179224b97072f6f51952e67c617f9ac2",
+      "candidate_sha": "f1d13534a4d6f96999110c4443eeb43e780b93e0",
+      "current_candidate_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
       "status": "blocked",
-      "stale_after_rebase": false,
+      "stale_after_rebase": true,
       "functional_scenarios_passed": null,
       "fixture_coverage": "Existing observability A/B coverage is not the summary-recovery workload required by A5.",
       "reason": "All runtime and paired workload lanes passed, but the budget classifier failed closed because hardware comparability evidence was unavailable (incompatible cpuModel). The empirical card is unavailable, and the existing harness does not seed the summary-recovery workload required by A5."

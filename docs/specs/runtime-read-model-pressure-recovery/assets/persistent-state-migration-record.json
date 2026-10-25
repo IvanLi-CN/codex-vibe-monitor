@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1191 implementation candidate 316385432289ce108d218e5aa9f60edbd5dc6435, validated at evidence head 63df0f52179224b97072f6f51952e67c617f9ac2 after the linear rebase onto main 9c8c8aeac7a40728a36b4159a51c8416465b4a64; current-head CI and migration lanes pass, while empirical performance acceptance is blocked and fresh Tier 4 review is not recorded.",
+      "to_program_version": "PR #1191 implementation commit f1d13534a4d6f96999110c4443eeb43e780b93e0 at current head 3002aa5958e1b34f72e35f13fbb2a9818f4c920a after the linear rebase onto main dff0b88dc00681720acfaa9103c8ddbba84d3325; refresh CI run 40207761057 is pending, while empirical performance acceptance is blocked and fresh Tier 4 review is not recorded.",
       "direct_major_skips_supported": false
     }
   },
@@ -159,13 +159,14 @@
   },
   "pending_execution_evidence": [
     {
-      "candidate_head_sha": "63df0f52179224b97072f6f51952e67c617f9ac2",
+      "candidate_head_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
       "reason": "Current-head PR CI and migration lanes passed, but candidate-bound performance run 40202278852 failed closed because hardware comparability evidence was unavailable. The existing observability harness also lacks the planned summary-recovery fixture, and fresh Tier 4 review after the required rebase is not recorded; no threshold relaxation or reuse of unavailable evidence is authorized."
     }
   ],
   "execution_evidence": {
-    "ci_run": "40202137523",
-    "candidate_head_sha": "63df0f52179224b97072f6f51952e67c617f9ac2",
+    "ci_run": "40206215471",
+    "candidate_head_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
+    "pending_ci_run": "40207761057",
     "stateful_and_migration_profiles_passed": true,
     "formal_review_passed": false,
     "performance_acceptance": {
@@ -178,13 +179,13 @@
     }
   },
   "delivery_context": {
-    "candidate_head_sha": "316385432289ce108d218e5aa9f60edbd5dc6435",
+    "candidate_head_sha": "3002aa5958e1b34f72e35f13fbb2a9818f4c920a",
     "candidate_validation_status": "current-head-validation-blocked",
-    "active_base_sha": "9c8c8aeac7a40728a36b4159a51c8416465b4a64",
+    "active_base_sha": "dff0b88dc00681720acfaa9103c8ddbba84d3325",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 9c8c8aea; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 5c3d6181dbd49da6e2d23987cd3df6ee064a65c5 onto current main 9c8c8aeac7a40728a36b4159a51c8416465b4a64, producing implementation candidate 316385432289ce108d218e5aa9f60edbd5dc6435. Current-head PR CI run 40202137523 and migration lanes pass; performance run 40202278852 is blocked by unavailable hardware comparability evidence, and fresh Tier 4 review remains unrecorded before Step 5C.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main dff0b88d; the topic adds no merge commit or unrelated base change.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base 9c8c8aeac7a40728a36b4159a51c8416465b4a64 onto current main dff0b88dc00681720acfaa9103c8ddbba84d3325, producing implementation commit f1d13534a4d6f96999110c4443eeb43e780b93e0 and current PR head 3002aa5958e1b34f72e35f13fbb2a9818f4c920a. Refresh CI run 40207761057 is pending; performance run 40202278852 is stale and blocked by unavailable hardware comparability evidence, and fresh Tier 4 review remains unrecorded before Step 5C.",
     "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }
