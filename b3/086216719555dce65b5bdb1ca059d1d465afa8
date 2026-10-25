@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.3",
+  "base_stable_version": "4.13.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-25T05:53:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0fe9541d2dbf21f15327923d4e0f6c89123eafbe",
+  "pr_number": 1193,
+  "pr_title": "refactor(tests): split raw payload retention helpers",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.3",
+  "target_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
+  "type_label": "type:patch"
+}
