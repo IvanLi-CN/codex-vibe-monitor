@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 21 current explicit file budgets (4 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 20 current explicit file budgets (4 production and 16 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -440,6 +440,22 @@ The statistics extraction starts from verified base `c215fc3ed7a4a0b3cf50bd3468e
 The extraction preserves crate-visible APIs and re-exports, SQL, transaction boundaries, archive replay and repair behavior, concurrency, resource classification, and all existing assertions. The `perf_stage_rollup_validation_tests` and `ttft_archive_compatibility_tests` modules remain in their coherent child modules, while the archive-rebuild `#[expect]` suppression moves to `repair_backfill.rs`; the suppression inventory remains 124. The frozen `src/api/slices/invocations_and_summary.rs` and complete `src/schema.rs` are unchanged, and no `include!` composition is introduced.
 
 Validation for this extraction is the canonical source-quality runner and fixture harness, focused performance-stage and archive-compatibility tests, locked all-target all-features checking, all-features Clippy, and `git diff --check`.
+
+## Archive File I/O Test Helper Extraction
+
+The archive file I/O test-helper extraction starts from the verified mainline baseline `224d36361b68c32fa3eb5e981f03022eaf6db49d` and removes the 12,908-line `src/tests/archive_file_io/archive_backfill_and_materialization.rs` candidate. The 121 existing tests are moved exactly once, retaining their names, attributes, assertions, SQL, fixtures, timing and budget thresholds, lock and task lifetimes, cleanup, and `archive_file_io` resource bucket.
+
+The new facade remains `src/tests/archive_file_io/mod.rs` at 856 lines. Shared fixture support is isolated in `archive_backfill_test_support.rs` at 104 lines, with `insert_summary_archive_snapshot_proof`, `write_valid_invocation_archive`, and `budgeted_archive_io_test_dir` kept behaviorally unchanged and exposed only to the parent module and its descendants. The responsibility modules are `archive_copy_summary_and_manifest.rs` (749 lines), `archive_startup_and_expiry.rs` (1,699), `historical_rollup_materialization.rs` (2,342), `archive_replay_recovery.rs` (2,004), `stale_archive_reconciliation.rs` (1,946), `retention_pool_archive_maintenance.rs` (2,115), and `archive_storage_schema_reconciliation.rs` (1,964); every file is below the 3,000-line test/helper target.
+
+The policy removes only the obsolete parent entry, leaving 20 explicit inventory files (4 production and 16 test/helper) and 125 suppression entries; the immutable preparation candidate counts remain 32 production and 23 test/helper. No `include!`, new `#[allow]` or `#[expect]`, production implementation, SQL/transaction semantics, schema, frozen invocation-summary source, or unrelated candidate changed.
+
+## Archive File I/O Verification Evidence
+
+The completed structural and compile checks are `cargo fmt --all -- --check`, `bash .github/scripts/test-rust-source-quality.sh`, `bash .github/scripts/run-rust-source-quality.sh`, `cargo check --locked --all-targets --all-features`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `git diff --check`; each passed on the candidate.
+
+The required `bash .github/scripts/run-backend-tests.sh --profile archive-file-io` was attempted with the repository defaults, retried, and retried again in an isolated temporary workspace; each attempt stopped before test execution because rustc 1.96.0 produced a `libsqlx_macros` dylib rejected by macOS with `mis-aligned LINKEDIT string pool`. No shared infrastructure or toolchain configuration was changed.
+
+As supplemental behavior evidence, `CARGO_PROFILE_TEST_DEBUG=2 RUST_MIN_STACK=8388608 cargo test --locked --all-features tests::archive_file_io:: -- --nocapture` built the test binary and ran 450 selected tests: 433 passed, 10 pre-existing archive/runtime concurrency or timing-sensitive tests failed, and 7 were ignored. None of the 10 failures belonged to the 121 migrated tests, so every migrated test passed in this fallback run; the fallback is not substituted for the blocked canonical profile.
 
 ## CI Contract
 
