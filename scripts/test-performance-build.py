@@ -406,6 +406,14 @@ class PerformanceBuildContractTests(unittest.TestCase):
             run,
         )
 
+    def test_candidate_branch_and_sha_pinning_uses_fetch_head(self) -> None:
+        workflow = WORKFLOW_PATH.read_text()
+        self.assertGreaterEqual(workflow.count("git -C candidate fetch --no-tags --force origin"), 5)
+        self.assertGreaterEqual(workflow.count("git -C candidate checkout --detach FETCH_HEAD"), 5)
+        self.assertIn("git -C candidate-report checkout --detach FETCH_HEAD", workflow)
+        self.assertNotIn('checkout --detach "$CANDIDATE"', workflow)
+        self.assertNotIn('checkout --detach "$CANDIDATE_REF"', workflow)
+
     def test_build_report_rejects_corrupt_component_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

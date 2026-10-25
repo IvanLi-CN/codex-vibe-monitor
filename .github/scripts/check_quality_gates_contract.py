@@ -187,7 +187,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     pin_candidate = step_config(image_job, "Pin candidate checkout", f"{workflow_path}.jobs.observability-performance-image")
     require(
         'git -C candidate fetch --no-tags --force origin "$CANDIDATE_REF"' in str(pin_candidate.get("run", ""))
-        and 'git -C candidate checkout --detach "$CANDIDATE_REF"' in str(pin_candidate.get("run", "")),
+        and "git -C candidate checkout --detach FETCH_HEAD" in str(pin_candidate.get("run", "")),
         f"{workflow_path} image job must explicitly pin the candidate ref",
     )
     identity = step_config(image_job, "Bind candidate identity", f"{workflow_path}.jobs.observability-performance-image")
@@ -214,7 +214,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         pin_candidate = step_config(job, "Pin candidate identity", f"{workflow_path}.jobs.{job_id}")
         require(
             'git -C candidate fetch --no-tags --force origin "$CANDIDATE"' in str(pin_candidate.get("run", ""))
-            and 'git -C candidate checkout --detach "$CANDIDATE"' in str(pin_candidate.get("run", "")),
+            and "git -C candidate checkout --detach FETCH_HEAD" in str(pin_candidate.get("run", "")),
             f"{workflow_path} {job_name} must explicitly pin the candidate SHA",
         )
     require(performance_job.get("name") == "Observability Acceptance (parallel workload lanes)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
@@ -427,7 +427,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     pin_candidate = step_config(resolve, "Pin candidate checkout", f"{workflow_path}.jobs.observability-performance-resolve")
     require(
         'git -C candidate fetch --no-tags --force origin "$CANDIDATE_REF"' in str(pin_candidate.get("run", ""))
-        and 'git -C candidate checkout --detach "$CANDIDATE_REF"' in str(pin_candidate.get("run", "")),
+        and "git -C candidate checkout --detach FETCH_HEAD" in str(pin_candidate.get("run", "")),
         f"{workflow_path} resolver must explicitly pin branch and SHA candidates",
     )
     identity = step_config(resolve, "Bind candidate and build identity", f"{workflow_path}.jobs.observability-performance-resolve")
@@ -507,7 +507,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     pin_candidate = step_config(image, "Pin candidate assembly sources", f"{workflow_path}.jobs.observability-performance-image")
     require(
         'git -C candidate fetch --no-tags --force origin "$CANDIDATE"' in str(pin_candidate.get("run", ""))
-        and 'git -C candidate checkout --detach "$CANDIDATE"' in str(pin_candidate.get("run", "")),
+        and "git -C candidate checkout --detach FETCH_HEAD" in str(pin_candidate.get("run", "")),
         f"{workflow_path} image assembly must explicitly pin the candidate SHA",
     )
     for name in ("Assemble production image from verified contexts", "Build canonical production image"):
@@ -580,7 +580,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         pin_candidate = step_config(workflow["jobs"][job_id], "Pin candidate identity", f"{workflow_path}.jobs.{job_id}")
         require(
             'git -C candidate fetch --no-tags --force origin "$CANDIDATE"' in str(pin_candidate.get("run", ""))
-            and 'git -C candidate checkout --detach "$CANDIDATE"' in str(pin_candidate.get("run", "")),
+            and "git -C candidate checkout --detach FETCH_HEAD" in str(pin_candidate.get("run", "")),
             f"{workflow_path} downstream jobs must explicitly pin the candidate SHA",
         )
     for name in ("Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
@@ -645,7 +645,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     pin_report = step_config(report, "Pin candidate report generator (build-only)", workflow_path)
     require(
         'git -C candidate-report fetch --no-tags --force origin "$CANDIDATE"' in str(pin_report.get("run", ""))
-        and 'git -C candidate-report checkout --detach "$CANDIDATE"' in str(pin_report.get("run", "")),
+        and "git -C candidate-report checkout --detach FETCH_HEAD" in str(pin_report.get("run", "")),
         f"{workflow_path} build-only report generator must be pinned to the candidate SHA",
     )
     report_run = str(report_step.get("run", ""))
