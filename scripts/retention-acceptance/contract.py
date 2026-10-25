@@ -116,15 +116,21 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
         or selected <= 0
         or not isinstance(committed, int)
         or isinstance(committed, bool)
-        or committed != selected
+        or committed <= 0
+        or committed > selected
     ):
+        return False
+    if committed != selected and scope.get("hasMore") is not True:
         return False
     batches = details.get("archiveBatches")
     if not isinstance(batches, list) or not batches:
         return False
     return all(
         isinstance(batch, dict)
-        and batch.get("batchRows") == batch.get("committedRows")
+        and isinstance(batch.get("batchRows"), int)
+        and isinstance(batch.get("committedRows"), int)
+        and batch.get("committedRows") > 0
+        and batch.get("committedRows") <= batch.get("batchRows")
         and batch.get("timeoutCount", 0) == 0
         for batch in batches
     )

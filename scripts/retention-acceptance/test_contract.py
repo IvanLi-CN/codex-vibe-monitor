@@ -280,7 +280,7 @@ def valid_evidence() -> dict:
 
 
 class ContractTests(unittest.TestCase):
-    def test_legacy_partial_task_run_requires_full_selected_batch(self) -> None:
+    def test_partial_task_run_requires_progress_and_more_work(self) -> None:
         row = {
             "status": "skipped",
             "completion": "partial",
@@ -290,12 +290,15 @@ class ContractTests(unittest.TestCase):
                 "fatalError": None,
                 "errorChain": None,
                 "timeoutCount": 0,
-                "selectedScope": {"selected": 1000, "committed": 1000},
-                "archiveBatches": [{"batchRows": 1000, "committedRows": 1000, "timeoutCount": 0}],
+                "selectedScope": {"selected": 1000, "committed": 735, "hasMore": True},
+                "archiveBatches": [{"batchRows": 1000, "committedRows": 735, "timeoutCount": 0}],
             },
         }
         self.assertTrue(task_run_is_accepted_terminal(row))
+        row["details"]["selectedScope"]["committed"] = 0
+        self.assertFalse(task_run_is_accepted_terminal(row))
         row["details"]["selectedScope"]["committed"] = 999
+        row["details"]["selectedScope"]["hasMore"] = False
         self.assertFalse(task_run_is_accepted_terminal(row))
 
     def test_competitor_partial_chunk_requires_positive_release(self) -> None:
