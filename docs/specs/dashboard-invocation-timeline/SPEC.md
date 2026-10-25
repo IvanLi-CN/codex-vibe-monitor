@@ -91,9 +91,18 @@
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
 - Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a delayed live-window refresh keeps the last committed bars and matching viewport visible until replacement; SSE and polling start no more than one traversal per rolling 15 seconds; failures retain the last good timeline with bounded exponential retry, while a user-requested window change shows loading for the new window and bypasses automatic retry delays.
 
+### VER-DIT-004
+
+- Method: collect the fixed-field materialization summary for at least 20 complete snapshots on representative high-load fixtures, separately for global and account scopes; pair the samples with `EXPLAIN QUERY PLAN` for the source page, deduplication, and account-fallback queries.
+- covers: snapshot freshness, bounded source traversal, account fallback, and materialization observability.
+- Pass condition: complete materialization p95 is at most 15 seconds for each measured scope; the plans show bounded time-range, cursor, deduplication, and account-fallback paths without an unbounded full-table scan; the summary distinguishes lock wait, source pages/scanned rows, materialized rows, account resolution, publish batches, publish rows, and final outcome without recording account values, payloads, or snapshot tokens.
+- Current evidence: source-equivalent docs-only candidate `5547897f4e821ad7bf8b4d7ddffbd16adb6ea163` passed the manual fixture on an Agent VM on 2026-10-25. Global scope measured 20 samples over 7,000 rows at p50 8,830 ms, p95 11,978 ms, and max 12,066 ms; account scope measured 20 samples over 3,500 rows at p50 4,185 ms, p95 7,403 ms, and max 7,582 ms. Source, deduplication, and account-fallback plans used the required indexes and contained no unbounded source or attempt-table scan.
+
 ## Related ADRs
 
 - [ADR 0019: Dashboard timeline replacement contract](../../adr/0019-dashboard-timeline-replacement-contract.md)
+- [ADR 0044: SQLite contention boundaries and ordered Summary publication](../../adr/0044-sqlite-contention-and-summary-ordering.md)
+- [ADR 0047: Dashboard live timeline range independence](../../adr/0047-dashboard-live-timeline-range-independence.md)
 
 ## Visual Evidence
 

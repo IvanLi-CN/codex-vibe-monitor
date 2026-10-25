@@ -32,6 +32,11 @@ function canonicalTimelineEpoch(value: number) {
   return Math.floor(value / 1_000) * 1_000;
 }
 
+function localCalendarDayKey(value: number) {
+  const date = new Date(value);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
 function clampWindow(window: InvocationTimelineWindow, bounds: InvocationTimelineWindow) {
   const boundSpan = Math.max(1, bounds.endMs - bounds.startMs);
   const span = Math.min(boundSpan, Math.max(60_000, window.endMs - window.startMs));
@@ -73,6 +78,17 @@ function preferTimelineRecord(
 ) {
   if (current.isInFlight !== next.isInFlight) return current.isInFlight ? next : current;
   return next.id >= current.id ? next : current;
+}
+
+async function releaseTimelineSnapshotBestEffort(asOf: string) {
+  try {
+    await releaseInvocationTimelineSnapshot(asOf);
+  } catch (error: unknown) {
+    console.debug(
+      "Invocation timeline snapshot release failed; the server TTL will reclaim it",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 async function fetchInvocationTimelineSnapshot(options: {
@@ -125,12 +141,7 @@ async function fetchInvocationTimelineSnapshot(options: {
   if (mergedRecords.length !== firstPage.total) {
     throw new Error("Invocation timeline snapshot is incomplete");
   }
-  void releaseInvocationTimelineSnapshot(asOf).catch((error: unknown) => {
-    console.debug(
-      "Invocation timeline snapshot release failed; the server TTL will reclaim it",
-      error instanceof Error ? error.message : String(error),
-    );
-  });
+  void releaseTimelineSnapshotBestEffort(asOf);
   return {
     ...firstPage,
     asOf,
@@ -155,7 +166,9 @@ export function useInvocationTimeline({
     const endMs = parseEpoch(response?.rangeEnd);
     return startMs != null && endMs != null && endMs > startMs ? { startMs, endMs } : null;
   }, [response?.rangeEnd, response?.rangeStart]);
-  const boundsContextKey = bounds ? `${closedNaturalDay}:${upstreamAccountId ?? "all"}` : "empty";
+  const boundsContextKey = bounds
+    ? `${closedNaturalDay}:${upstreamAccountId ?? "all"}:${closedNaturalDay ? localCalendarDayKey(bounds.endMs) : "live"}`
+    : "empty";
   const [requestedWindow, setRequestedWindow] = useState<InvocationTimelineWindow | null>(() =>
     resolveInitialWindow(response, closedNaturalDay),
   );
@@ -241,17 +254,6 @@ export function useInvocationTimeline({
     }
     const priorBounds = previousBounds.current;
     previousBounds.current = bounds;
-    const boundsChanged =
-      priorBounds != null &&
-      (priorBounds.startMs !== bounds.startMs || priorBounds.endMs !== bounds.endMs);
-    if (boundsChanged && !hasDataRef.current) {
-      requestSequence.current += 1;
-      abortControllerRef.current?.abort();
-      pendingAutomaticRefreshRef.current = false;
-      immediateRefreshRequiredRef.current = true;
-      setIsLoading(enabled);
-      setIsRefreshing(false);
-    }
     const current = requestedWindow;
     if (!current) {
       setRequestedWindow(resolveInitialWindow(response, closedNaturalDay));
@@ -324,13 +326,12 @@ export function useInvocationTimeline({
           throw new Error("Invocation timeline snapshot does not match the requested window");
         }
         const latestTarget = requestedWindowRef.current;
-        if (
-          !latestTarget ||
+        const targetAdvanced =
+          latestTarget == null ||
           latestTarget.startMs !== requestedTarget.startMs ||
-          latestTarget.endMs !== requestedTarget.endMs
-        ) {
+          latestTarget.endMs !== requestedTarget.endMs;
+        if (targetAdvanced) {
           pendingAutomaticRefreshRef.current = true;
-          return;
         }
         hasDataRef.current = true;
         retryAttemptRef.current = 0;
