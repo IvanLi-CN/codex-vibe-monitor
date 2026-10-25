@@ -39,9 +39,6 @@ fn stateful_schema_template_force_fresh() -> bool {
 }
 
 fn current_test_state_schema_template_path() -> Option<PathBuf> {
-    if stateful_schema_template_force_fresh() {
-        return None;
-    }
     std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
         .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
         .map(PathBuf::from)

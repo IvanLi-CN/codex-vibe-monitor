@@ -148,6 +148,16 @@ jobs:
             --workspace-remap "$trusted_repo" \
             --no-run > "$ref_root/archive-extract.log" 2>&1
 
+      - name: Refresh trusted harness before replay
+        if: steps.archives.outcome == 'success'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.trusted_harness_sha }}
+          path: trusted
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
       - name: Run cold and warm Stateful SQLite replays
         id: replays
         if: steps.archives.outcome == 'success'
@@ -292,6 +302,16 @@ jobs:
             done
           done
           exit "$overall_status"
+
+      - name: Refresh trusted harness before acceptance gate
+        if: always()
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.trusted_harness_sha }}
+          path: trusted
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
 
       - name: Generate empirical acceptance card
         id: acceptance
