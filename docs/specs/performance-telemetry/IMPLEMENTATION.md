@@ -328,7 +328,8 @@ SQLite 分桶首次出现一项既有超时夹具的 502/503 差异；三次单�
 性能开销验收迁移到 GitHub Actions：生产镜像构建与测量使用独立 GitHub-hosted
 job，测量以四个 workload lane 并行执行同一镜像的运行时场景和三对 60 秒 A/B；
 每个 pair lane 内部保持三种 mode 串行，保留 5% 稳定性与开销预算。失败产物按
-run/attempt 留存并阻断现有 Build Artifacts 门禁。
+run/attempt 留存；该 workflow 不作为现有 Build Artifacts 的依赖，未启动或 unavailable
+不改变普通 PR 门禁。
 共享测试机只签发运行时集成卡；此前受干扰的 A/B 保留为诊断记录，不用于证明预算。
 当前实现已接入工作流，是否通过以对应候选的 Actions 场景结果与验收卡为准。
 
