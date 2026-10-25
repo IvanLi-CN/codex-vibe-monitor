@@ -254,18 +254,20 @@ mod retention_write_budget_tests {
         let mut health = RetentionWriteHealthState::default();
         assert!(!observe_retention_write_commit_with_hold(
             &mut health,
-            OPERATION,
-            "normal",
-            4,
-            4 * 256,
-            Duration::ZERO,
-            Duration::ZERO,
-            Duration::from_millis(251),
-            Duration::ZERO,
-            Some(Duration::from_millis(1)),
-            None,
-            0,
-            0,
+            &RetentionWriteCommit {
+                operation: OPERATION,
+                admission_mode: "normal",
+                rows: 4,
+                estimated_bytes: 4 * 256,
+                prepare_elapsed: Duration::ZERO,
+                lock_wait: Duration::ZERO,
+                execute_elapsed: Duration::from_millis(251),
+                commit_elapsed: Duration::ZERO,
+                write_hold_elapsed: Some(Duration::from_millis(1)),
+                raw_reference_check_elapsed: None,
+                p1_waiter_count: 0,
+                candidate_remaining_hint: 0,
+            },
         ));
         assert_eq!(
             retention_adaptive_candidate_limit_from_state(&mut health, 64, OPERATION),

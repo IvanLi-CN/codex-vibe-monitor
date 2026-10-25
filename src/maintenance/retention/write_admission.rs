@@ -1372,6 +1372,11 @@ macro_rules! retention_record_commit {
 pub(crate) use retention_record_commit;
 
 pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> bool {
+    let mut health = RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health");
+    let breached = observe_retention_write_commit_with_hold(&mut health, &commit);
+    drop(health);
     let RetentionWriteCommit {
         operation,
         admission_mode,
@@ -1386,25 +1391,6 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> boo
         p1_waiter_count,
         candidate_remaining_hint,
     } = commit;
-    let mut health = RETENTION_WRITE_HEALTH
-        .lock()
-        .expect("retention write health");
-    let breached = observe_retention_write_commit_with_hold(
-        &mut health,
-        operation,
-        admission_mode,
-        rows,
-        estimated_bytes,
-        prepare_elapsed,
-        lock_wait,
-        execute_elapsed,
-        commit_elapsed,
-        write_hold_elapsed,
-        raw_reference_check_elapsed,
-        p1_waiter_count,
-        candidate_remaining_hint,
-    );
-    drop(health);
     if breached {
         warn!(
             operation,
@@ -1458,6 +1444,28 @@ pub(crate) fn observe_retention_write_commit(
 ) -> bool {
     observe_retention_write_commit_with_hold(
         health,
+        &RetentionWriteCommit {
+            operation,
+            admission_mode,
+            rows,
+            estimated_bytes,
+            prepare_elapsed,
+            lock_wait,
+            execute_elapsed,
+            commit_elapsed,
+            write_hold_elapsed: None,
+            raw_reference_check_elapsed,
+            p1_waiter_count,
+            candidate_remaining_hint,
+        },
+    )
+}
+
+pub(crate) fn observe_retention_write_commit_with_hold(
+    health: &mut RetentionWriteHealthState,
+    commit: &RetentionWriteCommit,
+) -> bool {
+    let RetentionWriteCommit {
         operation,
         admission_mode,
         rows,
@@ -1466,29 +1474,11 @@ pub(crate) fn observe_retention_write_commit(
         lock_wait,
         execute_elapsed,
         commit_elapsed,
-        None,
+        write_hold_elapsed,
         raw_reference_check_elapsed,
         p1_waiter_count,
         candidate_remaining_hint,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn observe_retention_write_commit_with_hold(
-    health: &mut RetentionWriteHealthState,
-    operation: &'static str,
-    admission_mode: &'static str,
-    rows: usize,
-    estimated_bytes: usize,
-    prepare_elapsed: Duration,
-    lock_wait: Duration,
-    execute_elapsed: Duration,
-    commit_elapsed: Duration,
-    write_hold_elapsed: Option<Duration>,
-    raw_reference_check_elapsed: Option<Duration>,
-    p1_waiter_count: usize,
-    candidate_remaining_hint: usize,
-) -> bool {
+    } = *commit;
     let elapsed =
         write_hold_elapsed.unwrap_or_else(|| execute_elapsed.saturating_add(commit_elapsed));
     let breached =
