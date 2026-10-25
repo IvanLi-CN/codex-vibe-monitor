@@ -652,6 +652,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       const timelineControls = page.getByTestId("dashboard-invocation-timeline").locator("button");
       await expect(timelineControls).toHaveCount(4);
       const triggerDenseRefresh = async (releaseCountBefore: number) => {
+        console.log(`[timeline-capacity] dense ${name}: refresh active wait`);
         await expect
           .poll(
             () =>
@@ -663,6 +664,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBe(0);
+        console.log(`[timeline-capacity] dense ${name}: refresh active wait complete`);
         const traversalCountBefore = await page.evaluate(
           () =>
             (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
@@ -674,9 +676,11 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
           diagnostics.nextTraversalDelayMs = delayMs;
         }, DENSE_TRAVERSAL_DELAY_MS);
+        console.log(`[timeline-capacity] dense ${name}: refresh click`);
         // The capacity fixture anchors records at requestEnd - 15 minutes; lengthening the
         // window keeps the synthetic dense records in range across both refreshes.
         await timelineControls.nth(1).click();
+        console.log(`[timeline-capacity] dense ${name}: refresh click complete`);
         await expect
           .poll(
             () =>
@@ -688,6 +692,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBeGreaterThan(traversalCountBefore);
+        console.log(`[timeline-capacity] dense ${name}: traversal started`);
         await expect
           .poll(() =>
             page.evaluate(
@@ -697,6 +702,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             ),
           )
           .toBeGreaterThan(releaseCountBefore);
+        console.log(`[timeline-capacity] dense ${name}: snapshot released`);
         await expect
           .poll(
             () =>
@@ -708,11 +714,14 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBe(0);
+        console.log(`[timeline-capacity] dense ${name}: refresh active zero`);
         await expect(page.getByTestId("dashboard-invocation-timeline-lanes")).toHaveAttribute(
           "data-total-calls",
           "550",
         );
+        console.log(`[timeline-capacity] dense ${name}: refresh count asserted`);
         await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
+        console.log(`[timeline-capacity] dense ${name}: refresh state asserted`);
       };
       console.log(`[timeline-capacity] dense ${name}: first refresh`);
       await triggerDenseRefresh(beforeRefresh.releaseCount);
