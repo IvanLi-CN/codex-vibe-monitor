@@ -10,6 +10,11 @@ import { formatManagedTaskDuration, formatManagedTaskTimestamp } from "./taskRun
 export function ManagedTaskRunFacts({ run }: { run: ManagedTaskRun }): JSX.Element {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const executionUid = run.executionUid?.trim() || null;
+  const fileResourceWaitMs = run.details?.fileResourceWaitMs;
+  const hasFileResourceWait =
+    typeof fileResourceWaitMs === "number" &&
+    Number.isFinite(fileResourceWaitMs) &&
+    fileResourceWaitMs >= 0;
 
   const copyExecutionUid = async () => {
     if (!executionUid) return;
@@ -59,12 +64,14 @@ export function ManagedTaskRunFacts({ run }: { run: ManagedTaskRun }): JSX.Eleme
             {formatManagedTaskDuration(run.details?.resourceWaitMs)}
           </dd>
         </div>
-        <div>
-          <dt className="text-base-content/60">文件资源等待</dt>
-          <dd className="mt-1 font-medium tabular-nums">
-            {formatManagedTaskDuration(run.details?.fileResourceWaitMs)}
-          </dd>
-        </div>
+        {hasFileResourceWait ? (
+          <div>
+            <dt className="text-base-content/60">文件资源等待</dt>
+            <dd className="mt-1 font-medium tabular-nums">
+              {formatManagedTaskDuration(fileResourceWaitMs)}
+            </dd>
+          </div>
+        ) : null}
       </dl>
       <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2">
         <span className="shrink-0 text-base-content/60">执行身份</span>

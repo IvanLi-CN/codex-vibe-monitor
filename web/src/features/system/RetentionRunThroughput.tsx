@@ -61,13 +61,16 @@ function serviceRateMultiple(
   }
   if (
     serviceRateValue == null ||
+    !Number.isFinite(serviceRateValue) ||
+    serviceRateValue < 0 ||
     arrivalRowsPerSecond == null ||
     !Number.isFinite(arrivalRowsPerSecond) ||
     arrivalRowsPerSecond <= 0
   ) {
     return null;
   }
-  return serviceRateValue / arrivalRowsPerSecond;
+  const derivedMultiple = serviceRateValue / arrivalRowsPerSecond;
+  return Number.isFinite(derivedMultiple) ? derivedMultiple : null;
 }
 
 export function RetentionRunThroughput({

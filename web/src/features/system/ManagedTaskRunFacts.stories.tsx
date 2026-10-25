@@ -72,6 +72,20 @@ export const CompleteWithIdentity: Story = {
   },
 };
 
+export const WithoutFileResourceWait: Story = {
+  args: {
+    run: {
+      ...completeRun,
+      details: { resourceWaitMs: 12_000 },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("调度侧资源准入等待")).toBeVisible();
+    await expect(canvas.queryByText("文件资源等待")).not.toBeInTheDocument();
+  },
+};
+
 export const Running: Story = {
   args: {
     run: {

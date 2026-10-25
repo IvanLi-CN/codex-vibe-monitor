@@ -118,6 +118,36 @@ export const SingleBatchFallback: Story = {
   },
 };
 
+export const DerivedRateOverflowUnknown: Story = {
+  args: {
+    details: {
+      timeoutCount: 0,
+      archiveBatches: [
+        {
+          dataset: "codex_invocations",
+          monthKey: "2026-09",
+          batchRows: 1,
+          committedRows: 1,
+          committedRowsPerSecond: Number.MAX_VALUE,
+          arrivalRowsPerSecond: Number.MIN_VALUE,
+          serviceRateMultiple: null,
+          filePrepareMs: 0,
+          sourceIdentityMs: 0,
+          archiveWriterMs: 0,
+          summaryProofMs: 0,
+          lockWaitMs: 0,
+        },
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("服务倍率")).toBeVisible();
+    await expect(canvas.getByText("未知")).toBeVisible();
+    await expect(canvas.queryByText("Infinity×")).not.toBeInTheDocument();
+  },
+};
+
 export const PartialTimeout: Story = {
   args: {
     details: {
