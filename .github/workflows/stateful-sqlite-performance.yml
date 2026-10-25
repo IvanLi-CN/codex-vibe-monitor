@@ -127,6 +127,25 @@ jobs:
             sudo useradd --create-home --shell /usr/sbin/nologin "$CANDIDATE_USER"
           fi
 
+      - name: Prepare read-only Rust toolchain for candidate user
+        id: toolchain
+        env:
+          TOOL_ROOT: ${{ runner.temp }}/stateful-sqlite-tools
+        run: |
+          set -euo pipefail
+          sysroot="$(rustc --print sysroot)"
+          nextest_bin="$(command -v cargo-nextest)"
+          test -x "$sysroot/bin/cargo"
+          test -x "$sysroot/bin/rustc"
+          test -x "$nextest_bin"
+          install -d -m 755 "$TOOL_ROOT"
+          sudo install -d -m 755 "$TOOL_ROOT/bin"
+          sudo cp -a "$sysroot" "$TOOL_ROOT/sysroot"
+          sudo install -m 755 "$nextest_bin" "$TOOL_ROOT/bin/cargo-nextest"
+          sudo chown -R root:root "$TOOL_ROOT"
+          echo "path=$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" >> "$GITHUB_OUTPUT"
+          echo "rustc=$TOOL_ROOT/sysroot/bin/rustc" >> "$GITHUB_OUTPUT"
+
       - name: Build and extract candidate test archive
         id: archives
         continue-on-error: true
@@ -134,7 +153,8 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
           CANDIDATE_USER: stateful-sqlite-test
-          PATH: ${{ steps.revisions.outputs.safe_path }}
+          PATH: ${{ steps.toolchain.outputs.path }}
+          RUSTC: ${{ steps.toolchain.outputs.rustc }}
           BASH_ENV: /dev/null
           ENV: /dev/null
           PYTHONPATH: ""
@@ -205,7 +225,8 @@ jobs:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
           CANDIDATE_USER: stateful-sqlite-test
-          PATH: ${{ steps.revisions.outputs.safe_path }}
+          PATH: ${{ steps.toolchain.outputs.path }}
+          RUSTC: ${{ steps.toolchain.outputs.rustc }}
           BASH_ENV: /dev/null
           ENV: /dev/null
           PYTHONPATH: ""
