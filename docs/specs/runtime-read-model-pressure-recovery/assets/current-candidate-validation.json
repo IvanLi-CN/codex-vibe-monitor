@@ -2,9 +2,9 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "pr-rebased-validation-required",
-  "candidate_head_sha": "8546c733024d83f58799651b296bc3ad5a161d96",
-  "implementation_commit": "8546c733024d83f58799651b296bc3ad5a161d96",
-  "active_base_sha": "629df74fc06957dfaaf7c30df7adae4eeb9a7afd",
+  "candidate_head_sha": "c7208893d8b94d20b086d5c447256943490fb454",
+  "implementation_commit": "c7208893d8b94d20b086d5c447256943490fb454",
+  "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
   "base_ref": "main",
   "pr_number": 1191,
   "candidate_branch": "th/summary-recovery-query-fairness",
@@ -13,7 +13,7 @@
     "merge_commit_sha": null,
     "merge_strategy": "linear-rebase-to-current-main",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "The implementation candidate is linearly rebased onto current main 629df74f; no merge commit or unrelated base merge is included.",
+    "mainline_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
@@ -112,7 +112,7 @@
     "required": true,
     "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
     "status": "blocked-after-rebase",
-    "candidate_sha": "8546c733024d83f58799651b296bc3ad5a161d96",
+    "candidate_sha": "c7208893d8b94d20b086d5c447256943490fb454",
     "previous_candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
     "contract_digest": "2a3e47d2afc022281681956e95a566e57fcece92aaddb25308d387c0289b13bf",
     "scenario_set_digest": "91e15552313348ade24b539822c79c92a495f0a5b3b51e2fdf84c3963c3d9694",
@@ -142,7 +142,7 @@
     "production": "No production database copy, backup, deployment, restart, rollback, observation, or mutable external write is authorized by this record."
   },
   "local_validation": {
-    "validated_commit": "8546c733024d83f58799651b296bc3ad5a161d96",
+    "validated_commit": "c7208893d8b94d20b086d5c447256943490fb454",
     "stale_after_rebase": false,
     "passed": [
       "cargo fmt --all -- --check",
@@ -166,7 +166,7 @@
   "execution_evidence": {
     "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
     "head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
-    "current_head_sha": "8546c733024d83f58799651b296bc3ad5a161d96",
+    "current_head_sha": "c7208893d8b94d20b086d5c447256943490fb454",
     "stale_after_rebase": true,
     "passed_lanes": [
       "Lint & Format Check",
@@ -191,7 +191,7 @@
       "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
       "artifact": "observability-acceptance-40167801081-1",
       "candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
-      "current_candidate_sha": "8546c733024d83f58799651b296bc3ad5a161d96",
+      "current_candidate_sha": "c7208893d8b94d20b086d5c447256943490fb454",
       "status": "stale-after-rebase",
       "stale_after_rebase": true,
       "functional_scenarios_passed": true,
