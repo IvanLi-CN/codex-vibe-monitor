@@ -31,6 +31,7 @@ DATASETS = {
     },
 }
 COMPETITOR_TASK = "raw_orphan_sweep"
+SUMMARY_RECOVERY_TASK = "summary_coverage_recovery"
 COMPETITOR_FILE_COUNT = 512
 COMPETITOR_FILE_BYTES = 256
 RUN_SECONDS = 120

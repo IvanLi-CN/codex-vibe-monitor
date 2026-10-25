@@ -9,11 +9,20 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Iterable
 
-from contract import COMPETITOR_FILE_COUNT, COMPETITOR_TASK, DATASETS, RETENTION_DAYS, SEED, canonical_json
+from contract import (
+    COMPETITOR_FILE_COUNT,
+    COMPETITOR_TASK,
+    DATASETS,
+    RETENTION_DAYS,
+    SEED,
+    SUMMARY_RECOVERY_TASK,
+    canonical_json,
+)
 
 
 CONTROLLED_TASK_KEYS = tuple(
-    [DATASETS[name]["task_key"] for name in DATASETS] + [COMPETITOR_TASK]
+    [DATASETS[name]["task_key"] for name in DATASETS]
+    + [COMPETITOR_TASK, SUMMARY_RECOVERY_TASK]
 )
 SHANGHAI = timezone(timedelta(hours=8))
 PARALLEL_WORK_COVERAGE_DAYS = 30

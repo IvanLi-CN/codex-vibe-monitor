@@ -36,6 +36,7 @@ from contract import (
     RUN_SECONDS,
     SCHEMA_VERSION,
     SEED,
+    SUMMARY_RECOVERY_TASK,
     TRIAL_EXECUTION_ORDER,
     TRIALS_PER_VERSION,
     AcceptanceError,
@@ -919,7 +920,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
+            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep','summary_coverage_recovery') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
@@ -954,7 +955,7 @@ def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
     try:
         connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True, timeout=2)
         connection.execute("PRAGMA busy_timeout=2000")
-        keys = (*tuple(DATASETS[name]["task_key"] for name in DATASETS), COMPETITOR_TASK)
+        keys = (*tuple(DATASETS[name]["task_key"] for name in DATASETS), COMPETITOR_TASK, SUMMARY_RECOVERY_TASK)
         placeholders = ",".join("?" for _ in keys)
         tasks = [
             {
@@ -1026,7 +1027,7 @@ def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
 def task_owners_idle(maintenance_db: Path) -> bool:
     connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
     try:
-        keys = tuple(DATASETS[name]["task_key"] for name in DATASETS) + (COMPETITOR_TASK,)
+        keys = tuple(DATASETS[name]["task_key"] for name in DATASETS) + (COMPETITOR_TASK, SUMMARY_RECOVERY_TASK)
         placeholders = ",".join("?" for _ in keys)
         pending = connection.execute(
             f"SELECT COUNT(*) FROM managed_task_runs WHERE task_key IN ({placeholders}) AND status IN ('running','requested','queued')",

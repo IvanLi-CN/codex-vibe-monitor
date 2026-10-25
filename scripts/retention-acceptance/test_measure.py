@@ -23,6 +23,7 @@ from contract import (
     CONTAINER_RUN_ID_LABEL,
     CONTAINER_TRIAL_LABEL,
     DATASETS,
+    SUMMARY_RECOVERY_TASK,
     TRIAL_EXECUTION_ORDER,
 )
 from fixture import (
@@ -415,7 +416,8 @@ class MeasurementBudgetTests(unittest.TestCase):
 
             self.assertEqual(
                 set(CONTROLLED_TASK_KEYS),
-                {DATASETS[name]["task_key"] for name in DATASETS} | {COMPETITOR_TASK},
+                {DATASETS[name]["task_key"] for name in DATASETS}
+                | {COMPETITOR_TASK, SUMMARY_RECOVERY_TASK},
             )
             self.assertEqual(set(CONTROLLED_TASK_KEYS), {
                 key for key, (enabled, next_trigger, next_catchup, _) in rows.items()
