@@ -200,7 +200,7 @@ jobs:
           extract="$artifact_root/archive-extract"
           build_target="$artifact_root/build-target"
           sudo install -d -m 755 "$extract" "$build_target" "$CARGO_HOME"
-          touch "$archive"
+          sudo touch "$archive"
           sudo chown -R "$CANDIDATE_USER" "$CARGO_HOME" "$build_target" "$archive" "$extract"
           set +e
           (
