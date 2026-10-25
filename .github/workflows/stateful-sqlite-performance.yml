@@ -1,11 +1,6 @@
 name: Stateful SQLite Performance Acceptance
 
 on:
-  push:
-    branches:
-      - th/stateful-sqlite-fixture-timing
-    paths:
-      - .github/workflows/stateful-sqlite-performance.yml
   workflow_dispatch:
     inputs:
       baseline_ref:
