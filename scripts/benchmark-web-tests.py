@@ -177,7 +177,7 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     )
     text = text.replace("const LIVE_REFRESH_TIMER_GUARD_MS = 50;\n", "")
     text = text.replace(
-        """      await page.evaluate((minimumRefreshIntervalMs) => {
+        """      await page.addInitScript((minimumRefreshIntervalMs) => {
         const nativeSetTimeout = window.setTimeout.bind(window);
         window.setTimeout = ((...args: Parameters<typeof window.setTimeout>) => {
           const [handler, timeout, ...rest] = args;

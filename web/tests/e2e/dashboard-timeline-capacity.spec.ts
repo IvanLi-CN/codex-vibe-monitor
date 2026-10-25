@@ -578,6 +578,15 @@ test("single-client dense timeline stays below the long-task budget on desktop a
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
     try {
+      await page.addInitScript((minimumRefreshIntervalMs) => {
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = ((...args: Parameters<typeof window.setTimeout>) => {
+          const [handler, timeout, ...rest] = args;
+          const acceleratedTimeout =
+            typeof timeout === "number" && timeout >= minimumRefreshIntervalMs ? 0 : timeout;
+          return nativeSetTimeout(handler, acceleratedTimeout, ...rest);
+        }) as typeof window.setTimeout;
+      }, MINIMUM_REFRESH_INTERVAL_MS);
       await startCapacityDashboard(page, viewport, true);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
       await instrumentTimelineFetch(page);
@@ -658,17 +667,6 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
       await expectVisibleCallsAreVirtualized(page, 550);
 
-      // The real refresh cadence is covered by the two-client proof above. Advance the scheduler
-      // clock here so the dense render proof measures the refresh instead of waiting 15 seconds.
-      await page.evaluate((minimumRefreshIntervalMs) => {
-        const nativeSetTimeout = window.setTimeout.bind(window);
-        window.setTimeout = ((...args: Parameters<typeof window.setTimeout>) => {
-          const [handler, timeout, ...rest] = args;
-          const acceleratedTimeout =
-            typeof timeout === "number" && timeout >= minimumRefreshIntervalMs ? 0 : timeout;
-          return nativeSetTimeout(handler, acceleratedTimeout, ...rest);
-        }) as typeof window.setTimeout;
-      }, MINIMUM_REFRESH_INTERVAL_MS);
       await expect
         .poll(
           () =>
