@@ -514,6 +514,10 @@ impl ProxySqliteWritePermit {
         self.lock_wait
     }
 
+    pub(crate) fn held_since(&self) -> Instant {
+        self.observed_at
+    }
+
     pub(crate) fn write_class(&self) -> &'static str {
         self.class.as_str()
     }
