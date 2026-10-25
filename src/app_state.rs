@@ -869,6 +869,12 @@ pub(crate) struct AppState {
     pub(crate) upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }
 
+impl AppState {
+    pub(crate) fn sqlite_storage_pool(&self) -> Pool<Sqlite> {
+        self.pool.clone()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingAvailabilitySignal {
     sender: tokio::sync::watch::Sender<u64>,
