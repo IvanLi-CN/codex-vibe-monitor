@@ -1,0 +1,227 @@
+name: Stateful SQLite Performance Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Timed pre-template baseline commit or ref
+        required: true
+        default: 30518796320b16233c04d1c3e74a0a56164904b9
+        type: string
+      candidate_ref:
+        description: Candidate commit or ref to measure
+        required: true
+        default: th/stateful-sqlite-fixture-timing
+        type: string
+
+concurrency:
+  group: stateful-sqlite-performance-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Stateful SQLite A/B replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: baseline
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Verify Rust system dependencies
+        run: |
+          set -euo pipefail
+          command -v pkg-config
+          pkg-config --exists sqlite3
+          test -r /usr/include/sqlite3.h
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('candidate/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-stateful-sqlite-performance-registry-
+
+      - name: Resolve immutable revisions and runner identity
+        id: revisions
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_ROOT"
+          baseline_sha="$(git -C baseline rev-parse HEAD)"
+          candidate_sha="$(git -C candidate rev-parse HEAD)"
+          test "$baseline_sha" != "$candidate_sha"
+          printf 'baseline_sha=%s\ncandidate_sha=%s\n' "$baseline_sha" "$candidate_sha" > "$EVIDENCE_ROOT/revisions.txt"
+          {
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            printf 'runner_name=%s\n' "$RUNNER_NAME"
+            printf 'image_os=%s\n' "${ImageOS:-unknown}"
+            printf 'image_version=%s\n' "${ImageVersion:-unknown}"
+            printf 'cpu_count=%s\n' "$(nproc)"
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'cargo_nextest=%s\n' "$(cargo-nextest --version)"
+          } > "$EVIDENCE_ROOT/runner-context.txt"
+          echo "baseline_sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Build and extract isolated test archives
+        id: archives
+        continue-on-error: true
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_ROOT/cargo-home"
+          for ref_name in baseline candidate; do
+            repo="$GITHUB_WORKSPACE/$ref_name"
+            ref_root="$EVIDENCE_ROOT/$ref_name"
+            mkdir -p "$ref_root"
+            archive="$ref_root/backend-tests.tar.zst"
+            extract="$ref_root/archive-extract"
+            build_target="$ref_root/build-target"
+            test ! -e "$extract"
+            mkdir "$extract"
+            set +e
+            (
+              cd "$repo"
+              CARGO_TARGET_DIR="$build_target" \
+                cargo nextest archive --locked --all-features \
+                --archive-file "$archive" --zstd-level 0
+            ) > "$ref_root/archive-build.log" 2>&1
+            status=$?
+            set -e
+            test "$status" -eq 0
+            CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
+              --archive-file "$archive" \
+              --extract-to "$extract" \
+              --workspace-remap "$repo" \
+              --no-run > "$ref_root/archive-extract.log" 2>&1
+          done
+
+      - name: Run cold and warm Stateful SQLite replays
+        id: replays
+        if: steps.archives.outcome == 'success'
+        continue-on-error: true
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+        run: |
+          set -uo pipefail
+          wall_file="$EVIDENCE_ROOT/wall-times.txt"
+          : > "$wall_file"
+          for ref_name in baseline candidate; do
+            repo="$GITHUB_WORKSPACE/$ref_name"
+            archive_dir="$EVIDENCE_ROOT/$ref_name/archive-extract"
+            workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
+            mkdir -p "$workspace"
+            for replay in cold warm; do
+              for shard in 1 2; do
+                log="$EVIDENCE_ROOT/logs/$ref_name/$replay/shard-$shard.log"
+                mkdir -p "$(dirname "$log")"
+                start_ms="$(date +%s%3N)"
+                set +e
+                (
+                  cd "$repo"
+                  CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1 \
+                  BACKEND_TEST_WORKSPACE="$workspace" \
+                  CARGO_HOME="$CARGO_HOME" \
+                  CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/replay-target" \
+                  NEXTEST_SUCCESS_OUTPUT=final \
+                    bash .github/scripts/run-backend-tests.sh \
+                    --profile stateful-sqlite \
+                    --partition "hash:$shard/2" \
+                    --archive-dir "$archive_dir"
+                ) > "$log" 2>&1
+                status=$?
+                set -e
+                end_ms="$(date +%s%3N)"
+                wall_ms=$((end_ms - start_ms))
+                printf 'stateful-performance ref=%s replay=%s shard=%s wall_ms=%s exit_code=%s\n' \
+                  "$ref_name" "$replay" "$shard" "$wall_ms" "$status" | tee -a "$wall_file"
+                if [ "$status" -ne 0 ]; then
+                  exit "$status"
+                fi
+              done
+            done
+          done
+
+      - name: Generate empirical acceptance card
+        id: acceptance
+        if: always()
+        continue-on-error: true
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          BASELINE_SHA: ${{ steps.revisions.outputs.baseline_sha }}
+          CANDIDATE_SHA: ${{ steps.revisions.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_ROOT/evidence"
+          python3 candidate/.github/scripts/stateful-sqlite-performance.py \
+            --root "$EVIDENCE_ROOT" \
+            --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
+            --baseline-sha "$BASELINE_SHA" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --output-dir "$EVIDENCE_ROOT/evidence" \
+            | tee "$EVIDENCE_ROOT/evidence/acceptance-card.stdout"
+          status=${PIPESTATUS[0]}
+          if [ -f "$EVIDENCE_ROOT/evidence/acceptance-card.md" ]; then
+            cat "$EVIDENCE_ROOT/evidence/acceptance-card.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Upload sanitized acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stateful-sqlite-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/stateful-sqlite-performance/revisions.txt
+            ${{ runner.temp }}/stateful-sqlite-performance/runner-context.txt
+            ${{ runner.temp }}/stateful-sqlite-performance/wall-times.txt
+            ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.json
+            ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce empirical acceptance
+        if: always()
+        env:
+          ARCHIVES_OUTCOME: ${{ steps.archives.outcome }}
+          REPLAYS_OUTCOME: ${{ steps.replays.outcome }}
+          ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
+        run: |
+          set -euo pipefail
+          test "$ARCHIVES_OUTCOME" = success
+          test "$REPLAYS_OUTCOME" = success
+          test "$ACCEPTANCE_OUTCOME" = success
