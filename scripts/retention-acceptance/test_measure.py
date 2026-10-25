@@ -114,6 +114,45 @@ class MeasurementBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
             validate_task_snapshot(rows)
 
+    def test_competitor_partial_chunks_count_toward_fixed_workload(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                "committed_work": 32,
+                "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+                "error_detail": None,
+            }
+            for index in range(16)
+        ] + [
+            {
+                "task_key": task_key,
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                "committed_work": 1000,
+                "details": {},
+                "error_detail": None,
+            }
+            for index, (task_key, trigger_kind) in enumerate(
+                [
+                    ("retention_archive", "schedule"),
+                    ("retention_archive", "catchup"),
+                    ("pool_upstream_attempt_archive", "schedule"),
+                    ("pool_upstream_attempt_archive", "catchup"),
+                ],
+                start=1,
+            )
+        ]
+
+        validate_task_snapshot(rows)
+
     def test_fixture_history_timestamps_match_retention_local_time_contract(self) -> None:
         timestamp = _history_timestamp("2026-10-24 00:00:00", 0)
 

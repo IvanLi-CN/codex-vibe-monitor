@@ -20,6 +20,7 @@ from contract import (
     TRIAL_EXECUTION_ORDER,
     AcceptanceError,
     sha256_json,
+    task_run_is_accepted_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
 )
@@ -287,6 +288,17 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(task_run_is_accepted_terminal(row))
         row["details"]["selectedScope"]["committed"] = 999
         self.assertFalse(task_run_is_accepted_terminal(row))
+
+    def test_competitor_partial_chunk_requires_positive_failure_free_release(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "partial",
+            "error_detail": None,
+            "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+        }
+        self.assertTrue(task_run_is_accepted_competitor_chunk(row))
+        row["details"]["failures"] = 1
+        self.assertFalse(task_run_is_accepted_competitor_chunk(row))
 
     def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
         evidence = valid_evidence()

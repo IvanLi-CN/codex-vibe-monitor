@@ -40,6 +40,7 @@ from contract import (
     AcceptanceError,
     parse_time,
     sha256_bytes,
+    task_run_is_accepted_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
 )
@@ -1114,7 +1115,11 @@ def wait_for_task_evidence(
 def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if row.get("actual_finished_at") is not None and task_run_is_accepted_terminal(row):
+        if row.get("actual_finished_at") is not None and (
+            task_run_is_accepted_competitor_chunk(row)
+            if row.get("task_key") == COMPETITOR_TASK
+            else task_run_is_accepted_terminal(row)
+        ):
             by_key.setdefault(row["task_key"], []).append(row)
     for key in (DATASETS[name]["task_key"] for name in DATASETS):
         runs = by_key.get(key, [])

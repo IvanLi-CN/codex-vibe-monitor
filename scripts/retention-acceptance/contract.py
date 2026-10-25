@@ -129,6 +129,29 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
     )
 
 
+def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
+    """Accept bounded orphan-sweep chunks while retaining strict failure checks."""
+    if row.get("status") == "success":
+        return True
+    if row.get("status") != "skipped" or row.get("completion") != "partial":
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict) or details.get("failures", 0) != 0:
+        return False
+    released = details.get("filesReleased")
+    checked = details.get("filesChecked")
+    return (
+        isinstance(released, int)
+        and not isinstance(released, bool)
+        and released > 0
+        and isinstance(checked, int)
+        and not isinstance(checked, bool)
+        and checked >= released
+    )
+
+
 def _number(value: Any, message: str) -> float:
     _require(
         isinstance(value, (int, float))
@@ -258,10 +281,12 @@ def _validate_task_runs(
         finished = parse_time(row.get("actual_finished_at"))
         _require(finished >= started, "task run has an inverted execution interval")
         _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
-        _require(
-            task_run_is_accepted_terminal(row),
-            f"background task {key} did not finish successfully or fully commit its selected batch",
+        accepted = (
+            task_run_is_accepted_competitor_chunk(row)
+            if key == COMPETITOR_TASK
+            else task_run_is_accepted_terminal(row)
         )
+        _require(accepted, f"background task {key} did not finish successfully or commit valid work")
         work = row.get("committed_work")
         _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
