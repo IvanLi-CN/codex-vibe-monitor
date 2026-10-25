@@ -40,7 +40,8 @@ type TimelineDiagnostics = {
   activeTraversals: number;
   maxActiveTraversals: number;
   nextTraversalDelayMs: number;
-  holdNextTraversalDelayMs: number;
+  holdSubsequentTraversals: boolean;
+  holdNextTraversal: boolean;
   longTasks: Array<{ duration: number; startTime: number }>;
   longTaskObserverSupported: boolean;
   timelineActivationStartMs: number | null;
@@ -79,7 +80,8 @@ function installDiagnostics(page: Page, initialRange: "today" | "yesterday" | "1
       activeTraversals: 0,
       maxActiveTraversals: 0,
       nextTraversalDelayMs: 0,
-      holdNextTraversalDelayMs: 0,
+      holdSubsequentTraversals: false,
+      holdNextTraversal: false,
       longTasks: [],
       longTaskObserverSupported: PerformanceObserver.supportedEntryTypes.includes("longtask"),
       timelineActivationStartMs: null,
@@ -224,6 +226,9 @@ function installTimelineFetchInstrumentationInPage() {
     if (isTimeline && method === "GET") {
       diagnostics.pageRequests += 1;
       if (isFirstPageTimelineGet) {
+        while (diagnostics.holdNextTraversal) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
+        }
         observedFirstPageRequests.add(requestUrl.toString());
         diagnostics.timelineRequestWindows.push({
           from: requestUrl.searchParams.get("from") ?? "",
@@ -269,10 +274,7 @@ function installTimelineFetchInstrumentationInPage() {
             rangeStart: payload.rangeStart,
             rangeEnd: payload.rangeEnd,
           });
-          if (diagnostics.holdNextTraversalDelayMs > 0) {
-            diagnostics.nextTraversalDelayMs = diagnostics.holdNextTraversalDelayMs;
-            diagnostics.holdNextTraversalDelayMs = 0;
-          }
+          if (diagnostics.holdSubsequentTraversals) diagnostics.holdNextTraversal = true;
         }
       } catch {
         // Keep the fetch instrumentation non-invasive when a demo response is malformed.
@@ -708,7 +710,7 @@ test("keeps the old live window visible and commits it before catching up", asyn
             .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
           if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
           diagnostics.nextTraversalDelayMs = delayMs;
-          diagnostics.holdNextTraversalDelayMs = delayMs;
+          diagnostics.holdSubsequentTraversals = true;
         }, MOVING_WINDOW_TRAVERSAL_DELAY_MS),
       ),
     );
@@ -841,6 +843,16 @@ test("keeps the old live window visible and commits it before catching up", asyn
       ),
     );
     await Promise.all(
+      pages.map((page) =>
+        page.evaluate(() => {
+          const diagnostics = (window as TimelineDiagnosticsWindow)
+            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+          diagnostics.holdNextTraversal = false;
+        }),
+      ),
+    );
+    await Promise.all(
       pages.map((page, index) =>
         expect
           .poll(
@@ -925,6 +937,17 @@ test("keeps the old live window visible and commits it before catching up", asyn
             { timeout: 5_000 },
           )
           .toBeGreaterThan(Date.parse(firstResponseWindows[index]?.rangeEnd ?? "")),
+      ),
+    );
+    await Promise.all(
+      pages.map((page) =>
+        page.evaluate(() => {
+          const diagnostics = (window as TimelineDiagnosticsWindow)
+            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+          diagnostics.holdSubsequentTraversals = false;
+          diagnostics.holdNextTraversal = false;
+        }),
       ),
     );
     await Promise.all(
