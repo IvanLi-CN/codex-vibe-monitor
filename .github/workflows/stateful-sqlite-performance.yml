@@ -117,12 +117,30 @@ jobs:
           echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
           echo "trusted_harness_sha=$trusted_harness_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare isolated candidate user
+        id: isolation
+        env:
+          CANDIDATE_USER: stateful-sqlite-test
+        run: |
+          set -euo pipefail
+          if ! id -u "$CANDIDATE_USER" >/dev/null 2>&1; then
+            sudo useradd --create-home --shell /usr/sbin/nologin "$CANDIDATE_USER"
+          fi
+
       - name: Build and extract candidate test archive
         id: archives
         continue-on-error: true
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+          CANDIDATE_USER: stateful-sqlite-test
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT/cargo-home"
@@ -135,17 +153,27 @@ jobs:
           build_target="$ref_root/build-target"
           test ! -e "$extract"
           mkdir "$extract"
+          mkdir -p "$build_target"
+          touch "$archive"
+          sudo chown -R "$CANDIDATE_USER" "$EVIDENCE_ROOT/cargo-home" "$build_target" "$archive"
           set +e
           (
             cd "$repo"
-            CARGO_TARGET_DIR="$build_target" \
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              PATH="$PATH" \
+              CARGO_HOME="$CARGO_HOME" \
+              CARGO_TARGET_DIR="$build_target" \
               cargo nextest archive --locked --all-features \
               --archive-file "$archive" --zstd-level 0
           ) > "$ref_root/archive-build.log" 2>&1
           status=$?
+          sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
           set -e
           test "$status" -eq 0
-          CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
+          extract_cargo_home="$EVIDENCE_ROOT/extract-cargo-home"
+          mkdir -p "$extract_cargo_home"
+          CARGO_HOME="$extract_cargo_home" cargo-nextest nextest run \
             --archive-file "$archive" \
             --extract-to "$extract" \
             --workspace-remap "$trusted_repo" \
@@ -176,6 +204,7 @@ jobs:
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
           CARGO_HOME: ${{ runner.temp }}/stateful-sqlite-performance/cargo-home
+          CANDIDATE_USER: stateful-sqlite-test
           PATH: ${{ steps.revisions.outputs.safe_path }}
           BASH_ENV: /dev/null
           ENV: /dev/null
@@ -202,14 +231,21 @@ jobs:
                 repo="$GITHUB_WORKSPACE/trusted"
                 archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
                 workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
+                replay_target="$EVIDENCE_ROOT/$ref_name/replay-target"
+                replay_tmp="$EVIDENCE_ROOT/$ref_name/tmp"
                 mkdir -p "$workspace"
+                mkdir -p "$replay_target" "$replay_tmp"
+                sudo chown -R "$CANDIDATE_USER" "$workspace" "$replay_target" "$replay_tmp"
                 log="$EVIDENCE_ROOT/logs/$ref_name/$replay/shard-$shard.log"
                 mkdir -p "$(dirname "$log")"
                 replay_env=(
                   CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
+                  HOME="/home/$CANDIDATE_USER"
+                  PATH="$PATH"
                   BACKEND_TEST_WORKSPACE="$workspace"
                   CARGO_HOME="$CARGO_HOME"
-                  CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/replay-target"
+                  CARGO_TARGET_DIR="$replay_target"
+                  TMPDIR="$replay_tmp"
                   NEXTEST_SUCCESS_OUTPUT=final
                 )
                 if [ "$ref_name" = control ]; then
@@ -219,12 +255,13 @@ jobs:
                 set +e
                 (
                   cd "$repo"
-                  env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
+                  sudo -u "$CANDIDATE_USER" env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
                     --profile stateful-sqlite \
                     --partition "hash:$shard/2" \
                     --archive-dir "$archive_dir"
                 ) > "$log" 2>&1
                 status=$?
+                sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
                 set -e
                 end_ms="$(date +%s%3N)"
                 wall_ms=$((end_ms - start_ms))
@@ -271,14 +308,21 @@ jobs:
                 repo="$GITHUB_WORKSPACE/trusted"
                 archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
                 workspace="$EVIDENCE_ROOT/$ref_name/target-workspace/$replay/setup-$target_index"
+                replay_target="$EVIDENCE_ROOT/$ref_name/target-replay-target"
+                replay_tmp="$EVIDENCE_ROOT/$ref_name/target-tmp"
                 mkdir -p "$workspace"
+                mkdir -p "$replay_target" "$replay_tmp"
+                sudo chown -R "$CANDIDATE_USER" "$workspace" "$replay_target" "$replay_tmp"
                 log="$EVIDENCE_ROOT/logs/$ref_name/$replay/setup-$target_index.log"
                 mkdir -p "$(dirname "$log")"
                 replay_env=(
                   CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
+                  HOME="/home/$CANDIDATE_USER"
+                  PATH="$PATH"
                   BACKEND_TEST_WORKSPACE="$workspace"
                   CARGO_HOME="$CARGO_HOME"
-                  CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/target-replay-target"
+                  CARGO_TARGET_DIR="$replay_target"
+                  TMPDIR="$replay_tmp"
                   NEXTEST_SUCCESS_OUTPUT=final
                 )
                 if [ "$ref_name" = control ]; then
@@ -288,12 +332,13 @@ jobs:
                 set +e
                 (
                   cd "$repo"
-                  env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
+                  sudo -u "$CANDIDATE_USER" env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
                     --profile stateful-sqlite \
                     --test-filter "$target_filter" \
                     --archive-dir "$archive_dir"
                 ) > "$log" 2>&1
                 status=$?
+                sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
                 set -e
                 end_ms="$(date +%s%3N)"
                 wall_ms=$((end_ms - start_ms))
@@ -340,6 +385,13 @@ jobs:
           for file in revisions.txt runner-context.txt wall-times.txt target-wall-times.txt replay-failures.txt; do
             if [ -f "$EVIDENCE_ROOT/$file" ]; then
               cp "$EVIDENCE_ROOT/$file" "$sanitized_root/$file"
+            fi
+          done
+          for file in archive-build.log archive-extract.log; do
+            source="$EVIDENCE_ROOT/candidate/$file"
+            if [ -f "$source" ]; then
+              sed -E 's#(/home/runner/work/|/tmp/)[^[:space:]]+#<path>#g' "$source" \
+                | tail -n 200 > "$sanitized_root/$file" || true
             fi
           done
           if [ -d "$EVIDENCE_ROOT/logs" ]; then
