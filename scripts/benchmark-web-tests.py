@@ -186,6 +186,7 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
         "          triggerCount: diagnostics.demoRevisionTriggers,\n",
         "",
     )
+    text = re.sub(r"^\s*console\.log\(`\[timeline-capacity\] dense .*?\);\n", "", text, flags=re.MULTILINE)
     text = re.sub(
         r"\n      await page\.evaluate\(\(\) => \{\n"
         r"        const trigger = \(window as TimelineDiagnosticsWindow\)\n"

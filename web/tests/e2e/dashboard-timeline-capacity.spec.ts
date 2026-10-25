@@ -586,6 +586,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
     const page = await context.newPage();
     try {
       await startCapacityDashboard(page, viewport, true);
+      console.log(`[timeline-capacity] dense ${name}: dashboard ready`);
       await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
       await instrumentTimelineFetch(page);
 
@@ -713,13 +714,17 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         );
         await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
       };
+      console.log(`[timeline-capacity] dense ${name}: first refresh`);
       await triggerDenseRefresh(beforeRefresh.releaseCount);
+      console.log(`[timeline-capacity] dense ${name}: first refresh complete`);
       const releaseCountAfterFirstRefresh = await page.evaluate(
         () =>
           (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
             ?.releasedSnapshots ?? 0,
       );
+      console.log(`[timeline-capacity] dense ${name}: second refresh`);
       await triggerDenseRefresh(releaseCountAfterFirstRefresh);
+      console.log(`[timeline-capacity] dense ${name}: second refresh complete`);
 
       const refreshedLanes = page.getByTestId("dashboard-invocation-timeline-lanes");
       await expect(refreshedLanes).toBeVisible();
@@ -780,8 +785,11 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       expect(diagnostics?.timelineHttpFailures).toBe(0);
       expect(timelineMountMaxLongTaskMs).toBeLessThan(200);
       expect(maxRefreshLongTaskMs).toBeLessThan(200);
+      console.log(`[timeline-capacity] dense ${name}: assertions complete`);
     } finally {
+      console.log(`[timeline-capacity] dense ${name}: closing context`);
       await context.close();
+      console.log(`[timeline-capacity] dense ${name}: context closed`);
     }
   }
 });
