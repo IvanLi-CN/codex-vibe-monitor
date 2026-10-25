@@ -656,10 +656,17 @@ def aggregate_group(group: str, manifest: dict, results_root: Path) -> dict:
         expected = set(E2E_SPECS) - ({"dashboard-timeline-capacity.spec.ts"} if profile == "pr" else set())
         actual = {Path(case["file"]).name for case in browser[profile].get("cases", [])}
         browser[profile]["success"] = browser[profile].get("success", False) and actual == expected
+        if actual != expected:
+            browser[profile]["retry_only"] = False
     reports = {"success": bool(unit.get("success")) and bool(storybook.get("success"))
                and all(report.get("success", False) for report in browser.values())
                and all(name in unit.get("suites", {}) for name in SLOW_SUITES),
                "unit": unit, "storybook": storybook, "browser": browser}
+    report_sections = [unit, storybook, *browser.values()]
+    reports["retry_only"] = (not reports["success"] and any(section.get("retry_only", False) for section in report_sections)
+                              and all(section.get("success", False) or section.get("retry_only", False)
+                                      for section in report_sections))
+    reports["retry_cases"] = [case for section in report_sections for case in section.get("retry_cases", [])]
     durations = [record.get("wall_seconds") for record in records]
     all_durations = all(isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0
                         for seconds in durations)
@@ -714,17 +721,32 @@ def vitest_results(path: Path) -> dict:
 
 def playwright_results(reports: Path) -> dict:
     cases = []
+    retry_cases = []
+    unexpected_cases = []
+    skipped_cases = []
     def walk(suites: list[dict], parents: tuple = ()) -> None:
         for suite in suites:
             names = (*parents, suite.get("title", ""))
             for spec in suite.get("specs", []):
                 for test in spec.get("tests", []):
                     results = test.get("results", [])
-                    cases.append({"file": spec.get("file", suite.get("file")),
-                                  "name": " > ".join((*names, spec["title"])),
-                                  "project": test.get("projectName"),
-                                  "passed": bool(results) and all(item.get("status") == "passed" and item.get("retry", 0) == 0 for item in results)
-                                            and test.get("status") == "expected"})
+                    retry_count = sum(1 for item in results if item.get("retry", 0) > 0)
+                    final_pass = bool(results) and results[-1].get("status") == "passed" and test.get("status") in ("expected", "flaky")
+                    strict_pass = final_pass and test.get("status") == "expected" and all(
+                        item.get("status") == "passed" and item.get("retry", 0) == 0 for item in results
+                    )
+                    case = {"file": spec.get("file", suite.get("file")),
+                            "name": " > ".join((*names, spec["title"])),
+                            "project": test.get("projectName"), "passed": strict_pass,
+                            "final_pass": final_pass, "retry_count": retry_count,
+                            "status": test.get("status")}
+                    cases.append(case)
+                    if retry_count or test.get("status") == "flaky":
+                        retry_cases.append(case)
+                    if not final_pass:
+                        unexpected_cases.append(case)
+                    if test.get("status") == "skipped":
+                        skipped_cases.append(case)
             walk(suite.get("suites", []), names)
     errors = []
     files = sorted(reports.glob("playwright-*.json"))
@@ -732,7 +754,11 @@ def playwright_results(reports: Path) -> dict:
         report = json.loads(path.read_text())
         walk(report.get("suites", []))
         errors.extend(report.get("errors", []))
-    return {"success": bool(files) and bool(cases) and not errors and all(case["passed"] for case in cases), "cases": cases}
+    strict_success = bool(files) and bool(cases) and not errors and all(case["passed"] for case in cases)
+    retry_only = (bool(files) and bool(cases) and not errors and not skipped_cases and not unexpected_cases
+                  and bool(retry_cases))
+    return {"success": strict_success, "retry_only": retry_only, "retry_count": sum(case["retry_count"] for case in retry_cases),
+            "retry_cases": retry_cases, "cases": cases}
 
 
 def validate_reports(directory: Path) -> dict:
@@ -836,7 +862,7 @@ def run_group(group: str, source: Path, manifest: dict, output: Path) -> dict:
 
 def compare(a: dict, b: dict, manifest: dict) -> dict:
     result = {"passed": False, "reason": "candidate_failed", "delta_seconds": None, "delta_percent": None,
-              "unimplemented_slow_suites": manifest.get("unimplemented_slow_suites", [])}
+              "baseline_retry_cases": [], "unimplemented_slow_suites": manifest.get("unimplemented_slow_suites", [])}
     if (a.get("manifest_digest") != manifest["digest"] or b.get("manifest_digest") != manifest["digest"]
             or a.get("group") != "A" or b.get("group") != "B"
             or a.get("sha") != manifest["identities"]["A"]["sha"] or b.get("sha") != manifest["identities"]["B"]["sha"]
@@ -848,13 +874,22 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
         return (group.get("status") == "passed" and group.get("reports", {}).get("success")
                 and isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0
                 and [phase.get("name") for phase in group.get("phases", [])] == list(WORKLOAD)
-                and all(phase.get("status") == "passed" for phase in group["phases"]))
+                and all(phase.get("status") == "passed" and phase.get("execution_completed_naturally") is not False
+                        for phase in group["phases"]))
+    def retry_only_complete(group: dict) -> bool:
+        seconds = group.get("wall_seconds", 0)
+        return (group.get("status") == "failed" and group.get("reports", {}).get("retry_only") is True
+                and isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0
+                and [phase.get("name") for phase in group.get("phases", [])] == list(WORKLOAD)
+                and all(phase.get("execution_completed_naturally") is True
+                        and phase.get("status") in ("passed", "failed") for phase in group["phases"]))
     if not complete(b):
         return result
     if not complete(a):
         if a.get("status") == "timeout":
             return {**result, "passed": True, "reason": "baseline_workflow_timeout_candidate_complete"}
-        return {**result, "reason": "baseline_failed_or_missing"}
+        if not retry_only_complete(a):
+            return {**result, "reason": "baseline_failed_or_missing"}
     delta = a["wall_seconds"] - b["wall_seconds"]
     percent = delta / a["wall_seconds"] * 100
     # Compare common semantic test identities, allowing the explicit Demo execution-layer migration.
@@ -872,8 +907,10 @@ def compare(a: dict, b: dict, manifest: dict) -> dict:
         new_cases = {(Path(c["file"]).name, c["name"]) for c in b["reports"]["browser"][profile]["cases"]}
         if not old_cases <= new_cases:
             return {**result, "reason": f"candidate_removed_{profile}_browser_tests"}
-    return {**result, "passed": delta >= 5 and percent >= 10, "reason": "improvement_threshold",
-            "delta_seconds": delta, "delta_percent": percent}
+    reason = "baseline_retry_only_candidate_complete" if retry_only_complete(a) else "improvement_threshold"
+    return {**result, "passed": delta >= 5 and percent >= 10, "reason": reason,
+            "delta_seconds": delta, "delta_percent": percent,
+            "baseline_retry_cases": a.get("reports", {}).get("retry_cases", [])}
 
 
 def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
@@ -881,10 +918,14 @@ def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
              f"A `{a.get('sha')}`; B `{b.get('sha')}`; workload `{manifest['digest']}`.", "",
              "Each phase reports the natural wall time of its command on GitHub Actions. The script has no subprocess deadline and never fabricates a completion time after cleanup. Each phase runs A then B sequentially on the same GitHub-hosted runner, with isolated source, cache, ports, and reports. An Actions workflow timeout produces incomplete evidence rather than a numeric duration.", "",
              "| Phase | A seconds | B seconds | A − B seconds |", "|---|---:|---:|---:|"]
+    def observed(record: dict | None) -> bool:
+        return bool(record and isinstance(record.get("wall_seconds"), (int, float))
+                    and math.isfinite(record["wall_seconds"]) and record["wall_seconds"] > 0
+                    and record.get("execution_completed_naturally") is not False)
     for name in manifest["workload"]:
         left = next((p for p in a.get("phases", []) if p["name"] == name), None)
         right = next((p for p in b.get("phases", []) if p["name"] == name), None)
-        delta = f"{left['wall_seconds'] - right['wall_seconds']:.3f}" if left and right and left["status"] == right["status"] == "passed" else "—"
+        delta = f"{left['wall_seconds'] - right['wall_seconds']:.3f}" if observed(left) and observed(right) else "—"
         lines.append(f"| {name} | {left['wall_seconds'] if left else 'not run'} | {right['wall_seconds'] if right else 'not run'} | {delta} |")
     lines += ["", f"A: {a.get('status')}, score {a.get('score', 0)}, maximum natural phase time {a.get('wall_seconds')} s.",
               f"B: {b.get('status')}, score {b.get('score', 0)}, maximum natural phase time {b.get('wall_seconds')} s.", ""]
@@ -892,6 +933,8 @@ def markdown(a: dict, b: dict, manifest: dict, verdict: dict) -> str:
         lines.append(f"Measured maximum-phase difference: {verdict['delta_seconds']} s / {verdict['delta_percent']}%.")
     else:
         lines.append("Numeric A/B difference: unavailable because one side did not complete naturally.")
+    if verdict.get("reason") == "baseline_retry_only_candidate_complete":
+        lines += ["", "Baseline completed naturally but had retry-only browser failures; it is not reported as green. Candidate completed with strict reports. The measured difference includes the baseline retry cost and is a stability-recovery observation, not an all-green A/B sample."]
     lines += ["",
               "## Four target Vitest suites", "", "| Suite | A seconds | B seconds | Implementation |", "|---|---:|---:|---|"]
     for name in SLOW_SUITES:

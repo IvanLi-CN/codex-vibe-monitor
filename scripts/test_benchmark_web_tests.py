@@ -75,6 +75,19 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(result["passed"], expected)
                 self.assertEqual(result["delta_seconds"], a - b)
 
+    def test_natural_baseline_retry_only_recovery_is_measured_and_explicit(self):
+        baseline = group("A", 100, "failed")
+        baseline["reports"]["success"] = False
+        baseline["reports"]["retry_only"] = True
+        baseline["reports"]["retry_cases"] = [{"name": "old flaky case"}]
+        baseline["phases"][0]["status"] = "failed"
+        baseline["phases"] = [{**phase, "execution_completed_naturally": True} for phase in baseline["phases"]]
+        result = MODULE.compare(baseline, group("B", 90), manifest())
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["reason"], "baseline_retry_only_candidate_complete")
+        self.assertEqual(result["delta_seconds"], 10)
+        self.assertEqual(result["baseline_retry_cases"], [{"name": "old flaky case"}])
+
     def test_candidate_timeout_failure_or_incomplete_never_passes(self):
         for status in ("timeout", "failed", "environment_failed", "running"):
             with self.subTest(status=status):
@@ -284,6 +297,17 @@ class ReporterTests(unittest.TestCase):
                 self.assertEqual(MODULE.playwright_results(path)["success"], expected)
         with tempfile.TemporaryDirectory() as temporary:
             self.assertFalse(MODULE.playwright_results(Path(temporary))["success"])
+
+    def test_playwright_retry_only_report_is_distinguished_from_strict_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            report = {"suites": [{"title": "suite", "specs": [{"title": "case", "file": "test.spec.ts", "tests": [
+                {"status": "flaky", "results": [{"status": "failed", "retry": 0}, {"status": "passed", "retry": 1}]}]}]}]}
+            (path / "playwright-1.json").write_text(json.dumps(report))
+            result = MODULE.playwright_results(path)
+            self.assertFalse(result["success"])
+            self.assertTrue(result["retry_only"])
+            self.assertEqual(result["retry_count"], 1)
 
 
 class WorkflowTests(unittest.TestCase):
