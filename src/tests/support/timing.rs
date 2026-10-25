@@ -2,14 +2,23 @@ use std::{future::Future, time::Instant};
 
 pub(crate) const STATEFUL_TEST_TIMING_ENV: &str = "CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING";
 
-pub(crate) fn test_timing_span(phase: &'static str) -> Option<TestTimingSpan> {
-    let enabled = std::env::var(STATEFUL_TEST_TIMING_ENV)
+fn timing_enabled() -> bool {
+    std::env::var(STATEFUL_TEST_TIMING_ENV)
         .ok()
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-    enabled.then(|| TestTimingSpan {
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+pub(crate) fn test_timing_span(phase: &'static str) -> Option<TestTimingSpan> {
+    timing_enabled().then(|| TestTimingSpan {
         phase,
         started_at: Instant::now(),
     })
+}
+
+pub(crate) fn test_timing_target(target: &str) {
+    if timing_enabled() {
+        eprintln!("stateful-test-timing target={target}");
+    }
 }
 
 pub(crate) async fn timed_test_phase<Fut>(phase: &'static str, future: Fut) -> Fut::Output

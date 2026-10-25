@@ -1154,6 +1154,9 @@ async fn http_readiness_is_published_before_prompt_cache_materialization_complet
 }
 #[tokio::test]
 async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure() {
+    test_timing_target(
+        "tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure",
+    );
     let _whole_test = test_timing_span("whole_test");
     let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-hot-read-readiness-pressure",
@@ -1476,6 +1479,9 @@ async fn runtime_drain_joins_pending_startup_hydration_after_http_readiness() {
 
 #[tokio::test]
 async fn summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure() {
+    test_timing_target(
+        "tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure",
+    );
     let _whole_test = test_timing_span("whole_test");
     let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-summary-hydration-deadline",
@@ -1517,6 +1523,9 @@ async fn summary_startup_hydration_publishes_bounded_fallback_under_sqlite_press
 
 #[tokio::test]
 async fn system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
+    test_timing_target(
+        "tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline",
+    );
     let _whole_test = test_timing_span("whole_test");
     let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "startup-system-status-hydration-deadline",

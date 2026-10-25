@@ -21759,6 +21759,9 @@ async fn timeseries_startup_recovery_baseline_reenters_after_stopped_release() {
 
 #[tokio::test]
 async fn restart_schema_refreshes_existing_objects_across_primed_pool_connections() {
+    test_timing_target(
+        "tests::stateful_sqlite::parallel_work_stats_and_timeseries::restart_schema_refreshes_existing_objects_across_primed_pool_connections",
+    );
     let _whole_test = test_timing_span("whole_test");
     let temp_dir = make_temp_test_dir("existing-schema-objects-across-pool");
     let database_path = temp_dir.join("projection.db");

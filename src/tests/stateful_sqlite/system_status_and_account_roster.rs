@@ -378,6 +378,9 @@ async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_curso
 async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration() {
     use std::time::Duration as StdDuration;
 
+    test_timing_target(
+        "tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration",
+    );
     let _whole_test = test_timing_span("whole_test");
     let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-raw-revalidation",

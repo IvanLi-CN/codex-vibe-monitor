@@ -30,6 +30,9 @@ PHASE_RE = re.compile(
     r"stateful-test-timing phase=(?P<phase>[a-z0-9_]+) "
     r"elapsed_ms=(?P<elapsed>[0-9]+)"
 )
+TARGET_MARKER_RE = re.compile(
+    r"stateful-test-timing target=(?P<target>tests::stateful_sqlite::[a-z0-9_]+::[a-z0-9_]+)"
+)
 WALL_RE = re.compile(
     r"^stateful-performance ref=(?P<ref>control|candidate) "
     r"replay=(?P<replay>cold|warm) shard=(?P<shard>[12]) "
@@ -108,27 +111,18 @@ def median(values: list[int]) -> int:
     return int(statistics.median(values))
 
 
-def target_from_lines(lines: list[str], end_index: int) -> str | None:
-    for line in reversed(lines[max(0, end_index - 400) : end_index]):
-        for target in TARGETS:
-            if target in line:
-                return target
-    return None
-
-
 def parse_log(path: Path) -> dict[str, dict[str, list[int]]]:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     events: dict[str, dict[str, list[int]]] = {}
     current_target: str | None = None
-    for index, line in enumerate(lines):
-        for target in TARGETS:
-            if target in line:
-                current_target = target
-                break
+    for line in lines:
+        target_marker = TARGET_MARKER_RE.search(line)
+        if target_marker is not None:
+            marker_target = target_marker.group("target")
+            current_target = marker_target if marker_target in TARGETS else None
+            continue
         if "stderr ───" in line:
-            block_target = target_from_lines(lines, index)
-            if block_target is not None:
-                current_target = block_target
+            current_target = None
             continue
         if "stdout ───" in line:
             continue
@@ -174,16 +168,22 @@ def collect_replay(root: Path, ref: str, replay: str) -> dict[str, dict[str, lis
     return events
 
 
-def sample(events: dict[str, list[int]]) -> dict[str, object]:
+def sample(target: str, events: dict[str, list[int]]) -> dict[str, object]:
     phase_totals = {phase: sum(values) for phase, values in events.items()}
     setup_ms = sum(phase_totals.get(phase, 0) for phase in SETUP_PHASES)
+    whole_test_ms = phase_totals["whole_test"]
+    if setup_ms > whole_test_ms:
+        raise ValueError(
+            f"setup timing exceeds whole-test timing for {target}: "
+            f"setup_ms={setup_ms} whole_test_ms={whole_test_ms}"
+        )
     return {
         "phase_ms": phase_totals,
         "setup_ms": setup_ms,
         "production_ms": phase_totals.get("production_operation", 0),
         "wait_ms": phase_totals.get("explicit_wait", 0),
         "cleanup_ms": phase_totals.get("cleanup", 0),
-        "whole_test_ms": phase_totals["whole_test"],
+        "whole_test_ms": whole_test_ms,
     }
 
 
@@ -224,7 +224,9 @@ def build_card(
     for ref in replay_samples:
         for replay in ("cold", "warm"):
             events = collect_replay(root, ref, replay)
-            replay_samples[ref][replay] = {target: sample(events[target]) for target in TARGETS}
+            replay_samples[ref][replay] = {
+                target: sample(target, events[target]) for target in TARGETS
+            }
 
     tests: list[dict[str, object]] = []
     measured_setup_improvements = 0

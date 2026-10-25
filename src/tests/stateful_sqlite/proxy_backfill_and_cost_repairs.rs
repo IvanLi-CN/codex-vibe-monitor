@@ -2282,6 +2282,9 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
 
 #[tokio::test]
 async fn run_backfill_with_retry_succeeds_after_lock_release() {
+    test_timing_target(
+        "tests::stateful_sqlite::proxy_backfill_and_cost_repairs::run_backfill_with_retry_succeeds_after_lock_release",
+    );
     let _whole_test = test_timing_span("whole_test");
     let temp_dir = make_temp_test_dir("proxy-backfill-retry-success");
     let db_path = temp_dir.join("lock-success.db");
