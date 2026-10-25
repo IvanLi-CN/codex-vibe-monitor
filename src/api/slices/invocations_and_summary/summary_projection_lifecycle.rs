@@ -1371,6 +1371,17 @@ mod compacted_source_recovery_budget_tests {
     }
 
     #[test]
+    fn candidate_budget_query_does_not_materialize_full_fields() {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+        push_compacted_source_recovery_candidate_budget_columns(&mut query);
+        let sql = query.build().sql().to_string();
+        assert!(sql.starts_with("SELECT id, occurred_at"));
+        assert!(sql.contains("AS estimated_bytes"));
+        assert!(!sql.contains("AS response_model"));
+        assert!(!sql.contains("AS reasoning_effort"));
+    }
+
+    #[test]
     fn recovery_runtime_keeps_adaptive_page_size_across_scheduler_turns() {
         let mut runtime = CompactedSourceRecoveryRuntime::default();
         runtime.halve_page_size();
@@ -1755,6 +1766,52 @@ struct CompactedSourceRecoveryCandidate {
     is_actionable: Option<i64>,
     estimated_bytes: i64,
     error_message_bytes: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct CompactedSourceRecoveryCandidateBudget {
+    id: i64,
+    occurred_at: String,
+    status: Option<String>,
+    estimated_bytes: i64,
+    error_message_bytes: i64,
+}
+
+impl CompactedSourceRecoveryCandidateBudget {
+    fn into_selection_candidate(self) -> Option<CompactedSourceRecoveryCandidate> {
+        if matches!(
+            self.status.as_deref(),
+            None | Some("running") | Some("pending")
+        ) {
+            return None;
+        }
+        Some(CompactedSourceRecoveryCandidate {
+            id: self.id,
+            invoke_id: String::new(),
+            occurred_at: self.occurred_at,
+            upstream_account_id: None,
+            model: None,
+            response_model: None,
+            reasoning_effort: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_input_tokens: None,
+            total_tokens: None,
+            cost: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            status: self.status,
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            estimated_bytes: self.estimated_bytes,
+            error_message_bytes: self.error_message_bytes,
+        })
+    }
 }
 
 impl CompactedSourceRecoveryCandidate {
@@ -2480,6 +2537,32 @@ fn push_compacted_source_recovery_candidate_columns(
     );
 }
 
+fn push_compacted_source_recovery_candidate_budget_columns(
+    query: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>,
+) {
+    query
+        .push("SELECT id, occurred_at, ")
+        .push(INVOCATION_STATUS_NORMALIZED_SQL)
+        .push(" AS status, (192");
+    for expression in [
+        "invoke_id",
+        "occurred_at",
+        "model",
+        INVOCATION_RESPONSE_MODEL_SQL,
+        INVOCATION_REASONING_EFFORT_SQL,
+        "status",
+        "error_message",
+        INVOCATION_FAILURE_KIND_SQL,
+        INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    ] {
+        push_compacted_source_recovery_text_length(query, expression);
+    }
+    query.push(
+        ") AS estimated_bytes, length(CAST(COALESCE(error_message, '') AS BLOB)) \
+         AS error_message_bytes FROM codex_invocations WHERE ",
+    );
+}
+
 async fn open_compacted_source_recovery_connection(
     state: &AppState,
     budget: Duration,
@@ -2595,14 +2678,93 @@ async fn load_compacted_source_recovery_candidates(
         let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
         return Ok(None);
     }
+    let mut budget_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+    push_compacted_source_recovery_candidate_budget_columns(&mut budget_query);
+    budget_query.push("id IN (");
+    {
+        let mut separated = budget_query.separated(", ");
+        for key in &keys {
+            separated.push_bind(key.id);
+        }
+        separated.push_unseparated(")");
+    }
+    budget_query
+        .push(" AND id <= ")
+        .push_bind(checkpoint.target_live_high_watermark_id);
+    let budget_result = tokio::time::timeout(
+        remaining,
+        budget_query
+            .build_query_as::<CompactedSourceRecoveryCandidateBudget>()
+            .fetch_all(&mut connection),
+    )
+    .await;
+    let budgets = match budget_result {
+        Ok(Ok(budgets)) => budgets,
+        Ok(Err(error)) => {
+            let error =
+                anyhow!(error).context("load bounded compacted source recovery byte estimates");
+            if interrupted.load(Ordering::Acquire)
+                || Instant::now() >= deadline
+                || is_sqlite_contention(&error)
+            {
+                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
+                    .await?;
+                return Ok(None);
+            } else {
+                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
+                    .await?;
+                return Err(error);
+            }
+        }
+        Err(_) => {
+            let _ =
+                close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+            return Ok(None);
+        }
+    };
+    let budget_page = CompactedSourceRecoveryCandidatePage {
+        keys: keys.clone(),
+        candidates: budgets
+            .into_iter()
+            .filter_map(CompactedSourceRecoveryCandidateBudget::into_selection_candidate)
+            .collect(),
+    };
+    let (selected_budget_candidates, _, _) =
+        match select_compacted_source_recovery_candidate_page(budget_page, page_size) {
+            Ok(selection) => selection,
+            Err(error) => {
+                let _ = close_compacted_source_recovery_connection_bounded(connection, deadline)
+                    .await?;
+                return Err(error);
+            }
+        };
+    let selected_ids = selected_budget_candidates
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    if selected_ids.is_empty() {
+        if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
+            return Ok(None);
+        }
+        return Ok(Some(CompactedSourceRecoveryCandidatePage {
+            keys,
+            candidates: Vec::new(),
+        }));
+    }
+
+    let remaining = budget.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        let _ = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+        return Ok(None);
+    }
     let mut candidate_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
     push_compacted_source_recovery_candidate_columns(&mut candidate_query);
     candidate_query.push(INVOCATION_STATUS_NORMALIZED_SQL);
     candidate_query.push(" NOT IN ('running', 'pending') AND id IN (");
     {
         let mut separated = candidate_query.separated(", ");
-        for key in &keys {
-            separated.push_bind(key.id);
+        for id in selected_ids {
+            separated.push_bind(id);
         }
         separated.push_unseparated(")");
     }
@@ -2616,7 +2778,8 @@ async fn load_compacted_source_recovery_candidates(
             .fetch_all(&mut connection),
     )
     .await;
-    if !close_compacted_source_recovery_connection_bounded(connection, deadline).await? {
+    let closed = close_compacted_source_recovery_connection_bounded(connection, deadline).await?;
+    if !closed {
         return Ok(None);
     }
     match candidate_result {
