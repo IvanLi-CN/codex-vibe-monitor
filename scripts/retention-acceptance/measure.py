@@ -1069,10 +1069,12 @@ def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, in
                 "converted_rows": None,
                 "required_converted_rows": required_converted,
                 "missing": [],
+                "missing_manifest_details": [],
             }
             source_kind_clause = " AND summary_source_kind='authoritative'" if name == "invocations" else ""
             manifests = connection.execute(
-                "SELECT id,file_path,sha256 FROM archive_batches "
+                "SELECT id,file_path,sha256,row_count,status,cleanup_state,summary_source_kind, "
+                "coverage_start_at,coverage_end_at,created_at FROM archive_batches "
                 "WHERE dataset=? AND status='completed' AND cleanup_state='active' "
                 f"AND superseded_by IS NULL{source_kind_clause}",
                 (dataset,),
@@ -1082,18 +1084,81 @@ def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, in
                 dataset_status["missing"].append("completed active archive manifest")
             if name == "invocations":
                 targets = {"invocation_rollup_hourly", "upstream_account_stats_hourly", "upstream_account_usage_breakdown_hourly"}
-                for archive_id, file_path, manifest_sha in manifests:
+                for (
+                    archive_id,
+                    file_path,
+                    manifest_sha,
+                    manifest_row_count,
+                    manifest_status,
+                    cleanup_state,
+                    summary_source_kind,
+                    coverage_start_at,
+                    coverage_end_at,
+                    created_at,
+                ) in manifests:
                     proof = connection.execute(
                         "SELECT page_count FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
                         (archive_id, manifest_sha),
                     ).fetchone()
-                    if proof is None:
-                        dataset_status["missing"].append(f"summary proof:{archive_id}")
-                        continue
                     pages = connection.execute(
                         "SELECT COUNT(*) FROM summary_archive_snapshot WHERE archive_batch_id=? AND manifest_sha256=? AND format_version=2",
                         (archive_id, manifest_sha),
                     ).fetchone()[0]
+                    if proof is None:
+                        dataset_status["missing"].append(f"summary proof:{archive_id}")
+                        obligation = connection.execute(
+                            "SELECT state,terminal_reason,updated_at,resolved_at "
+                            "FROM summary_coverage_obligation "
+                            "WHERE archive_batch_id=? AND manifest_sha256=?",
+                            (archive_id, manifest_sha),
+                        ).fetchone()
+                        outcome = connection.execute(
+                            "SELECT disposition,failure_kind,next_probe_at,updated_at,next_page_index, "
+                            "next_row_id,hash_complete_sha256,source_fingerprint "
+                            "FROM summary_archive_snapshot_backfill_outcome "
+                            "WHERE archive_batch_id=? AND manifest_sha256=?",
+                            (archive_id, manifest_sha),
+                        ).fetchone()
+                        dataset_status["missing_manifest_details"].append(
+                            {
+                                "archive_id": archive_id,
+                                "file_path": file_path,
+                                "manifest_sha256": manifest_sha,
+                                "row_count": manifest_row_count,
+                                "status": manifest_status,
+                                "cleanup_state": cleanup_state,
+                                "summary_source_kind": summary_source_kind,
+                                "coverage_start_at": coverage_start_at,
+                                "coverage_end_at": coverage_end_at,
+                                "created_at": created_at,
+                                "v2_page_count": pages,
+                                "obligation": (
+                                    {
+                                        "state": obligation[0],
+                                        "terminal_reason": obligation[1],
+                                        "updated_at": obligation[2],
+                                        "resolved_at": obligation[3],
+                                    }
+                                    if obligation is not None
+                                    else None
+                                ),
+                                "backfill_outcome": (
+                                    {
+                                        "disposition": outcome[0],
+                                        "failure_kind": outcome[1],
+                                        "next_probe_at": outcome[2],
+                                        "updated_at": outcome[3],
+                                        "next_page_index": outcome[4],
+                                        "next_row_id": outcome[5],
+                                        "hash_complete_sha256": outcome[6],
+                                        "source_fingerprint": outcome[7],
+                                    }
+                                    if outcome is not None
+                                    else None
+                                ),
+                            }
+                        )
+                        continue
                     if pages != proof[0]:
                         dataset_status["missing"].append(f"summary pages:{archive_id}:{pages}/{proof[0]}")
                     replayed = {
