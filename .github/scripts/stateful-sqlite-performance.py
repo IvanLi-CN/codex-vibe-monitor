@@ -126,7 +126,9 @@ def parse_log(path: Path) -> dict[str, dict[str, list[int]]]:
                 current_target = target
                 break
         if "stderr ───" in line:
-            current_target = current_target or target_from_lines(lines, index)
+            block_target = target_from_lines(lines, index)
+            if block_target is not None:
+                current_target = block_target
             continue
         if "stdout ───" in line:
             continue
