@@ -36,6 +36,7 @@ from measure import (
     run_command,
     run_foreground,
     start_container,
+    task_state_snapshot,
     wait_for_task_evidence,
 )
 
@@ -50,6 +51,13 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_task_state_snapshot_missing_database_is_non_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = task_state_snapshot(Path(temporary) / "missing.sqlite")
+
+        self.assertIn("error", snapshot)
+        self.assertIn("unable to open database file", snapshot["error"])
+
     def test_task_evidence_drain_uses_remaining_phase_budget(self) -> None:
         valid_runs = [
             {

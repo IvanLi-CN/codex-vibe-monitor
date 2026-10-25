@@ -944,8 +944,8 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
 
 def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
     """Capture scheduler state when a trial cannot produce terminal evidence."""
-    connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True, timeout=2)
     try:
+        connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True, timeout=2)
         connection.execute("PRAGMA busy_timeout=2000")
         keys = (*tuple(DATASETS[name]["task_key"] for name in DATASETS), COMPETITOR_TASK)
         placeholders = ",".join("?" for _ in keys)
@@ -1003,7 +1003,8 @@ def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
     except sqlite3.Error as error:
         return {"error": f"could not capture maintenance scheduler state: {error}"}
     finally:
-        connection.close()
+        if "connection" in locals():
+            connection.close()
 
 
 def task_owners_idle(maintenance_db: Path) -> bool:
@@ -1174,6 +1175,7 @@ def run_trial(
     oracle: dict[str, Any] | None = None
     input_start = input_end = cleanup_end = None
     container_stopped = False
+    scheduler_snapshot: dict[str, Any] | None = None
     wall_start = time.monotonic()
     try:
         container_id = start_container(
@@ -1280,6 +1282,7 @@ def run_trial(
                 cleanup_errors.append(error)
         if input_end is None:
             input_end = utc_now()
+        scheduler_snapshot = task_state_snapshot(maintenance_db)
         trial_cleanup, retry_errors = cleanup_path_if_safe(
             trial_dir,
             root,
@@ -1313,7 +1316,7 @@ def run_trial(
             "latency_samples_ms": input_samples,
             "foreground_workload": foreground_evidence,
             "task_runs": task_evidence,
-            "task_state_snapshot": task_state_snapshot(maintenance_db),
+            "task_state_snapshot": scheduler_snapshot or {"error": "scheduler snapshot was not captured"},
             "write_hold_samples": write_scrapes,
             "write_hold_buckets": write_buckets,
         }
