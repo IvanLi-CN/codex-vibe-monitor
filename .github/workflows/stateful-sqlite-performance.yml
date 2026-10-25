@@ -94,7 +94,7 @@ jobs:
           echo "baseline_sha=$baseline_sha" >> "$GITHUB_OUTPUT"
           echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Build and extract isolated test archives
+      - name: Build and extract candidate test archive
         id: archives
         continue-on-error: true
         env:
@@ -103,31 +103,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT/cargo-home"
-          for ref_name in baseline candidate; do
-            repo="$GITHUB_WORKSPACE/$ref_name"
-            ref_root="$EVIDENCE_ROOT/$ref_name"
-            mkdir -p "$ref_root"
-            archive="$ref_root/backend-tests.tar.zst"
-            extract="$ref_root/archive-extract"
-            build_target="$ref_root/build-target"
-            test ! -e "$extract"
-            mkdir "$extract"
-            set +e
-            (
-              cd "$repo"
-              CARGO_TARGET_DIR="$build_target" \
-                cargo nextest archive --locked --all-features \
-                --archive-file "$archive" --zstd-level 0
-            ) > "$ref_root/archive-build.log" 2>&1
-            status=$?
-            set -e
-            test "$status" -eq 0
-            CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
-              --archive-file "$archive" \
-              --extract-to "$extract" \
-              --workspace-remap "$repo" \
-              --no-run > "$ref_root/archive-extract.log" 2>&1
-          done
+          repo="$GITHUB_WORKSPACE/candidate"
+          ref_root="$EVIDENCE_ROOT/candidate"
+          mkdir -p "$ref_root"
+          archive="$ref_root/backend-tests.tar.zst"
+          extract="$ref_root/archive-extract"
+          build_target="$ref_root/build-target"
+          test ! -e "$extract"
+          mkdir "$extract"
+          set +e
+          (
+            cd "$repo"
+            CARGO_TARGET_DIR="$build_target" \
+              cargo nextest archive --locked --all-features \
+              --archive-file "$archive" --zstd-level 0
+          ) > "$ref_root/archive-build.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 0
+          CARGO_HOME="$CARGO_HOME" cargo-nextest nextest run \
+            --archive-file "$archive" \
+            --extract-to "$extract" \
+            --workspace-remap "$repo" \
+            --no-run > "$ref_root/archive-extract.log" 2>&1
 
       - name: Run cold and warm Stateful SQLite replays
         id: replays
@@ -144,23 +142,29 @@ jobs:
           : > "$failure_file"
           overall_status=0
           for ref_name in baseline candidate; do
-            repo="$GITHUB_WORKSPACE/$ref_name"
-            archive_dir="$EVIDENCE_ROOT/$ref_name/archive-extract"
+            repo="$GITHUB_WORKSPACE/candidate"
+            archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
             workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
             mkdir -p "$workspace"
             for replay in cold warm; do
               for shard in 1 2; do
                 log="$EVIDENCE_ROOT/logs/$ref_name/$replay/shard-$shard.log"
                 mkdir -p "$(dirname "$log")"
+                replay_env=(
+                  CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
+                  BACKEND_TEST_WORKSPACE="$workspace"
+                  CARGO_HOME="$CARGO_HOME"
+                  CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/replay-target"
+                  NEXTEST_SUCCESS_OUTPUT=final
+                )
+                if [ "$ref_name" = baseline ]; then
+                  replay_env+=(BACKEND_TEST_DISABLE_SCHEMA_TEMPLATE=1)
+                fi
                 start_ms="$(date +%s%3N)"
                 set +e
                 (
                   cd "$repo"
-                  CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1 \
-                  BACKEND_TEST_WORKSPACE="$workspace" \
-                  CARGO_HOME="$CARGO_HOME" \
-                  CARGO_TARGET_DIR="$EVIDENCE_ROOT/$ref_name/replay-target" \
-                  NEXTEST_SUCCESS_OUTPUT=final \
+                  env "${replay_env[@]}" \
                     bash .github/scripts/run-backend-tests.sh \
                     --profile stateful-sqlite \
                     --partition "hash:$shard/2" \
@@ -177,7 +181,11 @@ jobs:
                   {
                     printf 'ref=%s replay=%s shard=%s exit_code=%s\n' \
                       "$ref_name" "$replay" "$shard" "$status"
-                    grep -E '^\s*(FAIL|test result:)' "$log" | tail -n 80 || true
+                    sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g' "$log" \
+                      | grep -E '(backend_test_profile=|Summary|FAIL|failed|test result:|signal|timeout)' \
+                      | tail -n 120 \
+                      | sed -E 's#(/home/runner/work/|/tmp/)[^[:space:]]+#<path>#g' \
+                      || true
                   } >> "$failure_file"
                 fi
               done
@@ -200,6 +208,7 @@ jobs:
             --root "$EVIDENCE_ROOT" \
             --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
             --baseline-sha "$BASELINE_SHA" \
+            --baseline-source-sha "$CANDIDATE_SHA" \
             --candidate-sha "$CANDIDATE_SHA" \
             --output-dir "$EVIDENCE_ROOT/evidence" \
             | tee "$EVIDENCE_ROOT/evidence/acceptance-card.stdout"

@@ -132,7 +132,8 @@ def parse_wall_file(path: Path) -> tuple[dict[tuple[str, str, str], int], list[s
 
 def build_card(
     root: Path,
-    baseline_sha: str,
+    baseline_reference_sha: str,
+    baseline_source_sha: str,
     candidate_sha: str,
     wall: dict[tuple[str, str, str], int],
     replay_failures: list[str],
@@ -218,9 +219,11 @@ def build_card(
     accepted = not replay_failures and setup_pass and wall_pass
     return {
         "acceptance": "pass" if accepted else "fail",
-        "baseline_sha": baseline_sha,
+        "baseline_reference_sha": baseline_reference_sha,
+        "baseline_source_sha": baseline_source_sha,
         "candidate_sha": candidate_sha,
-        "runner": "GitHub-hosted ubuntu-24.04; one job; 6 nextest threads",
+        "baseline_mode": "candidate archive with current-schema template disabled",
+        "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads",
         "replay_order": ["cold", "warm"],
         "thresholds": {
             "minimum_setup_improvements": 4,
@@ -254,8 +257,10 @@ def markdown_card(card: dict[str, object]) -> str:
         "",
         f"Decision: **{str(card['acceptance']).upper()}**",
         "",
-        f"- Baseline: `{card['baseline_sha']}`",
+        f"- Baseline reference: `{card['baseline_reference_sha']}`",
+        f"- Baseline source: `{card['baseline_source_sha']}`",
         f"- Candidate: `{card['candidate_sha']}`",
+        f"- Baseline mode: {card['baseline_mode']}",
         f"- Runner: {card['runner']}",
         f"- Replay order: `{', '.join(card['replay_order'])}`",
         "",
@@ -318,6 +323,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--wall-file", type=Path, required=True)
     parser.add_argument("--baseline-sha", required=True)
+    parser.add_argument("--baseline-source-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -327,6 +333,7 @@ def main() -> int:
         card = build_card(
             args.root,
             args.baseline_sha,
+            args.baseline_source_sha,
             args.candidate_sha,
             wall,
             replay_failures,
