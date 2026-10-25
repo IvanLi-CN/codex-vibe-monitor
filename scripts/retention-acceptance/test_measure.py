@@ -83,6 +83,23 @@ class MeasurementBudgetTests(unittest.TestCase):
                 )
                 maintenance.execute("CREATE TABLE managed_task_runs (id INTEGER)")
                 maintenance.execute("CREATE TABLE managed_task_work_runs (id INTEGER)")
+                maintenance.execute(
+                    """
+                    CREATE TABLE startup_backfill_progress (
+                        task_name TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL,
+                        next_run_after TEXT,
+                        next_probe_at TEXT
+                    )
+                    """
+                )
+                maintenance.executemany(
+                    "INSERT INTO startup_backfill_progress VALUES (?,?,?,?)",
+                    [
+                        ("historical_rollups", 1, "old-run", "old-probe"),
+                        ("prompt_cache_key", 1, "old-run", "old-probe"),
+                    ],
+                )
                 task_rows = [
                     (key, 1, "old-trigger", "old-catchup", "old-reason", "old-updated")
                     for key in (
@@ -136,6 +153,15 @@ class MeasurementBudgetTests(unittest.TestCase):
                 rows["long_term_projection"],
                 (0, None, None, None),
             )
+            progress_connection = sqlite3.connect(maintenance_database)
+            try:
+                progress_rows = progress_connection.execute(
+                    "SELECT enabled,next_run_after,next_probe_at "
+                    "FROM startup_backfill_progress ORDER BY task_name"
+                ).fetchall()
+            finally:
+                progress_connection.close()
+            self.assertEqual(progress_rows, [(0, None, None), (0, None, None)])
 
     def test_observed_attempt_states_counts_rows_from_five_column_query(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

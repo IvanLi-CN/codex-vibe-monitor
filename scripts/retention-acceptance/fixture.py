@@ -197,6 +197,11 @@ def prepare_competitor(
             f"WHERE task_key NOT IN ({placeholders})",
             (now, *CONTROLLED_TASK_KEYS),
         )
+        if "startup_backfill_progress" in table_names:
+            maintenance.execute(
+                "UPDATE startup_backfill_progress "
+                "SET enabled=0,next_run_after=NULL,next_probe_at=NULL"
+            )
         task_keys = CONTROLLED_TASK_KEYS
         for key in task_keys:
             cursor = maintenance.execute(
