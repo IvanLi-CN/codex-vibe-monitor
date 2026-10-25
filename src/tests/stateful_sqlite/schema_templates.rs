@@ -27,7 +27,7 @@ pub(crate) fn current_stateful_schema_template_path() -> Option<PathBuf> {
 
 pub(crate) fn current_stateful_file_fixture_schema_template_path(_prefix: &str) -> Option<PathBuf> {
     let force_fresh = std::env::var(STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH_ENV)
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     if force_fresh {
         None
     } else {
