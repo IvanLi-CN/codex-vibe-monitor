@@ -869,7 +869,8 @@ def observed_attempt_states(
             for row in rows
         ]
         latest_counts = {}
-        for _, invoke_id in rows:
+        for row in rows:
+            invoke_id = row[1]
             latest_counts[invoke_id] = latest_counts.get(invoke_id, 0) + 1
         ids = [row["attempt_public_id"] for row in latest_states]
         terminal = all(
