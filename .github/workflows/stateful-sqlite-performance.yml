@@ -204,6 +204,7 @@ jobs:
           build_target="$artifact_root/build-target"
           sudo install -d -m 755 "$extract" "$build_target" "$CARGO_HOME"
           sudo touch "$archive"
+          sudo chown "$CANDIDATE_USER" "$artifact_root"
           sudo chown -R "$CANDIDATE_USER" "$CARGO_HOME" "$build_target" "$archive" "$extract"
           set +e
           (
@@ -240,6 +241,8 @@ jobs:
           set -e
           test "$status" -eq 0
           sudo chown -R root:root "$archive" "$extract"
+          sudo chown root:root "$artifact_root"
+          sudo chmod 755 "$artifact_root"
           sudo chmod a+r "$archive"
           sudo chmod -R a+rX "$extract"
 
