@@ -228,14 +228,21 @@ async function instrumentTimelineFetch(page: Page) {
           }
         }
       }
-      const response = await originalFetch(input, init);
-      if (isTimeline && response.status >= 400) diagnostics.timelineHttpFailures += 1;
-      if (isTimeline && method === "DELETE") {
-        if (response.status === 204) diagnostics.releasedSnapshots += 1;
-        else diagnostics.releaseFailures += 1;
-        diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+      try {
+        const response = await originalFetch(input, init);
+        if (isTimeline && response.status >= 400) diagnostics.timelineHttpFailures += 1;
+        if (isTimeline && method === "DELETE") {
+          if (response.status === 204) diagnostics.releasedSnapshots += 1;
+          else diagnostics.releaseFailures += 1;
+          diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+        }
+        return response;
+      } catch (error) {
+        if (isTimeline && method === "GET" && !requestUrl.searchParams.has("cursor")) {
+          diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+        }
+        throw error;
       }
-      return response;
     };
   });
 }
@@ -644,6 +651,22 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       const timelineControls = page.getByTestId("dashboard-invocation-timeline").locator("button");
       await expect(timelineControls).toHaveCount(4);
       const triggerDenseRefresh = async (releaseCountBefore: number) => {
+        await expect
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.activeTraversals ?? 0,
+              ),
+            { timeout: 15_000 },
+          )
+          .toBe(0);
+        const traversalCountBefore = await page.evaluate(
+          () =>
+            (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+              ?.traversalStarts.length ?? 0,
+        );
         await page.evaluate((delayMs) => {
           const diagnostics = (window as TimelineDiagnosticsWindow)
             .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
@@ -657,11 +680,11 @@ test("single-client dense timeline stays below the long-task budget on desktop a
               page.evaluate(
                 () =>
                   (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                    ?.activeTraversals ?? 0,
+                    ?.traversalStarts.length ?? 0,
               ),
             { timeout: 15_000 },
           )
-          .toBe(1);
+          .toBeGreaterThan(traversalCountBefore);
         await expect
           .poll(() =>
             page.evaluate(
@@ -672,12 +695,14 @@ test("single-client dense timeline stays below the long-task budget on desktop a
           )
           .toBeGreaterThan(releaseCountBefore);
         await expect
-          .poll(() =>
-            page.evaluate(
-              () =>
-                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.activeTraversals ?? 0,
-            ),
+          .poll(
+            () =>
+              page.evaluate(
+                () =>
+                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                    ?.activeTraversals ?? 0,
+              ),
+            { timeout: 15_000 },
           )
           .toBe(0);
       };

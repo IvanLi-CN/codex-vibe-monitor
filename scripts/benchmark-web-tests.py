@@ -172,6 +172,33 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
     text = text.replace("    }, DELAYED_TRAVERSAL_MS);", "    });")
     text = text.replace("    }, DENSE_TRAVERSAL_DELAY_MS);", "    });")
     text = text.replace(
+        """      try {
+        const response = await originalFetch(input, init);
+        if (isTimeline && response.status >= 400) diagnostics.timelineHttpFailures += 1;
+        if (isTimeline && method === \"DELETE\") {
+          if (response.status === 204) diagnostics.releasedSnapshots += 1;
+          else diagnostics.releaseFailures += 1;
+          diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+        }
+        return response;
+      } catch (error) {
+        if (isTimeline && method === \"GET\" && !requestUrl.searchParams.has(\"cursor\")) {
+          diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+        }
+        throw error;
+      }
+""",
+        """      const response = await originalFetch(input, init);
+      if (isTimeline && response.status >= 400) diagnostics.timelineHttpFailures += 1;
+      if (isTimeline && method === \"DELETE\") {
+        if (response.status === 204) diagnostics.releasedSnapshots += 1;
+        else diagnostics.releaseFailures += 1;
+        diagnostics.activeTraversals = Math.max(0, diagnostics.activeTraversals - 1);
+      }
+      return response;
+""",
+    )
+    text = text.replace(
         "        .toBeGreaterThan(beforeRefresh.releaseCount);\n",
         "        .toBeGreaterThan(beforeRefresh.releaseCount + 1);\n",
     )
