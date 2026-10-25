@@ -1,5 +1,24 @@
 use super::*;
 use serde_json::json;
+
+async fn dashboard_network_timeseries_base_has_live_bucket(
+    hub: &SubscriptionHub,
+    topic_key: &str,
+) -> bool {
+    let guard = hub.state.lock().await;
+    guard
+        .topics
+        .get(topic_key)
+        .and_then(|cached| cached.dashboard_materializer.as_ref())
+        .is_some_and(|materializer| {
+            matches!(
+                materializer,
+                DashboardTopicMaterializer::NetworkTimeseries { base, .. }
+                    if base.points.iter().any(|point| point.is_live_bucket)
+            )
+        })
+}
+
 #[tokio::test]
 async fn first_dashboard_owner_starts_pending_runtime_projection_producer() {
     let state = crate::tests::test_state_with_openai_base(
@@ -128,6 +147,59 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
     )
     .await
     .expect("open second full Dashboard SSE topology");
+    let network_timeseries_topic = topics
+        .iter()
+        .find(|topic| topic.name() == "dashboard.network-timeseries.window")
+        .cloned()
+        .expect("network timeseries topic");
+    let network_timeseries_topic_key = network_timeseries_topic
+        .cache_key()
+        .expect("network timeseries topic key");
+    if !dashboard_network_timeseries_base_has_live_bucket(
+        state.subscription_hub.as_ref(),
+        &network_timeseries_topic_key,
+    )
+    .await
+    {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                while Utc::now()
+                    .timestamp()
+                    .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS)
+                    < network_fixture_min_bucket_age_seconds
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                let refreshed = state
+                    .subscription_hub
+                    .refresh_topic_if_active(state.clone(), network_timeseries_topic.clone(), false)
+                    .await
+                    .expect("refresh network timeseries base");
+                assert!(
+                    refreshed.is_some(),
+                    "network timeseries topic must remain active while repairing its base",
+                );
+                if dashboard_network_timeseries_base_has_live_bucket(
+                    state.subscription_hub.as_ref(),
+                    &network_timeseries_topic_key,
+                )
+                .await
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("repair network timeseries base timed out");
+    }
+    assert!(
+        dashboard_network_timeseries_base_has_live_bucket(
+            state.subscription_hub.as_ref(),
+            &network_timeseries_topic_key,
+        )
+        .await,
+        "network timeseries base must expose a live bucket for later network overlay",
+    );
     for topic in &topics {
         assert_eq!(
             state
