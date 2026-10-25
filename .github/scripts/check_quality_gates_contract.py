@@ -373,7 +373,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     build_path_input = require_mapping(dispatch_inputs["build_path"], f"{workflow_path}.build_path")
     require(build_path_input.get("required") is True and build_path_input.get("type") == "choice" and build_path_input.get("default") == "auto" and build_path_input.get("options") == ["auto", "canonical"], f"{workflow_path} build_path choices drifted")
     permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
-    require(permissions == {"contents": "read"}, f"{workflow_path} permissions must stay contents: read")
+    require(permissions == {"contents": "read", "actions": "read"}, f"{workflow_path} permissions must allow read-only Actions job timestamps")
 
     resolve = job_config(workflow, "observability-performance-resolve", workflow_path)
     producer = job_config(workflow, "observability-performance-producer", workflow_path)
@@ -406,7 +406,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(resolve_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}" and resolve_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}" and resolve_checkout.get("path") == "candidate", f"{workflow_path} resolver checkout drifted")
     identity = step_config(resolve, "Bind candidate and build identity", f"{workflow_path}.jobs.observability-performance-resolve")
     identity_run = str(identity.get("run", ""))
-    require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "web_cache_key", "runtime_cache_key")), f"{workflow_path} must bind candidate and build identity")
+    require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "rust_deps_cache_key", "rust_target_cache_key", "web_cache_key", "web_deps_cache_key", "runtime_cache_key", "base_image_digests", "trusted_recipe_digest")), f"{workflow_path} must bind candidate and build identity")
     outputs = require_mapping(resolve.get("outputs"), f"{workflow_path}.jobs.observability-performance-resolve.outputs")
     require(outputs.get("candidate") == "${{ steps.identity.outputs.candidate }}" and outputs.get("trusted_ref") == "${{ steps.refs.outputs.trusted_ref }}" and outputs.get("effective_build_path") == "${{ steps.identity.outputs.effective_build_path }}" and outputs.get("complete_image_cache_hit") == "${{ steps.complete-image-cache-check.outputs.valid }}", f"{workflow_path} resolver outputs drifted")
     complete_cache = uses_step_config(resolve, "Restore complete candidate image cache", "actions/cache/restore@v4", workflow_path)
@@ -423,13 +423,15 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     producer_strategy = require_mapping(producer.get("strategy"), f"{workflow_path}.producer.strategy")
     producer_matrix = require_mapping(producer_strategy.get("matrix"), f"{workflow_path}.producer.strategy.matrix")
     require(producer_strategy.get("fail-fast") is False and producer_matrix.get("component") == ["rust", "web", "runtime-base"], f"{workflow_path} producer matrix drifted")
-    for name in ("Restore Rust dependency and target cache", "Restore Bun dependency cache", "Save Rust dependency and target cache", "Save Bun dependency cache"):
+    for name in ("Restore Rust dependency cache", "Restore Rust target cache", "Restore Bun dependency cache", "Save Rust dependency and target cache", "Save Rust target cache", "Save Bun dependency cache"):
         require(step_config(producer, name, workflow_path).get("continue-on-error") is True, f"{workflow_path} {name} must remain best effort")
     rust_save = step_config(producer, "Save Rust dependency and target cache", workflow_path)
     web_save = step_config(producer, "Save Bun dependency cache", workflow_path)
     require(
         rust_save.get("id") == "rust-cache-save"
-        and "cache-hit != 'true'" in str(rust_save.get("if", ""))
+        and "rust-deps-cache.outputs.cache-hit != 'true'" in str(rust_save.get("if", ""))
+        and step_config(producer, "Save Rust target cache", workflow_path).get("id") == "rust-target-cache-save"
+        and "rust-target-cache.outputs.cache-hit != 'true'" in str(step_config(producer, "Save Rust target cache", workflow_path).get("if", ""))
         and web_save.get("id") == "web-cache-save"
         and "cache-hit != 'true'" in str(web_save.get("if", "")),
         f"{workflow_path} dependency cache saves must be skipped only after an exact cache hit",
@@ -450,11 +452,15 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(
         "--progress=plain" in runtime_run
         and "CACHE_SAVE" in runtime_run
+        and "CACHE_RESTORE" in runtime_run
+        and "cache_restore=\"hit\"" in runtime_run
         and "cache_save=\"failed\"" in runtime_run
         and "cache_save=\"saved\"" in runtime_run
         and "cache_save=\"unknown\"" in runtime_run,
         f"{workflow_path} runtime-base producer must report observed cache export status",
     )
+    require(checkout_step(resolve, "Checkout trusted production recipe", workflow_path).get("ref") == "${{ steps.refs.outputs.trusted_ref }}", f"{workflow_path} must compare candidate recipes with the trusted workflow revision")
+    require("Resolve production base image digests" in {str(step.get("name")) for step in producer.get("steps", [])} | {str(step.get("name")) for step in resolve.get("steps", [])}, f"{workflow_path} must resolve production base image digests before cache identity")
     for name in ("Build Rust production artifact", "Build Web production artifact", "Build runtime-base production artifact"):
         step = step_config(producer, name, workflow_path)
         require("matrix.component" in str(step.get("if", "")) and "production" in str(step.get("run", "")), f"{workflow_path} {name} must remain required")

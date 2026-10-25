@@ -5,6 +5,13 @@
   `gh run view --json jobs` 绑定 Actions job ID、状态和真实 job 时间戳，保留 producer 卡的
   编译时间并额外报告 job 排队/执行时间。
 
+- 2026-10-26：补齐构建证据边界：报告 job 获得只读 `actions` 权限并对 Actions 失败状态、
+  candidate/build identity 不匹配和缺失 producer card fail-closed；Rust 下载与 target、Bun
+  依赖缓存拆分为兼容输入层，producer card 记录 restore/save phase timing；runtime-base
+  记录 BuildKit 日志可观测的 hit/miss，无法分解的 phase 保留 unknown。auto 路径比较候选与
+  trusted recipe 合同，基础镜像 manifest digest 纳入 build identity，避免静默忽略 Dockerfile
+  配方变化或复用可变 tag 的旧缓存。
+
 - 2026-10-25：完成 Observability Performance 构建并行与复用改造。新增 `build_only` 与
   `build_path=auto|canonical` 手动输入；auto 在独立 runner 并行生产 Rust、Web、runtime-base，
   通过 `observability-performance-v2` 缓存和 named contexts 装配 production runtime，命中

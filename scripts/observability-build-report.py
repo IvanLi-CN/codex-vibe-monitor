@@ -76,6 +76,19 @@ def actions_timing(job: dict[str, Any], run_started: str) -> dict[str, Any]:
     }
 
 
+def require_card_identity(card: dict[str, Any], candidate: str, build_identity: str) -> None:
+    if card.get("candidate") != candidate:
+        raise ValueError(f"card candidate mismatch for {card.get('component', 'image')}")
+    if card.get("buildIdentity") != build_identity:
+        raise ValueError(f"card build identity mismatch for {card.get('component', 'image')}")
+
+
+def optional_sum(values: list[Any]) -> float | None:
+    if not values or any(not isinstance(value, (int, float)) for value in values):
+        return None
+    return round(sum(float(value) for value in values), 3)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=pathlib.Path)
@@ -103,6 +116,7 @@ def main() -> None:
     )
     jobs = []
     for card in [*components.values(), image] if image else list(components.values()):
+        require_card_identity(card, args.candidate, args.build_identity)
         action_name = actions_job_name(card)
         action_job = actions_jobs.get(action_name)
         if action_job is None:
@@ -110,6 +124,11 @@ def main() -> None:
         action = actions_timing(action_job, args.run_started)
         if action["queueSeconds"] is None or action["executionSeconds"] is None:
             raise ValueError(f"Actions job timestamps incomplete for {action_name}")
+        if action["status"] != "completed" or action["conclusion"] != "success":
+            raise ValueError(
+                f"Actions job did not complete successfully for {action_name}: "
+                f"status={action['status']!r} conclusion={action['conclusion']!r}"
+            )
         card_execution = card.get("elapsedSeconds") or seconds_between(card.get("startedAt"), card.get("finishedAt"))
         jobs.append(
             {
@@ -128,6 +147,29 @@ def main() -> None:
         )
 
     ready_at = image.get("finishedAt") if image else None
+    queue_seconds = [job["queueSeconds"] for job in jobs]
+    execution_seconds = [job["executionSeconds"] for job in jobs]
+    restore_seconds = [
+        card.get("cache", {}).get("restoreSeconds")
+        for card in components.values()
+        if card.get("cache", {}).get("restoreSeconds") is not None
+    ]
+    save_seconds = [
+        card.get("cache", {}).get("saveSeconds")
+        for card in components.values()
+        if card.get("cache", {}).get("saveSeconds") is not None
+    ]
+    transfer_bytes = [
+        job.get("transfer", {}).get("archiveBytes")
+        for job in jobs
+        if job.get("transfer", {}).get("archiveBytes") is not None
+    ]
+    required_components = {"rust", "web", "runtime-base"}
+    image_cache_status = image.get("cache", {}).get("status") if image else None
+    components_ready = set(components) >= required_components
+    image_ready = image is not None and image.get("status") == "ready"
+    if image_ready and image_cache_status == "assembled" and args.build_path == "auto" and not components_ready:
+        raise ValueError("assembled auto image is missing one or more producer cards")
     report = {
         "schema": SCHEMA,
         "candidate": args.candidate,
@@ -149,11 +191,13 @@ def main() -> None:
             "runStartedAt": args.run_started,
             "imageReadyAt": ready_at,
             "imageReadySeconds": seconds_between(args.run_started, ready_at),
-            "executionSeconds": sum(
-                float(job["executionSeconds"])
-                for job in jobs
-                if job["executionSeconds"] is not None
-            ),
+            "queueSeconds": optional_sum(queue_seconds),
+            "executionSeconds": optional_sum(execution_seconds),
+            "runnerUsageSeconds": optional_sum(execution_seconds),
+            "cacheRestoreSeconds": optional_sum(restore_seconds),
+            "cacheSaveSeconds": optional_sum(save_seconds),
+            "cacheTimingComplete": len(restore_seconds) == len(components) and len(save_seconds) == len(components),
+            "transferBytes": optional_sum(transfer_bytes),
             "actionsObserved": True,
             "transfer": image.get("transfer", {}) if image else {"status": "missing"},
         },
@@ -170,7 +214,7 @@ def main() -> None:
                 "archiveSha256": image.get("archiveSha256") if image else None,
             },
         },
-        "status": "passed" if image and image.get("status") == "ready" else "incomplete",
+        "status": "passed" if image_ready else "incomplete",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

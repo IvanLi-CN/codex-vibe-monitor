@@ -59,7 +59,11 @@ class PerformanceBuildContractTests(unittest.TestCase):
     def test_cache_save_results_are_reported(self) -> None:
         workflow = WORKFLOW_PATH.read_text()
         self.assertIn("id: rust-cache-save", workflow)
+        self.assertIn("id: rust-target-cache-save", workflow)
         self.assertIn("id: web-cache-save", workflow)
+        self.assertIn("rust_deps_cache_key", workflow)
+        self.assertIn("rust_target_cache_key", workflow)
+        self.assertIn("web_deps_cache_key", workflow)
         self.assertIn("Finalize Rust cache report", workflow)
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
@@ -115,7 +119,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "status": "ready",
                 "startedAt": "2026-10-25T00:00:10Z",
                 "finishedAt": "2026-10-25T00:01:10Z",
-                "cache": {"restore": "miss", "save": "best-effort"},
+                "cache": {"restore": "miss", "save": "saved", "restoreSeconds": 1.5, "saveSeconds": 2.5},
                 "archiveSha256": hashlib.sha256(b"component").hexdigest(),
             }))
             image_dir = root / "image"
@@ -128,7 +132,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "status": "ready",
                 "startedAt": "2026-10-25T00:01:15Z",
                 "finishedAt": "2026-10-25T00:01:45Z",
-                "cache": {"status": "assembled"},
+                "cache": {"status": "hit"},
                 "transfer": {"archiveBytes": 12},
                 "imageId": "sha256:image",
                 "archiveSha256": "c" * 64,
@@ -168,6 +172,11 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["cache"]["namespace"], "observability-performance-v2")
             self.assertEqual(value["status"], "passed")
             self.assertGreater(value["timing"]["imageReadySeconds"], 0)
+            self.assertEqual(value["timing"]["queueSeconds"], 86.0)
+            self.assertEqual(value["timing"]["runnerUsageSeconds"], 92.0)
+            self.assertEqual(value["timing"]["cacheRestoreSeconds"], 1.5)
+            self.assertEqual(value["timing"]["cacheSaveSeconds"], 2.5)
+            self.assertEqual(value["timing"]["transferBytes"], 12.0)
             self.assertEqual(value["jobs"][0]["actions"]["databaseId"], 101)
             self.assertEqual(value["jobs"][0]["executionSeconds"], 60.0)
 
@@ -231,6 +240,44 @@ class PerformanceBuildContractTests(unittest.TestCase):
                     "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
                 ]
                 with self.assertRaisesRegex(ValueError, "Actions job timestamps incomplete"):
+                    report.main()
+            finally:
+                sys.argv = old_argv
+
+    def test_build_report_rejects_failed_actions_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_dir = root / "image"
+            image_dir.mkdir()
+            (image_dir / "image.json").write_text(json.dumps({
+                "schema": "cvm-performance-build-image-v1",
+                "component": "image",
+                "candidate": "a" * 40,
+                "buildIdentity": "b" * 64,
+                "status": "ready",
+                "startedAt": "2026-10-25T00:00:10Z",
+                "finishedAt": "2026-10-25T00:00:20Z",
+                "cache": {"status": "hit"},
+            }))
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({"jobs": [{
+                "databaseId": 101,
+                "name": "Observability Performance Image",
+                "status": "completed",
+                "conclusion": "failure",
+                "startedAt": "2026-10-25T00:00:12Z",
+                "completedAt": "2026-10-25T00:00:20Z",
+            }]}))
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(root), "--output", str(root / "report.json"),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
+                ]
+                with self.assertRaisesRegex(ValueError, "did not complete successfully"):
                     report.main()
             finally:
                 sys.argv = old_argv

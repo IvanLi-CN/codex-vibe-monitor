@@ -6,6 +6,13 @@
 
 ## 本地 Grafana 预览
 
+Observability Performance 的构建报告是独立的运维证据，不是性能预算卡：它记录实际 candidate、
+build identity、Actions job 排队/执行、runner 使用量、分层缓存 restore/save、artifact transfer
+和 image ready 时间。报告生成器使用只读 Actions job 查询，并在 job 失败、身份不一致或 auto
+装配缺少 producer card 时拒绝生成 `passed`；完整镜像命中时 producer job 按预期 skip。缓存
+namespace 与 release/Clippy/nextest 隔离，cache 写入失败只允许降级为 miss，不能掩盖必需构建、
+交接或校验失败。
+
 需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus、Tempo 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
 
 维护竞争的上线前后固定 UTC 窗口、查询集、处理量与采集质量要求见[维护竞争前后比较](contention-comparison.md)。观测版本上线后，修复开发与自然基线采集并行；基线充分性只约束修复上线。
