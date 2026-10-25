@@ -3,17 +3,25 @@ use super::*;
 
 pub(crate) use super::*;
 
-mod forward_proxy_config_and_storage;
+mod app_config_and_invocation_index_contracts;
+mod capture_snapshot_and_replay;
+mod forward_proxy_binding_and_capture_diagnostics;
+mod forward_proxy_subscription_and_weights;
 mod forward_proxy_xhttp;
 mod invocation_timeline_maintenance;
+mod lightweight_test_support;
 mod models_dev_http_client;
 mod observability_lifecycles;
 mod performance_index_cli;
 mod prompt_cache_attribution;
+mod raw_capture_overflow_and_projection;
+mod raw_payload_file_storage;
 mod response_payload_content_encodings;
 mod retention_archive_size;
 mod retention_batch_metrics;
+mod schema_migration_and_maintenance;
 mod time_ranges_and_proxy_display;
 
-pub(crate) use forward_proxy_config_and_storage::*;
+pub(crate) use lightweight_test_support::*;
+pub(crate) use schema_migration_and_maintenance::*;
 pub(crate) use time_ranges_and_proxy_display::*;

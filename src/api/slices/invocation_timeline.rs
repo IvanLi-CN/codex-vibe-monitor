@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection};
+use sqlx::{Connection, FromRow, QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(test)]
 use std::sync::Arc;
@@ -441,8 +441,6 @@ fn append_timeline_db_predicates(
     persisted_filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
-    attempt_snapshot_id: i64,
-    upstream_account_id: Option<i64>,
     start_bound: &str,
     overlap_start_bound: &str,
     end_bound: &str,
@@ -455,16 +453,6 @@ fn append_timeline_db_predicates(
         source_scope,
         Some(SnapshotConstraint::UpTo(snapshot_id)),
     );
-    if let Some(upstream_account_id) = upstream_account_id {
-        query
-            .push(" AND ")
-            .push(timeline_upstream_account_id_sql(
-                "codex_invocations",
-                Some(attempt_snapshot_id),
-            ))
-            .push(" = ")
-            .push_bind(upstream_account_id);
-    }
     query
         .push(" AND (occurred_at < ")
         .push_bind(end_bound.to_string())
@@ -528,6 +516,32 @@ fn create_timeline_snapshot_for_scope(
     include_live: bool,
     source_scope: InvocationSourceScope,
 ) -> Result<String, ApiError> {
+    create_timeline_snapshot_for_scope_at_revision(
+        snapshot_id,
+        attempt_snapshot_id,
+        natural_day_start,
+        natural_day_end,
+        range_start,
+        range_end,
+        upstream_account_id,
+        include_live,
+        current_dashboard_activity_live_revision(),
+        source_scope,
+    )
+}
+
+fn create_timeline_snapshot_for_scope_at_revision(
+    snapshot_id: i64,
+    attempt_snapshot_id: i64,
+    natural_day_start: String,
+    natural_day_end: String,
+    range_start: String,
+    range_end: String,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
+    revision: u64,
+    source_scope: InvocationSourceScope,
+) -> Result<String, ApiError> {
     let token = nanoid::nanoid!(16);
     let now = Instant::now();
     let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
@@ -561,7 +575,7 @@ fn create_timeline_snapshot_for_scope(
         TimelineSnapshot {
             snapshot_id,
             attempt_snapshot_id,
-            revision: current_dashboard_activity_live_revision(),
+            revision,
             natural_day_start,
             natural_day_end,
             range_start,
@@ -666,6 +680,309 @@ struct TimelineAccountFallbackRow {
     upstream_account_id: Option<i64>,
     payload_upstream_account_id_is_valid: i64,
     upstream_account_name: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct TimelineSourceRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    status: Option<String>,
+    live_phase: Option<String>,
+    first_token_ms: Option<f64>,
+    t_total_ms: Option<f64>,
+    pool_attempt_count: Option<i64>,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    payload_upstream_account_id_is_valid: i64,
+    failure_class: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct TimelineAttemptAccountRow {
+    invoke_id: String,
+    occurred_at: String,
+    upstream_account_id: i64,
+}
+
+fn build_timeline_attempt_account_query(
+    prefix: &'static str,
+    keys: &[(String, String)],
+    attempt_snapshot_id: i64,
+) -> QueryBuilder<'static, Sqlite> {
+    let mut query = QueryBuilder::<Sqlite>::new(prefix);
+    for (index, (invoke_id, occurred_at)) in keys.iter().enumerate() {
+        if index > 0 {
+            query.push(" UNION ALL ");
+        }
+        query.push(
+            "SELECT invoke_id, occurred_at, upstream_account_id FROM (SELECT invoke_id, occurred_at, upstream_account_id FROM pool_upstream_request_attempts INDEXED BY idx_pool_upstream_request_attempts_invoke_attempt WHERE id > 0 AND id <= ",
+        );
+        query.push_bind(attempt_snapshot_id);
+        query
+            .push(" AND typeof(upstream_account_id) = 'integer' AND upstream_account_id IS NOT NULL AND upstream_account_id > 0 AND upstream_account_id < 9007199254740992 AND invoke_id = ")
+            .push_bind(invoke_id.clone())
+            .push(" AND occurred_at = ")
+            .push_bind(occurred_at.clone())
+            .push(" ORDER BY attempt_index DESC, id DESC LIMIT 1) AS timeline_fallback_");
+        query.push(index.to_string());
+    }
+    query
+}
+
+struct TimelineMaterializationObservation {
+    started_at: Instant,
+    lock_wait_started_at: Instant,
+    scope: &'static str,
+    lock_wait_ms: u64,
+    lock_acquired: bool,
+    capture_duration: Duration,
+    source_connection_duration: Duration,
+    source_begin_duration: Duration,
+    source_query_duration: Duration,
+    account_resolution_duration: Duration,
+    materialization_duration: Duration,
+    source_finalize_duration: Duration,
+    publish_duration: Duration,
+    publish_coordinator_wait_duration: Duration,
+    publish_pool_acquire_duration: Duration,
+    publish_begin_duration: Duration,
+    publish_sql_duration: Duration,
+    source_query_started_at: Option<Instant>,
+    capture_started_at: Option<Instant>,
+    source_connection_started_at: Option<Instant>,
+    source_begin_started_at: Option<Instant>,
+    account_resolution_started_at: Option<Instant>,
+    materialization_started_at: Option<Instant>,
+    source_finalize_started_at: Option<Instant>,
+    publish_started_at: Option<Instant>,
+    publish_coordinator_started_at: Option<Instant>,
+    publish_pool_acquire_started_at: Option<Instant>,
+    publish_begin_started_at: Option<Instant>,
+    publish_sql_started_at: Option<Instant>,
+    source_pages: usize,
+    scanned_source_rows: usize,
+    materialized_rows: usize,
+    publish_batches: usize,
+    published_rows: usize,
+    outcome: &'static str,
+}
+
+impl TimelineMaterializationObservation {
+    fn new(started_at: Instant, upstream_account_id: Option<i64>) -> Self {
+        Self {
+            started_at,
+            lock_wait_started_at: started_at,
+            scope: if upstream_account_id.is_some() {
+                "account"
+            } else {
+                "global"
+            },
+            lock_wait_ms: 0,
+            lock_acquired: false,
+            capture_duration: Duration::ZERO,
+            source_connection_duration: Duration::ZERO,
+            source_begin_duration: Duration::ZERO,
+            source_query_duration: Duration::ZERO,
+            account_resolution_duration: Duration::ZERO,
+            materialization_duration: Duration::ZERO,
+            source_finalize_duration: Duration::ZERO,
+            publish_duration: Duration::ZERO,
+            publish_coordinator_wait_duration: Duration::ZERO,
+            publish_pool_acquire_duration: Duration::ZERO,
+            publish_begin_duration: Duration::ZERO,
+            publish_sql_duration: Duration::ZERO,
+            source_query_started_at: None,
+            capture_started_at: None,
+            source_connection_started_at: None,
+            source_begin_started_at: None,
+            account_resolution_started_at: None,
+            materialization_started_at: None,
+            source_finalize_started_at: None,
+            publish_started_at: None,
+            publish_coordinator_started_at: None,
+            publish_pool_acquire_started_at: None,
+            publish_begin_started_at: None,
+            publish_sql_started_at: None,
+            source_pages: 0,
+            scanned_source_rows: 0,
+            materialized_rows: 0,
+            publish_batches: 0,
+            published_rows: 0,
+            outcome: "canceled",
+        }
+    }
+
+    fn record_lock_acquired(&mut self) {
+        self.lock_wait_ms = self.lock_wait_started_at.elapsed().as_millis() as u64;
+        self.lock_acquired = true;
+    }
+
+    fn begin_source_query(&mut self) {
+        self.source_query_started_at = Some(Instant::now());
+    }
+
+    fn finish_source_query(&mut self) {
+        if let Some(started_at) = self.source_query_started_at.take() {
+            self.source_query_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_capture(&mut self) {
+        self.capture_started_at = Some(Instant::now());
+    }
+
+    fn finish_capture(&mut self) {
+        if let Some(started_at) = self.capture_started_at.take() {
+            self.capture_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_source_connection(&mut self) {
+        self.source_connection_started_at = Some(Instant::now());
+    }
+
+    fn finish_source_connection(&mut self) {
+        if let Some(started_at) = self.source_connection_started_at.take() {
+            self.source_connection_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_source_begin(&mut self) {
+        self.source_begin_started_at = Some(Instant::now());
+    }
+
+    fn finish_source_begin(&mut self) {
+        if let Some(started_at) = self.source_begin_started_at.take() {
+            self.source_begin_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_account_resolution(&mut self) {
+        self.account_resolution_started_at = Some(Instant::now());
+    }
+
+    fn finish_account_resolution(&mut self) {
+        if let Some(started_at) = self.account_resolution_started_at.take() {
+            self.account_resolution_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_materialization(&mut self) {
+        self.materialization_started_at = Some(Instant::now());
+    }
+
+    fn finish_materialization(&mut self) {
+        if let Some(started_at) = self.materialization_started_at.take() {
+            self.materialization_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_source_finalize(&mut self) {
+        self.source_finalize_started_at = Some(Instant::now());
+    }
+
+    fn finish_source_finalize(&mut self) {
+        if let Some(started_at) = self.source_finalize_started_at.take() {
+            self.source_finalize_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_publish(&mut self) {
+        self.publish_started_at = Some(Instant::now());
+    }
+
+    fn finish_publish(&mut self) {
+        if let Some(started_at) = self.publish_started_at.take() {
+            self.publish_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_publish_coordinator_wait(&mut self) {
+        self.publish_coordinator_started_at = Some(Instant::now());
+    }
+
+    fn finish_publish_coordinator_wait(&mut self) {
+        if let Some(started_at) = self.publish_coordinator_started_at.take() {
+            self.publish_coordinator_wait_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_publish_pool_acquire(&mut self) {
+        self.publish_pool_acquire_started_at = Some(Instant::now());
+    }
+
+    fn finish_publish_pool_acquire(&mut self) {
+        if let Some(started_at) = self.publish_pool_acquire_started_at.take() {
+            self.publish_pool_acquire_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_publish_begin(&mut self) {
+        self.publish_begin_started_at = Some(Instant::now());
+    }
+
+    fn finish_publish_begin(&mut self) {
+        if let Some(started_at) = self.publish_begin_started_at.take() {
+            self.publish_begin_duration += started_at.elapsed();
+        }
+    }
+
+    fn begin_publish_sql(&mut self) {
+        self.publish_sql_started_at = Some(Instant::now());
+    }
+
+    fn finish_publish_sql(&mut self) {
+        if let Some(started_at) = self.publish_sql_started_at.take() {
+            self.publish_sql_duration += started_at.elapsed();
+        }
+    }
+}
+
+impl Drop for TimelineMaterializationObservation {
+    fn drop(&mut self) {
+        self.finish_source_query();
+        self.finish_capture();
+        self.finish_source_connection();
+        self.finish_source_begin();
+        self.finish_account_resolution();
+        self.finish_materialization();
+        self.finish_source_finalize();
+        self.finish_publish();
+        self.finish_publish_coordinator_wait();
+        self.finish_publish_pool_acquire();
+        self.finish_publish_begin();
+        self.finish_publish_sql();
+        let lock_wait_ms = if self.lock_acquired {
+            self.lock_wait_ms
+        } else {
+            self.lock_wait_started_at.elapsed().as_millis() as u64
+        };
+        tracing::info!(
+            scope = self.scope,
+            outcome = self.outcome,
+            elapsed_ms = self.started_at.elapsed().as_millis() as u64,
+            lock_wait_ms,
+            capture_ms = self.capture_duration.as_millis() as u64,
+            source_connection_ms = self.source_connection_duration.as_millis() as u64,
+            source_begin_ms = self.source_begin_duration.as_millis() as u64,
+            source_pages = self.source_pages,
+            scanned_source_rows = self.scanned_source_rows,
+            materialized_rows = self.materialized_rows,
+            source_query_ms = self.source_query_duration.as_millis() as u64,
+            account_resolution_ms = self.account_resolution_duration.as_millis() as u64,
+            materialization_ms = self.materialization_duration.as_millis() as u64,
+            source_finalize_ms = self.source_finalize_duration.as_millis() as u64,
+            publish_ms = self.publish_duration.as_millis() as u64,
+            publish_coordinator_wait_ms = self.publish_coordinator_wait_duration.as_millis() as u64,
+            publish_pool_acquire_ms = self.publish_pool_acquire_duration.as_millis() as u64,
+            publish_begin_ms = self.publish_begin_duration.as_millis() as u64,
+            publish_sql_ms = self.publish_sql_duration.as_millis() as u64,
+            publish_batches = self.publish_batches,
+            published_rows = self.published_rows,
+            "invocation timeline materialization summary"
+        );
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1233,6 +1550,167 @@ fn timeline_record_from_api(record: &ApiInvocation, is_runtime: bool) -> Invocat
     }
 }
 
+fn build_timeline_source_select_query(attempt_snapshot_id: i64) -> QueryBuilder<'static, Sqlite> {
+    build_timeline_source_select_query_with_prefix("", attempt_snapshot_id)
+}
+
+fn build_timeline_source_select_query_with_prefix(
+    prefix: &'static str,
+    attempt_snapshot_id: i64,
+) -> QueryBuilder<'static, Sqlite> {
+    let final_first_token_timing_sql = final_pool_invocation_timing_sql_at_snapshot(
+        "codex_invocations",
+        "first_token_ms",
+        Some(attempt_snapshot_id),
+    );
+    let final_live_phase_sql = invocation_live_phase_sql_with_timing_sql_at_snapshot(
+        "codex_invocations",
+        final_first_token_timing_sql.as_str(),
+        Some(attempt_snapshot_id),
+    );
+    let payload_account_id_sql = timeline_payload_account_id_sql("codex_invocations");
+    let payload_account_id_is_valid_sql =
+        timeline_payload_account_id_is_valid_sql("codex_invocations");
+    let mut query = QueryBuilder::new(prefix);
+    query.push("SELECT id, invoke_id, occurred_at, status, ");
+    query
+        .push(final_live_phase_sql.as_str())
+        .push(" AS live_phase, ")
+        .push(final_first_token_timing_sql.as_str())
+        .push(" AS first_token_ms, t_total_ms, ")
+        .push(INVOCATION_POOL_ATTEMPT_COUNT_SQL)
+        .push(" AS pool_attempt_count, ")
+        .push(payload_account_id_sql.as_str())
+        .push(" AS upstream_account_id, CASE WHEN ")
+        .push(payload_account_id_is_valid_sql.as_str())
+        .push(" = 1 THEN ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(" END AS upstream_account_name, ")
+        .push(payload_account_id_is_valid_sql.as_str())
+        .push(" AS payload_upstream_account_id_is_valid, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class FROM codex_invocations WHERE 1 = 1");
+    query
+}
+
+fn timeline_source_status_is_in_flight(status: Option<&str>) -> bool {
+    status.is_some_and(|status| {
+        status.trim().eq_ignore_ascii_case("running")
+            || status.trim().eq_ignore_ascii_case("pending")
+    })
+}
+
+fn timeline_source_display_status(
+    status: Option<&str>,
+    failure_class: Option<&str>,
+) -> Option<String> {
+    let normalized_status = status.map(str::trim).unwrap_or_default();
+    let normalized_failure_class = failure_class.map(str::trim).unwrap_or_default();
+    if normalized_status.eq_ignore_ascii_case("interrupted") {
+        Some("interrupted".to_string())
+    } else if matches!(
+        normalized_failure_class,
+        "service_failure" | "client_failure" | "client_abort"
+    ) {
+        Some("failed".to_string())
+    } else if normalized_status.is_empty() {
+        Some("unknown".to_string())
+    } else {
+        status.map(str::to_string)
+    }
+}
+
+fn timeline_record_from_source(record: &TimelineSourceRow) -> InvocationTimelineRecord {
+    let is_in_flight = timeline_source_status_is_in_flight(record.status.as_deref());
+    let total_ms = valid_timeline_duration_ms(record.t_total_ms);
+    let end_at = if is_in_flight {
+        None
+    } else {
+        total_ms.and_then(|duration| {
+            parse_to_utc_datetime(&record.occurred_at)
+                .and_then(|start| timeline_end_at(start, Some(duration)))
+        })
+    };
+    let occurred_at = record.occurred_at.clone();
+    InvocationTimelineRecord {
+        id: record.id,
+        invoke_id: record.invoke_id.clone(),
+        occurred_at: parse_to_utc_datetime(&occurred_at)
+            .map(format_utc_iso_precise)
+            .unwrap_or(occurred_at),
+        end_at,
+        is_in_flight,
+        status: timeline_source_display_status(
+            record.status.as_deref(),
+            record.failure_class.as_deref(),
+        ),
+        live_phase: record.live_phase.clone(),
+        first_token_ms: record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0),
+        t_total_ms: total_ms,
+        pool_attempt_count: record.pool_attempt_count,
+        upstream_account_id: record.upstream_account_id,
+        upstream_account_name: record.upstream_account_name.clone(),
+        failure_class: record.failure_class.clone(),
+    }
+}
+
+async fn query_timeline_attempt_accounts_on_connection(
+    connection: &mut SqliteConnection,
+    keys: &HashSet<(String, String)>,
+    attempt_snapshot_id: i64,
+) -> Result<HashMap<(String, String), i64>, ApiError> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut fallback_accounts = HashMap::new();
+    let key_list = keys.iter().cloned().collect::<Vec<_>>();
+    for chunk in key_list.chunks(100) {
+        for row in build_timeline_attempt_account_query("", chunk, attempt_snapshot_id)
+            .build_query_as::<TimelineAttemptAccountRow>()
+            .fetch_all(&mut *connection)
+            .await?
+        {
+            fallback_accounts
+                .entry((row.invoke_id, row.occurred_at))
+                .or_insert(row.upstream_account_id);
+        }
+    }
+    Ok(fallback_accounts)
+}
+
+async fn hydrate_timeline_source_accounts_on_connection(
+    connection: &mut SqliteConnection,
+    records: &mut [TimelineSourceRow],
+    attempt_snapshot_id: i64,
+) -> Result<(), ApiError> {
+    let invalid_account_keys = records
+        .iter()
+        .filter(|record| record.payload_upstream_account_id_is_valid != 1)
+        .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+        .collect::<HashSet<_>>();
+    let fallback_accounts = query_timeline_attempt_accounts_on_connection(
+        connection,
+        &invalid_account_keys,
+        attempt_snapshot_id,
+    )
+    .await?;
+    for record in records {
+        if record.payload_upstream_account_id_is_valid != 1 {
+            record.upstream_account_id = None;
+            record.upstream_account_name = None;
+        }
+        if record.upstream_account_id.is_none()
+            && let Some(upstream_account_id) =
+                fallback_accounts.get(&(record.invoke_id.clone(), record.occurred_at.clone()))
+        {
+            record.upstream_account_id = Some(*upstream_account_id);
+        }
+    }
+    Ok(())
+}
+
 async fn materialize_timeline_snapshot(
     state: &AppState,
     snapshot_token: &str,
@@ -1248,6 +1726,8 @@ async fn materialize_timeline_snapshot(
     attempt_snapshot_id: i64,
     upstream_account_id: Option<i64>,
     include_live: bool,
+    runtime_records: Vec<ApiInvocation>,
+    observation: &mut TimelineMaterializationObservation,
 ) -> Result<(), ApiError> {
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
@@ -1256,107 +1736,7 @@ async fn materialize_timeline_snapshot(
     let mut materialized_sources = Vec::new();
     let mut materialized_row_count = 0;
     let mut materialized_byte_count = 0;
-    let mut scanned_source_rows = 0_usize;
-    let mut runtime_records = if include_live {
-        runtime_overlay_snapshot(state)
-    } else {
-        Vec::new()
-    };
-    let mut cursor = None;
-    while let Some((page, has_more, next_cursor)) = {
-        let mut source_transaction = state.pool.begin().await?;
-        let mut query = build_invocation_select_query();
-        append_timeline_db_predicates(
-            &mut query,
-            &persisted_filters,
-            source_scope,
-            snapshot_id,
-            attempt_snapshot_id,
-            upstream_account_id,
-            start_bound,
-            overlap_start_bound,
-            end_bound,
-            include_live,
-            cursor.as_ref(),
-        );
-        query
-                .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
-                .push_bind(snapshot_id)
-                .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
-                .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
-        let mut page = observe_query(
-            StatsQuery::InvocationTimeline,
-            query
-                .build_query_as::<ApiInvocation>()
-                .fetch_all(&mut *source_transaction),
-        )
-        .await?;
-        if page.is_empty() {
-            source_transaction.commit().await?;
-            None
-        } else {
-            scanned_source_rows = scanned_source_rows.saturating_add(page.len());
-            if scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
-                tracing::warn!(
-                    snapshot_token,
-                    scanned_source_rows,
-                    max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
-                    "invocation timeline source scan budget exhausted"
-                );
-                return Err(ApiError::unavailable(anyhow!(
-                    "invocation timeline source scan budget exhausted"
-                )));
-            }
-            let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
-            page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-            let next_cursor = page.last().cloned().map(|last| TimelineCursor {
-                as_of: snapshot_token.to_string(),
-                occurred_at: Some(last.occurred_at),
-                invoke_id: Some(last.invoke_id),
-            });
-            for record in &mut page {
-                hydrate_api_invocation_blocked_binding(record);
-            }
-            hydrate_timeline_accounts_on_connection(
-                &mut source_transaction,
-                &mut page,
-                source_scope,
-                snapshot_id,
-                attempt_snapshot_id,
-                false,
-            )
-            .await?;
-            let mut materialized_page = Vec::new();
-            for record in page
-                .iter()
-                .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
-            {
-                let timeline_record = timeline_record_from_api(record, false);
-                reserve_timeline_snapshot_budget(
-                    &mut materialized_row_count,
-                    &mut materialized_byte_count,
-                    cache_row_base,
-                    cache_byte_base,
-                    &timeline_record,
-                    None,
-                )?;
-                materialized_page.push(timeline_record);
-            }
-            source_transaction.commit().await?;
-            next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
-        }
-    } {
-        for timeline_record in page {
-            materialized_records.push(timeline_record);
-            materialized_sources.push(false);
-        }
-        if !has_more {
-            break;
-        }
-        pause_after_timeline_source_page().await;
-        cursor = Some(next_cursor);
-    }
-
+    let mut runtime_records = runtime_records;
     let mut runtime_filters = filters.clone();
     runtime_filters.upstream_account_id = None;
     runtime_records.retain(|record| {
@@ -1372,19 +1752,132 @@ async fn materialize_timeline_snapshot(
                 || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
             && runtime_record_matches_filters(record, &runtime_filters, source_scope)
     });
-    if !runtime_records.is_empty() {
-        let mut runtime_transaction = state.pool.begin().await?;
-        hydrate_timeline_accounts_on_connection(
-            &mut runtime_transaction,
-            &mut runtime_records,
+    let mut cursor: Option<TimelineCursor> = None;
+    loop {
+        observation.begin_source_connection();
+        let source_connection_result =
+            SqliteConnection::connect_with(state.pool.connect_options().as_ref()).await;
+        observation.finish_source_connection();
+        let mut source_connection = source_connection_result?;
+        observation.begin_source_begin();
+        let source_transaction_result = source_connection.begin().await;
+        observation.finish_source_begin();
+        let mut source_transaction = source_transaction_result?;
+        let mut query = build_timeline_source_select_query(attempt_snapshot_id);
+        append_timeline_db_predicates(
+            &mut query,
+            &persisted_filters,
             source_scope,
             snapshot_id,
-            attempt_snapshot_id,
-            true,
+            start_bound,
+            overlap_start_bound,
+            end_bound,
+            include_live,
+            cursor.as_ref(),
+        );
+        query
+            .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+            .push_bind(snapshot_id)
+            .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+            .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
+        observation.begin_source_query();
+        let source_query_result = observe_query(
+            StatsQuery::InvocationTimeline,
+            query
+                .build_query_as::<TimelineSourceRow>()
+                .fetch_all(&mut *source_transaction),
         )
-        .await?;
-        runtime_transaction.commit().await?;
+        .await;
+        observation.finish_source_query();
+        let mut source_records = source_query_result?;
+        observation.scanned_source_rows = observation
+            .scanned_source_rows
+            .saturating_add(source_records.len());
+        if observation.scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
+            tracing::warn!(
+                scanned_source_rows = observation.scanned_source_rows,
+                max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
+                "invocation timeline source scan budget exhausted"
+            );
+            return Err(ApiError::unavailable(anyhow!(
+                "invocation timeline source scan budget exhausted"
+            )));
+        }
+        let has_more = source_records.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
+        source_records.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
+        let next_cursor = source_records.last().map(|record| TimelineCursor {
+            as_of: snapshot_token.to_string(),
+            occurred_at: Some(record.occurred_at.clone()),
+            invoke_id: Some(record.invoke_id.clone()),
+        });
+        observation.begin_account_resolution();
+        let account_resolution_result = hydrate_timeline_source_accounts_on_connection(
+            &mut source_transaction,
+            &mut source_records,
+            attempt_snapshot_id,
+        )
+        .await;
+        observation.finish_account_resolution();
+        account_resolution_result?;
+
+        let source_page_row_count = source_records.len();
+        observation.begin_materialization();
+        for record in source_records.iter().filter(|record| {
+            upstream_account_id.is_none() || record.upstream_account_id == upstream_account_id
+        }) {
+            let timeline_record = timeline_record_from_source(record);
+            reserve_timeline_snapshot_budget(
+                &mut materialized_row_count,
+                &mut materialized_byte_count,
+                cache_row_base,
+                cache_byte_base,
+                &timeline_record,
+                None,
+            )?;
+            materialized_records.push(timeline_record);
+            materialized_sources.push(false);
+        }
+        observation.materialized_rows = materialized_records.len();
+        observation.finish_materialization();
+        if source_page_row_count > 0 {
+            observation.source_pages = observation.source_pages.saturating_add(1);
+        }
+        observation.begin_source_finalize();
+        let source_commit_result = source_transaction.commit().await;
+        let source_close_result = source_connection.close().await;
+        observation.finish_source_finalize();
+        source_commit_result?;
+        source_close_result?;
+        if !has_more {
+            break;
+        }
+        cursor = Some(next_cursor.ok_or_else(|| {
+            ApiError::unavailable(anyhow!("invocation timeline source page is missing cursor"))
+        })?);
+        pause_after_timeline_source_page().await;
     }
+
+    if !runtime_records.is_empty() {
+        observation.begin_account_resolution();
+        let runtime_resolution_result = async {
+            let mut runtime_transaction = state.pool.begin().await?;
+            hydrate_timeline_accounts_on_connection(
+                &mut runtime_transaction,
+                &mut runtime_records,
+                source_scope,
+                snapshot_id,
+                attempt_snapshot_id,
+                true,
+            )
+            .await?;
+            runtime_transaction.commit().await.map_err(ApiError::from)
+        }
+        .await;
+        observation.finish_account_resolution();
+        runtime_resolution_result?;
+    }
+
+    observation.begin_materialization();
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
     let mut record_indexes = materialized_records
         .iter()
@@ -1435,6 +1928,7 @@ async fn materialize_timeline_snapshot(
             materialized_records.push(timeline_record);
             materialized_sources.push(true);
         }
+        observation.materialized_rows = materialized_records.len();
     }
     let mut published_records = materialized_records
         .into_iter()
@@ -1450,18 +1944,41 @@ async fn materialize_timeline_snapshot(
         .iter()
         .map(|(record, is_runtime)| encode_timeline_snapshot_insert_row(record, *is_runtime))
         .collect::<Result<Vec<_>, _>>()?;
+    observation.materialized_rows = published_records.len();
+    observation.finish_materialization();
     for batch in published_rows.chunks(INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE) {
-        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-            .await;
-        let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        insert_timeline_snapshot_records_on_connection(
-            &mut publish_transaction,
-            snapshot_token,
-            batch,
-        )
-        .await?;
-        publish_transaction.commit().await?;
+        observation.begin_publish();
+        let publish_result: Result<(), ApiError> = async {
+            observation.begin_publish_coordinator_wait();
+            let _write_permit =
+                crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                    .acquire(
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                    )
+                    .await;
+            observation.finish_publish_coordinator_wait();
+            observation.begin_publish_pool_acquire();
+            let mut publish_connection = state.pool.acquire().await?;
+            observation.finish_publish_pool_acquire();
+            observation.begin_publish_begin();
+            let mut publish_transaction = publish_connection.begin_with("BEGIN IMMEDIATE").await?;
+            observation.finish_publish_begin();
+            observation.begin_publish_sql();
+            insert_timeline_snapshot_records_on_connection(
+                &mut publish_transaction,
+                snapshot_token,
+                batch,
+            )
+            .await?;
+            publish_transaction.commit().await.map_err(ApiError::from)?;
+            observation.finish_publish_sql();
+            Ok(())
+        }
+        .await;
+        observation.finish_publish();
+        publish_result?;
+        observation.publish_batches = observation.publish_batches.saturating_add(1);
+        observation.published_rows = observation.published_rows.saturating_add(batch.len());
     }
     // The token is inserted into the in-memory snapshot registry before materialization, but it
     // is only returned to callers after every short insert transaction succeeds. Readers with an
@@ -1472,7 +1989,23 @@ async fn materialize_timeline_snapshot(
         materialized_row_count,
         materialized_byte_count,
     )?;
+    observation.outcome = "success";
     Ok(())
+}
+
+async fn capture_timeline_runtime_overlay_and_watermarks(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+) -> Result<(Vec<ApiInvocation>, u64, i64, i64), ApiError> {
+    let records = runtime_overlay_snapshot(state);
+    let (snapshot_id, attempt_snapshot_id) =
+        resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
+    Ok((
+        records,
+        current_dashboard_activity_live_revision(),
+        snapshot_id,
+        attempt_snapshot_id,
+    ))
 }
 
 pub(crate) async fn fetch_timeline(
@@ -1594,11 +2127,45 @@ pub(crate) async fn fetch_timeline(
                 "asOf is required with an invocation timeline cursor"
             )));
         }
+        let materialization_started_at = Instant::now();
+        let mut observation = TimelineMaterializationObservation::new(
+            materialization_started_at,
+            params.upstream_account_id,
+        );
         let _materialization_guard = INVOCATION_TIMELINE_MATERIALIZATION_LOCK.lock().await;
-        let source_scope = resolve_default_source_scope(&state.pool).await?;
-        let (snapshot_id, attempt_snapshot_id) =
-            resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
-        let as_of = create_timeline_snapshot_for_scope(
+        observation.record_lock_acquired();
+        let source_scope = match resolve_default_source_scope(&state.pool).await {
+            Ok(source_scope) => source_scope,
+            Err(error) => {
+                observation.outcome = "error";
+                return Err(ApiError::from(error));
+            }
+        };
+        observation.begin_capture();
+        let capture_result = if include_live {
+            capture_timeline_runtime_overlay_and_watermarks(state.as_ref(), source_scope).await
+        } else {
+            resolve_timeline_snapshot_watermarks(&state.pool, source_scope)
+                .await
+                .map(|(snapshot_id, attempt_snapshot_id)| {
+                    (
+                        Vec::new(),
+                        current_dashboard_activity_live_revision(),
+                        snapshot_id,
+                        attempt_snapshot_id,
+                    )
+                })
+        };
+        observation.finish_capture();
+        let (runtime_records, live_revision, snapshot_id, attempt_snapshot_id) =
+            match capture_result {
+                Ok(capture) => capture,
+                Err(error) => {
+                    observation.outcome = "error";
+                    return Err(error);
+                }
+            };
+        let as_of = match create_timeline_snapshot_for_scope_at_revision(
             snapshot_id,
             attempt_snapshot_id,
             canonical_natural_day_start.clone(),
@@ -1607,8 +2174,15 @@ pub(crate) async fn fetch_timeline(
             canonical_range_end.clone(),
             params.upstream_account_id,
             include_live,
+            live_revision,
             source_scope,
-        )?;
+        ) {
+            Ok(as_of) => as_of,
+            Err(error) => {
+                observation.outcome = "error";
+                return Err(error);
+            }
+        };
         let mut snapshot_cleanup_guard = TimelineSnapshotCleanupGuard::new(as_of.clone());
         let materialize_result = materialize_timeline_snapshot(
             state.as_ref(),
@@ -1625,13 +2199,16 @@ pub(crate) async fn fetch_timeline(
             attempt_snapshot_id,
             params.upstream_account_id,
             include_live,
+            runtime_records,
+            &mut observation,
         )
         .await;
         if let Err(error) = materialize_result {
+            observation.outcome = "error";
             snapshot_cleanup_guard.cleanup_now();
             return Err(error);
         }
-        let snapshot = load_timeline_snapshot_with_scope(
+        let snapshot = match load_timeline_snapshot_with_scope(
             &as_of,
             &canonical_natural_day_start,
             &canonical_natural_day_end,
@@ -1639,7 +2216,14 @@ pub(crate) async fn fetch_timeline(
             &canonical_range_end,
             params.upstream_account_id,
             include_live,
-        )?;
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                observation.outcome = "error";
+                snapshot_cleanup_guard.cleanup_now();
+                return Err(error);
+            }
+        };
         cleanup_guard = Some(snapshot_cleanup_guard);
         pause_after_timeline_materialization(
             &as_of,
@@ -1795,8 +2379,7 @@ async fn hydrate_timeline_accounts_on_connection(
     if keys.is_empty() {
         return Ok(());
     }
-    let resolved_id =
-        timeline_upstream_account_id_sql("codex_invocations", Some(attempt_snapshot_id));
+    let payload_account_id_sql = timeline_payload_account_id_sql("codex_invocations");
     let mut rows = Vec::new();
     let key_list = keys.into_iter().collect::<Vec<_>>();
     for chunk in key_list.chunks(100) {
@@ -1804,7 +2387,7 @@ async fn hydrate_timeline_accounts_on_connection(
             "SELECT codex_invocations.invoke_id, codex_invocations.occurred_at, ",
         );
         query
-            .push(resolved_id.as_str())
+            .push(payload_account_id_sql.as_str())
             .push(" AS upstream_account_id, ")
             .push(timeline_payload_account_id_is_valid_sql(
                 "codex_invocations",
@@ -1844,51 +2427,43 @@ async fn hydrate_timeline_accounts_on_connection(
         .into_iter()
         .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
         .collect::<std::collections::HashMap<_, _>>();
+    let mut attempt_resolution_keys = invalid_account_keys;
+    attempt_resolution_keys.extend(
+        fallbacks
+            .iter()
+            .filter(|(_, row)| row.payload_upstream_account_id_is_valid != 1)
+            .map(|(key, _)| key.clone()),
+    );
+    let attempt_accounts = query_timeline_attempt_accounts_on_connection(
+        connection,
+        &attempt_resolution_keys,
+        attempt_snapshot_id,
+    )
+    .await?;
     for record in records {
-        if let Some(row) = fallbacks.get(&(record.invoke_id.clone(), record.occurred_at.clone())) {
-            if let Some(upstream_account_id) = row.upstream_account_id {
-                record.upstream_account_id = Some(upstream_account_id);
-                record.upstream_account_name = (row.payload_upstream_account_id_is_valid == 1)
-                    .then(|| row.upstream_account_name.clone())
-                    .flatten();
-            } else if !preserve_valid_runtime_account
-                && row.payload_upstream_account_id_is_valid != 1
-            {
+        let key = (record.invoke_id.clone(), record.occurred_at.clone());
+        if let Some(row) = fallbacks.get(&key) {
+            if row.payload_upstream_account_id_is_valid == 1 {
+                if let Some(upstream_account_id) = row.upstream_account_id {
+                    record.upstream_account_id = Some(upstream_account_id);
+                    record.upstream_account_name = row.upstream_account_name.clone();
+                }
+            } else if let Some(upstream_account_id) = attempt_accounts.get(&key) {
+                record.upstream_account_id = Some(*upstream_account_id);
+                record.upstream_account_name = None;
+            } else if !preserve_valid_runtime_account {
                 record.upstream_account_id = None;
                 record.upstream_account_name = None;
             }
         }
-        if invalid_account_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
+        if attempt_resolution_keys.contains(&key)
             && record.upstream_account_id.is_none()
+            && let Some(upstream_account_id) = attempt_accounts.get(&key)
         {
-            record.upstream_account_id = sqlx::query_scalar(
-                "SELECT upstream_account_id FROM pool_upstream_request_attempts WHERE invoke_id = ?1 AND occurred_at = ?2 AND id > 0 AND id <= ?3 AND typeof(upstream_account_id) = 'integer' AND upstream_account_id IS NOT NULL AND upstream_account_id > 0 AND upstream_account_id < 9007199254740992 ORDER BY attempt_index DESC, id DESC LIMIT 1",
-            )
-            .bind(&record.invoke_id)
-            .bind(&record.occurred_at)
-            .bind(attempt_snapshot_id)
-            .fetch_optional(&mut *connection)
-            .await?;
+            record.upstream_account_id = Some(*upstream_account_id);
         }
     }
     Ok(())
-}
-
-fn timeline_upstream_account_id_sql(
-    invocation_ref: &str,
-    attempt_snapshot_id: Option<i64>,
-) -> String {
-    let payload_is_valid = format!("json_valid({invocation_ref}.payload)");
-    let attempt_snapshot_predicate = attempt_snapshot_id
-        .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
-        .unwrap_or_default();
-    let payload_id = format!(
-        "CASE WHEN {payload_is_valid} THEN {} END",
-        timeline_payload_account_id_sql(invocation_ref)
-    );
-    format!(
-        "COALESCE({payload_id}, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.id > 0{attempt_snapshot_predicate} AND typeof(attempt.upstream_account_id) = 'integer' AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < 9007199254740992 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))",
-    )
 }
 
 fn timeline_payload_account_id_parts(invocation_ref: &str) -> (String, String) {
@@ -1923,6 +2498,8 @@ mod tests {
     use chrono::TimeZone;
     use sqlx::Connection;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+    use std::io::{self, Write};
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[test]
     fn invocation_timeline_accepts_scope_aliases() {
@@ -2327,6 +2904,395 @@ mod tests {
                 .map(|record| record.invoke_id.as_str()),
             Some("batched-100")
         );
+        state.pool.close().await;
+    }
+
+    fn assert_timeline_plan_uses_index_without_table_scan(
+        label: &str,
+        details: &[String],
+        table: &str,
+    ) {
+        assert!(!details.is_empty(), "{label} plan must not be empty");
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains(&format!("SCAN {table}"))),
+            "{label} plan must not scan {table}: {details:?}"
+        );
+        assert!(
+            details.iter().any(|detail| {
+                detail.contains(&format!("SEARCH {table} USING")) && detail.contains("INDEX")
+            }),
+            "{label} plan must use an index for {table}: {details:?}"
+        );
+    }
+
+    #[derive(Clone)]
+    struct TimelineSummaryLogBuffer {
+        bytes: Arc<StdMutex<Vec<u8>>>,
+    }
+
+    struct TimelineSummaryLogWriter {
+        bytes: Arc<StdMutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for TimelineSummaryLogBuffer {
+        type Writer = TimelineSummaryLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TimelineSummaryLogWriter {
+                bytes: Arc::clone(&self.bytes),
+            }
+        }
+    }
+
+    impl Write for TimelineSummaryLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "manual performance evidence; run with --ignored --nocapture"]
+    async fn timeline_materialization_performance_evidence() {
+        let summary_bytes = Arc::new(StdMutex::new(Vec::new()));
+        let summary_subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(TimelineSummaryLogBuffer {
+                bytes: Arc::clone(&summary_bytes),
+            })
+            .finish();
+        let _summary_subscriber_guard = tracing::subscriber::set_default(summary_subscriber);
+        let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
+        reset_timeline_snapshot_cleanup_cursor_for_test();
+        reset_timeline_snapshot_release_queue_for_test();
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let natural_day_start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("valid natural-day start")
+            .and_utc();
+        let range_start = natural_day_start + chrono::Duration::hours(12);
+        let range_end = range_start + chrono::Duration::minutes(30);
+        let mut transaction = state.pool.begin().await.expect("begin performance fixture");
+        for index in 0..5_000_i64 {
+            let occurred_at = range_start + chrono::Duration::milliseconds(index % 1_800_000);
+            let account_id = if index % 2 == 0 { 42 } else { 43 };
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 250, ?3, '', 'full')",
+            )
+            .bind(format!("timeline-perf-{index:05}"))
+            .bind(db_occurred_at_lower_bound(occurred_at))
+            .bind(format!(r#"{{"upstreamAccountId":{account_id}}}"#))
+            .execute(&mut *transaction)
+            .await
+            .expect("insert performance fixture row");
+            for (attempt_index, attempt_account_id) in
+                [(1_i64, account_id + 1), (2_i64, account_id)]
+            {
+                sqlx::query(
+                    "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, phase, stream_latency_ms, first_byte_latency_ms, upstream_account_id) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?3, ?4, 'success', 'streaming_response', 120, 80, ?5)",
+                )
+                .bind(format!("timeline-perf-{index:05}"))
+                .bind(db_occurred_at_lower_bound(occurred_at))
+                .bind(attempt_index)
+                .bind(attempt_index - 1)
+                .bind(attempt_account_id)
+                .execute(&mut *transaction)
+                .await
+                .expect("insert performance fixture attempt");
+            }
+        }
+        // Keep malformed-payload fallback rows at one timestamp so the account-filter plan is
+        // exercised against a dense latest-attempt group rather than a sparse happy path.
+        for index in 0..2_000_i64 {
+            let occurred_at = range_start + chrono::Duration::milliseconds(1_000_000);
+            let account_id = if index % 2 == 0 { 42 } else { 43 };
+            let invoke_id = format!("timeline-perf-fallback-{index:04}");
+            let occurred_at = db_occurred_at_lower_bound(occurred_at);
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 250, '{bad-json', '', 'full')",
+            )
+            .bind(&invoke_id)
+            .bind(&occurred_at)
+            .execute(&mut *transaction)
+            .await
+            .expect("insert fallback performance fixture row");
+            for (attempt_index, attempt_account_id) in
+                [(1_i64, account_id + 1), (2_i64, account_id)]
+            {
+                sqlx::query(
+                    "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?3, ?4, 'success', ?5)",
+                )
+                .bind(&invoke_id)
+                .bind(&occurred_at)
+                .bind(attempt_index)
+                .bind(attempt_index - 1)
+                .bind(attempt_account_id)
+                .execute(&mut *transaction)
+                .await
+                .expect("insert fallback performance attempt");
+            }
+        }
+        transaction
+            .commit()
+            .await
+            .expect("commit performance fixture");
+
+        let snapshot_id =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                .fetch_one(&state.pool)
+                .await
+                .expect("read invocation performance watermark");
+        let attempt_snapshot_id = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(id), 0) FROM pool_upstream_request_attempts",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("read attempt performance watermark");
+        let start_bound = db_occurred_at_lower_bound(range_start);
+        let overlap_start = natural_day_start
+            - chrono::Duration::milliseconds(INVOCATION_TIMELINE_MAX_CROSS_DAY_LOOKBACK_MS);
+        let overlap_start_bound = db_occurred_at_lower_bound(overlap_start);
+        let end_bound = crate::db_occurred_at_upper_bound(range_end);
+        let source_cursor = TimelineCursor {
+            as_of: "timeline-perf".to_string(),
+            occurred_at: Some(start_bound.clone()),
+            invoke_id: Some("timeline-perf-00000".to_string()),
+        };
+        for scope in ["global", "account"] {
+            let mut source_plan = build_timeline_source_select_query_with_prefix(
+                "EXPLAIN QUERY PLAN ",
+                attempt_snapshot_id,
+            );
+            append_timeline_db_predicates(
+                &mut source_plan,
+                &InvocationRecordsFilters::default(),
+                InvocationSourceScope::All,
+                snapshot_id,
+                &start_bound,
+                &overlap_start_bound,
+                &end_bound,
+                false,
+                Some(&source_cursor),
+            );
+            source_plan
+                .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+                .push_bind(snapshot_id)
+                .push(" ) ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+                .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
+            let source_plan_details = source_plan
+                .build_query_as::<(i64, i64, i64, String)>()
+                .fetch_all(&state.pool)
+                .await
+                .expect("explain timeline source plan")
+                .into_iter()
+                .map(|(_, _, _, detail)| detail)
+                .collect::<Vec<_>>();
+            eprintln!("timeline_materialization_plan scope={scope} source={source_plan_details:?}");
+            assert_timeline_plan_uses_index_without_table_scan(
+                "timeline source",
+                &source_plan_details,
+                "codex_invocations",
+            );
+            assert!(
+                source_plan_details.iter().all(|detail| {
+                    !detail.contains("SCAN pool_upstream_request_attempts")
+                        && !detail.contains("SCAN attempt")
+                        && !detail.contains("SCAN final_attempt")
+                }),
+                "timeline source plan must not scan pool attempts: {source_plan_details:?}"
+            );
+            assert!(
+                source_plan_details.iter().any(|detail| {
+                    detail.contains("idx_pool_upstream_request_attempts_invoke_attempt")
+                }),
+                "timeline source latest-attempt expressions must use the invoke/attempt index: {source_plan_details:?}"
+            );
+        }
+        let dedup_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = ?1 AND duplicate.occurred_at = ?2 AND duplicate.id > ?3 AND duplicate.id <= ?4 LIMIT 1",
+        )
+        .bind("timeline-perf-00000")
+        .bind(db_occurred_at_lower_bound(range_start))
+        .bind(0_i64)
+        .bind(snapshot_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("explain timeline dedup plan")
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+        eprintln!("timeline_materialization_plan dedup={dedup_plan:?}");
+        assert_timeline_plan_uses_index_without_table_scan(
+            "timeline dedup",
+            &dedup_plan,
+            "duplicate",
+        );
+        let account_fallback_keys = (0..100_i64)
+            .map(|index| {
+                (
+                    format!("timeline-perf-fallback-{index:04}"),
+                    db_occurred_at_lower_bound(
+                        range_start + chrono::Duration::milliseconds(1_000_000),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let account_fallback_plan = build_timeline_attempt_account_query(
+            "EXPLAIN QUERY PLAN ",
+            &account_fallback_keys,
+            attempt_snapshot_id,
+        )
+        .build_query_as::<(i64, i64, i64, String)>()
+        .fetch_all(&state.pool)
+        .await
+        .expect("explain timeline account fallback plan")
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+        eprintln!("timeline_materialization_plan account_fallback={account_fallback_plan:?}");
+        assert_timeline_plan_uses_index_without_table_scan(
+            "timeline account fallback",
+            &account_fallback_plan,
+            "pool_upstream_request_attempts",
+        );
+        let indexed_fallback_searches = account_fallback_plan
+            .iter()
+            .filter(|detail| {
+                detail.contains(
+                    "SEARCH pool_upstream_request_attempts USING INDEX idx_pool_upstream_request_attempts_invoke_attempt",
+                )
+            })
+            .count();
+        assert!(
+            indexed_fallback_searches >= account_fallback_keys.len(),
+            "timeline account fallback must use one bounded indexed branch per key: {account_fallback_plan:?}"
+        );
+
+        for (scope, upstream_account_id, expected_total) in [
+            ("global", None, 7_000_i64),
+            ("account", Some(42_i64), 3_500_i64),
+        ] {
+            let mut elapsed_ms = Vec::with_capacity(20);
+            for _ in 0..20 {
+                let started = Instant::now();
+                let Json(response) = fetch_timeline(
+                    State(state.clone()),
+                    Query(InvocationTimelineQuery {
+                        natural_day_start: Some(format_utc_iso(natural_day_start)),
+                        natural_day_end: Some(format_utc_iso(
+                            natural_day_start + chrono::Duration::days(1),
+                        )),
+                        from: format_utc_iso(range_start),
+                        to: format_utc_iso(range_end),
+                        upstream_account_id,
+                        include_live: Some(false),
+                        limit: Some(INVOCATION_TIMELINE_PAGE_SIZE),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .expect("materialize performance snapshot");
+                assert_eq!(response.total, expected_total);
+                elapsed_ms.push(started.elapsed().as_millis());
+                assert_eq!(
+                    release_timeline_snapshot(AxumPath(response.as_of)).await,
+                    StatusCode::NO_CONTENT
+                );
+            }
+            elapsed_ms.sort_unstable();
+            let p50 = elapsed_ms[elapsed_ms.len() / 2];
+            let p95 = elapsed_ms[(elapsed_ms.len() * 95).div_ceil(100) - 1];
+            let max = *elapsed_ms.last().expect("performance sample");
+            eprintln!(
+                "timeline_materialization_perf scope={scope} samples={} rows={expected_total} p50_ms={p50} p95_ms={p95} max_ms={max}",
+                elapsed_ms.len()
+            );
+            assert!(
+                p95 <= 15_000,
+                "{scope} materialization p95 exceeded 15 seconds"
+            );
+        }
+
+        let summary_log = String::from_utf8(
+            summary_bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
+        .expect("timeline summary log must be UTF-8");
+        let summary_lines = summary_log
+            .lines()
+            .filter(|line| line.contains("invocation timeline materialization summary"))
+            .collect::<Vec<_>>();
+        assert!(
+            summary_lines
+                .iter()
+                .filter(|line| line.contains("scope=\"global\""))
+                .count()
+                >= 20,
+            "expected at least 20 global materialization summaries: {summary_lines:?}"
+        );
+        assert!(
+            summary_lines
+                .iter()
+                .filter(|line| line.contains("scope=\"account\""))
+                .count()
+                >= 20,
+            "expected at least 20 account materialization summaries: {summary_lines:?}"
+        );
+        for line in summary_lines {
+            assert!(
+                line.contains("outcome=\"success\""),
+                "summary outcome missing: {line}"
+            );
+            for field in [
+                "elapsed_ms=",
+                "lock_wait_ms=",
+                "source_pages=",
+                "scanned_source_rows=",
+                "materialized_rows=",
+                "source_query_ms=",
+                "account_resolution_ms=",
+                "publish_batches=",
+                "published_rows=",
+            ] {
+                assert!(
+                    line.contains(field),
+                    "summary field {field} missing: {line}"
+                );
+            }
+            for sensitive_field in ["upstream_account_id", "payload", "snapshot_token"] {
+                assert!(
+                    !line.contains(sensitive_field),
+                    "summary must not contain {sensitive_field}: {line}"
+                );
+            }
+        }
+
+        for _ in 0..8 {
+            let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .expect("clean performance snapshots");
+            if cleanup.skipped.is_none() && cleanup.deleted_tokens > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        reset_timeline_snapshot_release_queue_for_test();
         state.pool.close().await;
     }
 
@@ -3148,6 +4114,170 @@ mod tests {
                 })
         );
         state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_account_filter_uses_persisted_attempt_fallback() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = db_occurred_at_lower_bound(at(86_400));
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('runtime-attempt-precedence', ?1, 'proxy', 'running', '{bad-json', '', 'full')",
+        )
+        .bind(&occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert runtime account precedence fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (1, 'runtime-attempt-precedence', ?1, '/v1/responses', 'pool', 1, 1, 0, 'requesting', 42)",
+        )
+        .bind(&occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert runtime account precedence attempt");
+        let mut runtime_record =
+            crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+        runtime_record.id = 99_900;
+        runtime_record.invoke_id = "runtime-attempt-precedence".to_string();
+        runtime_record.occurred_at = occurred_at;
+        runtime_record.source = SOURCE_PROXY.to_string();
+        runtime_record.status = Some("running".to_string());
+        runtime_record.live_phase = Some("requesting".to_string());
+        runtime_record.t_total_ms = None;
+        runtime_record.upstream_account_id = Some(48);
+        runtime_record.upstream_account_name = Some("runtime-account".to_string());
+        state.proxy_runtime_invocations.upsert(runtime_record);
+
+        let Json(account_42_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(42),
+                include_live: Some(true),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("fetch persisted attempt account");
+        assert_eq!(account_42_response.total, 1);
+        assert_eq!(
+            account_42_response.records[0].invoke_id,
+            "runtime-attempt-precedence"
+        );
+        assert_eq!(account_42_response.records[0].upstream_account_id, Some(42));
+        assert_eq!(
+            release_timeline_snapshot(AxumPath(account_42_response.as_of)).await,
+            StatusCode::NO_CONTENT
+        );
+
+        let Json(account_48_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(48),
+                include_live: Some(true),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("reject runtime-only account");
+        assert_eq!(account_48_response.total, 0);
+        assert!(account_48_response.records.is_empty());
+        assert_eq!(
+            release_timeline_snapshot(AxumPath(account_48_response.as_of)).await,
+            StatusCode::NO_CONTENT
+        );
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn timeline_attempt_projection_respects_snapshot_watermark_across_pages() {
+        let (state, temp_dir, _db_url) = crate::tests::file_backed_test_state_with_busy_timeout(
+            "timeline-attempt-watermark",
+            Duration::from_secs(2),
+        )
+        .await;
+        let range_start = at(100_000);
+        let range_end = at(101_000);
+        for index in 0..500_i64 {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{\"upstreamAccountId\":42}', '', 'full')",
+            )
+            .bind(format!("watermark-padding-{index:03}"))
+            .bind(db_occurred_at_lower_bound(range_start + chrono::Duration::seconds(index)))
+            .execute(&state.pool)
+            .await
+            .expect("insert watermark padding fixture");
+        }
+        let special_occurred_at =
+            db_occurred_at_lower_bound(range_start + chrono::Duration::seconds(500));
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('watermark-phase', ?1, 'proxy', 'running', '{bad-json', '', 'full')",
+        )
+        .bind(&special_occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert watermark phase fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, phase, stream_latency_ms, first_byte_latency_ms, upstream_account_id) VALUES ('watermark-phase', ?1, '/v1/responses', 'pool', 1, 1, 0, 'requesting', 'waiting_first_byte', 100, 10, 42)",
+        )
+        .bind(&special_occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert initial watermark attempt");
+        let attempt_snapshot_id = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(id), 0) FROM pool_upstream_request_attempts",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("read initial attempt watermark");
+
+        let (entered, release) = install_timeline_source_page_pause_for_test();
+        let task = tokio::spawn(fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(range_start),
+                to: format_utc_iso(range_end),
+                include_live: Some(false),
+                limit: Some(1_000),
+                ..Default::default()
+            }),
+        ));
+        entered.notified().await;
+        // The attempt watermark excludes rows inserted after capture; it does not provide
+        // historical MVCC for in-place updates to an existing attempt row.
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, phase, stream_latency_ms, first_byte_latency_ms, upstream_account_id) VALUES ('watermark-phase', ?1, '/v1/responses', 'pool', 2, 2, 1, 'responding', 'responding', 100, 0, 42)",
+        )
+        .bind(&special_occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert post-watermark attempt");
+        let post_attempt_id = sqlx::query_scalar::<_, i64>(
+            "SELECT MAX(id) FROM pool_upstream_request_attempts WHERE invoke_id = 'watermark-phase'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("read post-watermark attempt");
+        assert!(post_attempt_id > attempt_snapshot_id);
+        release.notify_one();
+
+        let Json(response) = task
+            .await
+            .expect("timeline fetch task should complete")
+            .expect("timeline fetch should succeed");
+        let special = response
+            .records
+            .iter()
+            .find(|record| record.invoke_id == "watermark-phase")
+            .expect("watermark phase record is present");
+        assert_eq!(special.live_phase.as_deref(), Some("requesting"));
+        state.pool.close().await;
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[tokio::test]

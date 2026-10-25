@@ -13,7 +13,6 @@ import {
   RouterProvider,
   Routes,
 } from "react-router-dom";
-import ts from "typescript";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { COMPACT_VIEWPORT_MEDIA_QUERY } from "../../hooks/useCompactViewport";
@@ -22,13 +21,13 @@ import type { BroadcastPayload, EffectiveRoutingRule, TagSummary } from "../../l
 import { ApiRequestError } from "../../lib/api";
 import { ThemeProvider } from "../../theme/context";
 import UpstreamAccountsPage, { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts";
-import suite5 from "./UpstreamAccounts.api-key-details.txt?raw";
-import suite6 from "./UpstreamAccounts.delete-confirmation.txt?raw";
-import suite2 from "./UpstreamAccounts.duplicates.txt?raw";
-import suite7 from "./UpstreamAccounts.edit-drafts.txt?raw";
-import suite4 from "./UpstreamAccounts.oauth-recovery.txt?raw";
-import suite1 from "./UpstreamAccounts.roster-freshness.txt?raw";
-import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?raw";
+import suite5 from "./UpstreamAccounts.api-key-details.txt?suite";
+import suite6 from "./UpstreamAccounts.delete-confirmation.txt?suite";
+import suite2 from "./UpstreamAccounts.duplicates.txt?suite";
+import suite7 from "./UpstreamAccounts.edit-drafts.txt?suite";
+import suite4 from "./UpstreamAccounts.oauth-recovery.txt?suite";
+import suite1 from "./UpstreamAccounts.roster-freshness.txt?suite";
+import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?suite";
 
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
@@ -1505,25 +1504,13 @@ Object.defineProperties(scope, {
     },
   },
 });
-const evalChunk = (chunk: string) => {
-  const { outputText } = ts.transpileModule(chunk, {
-    compilerOptions: {
-      jsx: ts.JsxEmit.React,
-      module: ts.ModuleKind.None,
-      target: ts.ScriptTarget.ES2020,
-    },
-    fileName: "suite.tsx",
-  });
-  const code = outputText.replace(/^"use strict";\s*/, "");
-  new Function("scope", `with (scope) { ${code} }`)(scope);
-};
-evalChunk(suite1);
-evalChunk(suite2);
-evalChunk(suite3);
-evalChunk(suite4);
-evalChunk(suite5);
-evalChunk(suite6);
-evalChunk(suite7);
+suite1(scope);
+suite2(scope);
+suite3(scope);
+suite4(scope);
+suite5(scope);
+suite6(scope);
+suite7(scope);
 
 describe("UpstreamAccountsPage grouped roster toggle", () => {
   it("defaults to grid view with grid, grouped, flat selector order", async () => {

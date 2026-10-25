@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Expose explicit degraded Summary data quality, serve eligible broad Source Journal compaction gaps with acknowledged overlays, fail closed for scoped source gaps and unproven current rank, and repair pending invocation archive Summary rollups with fail-closed SHA identity, durable cross-page deduplication, and bounded background batches that resume from durable page state.",
-    "release_unit_description": "PR-B runtime Summary read-model recovery.",
+    "description": "Expose explicit degraded Summary data quality, serve eligible broad Source Journal compaction gaps with acknowledged overlays, fail closed for scoped source gaps and unproven current rank, repair pending invocation archive Summary rollups with fail-closed SHA identity, and add generation-fenced Dashboard compacted-source recovery with bounded background batches that resume from durable page state. The query-fairness follow-up coalesces the recovery range, uses covering tuple seeks, and adds adaptive in-memory scheduling without changing the durable format.",
+    "release_unit_description": "Dashboard Summary bounded source recovery.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -17,8 +17,8 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "The public change is one optional additive StatsResponse.dataQuality object. The durable change adds an optimizer-only partial index and reconciles existing replay-marker and hourly-rollup representations; no new row or column encoding is introduced.",
-      "assessed_at": "2026-10-09T10:54:44Z",
+      "reasoning": "This follow-up changes no schema, checkpoint format, or public response shape. It only narrows the existing format-1 reader query, releases scheduler resources between bounded turns, and adjusts in-memory page and retry state.",
+      "assessed_at": "2026-10-25T00:00:00Z",
       "evidence": [
         "docs/adr/0035-summary-source-journal-degraded-read-path.md",
         "docs/specs/runtime-read-model-pressure-recovery/SPEC.md",
@@ -30,96 +30,90 @@
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes; the additional fail-closed decisions narrow claims without changing the response schema."
+        "description": "The follow-up adds no public or durable fields. Healthy response fields, coded unavailable bodies, and existing format-1 checkpoint/staging rows remain compatible; the recovery path still narrows claims until exact publication rather than returning approximations."
       },
-      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the archive and existing rollup representations while ignoring the additive seek index and repair-state table. Terminal-journal proof-budget overflow and an eligible broad Source Journal compaction proof with an acknowledged overlay preserve a degraded last-good snapshot, while scoped source loss and an unproven current rank remain unavailable. NULL or blank replay-marker SHA values are unknown rather than legacy-readable coverage; stale or unknown markers and missing materialized Summary markers re-enter idempotent paged repair, with durable page and seen-ID state keeping the driver fail-closed until completion.",
-      "reassessed_at": "2026-10-11T12:18:01Z",
+      "reasoning": "Healthy responses retain their previous fields, while the existing optional system-status recovery object and coded 503 body remain additive. Dashboard day-window staging remains generation-fenced, idempotent, tuple-cursor based, and fail-closed until exact publication. The follow-up changes only the key-page query plan, bounded source reads, in-memory adaptive page size, and scheduler backoff; it retains the 512-row, 8 MiB, 250 ms, and 2 s limits and adds no DDL.",
+      "reassessed_at": "2026-10-25T00:00:00Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
-        "src/api/slices/summary_delta_gap.rs",
-        "src/api/slices/subscriptions/hub_projection.rs",
-        "src/api/slices/subscriptions/state.rs",
-        "src/api/slices/subscriptions/hub_lifecycle.rs",
-        "src/api/slices/subscriptions/topic_builders.rs",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+        "src/api/slices/invocations_and_summary/summary_recovery.rs",
+        "src/api/slices/invocations_and_summary/summary_recovery.rs::dashboard_recovery_response_if_ready",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
+        "src/schema/summary_coverage.rs",
         "src/stats/mod.rs",
         "src/tests/stateful_sqlite/record_budget.rs",
-        "src/tests/archive_file_io/mod.rs",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs"
+        "src/tests/stateful_sqlite/statistics_recovery.rs",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan",
+        "web/src/hooks/useStats.ts",
+        "web/src/hooks/useStats.integration.test.tsx::keeps polling pending recovery at the capped delay",
+        "src/tests/lightweight/summary_fallback_contention.rs::summary_projection_compaction_stays_pending_until_staged_recovery_publishes"
       ]
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the optimizer indexes idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, eligible broad source-compaction degradation with acknowledged overlays, scoped source and current-rank fail-closed behavior, all-time missing-baseline handling, NULL/blank marker repair, stale-marker reopening, a 129-archive stale-marker full rebuild, pagination past the 4,096-archive replacement boundary, cross-page source-ID deduplication, safe-bucket replacement beside a preserved missing authority bucket, same-bucket additive repair across the 128-batch boundary, restored-live deduplication, and incomplete live-cursor retry safety.",
-      "verified_at": "2026-10-11T12:18:01Z",
+      "reasoning": "The implementation candidate changes no public or persistent representation. Verification is intentionally pending the new candidate's Linux stateful, contention, and empirical acceptance lanes; local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
+      "verified_at": "2026-10-25T00:00:00Z",
       "evidence": [
-        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_rejects_source_gap_with_invalid_overlay_identity",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
-        "src/api/slices/subscriptions/tests/materialization.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-        "src/api/slices/subscriptions/hub_projection.rs",
-        "src/api/slices/subscriptions/state.rs",
-        "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
-        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
-        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing"
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
+        "scripts/summary-production-exact-oracle.py",
+        "scripts/test-summary-production-exact-oracle.py::ExactOracleTimeTests",
+        "scripts/test-summary-production-exact-oracle.py::ExactOracleUsageTests",
+        "src/schema/summary_coverage.rs",
+        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::recovery_snapshot_window_ranges_expire_at_the_next_reporting_day",
+        "web/src/hooks/useStats.integration.test.tsx::retries_a_pending_HTTP_recovery_summary_until_it_becomes_exact",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::deferred_recovery_uses_bounded_exponential_backoff"
       ]
     }
   },
   "compatibility_evidence": {
     "public_api": {
-      "change": "compatible additive field",
-      "supported_consumer_range": "Existing consumers of the StatsResponse JSON contract, including supported earlier same-Minor clients; healthy payloads retain the prior shape and degraded payloads add optional dataQuality.",
+      "change": "compatible additive fields and stable unavailable code",
+      "supported_consumer_range": "Existing consumers of the StatsResponse and SystemStatus JSON contracts, including supported earlier same-Minor clients; healthy payloads retain the prior shape, while coded unavailable responses and recovery status are additive.",
       "evidence": [
         "src/api/slices/settings_models_and_cache.rs::StatsResponse",
         "web/src/lib/api/core-foundation.ts::StatsDataQuality",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-        "src/api/slices/subscriptions/tests/materialization.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_sse_reconnect_revalidates_source_gap_against_cached_frame"
+        "src/stats/mod.rs::unavailable_with_code",
+        "src/api/slices/invocations_and_summary/summary_recovery.rs::summary_source_gap_unavailable_error",
+        "web/src/lib/api/core-foundation.ts::StatsDataQuality"
       ]
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "The main SQLite database gains two optimizer indexes and hourly_rollup_repair_seen_invocation_ids, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. NULL or blank replay-marker SHA values fail closed, nonblank stale SHA values re-enter repair, and a materialized archive missing either Summary marker triggers an idempotent paged full repair bounded to 4,096 completed authoritative batches per transaction with durable archive cursor, cross-page seen invocation IDs, and live repair cursor state that remain durable while completion is incomplete. The backfill driver resumes from those durable states before additive replay can run. The additive table is repair bookkeeping only; no allocator writeback or deployment state is introduced.",
-      "source_program_compatibility_range": "Supported earlier same-Minor readers of the existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations; the partial index is optional optimizer state.",
+      "state_description": "The existing SQLite Dashboard compacted-source checkpoint, aggregate, usage, and bounded record-identity tables remain unchanged at format 1. The follow-up stores no new durable field: it only reads fixed Shanghai day-window boundaries with an occurred_at,id tuple cursor, keeps generation-fence compare-and-swap publication, and retains the no-payload staging rule. Runtime page sizing, retry delay, and diagnostics remain in memory and reset after process restart or generation identity change.",
+      "source_program_compatibility_range": "Supported earlier same-Minor readers can ignore the additive Dashboard recovery tables/columns and continue using existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations.",
       "evidence": [
-        "src/schema.rs::idx_archive_batches_pending_summary_rollup_order",
-        "src/stats/mod.rs::backfill_missing_invocation_summary_archive_rollups",
-        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-        "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
-        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
-        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
-        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
+        "src/schema/summary_coverage.rs::ensure_column_with_definition",
+        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
+        "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::stage_compacted_source_recovery_page"
       ]
     }
   },
   "release_unit": {
     "member_change_records": [
-      "PR-B",
+      "PR #1191: th/summary-recovery-query-fairness@c72088935b13e35807566ad77db70a3b497a6519",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
     "calculation_evidence": [
-      "public_api=patch: additive optional field with existing consumer compatibility",
-      "persistent_state=patch: additive optimizer index and existing-table writes readable by earlier same-Minor readers"
+      "public_api=patch: additive recovery fields and stable coded unavailable body with existing healthy-response compatibility",
+      "persistent_state=patch: existing format-1 checkpoint/staging state is reused without DDL or durable representation changes"
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
-    "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-    "previous_review_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "candidate_validation_status": "pr-rebased-validation-required",
+    "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+    "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "PR-B was rebased onto origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0; no unrelated base merge is included.",
-    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the pushed PR-B candidate head; prior PR #1097 and older-head CI/review are superseded.",
-    "release_compatibility": "Patch remains the maximum verified impact: dataQuality is optional, and candidate-written durable state remains readable by supported earlier same-Minor readers."
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }

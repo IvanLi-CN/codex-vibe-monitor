@@ -560,6 +560,14 @@ impl SubscriptionHub {
         state.summary_delta_journal.clear_source_compaction_gap();
     }
 
+    pub(crate) async fn summary_source_compaction_gap_active(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .summary_delta_journal
+            .source_compaction_gap
+    }
+
     pub(crate) async fn record_summary_terminal_sequence_gap(&self, sequence: u64) {
         let mut state = self.state.lock().await;
         state
@@ -707,6 +715,42 @@ impl SubscriptionHub {
         let mut state = self.state.lock().await;
         state.summary_projection_revision = state.summary_projection_revision.saturating_add(1);
         state.summary_projection_revision
+    }
+
+    pub(crate) async fn summary_dashboard_recovery(
+        &self,
+    ) -> Option<Arc<SummaryDashboardRecoverySnapshot>> {
+        self.state.lock().await.summary_dashboard_recovery.clone()
+    }
+
+    pub(crate) async fn store_summary_dashboard_recovery(
+        &self,
+        snapshot: SummaryDashboardRecoverySnapshot,
+    ) {
+        self.state.lock().await.summary_dashboard_recovery = Some(Arc::new(snapshot));
+    }
+
+    pub(crate) async fn clear_summary_dashboard_recovery(&self) {
+        self.state.lock().await.summary_dashboard_recovery = None;
+    }
+
+    pub(crate) async fn set_summary_compacted_source_recovery_state(
+        &self,
+        state_value: SummaryCompactedSourceRecoveryState,
+    ) {
+        self.state
+            .lock()
+            .await
+            .summary_compacted_source_recovery_state = state_value;
+    }
+
+    pub(crate) async fn summary_compacted_source_recovery_state(
+        &self,
+    ) -> SummaryCompactedSourceRecoveryState {
+        self.state
+            .lock()
+            .await
+            .summary_compacted_source_recovery_state
     }
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {

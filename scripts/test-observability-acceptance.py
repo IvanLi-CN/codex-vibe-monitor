@@ -744,16 +744,18 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "runner identity"):
                 self.context()
 
-    def test_serial_scope_keeps_all_suites_on_one_runner_identity(self):
+    def test_parallel_scope_gives_each_workload_a_distinct_runner_identity(self):
         contexts = []
         for lane in ("pair-0", "pair-1", "pair-2"):
-            with patch.dict(os.environ, {**self.env, "OBSERVABILITY_LANE": lane, "OBSERVABILITY_RUNNER_SCOPE": "serial-bundle"}, clear=True):
+            with patch.dict(os.environ, {**self.env, "OBSERVABILITY_LANE": lane, "OBSERVABILITY_RUNNER_SCOPE": f"parallel-{lane}"}, clear=True):
                 contexts.append(self.context())
         self.assertEqual({context["runnerIdentity"] for context in contexts}, {
-            "job:owner/repo:123:2:observability-performance:serial-bundle"
+            "job:owner/repo:123:2:observability-performance:parallel-pair-0",
+            "job:owner/repo:123:2:observability-performance:parallel-pair-1",
+            "job:owner/repo:123:2:observability-performance:parallel-pair-2",
         })
         self.assertEqual({context["runnerLane"] for context in contexts}, {"pair-0", "pair-1", "pair-2"})
-        self.assertEqual({context["runnerScope"] for context in contexts}, {"serial-bundle"})
+        self.assertEqual({context["runnerScope"] for context in contexts}, {"parallel-pair-0", "parallel-pair-1", "parallel-pair-2"})
 
     def test_paired_suite_rejects_testbox_before_creating_state(self):
         args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="shared-testbox", suite="pair-0")
@@ -948,13 +950,19 @@ class AggregationTests(unittest.TestCase):
                         "evidenceLocator": "https://github.com/test/repo/actions/runs/123/attempts/1",
                         "cpuModel": ["synthetic CPU"], "cpuCount": 4, "cpuAffinity": [0, 1, 2, 3],
                         "runnerImage": "ubuntu24", "runnerImageVersion": "fixed", "kernel": "fixed",
-                        "runnerIdentity": "job:test/repo:123:1:observability-performance:serial-bundle",
-                        "runnerScope": "serial-bundle"}
+                        "runnerIdentity": "job:test/repo:123:1:observability-performance:parallel-pair-0",
+                        "runnerScope": "parallel-pair-0"}
         self.card = acceptance.certificate(SOURCE, self.candidate, self.context, "passed", "partial only")
         for lane in aggregation.LANES:
             part = self.part(lane)
             part.mkdir()
-            context = {**self.context, "runnerLane": lane}
+            scope = f"parallel-{lane}"
+            context = {
+                **self.context,
+                "runnerLane": lane,
+                "runnerIdentity": f"job:test/repo:123:1:observability-performance:{scope}",
+                "runnerScope": scope,
+            }
             config = {"candidate": self.candidate, "harnessSha": acceptance.source_revision(SOURCE),
                       "acceptanceContractDigest": acceptance.acceptance_contract_digest(SOURCE),
                       "candidateAcceptanceContractDigest": acceptance.acceptance_contract_digest(SOURCE),
@@ -1039,6 +1047,14 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(scenarios["default-observability-ab"]["error"], "required part evidence missing or invalid")
         self.assertFalse((self.output / "ab-samples.json").exists())
         self.assertFalse((self.output / "ab-summary.json").exists())
+
+    def test_runtime_scope_mismatch_cannot_pass(self):
+        self.change("runtime", "runner-context.json", lambda row: row.update(runnerScope="parallel-pair-0"))
+        self.assertFalse(self.aggregate())
+        self.assertEqual(
+            json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"],
+            "unavailable",
+        )
 
     def test_missing_auxiliary_cpu_identity_cannot_pass(self):
         self.change("pair-1", "cpu-attribution.json", lambda rows: rows[0]["containers"].pop(1))
@@ -1142,6 +1158,7 @@ class AggregationTests(unittest.TestCase):
                 "docs/adr/0034-shared-tempo-request-tracing.md",
                 "docs/adr/0046-observability-acceptance-hardware-admission.md",
                 "docs/adr/0047-observability-acceptance-single-runner-bundle.md",
+                "docs/adr/0048-observability-acceptance-parallel-workload-lanes.md",
                 "docs/design/request-lifecycle-observability.md",
             ]:
                 target = candidate_source / relative
@@ -1188,12 +1205,21 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(scenarios["default-observability-ab"]["error"], "hardware metadata incompatible: cpuModel")
         self.assertTrue(all(scenarios[name]["status"] == "passed" for name in aggregation.RUNTIME_SCENARIOS))
         self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
-        self.change("pair-2", "runner-context.json", lambda row: row.update(**self.context, runnerLane="pair-2"))
+        self.change(
+            "pair-2",
+            "runner-context.json",
+            lambda row: row.update({
+                **self.context,
+                "runnerLane": "pair-2",
+                "runnerScope": "parallel-pair-2",
+                "runnerIdentity": "job:test/repo:123:1:observability-performance:parallel-pair-2",
+            }),
+        )
         self.assertTrue(self.aggregate())
         self.change("pair-2", "runner-context.json", lambda row: row.update(runnerIdentity="different-runner"))
         self.assertFalse(self.aggregate())
         scenario = json.loads((self.output / "scenarios.json").read_text())["default-observability-ab"]
-        self.assertEqual(scenario["error"], "hardware metadata incompatible: runner identity")
+        self.assertEqual(scenario["error"], "hardware metadata unavailable: parallel runner identity")
 
     def test_hardware_mismatch_preserves_pair_preparation_diagnostic(self):
         self.change(
@@ -1312,6 +1338,52 @@ class WorkflowGateTests(unittest.TestCase):
     def test_current_workflow_fails_closed(self):
         self.verify(self.workflow)
 
+    def test_duplicate_named_extra_job_is_rejected(self):
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["unexpected-extra"] = {"name": "Observability Performance Budget"}
+        with self.assertRaises(contract.ContractError):
+            self.verify(workflow)
+
+    def test_manual_dispatch_is_the_only_scheduler_and_candidate_ref_is_required(self):
+        on_section = contract.mapping_get(self.workflow, "on")
+        self.assertEqual(set(on_section), {"workflow_dispatch"})
+        self.assertEqual(set(on_section["workflow_dispatch"]["inputs"]), {"candidate_ref"})
+        self.assertTrue(on_section["workflow_dispatch"]["inputs"]["candidate_ref"]["required"])
+        self.assertNotIn("observability-diagnostics", self.workflow["jobs"])
+        workflow = copy.deepcopy(self.workflow)
+        contract.mapping_get(workflow, "on")["pull_request_target"] = {"types": ["labeled"]}
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_candidate_branch_resolution_and_identity_pin_are_required(self):
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Resolve performance sources")
+        resolver["run"] = resolver["run"].replace("git check-ref-format --branch", "git check-ref-format")
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Resolve performance sources")
+        resolver["run"] = resolver["run"].replace('candidate_ref="refs/heads/$candidate_input"', 'candidate_ref="$candidate_input"')
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        identity = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Bind candidate identity")
+        identity["run"] = "echo candidate=unbound >> \"$GITHUB_OUTPUT\""
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_downstream_jobs_use_only_the_pinned_candidate_sha_and_trusted_main_sha(self):
+        for job_id in ("observability-performance", "observability-performance-result"):
+            workflow = copy.deepcopy(self.workflow)
+            checkout = next(step for step in workflow["jobs"][job_id]["steps"]
+                            if step["name"] == "Checkout candidate identity")
+            checkout["with"]["ref"] = "${{ inputs.candidate_ref }}"
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+                        if step["name"] == "Resolve performance sources")
+        resolver["run"] = resolver["run"].replace('trusted_ref="$WORKFLOW_SHA"', 'trusted_ref="$candidate_input"')
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
     def test_read_only_cache_export_is_rejected(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(x for x in workflow["jobs"]["observability-performance-image"]["steps"]
@@ -1335,7 +1407,7 @@ class WorkflowGateTests(unittest.TestCase):
 
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)
-        step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload pair-0 acceptance evidence")
+        step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload workload acceptance evidence")
         self.assertIn("client-failures.json", step["with"]["path"])
         self.assertNotIn("client.log", step["with"]["path"])
         step.pop("if")
@@ -1361,16 +1433,16 @@ class WorkflowGateTests(unittest.TestCase):
     def test_window_evidence_is_required_and_sensitive_artifacts_are_refused(self):
         for required in ["measurement-windows.json", "cpu-attribution.json"]:
             workflow = copy.deepcopy(self.workflow)
-            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload pair-0 acceptance evidence")
-            upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/pair-0/" + required, "")
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload workload acceptance evidence")
+            upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/" + required, "")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
         for extra in [False, True]:
             workflow = copy.deepcopy(self.workflow)
-            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload pair-0 acceptance evidence")
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload workload acceptance evidence")
             if extra:
-                upload["with"]["path"] += "\n${{ runner.temp }}/observability-acceptance/pair-0/private/*"
+                upload["with"]["path"] += "\n${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/private/*"
             else:
-                upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/pair-0/measurement-windows.json", "")
+                upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/measurement-windows.json", "")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_unbounded_or_changed_windows_are_rejected(self):
@@ -1379,31 +1451,47 @@ class WorkflowGateTests(unittest.TestCase):
         step["run"] = step["run"].replace("--seconds 60", "--seconds 300")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
-    def test_time_limit_and_single_runner_bundle_cannot_be_removed(self):
-        for job in ("observability-performance", "observability-performance-image", "observability-diagnostics"):
+    def test_time_limit_and_parallel_lane_contract_cannot_be_removed(self):
+        for job in ("observability-performance", "observability-performance-image"):
             workflow = copy.deepcopy(self.workflow)
             workflow["jobs"][job]["timeout-minutes"] = 16
-            if job == "observability-diagnostics":
-                with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
-            else:
-                with self.assertRaises(contract.ContractError): self.verify(workflow)
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
         workflow["jobs"]["observability-performance"]["strategy"] = {"matrix": {"lane": ["pair-0", "pair-1", "pair-2"]}}
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_each_job_cannot_restart_its_wall_clock(self):
         workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["observability-performance"]["steps"][0]["run"] = 'echo "OBSERVABILITY_TEST_STARTED_UTC=$(date +%s)" >> "$GITHUB_ENV"'
+        clock = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"] if step["name"] == "Start shared acceptance wall clock")
+        clock["run"] = 'echo "OBSERVABILITY_TEST_STARTED_UTC=$(date +%s)" >> "$GITHUB_ENV"'
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_action_preparation_and_runner_admission_cannot_bypass_deadline(self):
-        for name in ("Start test wall clock", "Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
+        for name in ("Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
             workflow = copy.deepcopy(self.workflow)
             step = next(row for row in workflow["jobs"]["observability-performance"]["steps"] if row["name"] == name)
             step.pop("timeout-minutes")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["observability-performance"]["steps"][0]["run"] = workflow["jobs"]["observability-performance"]["steps"][0]["run"].replace('started="$(date +%s)"', 'started="$(date +%s); sleep 1"')
+        clock = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"] if step["name"] == "Start shared acceptance wall clock")
+        clock.pop("timeout-minutes")
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_parallel_lanes_are_not_cancelled_or_serialized(self):
+        for key, value in (("fail-fast", True), ("max-parallel", 1)):
+            workflow = copy.deepcopy(self.workflow)
+            workflow["jobs"]["observability-performance"]["strategy"][key] = value
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        workflow["concurrency"]["cancel-in-progress"] = True
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_all_lanes_consume_the_producer_clock_and_candidate_identity(self):
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["observability-performance"]["env"].pop("OBSERVABILITY_TEST_STARTED_UTC")
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["observability-performance-image"]["outputs"]["acceptance_started"] = "${{ github.run_id }}"
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_download_preparation_cannot_bypass_shared_deadline(self):

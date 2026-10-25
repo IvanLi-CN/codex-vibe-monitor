@@ -26,7 +26,15 @@
 
 ## Validation Facts
 
-- `cargo test --quiet invocation_query_filters_and_schema_migrations -- --nocapture`
+- `cargo test --quiet schema_retirement_and_historical_fixtures -- --nocapture`
+- `cargo test --quiet prompt_cache_materialization_and_allocator -- --nocapture`
+- `cargo test --quiet proxy_capture_and_invocation_queries -- --nocapture`
+- `cargo test --quiet prompt_cache_schema_migration_contracts -- --nocapture`
+- `cargo test --quiet invocation_list_queries_and_filters -- --nocapture`
+- `cargo test --quiet invocation_summary_suggestions_and_stats -- --nocapture`
+- `cargo test --quiet prompt_cache_conversation_reads -- --nocapture`
+- `cargo test --quiet prompt_cache_binding_and_affinity -- --nocapture`
+- `cargo test --quiet prompt_cache_sticky_runtime -- --nocapture`
 - `cd web && bun run test`
 - `cd web && bun run build-storybook`
 

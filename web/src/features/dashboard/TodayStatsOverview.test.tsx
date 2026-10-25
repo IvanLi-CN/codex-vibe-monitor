@@ -56,6 +56,8 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.secondary.failureRate": "Failure rate",
         "dashboard.today.secondary.cacheHitRate": "Cache hit",
         "stats.cards.loadError": "Load error",
+        "stats.cards.recoveryPending": "Summary recovery pending",
+        "stats.cards.recoveryFailed": "Summary recovery failed",
         "stats.cards.success": "Success",
         "stats.cards.failures": "Failures",
         "stats.cards.totalCost": "Cost",
@@ -245,6 +247,54 @@ function render(ui: React.ReactNode) {
 }
 
 describe("TodayStatsOverview", () => {
+  it("shows coded recovery status instead of loading or zero metrics", () => {
+    render(
+      <TodayStatsOverview
+        stats={null}
+        loading={false}
+        error="Request failed"
+        errorCode="summary_recovery_pending"
+      />,
+    );
+
+    expect(host?.textContent).toContain("Summary recovery pending");
+    expect(host?.textContent).not.toContain("Load error");
+    const pendingGrid = host?.querySelector('[data-testid="today-stats-metrics-grid"]');
+    expect(pendingGrid).not.toBeNull();
+    expect(pendingGrid?.getAttribute("aria-hidden")).toBe("true");
+    expect(pendingGrid?.getAttribute("inert")).toBe("");
+    expect(pendingGrid?.className).toContain("pointer-events-none");
+    expect(
+      host?.querySelector('[data-testid="today-stats-metrics-state"]')?.getAttribute("aria-busy"),
+    ).toBe("true");
+    expect(host?.querySelector('[data-testid="today-stats-error-overlay"]')).not.toBeNull();
+    expect(host?.querySelector('[role="alert"]')?.textContent).toContain(
+      "Summary recovery pending",
+    );
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7);
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm-loading"]')).not.toBeNull();
+
+    act(() => {
+      root?.render(
+        <TodayStatsOverview
+          stats={null}
+          loading={false}
+          error="Request failed"
+          errorCode="summary_recovery_failed"
+        />,
+      );
+    });
+    expect(host?.textContent).toContain("Summary recovery failed");
+    const failedGrid = host?.querySelector('[data-testid="today-stats-metrics-grid"]');
+    expect(failedGrid).not.toBeNull();
+    expect(failedGrid?.getAttribute("inert")).toBe("");
+    expect(host?.querySelector('[data-testid="today-stats-error-overlay"]')).not.toBeNull();
+    expect(host?.querySelector('[role="alert"]')?.textContent).toContain("Summary recovery failed");
+    expect(
+      host?.querySelector('[data-testid="today-stats-metrics-state"]')?.getAttribute("aria-busy"),
+    ).toBeNull();
+  });
+
   it("reuses same-progress comparisons on live-clock rerenders and refreshes changed series", () => {
     const timeseries = buildTimeseriesWithLatency();
     const comparisonTimeseries = {

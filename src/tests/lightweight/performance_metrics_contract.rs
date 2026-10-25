@@ -152,6 +152,7 @@ fn performance_metrics_fixed_combinations_fit_budget_and_do_not_alias() {
             set(PerformanceGauge::ProjectionPending(projection, kind));
         }
     }
+    set(PerformanceGauge::SummaryRecoveryRetryDelay);
     assert_eq!(counters.len(), COUNTERS);
     assert_eq!(histograms.len(), HISTOGRAMS);
     assert_eq!(gauges.len(), GAUGES);

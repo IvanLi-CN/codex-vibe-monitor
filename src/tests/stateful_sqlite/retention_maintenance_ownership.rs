@@ -40,12 +40,12 @@ async fn ownership_manual_materialization_start_preserves_paused_schedule() {
 #[tokio::test]
 async fn ownership_settlement_serializes_deferred_finalization_from_timeline_writer() {
     let directory = make_temp_test_dir("maintenance-settlement-timeline-interleaving");
-    let fixture_started_at = Utc::now() - chrono::Duration::minutes(1);
-    let started_at = format_utc_iso_millis(fixture_started_at);
-    let execution_started_at =
-        format_utc_iso_millis(fixture_started_at + chrono::Duration::milliseconds(100));
-    let finished_at =
-        format_utc_iso_millis(fixture_started_at + chrono::Duration::milliseconds(900));
+    let timeline_started_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let execution_started_at = timeline_started_at + chrono::Duration::milliseconds(100);
+    let timeline_finished_at = timeline_started_at + chrono::Duration::seconds(1);
+    let started_at = crate::format_utc_iso_millis(timeline_started_at);
+    let execution_started_at = crate::format_utc_iso_millis(execution_started_at);
+    let finished_at = crate::format_utc_iso_millis(timeline_finished_at);
     let options = SqliteConnectOptions::new()
         .filename(directory.join("maintenance.sqlite"))
         .create_if_missing(true)
@@ -87,13 +87,13 @@ async fn ownership_settlement_serializes_deferred_finalization_from_timeline_wri
 
     let hooks = store.install_settlement_interleaving_hooks();
     let finish_store = store.clone();
-    let finish_at = finished_at.clone();
+    let finish_finished_at = finished_at.clone();
     let finish_task = tokio::spawn(async move {
         finish_store
             .finish_run_with_observation(
                 run_id,
                 "success",
-                &finish_at,
+                &finish_finished_at,
                 900,
                 Some("已完成"),
                 None,

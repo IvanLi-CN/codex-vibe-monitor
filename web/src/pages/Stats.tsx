@@ -39,7 +39,12 @@ export default function StatsPage() {
     [t],
   );
 
-  const { summary, isLoading: summaryLoading, error: summaryError } = useSummary(range);
+  const {
+    summary,
+    isLoading: summaryLoading,
+    error: summaryError,
+    errorCode: summaryErrorCode,
+  } = useSummary(range);
 
   const {
     data: timeseries,
@@ -122,7 +127,12 @@ export default function StatsPage() {
               />
             </div>
           </div>
-          <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
+          <StatsCards
+            stats={summary}
+            loading={summaryLoading}
+            error={summaryError}
+            errorCode={summaryErrorCode}
+          />
         </div>
       </section>
 

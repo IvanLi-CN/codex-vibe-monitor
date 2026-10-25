@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 21,
-    "suppression_entries": 125
+    "inventory_entries": 43,
+    "suppression_entries": 126
   },
   "loc_targets": {
     "production": 2500,
@@ -19,28 +19,160 @@
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
-      "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
+      "path": "src/tests/archive_file_io/raw_payload_capture_and_ownership.rs",
       "role": "test_helper",
-      "line_budget": 12908,
-      "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
+      "line_budget": 383,
+      "next_module_workstream": "Split raw payload capture and ownership fixtures by path, blob, schema, and bootstrap behavior."
     },
     {
-      "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
+      "path": "src/tests/archive_file_io/raw_payload_archive_finalization.rs",
       "role": "test_helper",
-      "line_budget": 9763,
-      "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
+      "line_budget": 604,
+      "next_module_workstream": "Split raw payload archive finalization fixtures by quota snapshots, identity, recovery, quarantine, and publication."
     },
     {
-      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "path": "src/tests/archive_file_io/raw_payload_cleanup_and_reconciliation.rs",
       "role": "test_helper",
-      "line_budget": 4214,
-      "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
+      "line_budget": 2040,
+      "next_module_workstream": "Split raw payload cleanup fixtures by reconciliation, orphan scans, writer fences, admission, and dry-run behavior."
     },
     {
-      "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+      "path": "src/tests/archive_file_io/raw_payload_compression.rs",
       "role": "test_helper",
-      "line_budget": 9997,
-      "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
+      "line_budget": 638,
+      "next_module_workstream": "Split raw payload compression fixtures by eligibility, path repair, budget ordering, CLI modes, and archive publication."
+    },
+    {
+      "path": "src/tests/archive_file_io/archive_http_and_shutdown.rs",
+      "role": "test_helper",
+      "line_budget": 1175,
+      "next_module_workstream": "Split archive HTTP and shutdown fixtures by child processes, readiness, imported OAuth jobs, and runtime sequencing."
+    },
+    {
+      "path": "src/tests/archive_file_io/pool_attempt_lifecycle.rs",
+      "role": "test_helper",
+      "line_budget": 1050,
+      "next_module_workstream": "Split pool attempt lifecycle fixtures by snapshots, dispatch filtering, broadcasts, phases, and orphan recovery."
+    },
+    {
+      "path": "src/tests/archive_file_io/pool_invocation_orphan_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 1465,
+      "next_module_workstream": "Split pool invocation orphan fixtures by running cleanup, phase distinctions, atomic recovery, and routing reservations."
+    },
+    {
+      "path": "src/tests/archive_file_io/deferred_pool_cleanup_guards.rs",
+      "role": "test_helper",
+      "line_budget": 675,
+      "next_module_workstream": "Split deferred pool cleanup fixtures by guard lifecycle, synthetic runtime, pending persistence, and failover."
+    },
+    {
+      "path": "src/tests/archive_file_io/stale_pool_orphan_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 1711,
+      "next_module_workstream": "Split stale pool orphan fixtures by selectors, phase classification, active exclusion, rollback, batching, and owner availability."
+    },
+    {
+      "path": "src/tests/lightweight/app_config_and_invocation_index_contracts.rs",
+      "role": "test_helper",
+      "line_budget": 732,
+      "next_module_workstream": "Split application configuration and invocation-index fixtures by environment, retention, and query-plan concerns."
+    },
+    {
+      "path": "src/tests/lightweight/capture_snapshot_and_replay.rs",
+      "role": "test_helper",
+      "line_budget": 140,
+      "next_module_workstream": "Split capture snapshot and replay fixtures by prebuffering, spill files, and partial-body recovery."
+    },
+    {
+      "path": "src/tests/lightweight/forward_proxy_binding_and_capture_diagnostics.rs",
+      "role": "test_helper",
+      "line_budget": 837,
+      "next_module_workstream": "Split forward-proxy binding and capture diagnostics by route identity, runtime weight, and response classification."
+    },
+    {
+      "path": "src/tests/lightweight/forward_proxy_subscription_and_weights.rs",
+      "role": "test_helper",
+      "line_budget": 225,
+      "next_module_workstream": "Split forward-proxy subscription and weight fixtures by refresh, bootstrap probing, and endpoint selection."
+    },
+    {
+      "path": "src/tests/lightweight/lightweight_test_support.rs",
+      "role": "test_helper",
+      "line_budget": 457,
+      "next_module_workstream": "Split lightweight test support by configuration, filesystem fixtures, and retention database builders."
+    },
+    {
+      "path": "src/tests/lightweight/raw_capture_overflow_and_projection.rs",
+      "role": "test_helper",
+      "line_budget": 411,
+      "next_module_workstream": "Split raw capture overflow and projection fixtures by spool recovery, streaming capture, and terminal projection."
+    },
+    {
+      "path": "src/tests/lightweight/raw_payload_file_storage.rs",
+      "role": "test_helper",
+      "line_budget": 630,
+      "next_module_workstream": "Split raw payload file fixtures by path resolution, compression, streaming writes, and search diagnostics."
+    },
+    {
+      "path": "src/tests/lightweight/schema_migration_and_maintenance.rs",
+      "role": "test_helper",
+      "line_budget": 650,
+      "next_module_workstream": "Split schema migration and maintenance fixtures by raw codecs, manifest setup, and observability snapshots."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/invocation_list_queries_and_filters.rs",
+      "role": "test_helper",
+      "line_budget": 1242,
+      "next_module_workstream": "Maintain the completed invocation-list query and filter responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/invocation_summary_suggestions_and_stats.rs",
+      "role": "test_helper",
+      "line_budget": 1689,
+      "next_module_workstream": "Maintain the completed summary, suggestion, statistics, and timing responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_binding_and_affinity.rs",
+      "role": "test_helper",
+      "line_budget": 2052,
+      "next_module_workstream": "Maintain the completed prompt-cache binding and affinity responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_conversation_reads.rs",
+      "role": "test_helper",
+      "line_budget": 678,
+      "next_module_workstream": "Maintain the completed prompt-cache conversation-read and failure-classification boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_materialization_and_allocator.rs",
+      "role": "test_helper",
+      "line_budget": 1294,
+      "next_module_workstream": "Maintain the completed prompt-cache materialization, allocator, and recovery boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_schema_migration_contracts.rs",
+      "role": "test_helper",
+      "line_budget": 498,
+      "next_module_workstream": "Maintain the completed prompt-cache schema migration and policy contract boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_sticky_runtime.rs",
+      "role": "test_helper",
+      "line_budget": 1182,
+      "next_module_workstream": "Maintain the completed prompt-cache sticky runtime and model-scoped routing boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_capture_and_invocation_queries.rs",
+      "role": "test_helper",
+      "line_budget": 495,
+      "next_module_workstream": "Maintain the completed proxy capture and invocation-query foundation boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/schema_retirement_and_historical_fixtures.rs",
+      "role": "test_helper",
+      "line_budget": 841,
+      "next_module_workstream": "Maintain the completed schema retirement and historical fixture compatibility boundary below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
@@ -525,22 +657,28 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
-      "path": "src/tests/archive_file_io/mod.rs",
+      "path": "src/tests/archive_file_io/pool_invocation_orphan_recovery.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/archive_file_io/mod.rs; update it when the listed module workstream changes the declaration."
+      "reason": "Retain this targeted expect for the reservation assertion that intentionally observes the mock log after an async route-state query; remove it when the test fixture exposes an async-aware observation boundary."
     },
     {
-      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
-      "kind": "allow",
-      "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/tests/lightweight/forward_proxy_config_and_storage.rs; remove it when the listed boundary split is complete."
+      "path": "src/tests/archive_file_io/stale_pool_orphan_recovery.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect for the reservation assertion that intentionally observes the mock log after an async route-state query; remove it when the test fixture exposes an async-aware observation boundary."
     },
     {
-      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "path": "src/tests/lightweight/lightweight_test_support.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/tests/lightweight/forward_proxy_config_and_storage.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the retention invocation fixture's persisted argument bundle; remove it when the shared fixture boundary is redesigned."
+    },
+    {
+      "path": "src/tests/lightweight/lightweight_test_support.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the retention upstream-attempt fixture's persisted argument bundle; remove it when the shared fixture boundary is redesigned."
     },
     {
       "path": "src/tests/lightweight/mod.rs",

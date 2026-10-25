@@ -1,47 +1,86 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "current-head-required-ci-and-tier4-pending",
-  "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
-  "implementation_commit": "f34d3663c305de0f31db6cb997fbff90e0ab4167",
-  "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
+  "status": "pr-rebased-validation-required",
+  "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+  "implementation_commit": "c72088935b13e35807566ad77db70a3b497a6519",
+  "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
   "base_ref": "main",
-  "pr_number": 1106,
-  "candidate_branch": "th/fix-summary-live-overlay",
+  "pr_number": 1191,
+  "candidate_branch": "th/summary-recovery-query-fairness",
   "base_sync": {
-    "previous_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
-    "merge_commit_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-    "merge_strategy": "rebase-onto-origin/main",
+    "previous_base_sha": "b1c523815090218499954e719b1b356b60d933cd",
+    "merge_commit_sha": null,
+    "merge_strategy": "linear-rebase-to-current-main",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "PR-B was rebased onto origin/main@98698a2; no unrelated base merge is included.",
+    "mainline_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
   "affected_validation": {
-    "refresh_reason": "PR-B was rebased onto origin/main@98698a24 and adds eligible broad Source Journal degradation plus Summary HTTP/SSE cached-frame revalidation; all required CI and Tier4 review lanes must bind to the pushed candidate head.",
-    "contract_regressions": [
-      "summary_projection_rolling_localizes_late_historical_live_source_gap",
-      "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
-      "hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-      "summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
-      "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
-      "all_time_overlay_overflow_does_not_block_rolling_summary",
-      "stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-      "stats_rejects_source_gap_with_invalid_overlay_identity",
-      "stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow"
-    ],
-    "migration_and_compatibility_regressions": [
-      "ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-      "summary_rollup_repair_reopens_stale_archive_sha_markers",
-      "all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
-      "all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
-      "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
-      "summary_rollup_force_repair_pages_past_archive_batch_budget",
-      "summary_rollup_repair_treats_null_and_blank_replay_sha_as_unknown",
-      "summary_rollup_force_repair_deduplicates_source_ids_across_pages",
-      "summary_rollup_force_repair_clears_safe_buckets_before_later_pages",
-      "summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
-      "summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
+    "refresh_reason": "This follow-up addresses recovery query fairness and scheduler resource retention: the Shanghai Dashboard windows use one covering tuple-seek range, expensive projection work is key-page bounded, timeout pages adapt down to one row, and each admission releases its reservation and execution lease before retry.",
+    "acceptance_items": [
+      {
+        "id": "A1",
+        "scope": "index-seek pagination and materialization budget",
+        "evidence": [
+          "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
+          "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::page_selection_honors_adaptive_row_limit"
+        ],
+        "status": "stale after rebase: passed on previous candidate 9cdab0d; current-head Linux execution required"
+      },
+      {
+        "id": "A2",
+        "scope": "format-1 checkpoint restart and exact publication",
+        "evidence": [
+          "src/schema/summary_coverage.rs",
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_accepts_more_than_10000_rows_and_resumes_after_restart",
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_rescans_target_row_that_becomes_terminal_after_scan"
+        ],
+        "status": "stale after rebase: passed on previous candidate 9cdab0d; current-head Linux execution required"
+      },
+      {
+        "id": "A3",
+        "scope": "retry backoff, reservation release, and adaptive page size",
+        "evidence": [
+          "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::deferred_recovery_uses_bounded_exponential_backoff",
+          "src/observability/contention.rs",
+          "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
+        ],
+        "status": "pending dedicated Linux contention and scheduler execution evidence"
+      },
+      {
+        "id": "A4",
+        "scope": "API, status, and diagnostic compatibility",
+        "evidence": [
+          "src/stats/mod.rs",
+          "src/api/slices/system_routes_and_tasks.rs",
+          "src/observability/contention.rs",
+          "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
+        ],
+        "status": "stale after rebase: static compatibility and migration evidence require current-head refresh"
+      },
+      {
+        "id": "A5",
+        "scope": "isolated empirical bounded-performance acceptance",
+        "evidence": [
+          "Backend Tests (Representative Scale)",
+          "Observability Performance Budget",
+          "GitHub CI candidate-bound evidence artifact"
+        ],
+        "status": "blocked: previous candidate evidence is stale after rebase; the prior metrics-mode CPU windows were unstable (CV 5.2146%; observed increase 7.2097%), while p95 increase 1.011% passed; this is not a Dashboard regression conclusion"
+      },
+      {
+        "id": "A6",
+        "scope": "current-head PR delivery",
+        "evidence": [
+          "git status --short --branch",
+          "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
+          "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
+        ],
+        "status": "blocked: PR #1191 was rebased onto current main; all prior CI/review/performance evidence is bound to the previous head, so current-head validation and Step 5C remain pending"
+      }
     ]
   },
   "required_lanes": [
@@ -53,11 +92,11 @@
     "Docs & Web Demo Build",
     "Front-end Tests",
     "Lint & Format Check",
-    "Records Overlay E2E",
-    "Repository Tooling Checks",
     "Review Policy Gate",
     "Storybook Accessibility Tests",
-    "Validate PR labels"
+    "Validate PR labels",
+    "Observability Performance Budget",
+    "Tier 4 formal review"
   ],
   "release_compatibility": {
     "semver_record": "assets/version-impact-record.json",
@@ -69,37 +108,97 @@
     "old_version_allocator_writeback": false,
     "deployment_scope": "none"
   },
+  "empirical_acceptance": {
+    "required": true,
+    "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
+    "status": "blocked-after-rebase",
+    "candidate_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "previous_candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+    "contract_digest": "2a3e47d2afc022281681956e95a566e57fcece92aaddb25308d387c0289b13bf",
+    "scenario_set_digest": "91e15552313348ade24b539822c79c92a495f0a5b3b51e2fdf84c3963c3d9694",
+    "evidence_locator": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081/attempts/1",
+    "failure": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "job": "Observability Performance Budget",
+      "functional_scenarios_passed": true,
+      "cpu_seconds_per_request": {
+        "observed_increase": 0.0720968518684939,
+        "coefficient_of_variation": 0.0521457846,
+        "stability_limit": 0.05,
+        "within_budget": false
+      },
+      "p95_seconds": {
+        "observed_increase": 0.0101117663,
+        "within_budget": true
+      },
+      "measured_candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+      "stale_after_rebase": true,
+      "policy": "Do not rerun to manufacture a pass or relax the threshold; the old measurement remains blocked and cannot authorize the rebased candidate."
+    }
+  },
   "deployment_surfaces": {
-    "github_release_and_ghcr": "Release and dual-platform GHCR publication remain release-workflow-owned and require successful CI Main plus release policy; this PR does not authorize publication.",
-    "docs_pages": "The Docs & Web Demo Build and docs-pages path remain a separate pipeline-owned surface; a passing build is not production deployment authorization.",
-    "production": "No production deployment, restart, observation, or mutable external write is authorized by this record."
+    "github_release_and_ghcr": "No release publication is authorized by this candidate; release workflow policy applies only after PR validation and merge.",
+    "docs_pages": "Docs and web builds are validation surfaces only and do not authorize production deployment.",
+    "production": "No production database copy, backup, deployment, restart, rollback, observation, or mutable external write is authorized by this record."
   },
-  "base_release_evidence": {
-    "source_main_ci_run_id": 37924263178,
-    "source_main_ci_head_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
-    "source_main_ci_conclusion": "success",
-    "source_release": "v4.3.1",
-    "source_release_url": "https://github.com/IvanLi-CN/codex-vibe-monitor/releases/tag/v4.3.1",
-    "source_ghcr_architectures": [
-      "linux/amd64",
-      "linux/arm64"
-    ],
-    "production_deployment": false,
-    "scope": "This is evidence for the already merged Proxy/base release only; it does not certify PR-B or authorize production deployment."
-  },
-  "local_validation_boundary": {
-    "required_local_checks": [
+  "local_validation": {
+    "validated_commit": "c72088935b13e35807566ad77db70a3b497a6519",
+    "stale_after_rebase": false,
+    "passed": [
       "cargo fmt --all -- --check",
-      "git diff --check",
-      "jq empty docs/specs/runtime-read-model-pressure-recovery/assets/current-candidate-validation.json docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
-      "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json"
+      "cargo check --locked --all-targets --all-features",
+      "cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json",
+      "python3 scripts/test-summary-production-exact-oracle.py",
+      "bash .github/scripts/test-quality-gates-contract.sh",
+      "git diff --check"
     ],
-    "applicable_lightweight_contract_checks": [
-      "bash .github/scripts/test-backend-test-contract.sh",
-      "bash .github/scripts/test-representative-scale-contract.sh",
-      "bash .github/scripts/test-quality-gates-contract.sh"
+    "blocked": [
+      {
+        "command": "cargo test --locked compacted_source_recovery_key_page_uses_production_builder -- --nocapture",
+        "reason": "The local macOS Rust test build is blocked before test execution by sqlx_macros dylib rejection: mis-aligned LINKEDIT string pool. Linux CI must execute the stateful SQLite tests."
+      }
     ],
-    "heavy_full_suite": "Full-target all-features check/clippy, complete backend profiles, and representative-scale execution are delegated to current-head Linux CI or a session VM; they are not repeated as local checks for this candidate.",
-    "visual_evidence": "Not applicable; this is a backend/API and repository-contract change."
+    "heavy_full_suite": "Backend resource profiles, representative-scale execution, contention pressure, current-head formal review, and empirical acceptance are delegated to the PR CI/testbox path; no production data is copied."
+  },
+  "visual_evidence": [],
+  "visual_evidence_owner_confirmation": "not_applicable",
+  "execution_evidence": {
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
+    "head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+    "current_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "stale_after_rebase": true,
+    "passed_lanes": [
+      "Lint & Format Check",
+      "Repository Tooling Checks",
+      "PR E2E Test Producer",
+      "Front-end Tests",
+      "PR Smoke Artifact Producer",
+      "Storybook Accessibility Tests",
+      "Backend Test Archive Producer",
+      "Docs & Web Demo Build",
+      "Records Overlay E2E",
+      "Retention Migration Validation",
+      "Backend Tests (Stateful SQLite shard 1/2)",
+      "Backend Tests (Lightweight)",
+      "Backend Tests (Representative Scale)",
+      "Backend Tests (Stateful SQLite shard 2/2)",
+      "Backend Tests (Archive / File I/O)",
+      "Backend Tests (Stateful SQLite)",
+      "Build Artifacts"
+    ],
+    "performance_acceptance": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "artifact": "observability-acceptance-40167801081-1",
+      "candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+      "current_candidate_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+      "status": "stale-after-rebase",
+      "stale_after_rebase": true,
+      "functional_scenarios_passed": true,
+      "cpu_observed_increase": 0.0720968518684939,
+      "cpu_window_cv": 0.0521457846,
+      "p95_observed_increase": 0.0101117663,
+      "reason": "The performance classifier rejected unavailable evidence because metrics-mode CPU windows exceeded the 5% stability limit and the observed CPU increase exceeded the 5% budget; p95 latency remained within budget."
+    }
   }
 }
