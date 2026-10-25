@@ -1176,9 +1176,15 @@ jobs:
           if not isinstance(checks, list):
               raise SystemExit("Actions check-runs payload did not contain check_runs")
 
+          tracked_names = {
+              "Observability Performance Producer (rust)",
+              "Observability Performance Producer (web)",
+              "Observability Performance Producer (runtime-base)",
+              "Observability Performance Image",
+          }
           for job in payload.get("jobs", []):
               name = job.get("name")
-              if not name:
+              if name not in tracked_names:
                   continue
               matches = [
                   check for check in checks

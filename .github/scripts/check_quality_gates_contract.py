@@ -570,6 +570,8 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and "created_at" in timestamp_run
         and "started_at" in timestamp_run
         and "completed_at" in timestamp_run
+        and "tracked_names" in timestamp_run
+        and "Observability Performance Image" in timestamp_run
         and require_mapping(timestamps.get("env"), "Actions timestamp collection env").get("GH_TOKEN") == "${{ github.token }}",
         f"{workflow_path} build report must collect read-only Actions job and check-run timestamps",
     )
