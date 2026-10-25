@@ -155,7 +155,7 @@ pub(crate) use summary_projection_lifecycle::{
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
     hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
-    refresh_summary_snapshots_with_test_deadline,
+    refresh_summary_snapshots_with_test_setup_deadline,
 };
 
 pub(crate) use invocation_query::{
@@ -233,7 +233,6 @@ static INVOCATION_ANCHOR_SNAPSHOTS: once_cell::sync::Lazy<
 
 #[cfg(test)]
 const SUMMARY_PROJECTION_TEST_INTERLEAVE_TABLE: &str = "summary_projection_test_interleave_gate";
-
 #[cfg(test)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SummaryProjectionTestInterleaveStage {
@@ -241,6 +240,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     AfterAllTimeArchiveDiscovery,
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
+    BeforeArchiveIdentityRevalidation,
     BeforeHistoricalLiveCoverage,
     BeforeLiveTailPublication,
     BeforeProjectionPublication,
@@ -261,7 +261,6 @@ pub(crate) struct SummaryProjectionTestInterleave {
 static SUMMARY_PROJECTION_TEST_INTERLEAVE: once_cell::sync::Lazy<
     StdMutex<Option<SummaryProjectionTestInterleave>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
-
 #[cfg(test)]
 impl SummaryProjectionTestInterleave {
     pub(crate) async fn wait_for_writer(&self) {
@@ -283,21 +282,18 @@ impl SummaryProjectionTestInterleave {
             .clone()
     }
 }
-
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave() -> SummaryProjectionTestInterleave {
     install_summary_projection_test_interleave_at(
         SummaryProjectionTestInterleaveStage::AfterRollupLoad,
     )
 }
-
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave_at(
     stage: SummaryProjectionTestInterleaveStage,
 ) -> SummaryProjectionTestInterleave {
     install_summary_projection_test_interleave_for_stages(&[stage])
 }
-
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave_for_stages(
     stages: &[SummaryProjectionTestInterleaveStage],
@@ -324,14 +320,12 @@ pub(crate) fn install_summary_projection_test_interleave_for_stages(
     *installed = Some(interleave.clone());
     interleave
 }
-
 #[cfg(test)]
 pub(crate) fn clear_summary_projection_test_interleave() {
     *SUMMARY_PROJECTION_TEST_INTERLEAVE
         .lock()
         .expect("summary projection test interleave lock") = None;
 }
-
 #[cfg(test)]
 async fn pause_summary_projection_test_interleave(
     pool: &Pool<Sqlite>,
@@ -369,7 +363,6 @@ async fn pause_summary_projection_test_interleave(
     interleave.resume_build.notified().await;
     Ok(())
 }
-
 fn store_invocation_anchor_snapshot(
     snapshot_id: i64,
     upstream_account_id: Option<i64>,
@@ -14784,7 +14777,7 @@ async fn build_summary_projection_once(
         pause_summary_projection_test_interleave(
             pool,
             mode,
-            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+            SummaryProjectionTestInterleaveStage::BeforeArchiveIdentityRevalidation,
         )
         .await?;
         let mut after_id = None;
@@ -15229,6 +15222,13 @@ async fn build_summary_projection_once(
             None,
         )
         .await;
+        #[cfg(test)]
+        pause_summary_projection_test_interleave(
+            pool,
+            mode,
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+        )
+        .await?;
         require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         archive_pool.close().await;
         drop(temp_cleanup);
