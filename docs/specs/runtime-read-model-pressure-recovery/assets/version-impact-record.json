@@ -97,7 +97,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "PR #1191: th/summary-recovery-query-fairness@642b49641f16e04a403fd57612c16f3914985b98",
+      "PR #1191: th/summary-recovery-query-fairness@316385432289ce108d218e5aa9f60edbd5dc6435",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
