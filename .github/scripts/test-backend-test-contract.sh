@@ -51,7 +51,7 @@ for smoke_script in \
   fi
 done
 
-web_builder_section="$(sed -n '/^FROM oven\/bun:.* AS web-builder$/,/^# Stage 2:/p' "$dockerfile")"
+web_builder_section="$(awk '$0 ~ /^FROM .* AS web-builder(-canonical)?$/ { in_stage=1 } in_stage { print } in_stage && /^# Stage 2:/ { exit }' "$dockerfile")"
 web_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$web_builder_section" | cut -d: -f1)"
 web_workdir_line="$(grep -n '^WORKDIR /app/web$' <<<"$web_builder_section" | cut -d: -f1)"
 if (( web_arg_line < web_workdir_line )); then
@@ -64,7 +64,7 @@ if (( web_arg_line != web_copy_line + 1 )); then
   exit 1
 fi
 
-rust_builder_section="$(sed -n '/^FROM rust:.* AS rust-builder$/,/^# Stage 3:/p' "$dockerfile")"
+rust_builder_section="$(awk '$0 ~ /^FROM .* AS rust-builder(-canonical)?$/ { in_stage=1 } in_stage { print } in_stage && /^# Stage 3:/ { exit }' "$dockerfile")"
 rust_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$rust_builder_section" | cut -d: -f1)"
 rust_workdir_line="$(grep -n '^WORKDIR /app$' <<<"$rust_builder_section" | cut -d: -f1)"
 if (( rust_arg_line < rust_workdir_line )); then
