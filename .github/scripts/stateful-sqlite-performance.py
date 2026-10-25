@@ -35,7 +35,15 @@ WALL_RE = re.compile(
     r"replay=(?P<replay>cold|warm) shard=(?P<shard>[12]) "
     r"wall_ms=(?P<wall>[0-9]+) exit_code=(?P<exit>[0-9]+)$"
 )
-EXCLUDED_FROM_SETUP = {"production_operation", "production_spawn", "explicit_wait", "cleanup", "whole_test"}
+SETUP_PHASES = {
+    "file_template_copy",
+    "file_pool_connect",
+    "file_schema_initialize",
+    "fixture_materialization",
+    "fixture_pool_connect",
+    "schema_template_restore",
+    "fixture_state_build",
+}
 PHASE_REQUIREMENTS = {
     TARGETS[0]: {
         "required": {
@@ -93,6 +101,7 @@ PHASE_REQUIREMENTS = {
         "setup_any": {"file_template_copy", "file_schema_initialize"},
     },
 }
+SETUP_TARGETS = frozenset({TARGETS[0], TARGETS[1], TARGETS[2], TARGETS[5]})
 
 
 def median(values: list[int]) -> int:
@@ -165,7 +174,7 @@ def collect_replay(root: Path, ref: str, replay: str) -> dict[str, dict[str, lis
 
 def sample(events: dict[str, list[int]]) -> dict[str, object]:
     phase_totals = {phase: sum(values) for phase, values in events.items()}
-    setup_ms = sum(value for phase, value in phase_totals.items() if phase not in EXCLUDED_FROM_SETUP)
+    setup_ms = sum(phase_totals.get(phase, 0) for phase in SETUP_PHASES)
     return {
         "phase_ms": phase_totals,
         "setup_ms": setup_ms,
@@ -218,21 +227,27 @@ def build_card(
     tests: list[dict[str, object]] = []
     measured_setup_improvements = 0
     measured_setup_tests = 0
+    setup_measurement_failures: list[str] = []
     for target in TARGETS:
         control_samples = [replay_samples["control"][replay][target] for replay in ("cold", "warm")]
         candidate_samples = [replay_samples["candidate"][replay][target] for replay in ("cold", "warm")]
         control_setup = median([int(item["setup_ms"]) for item in control_samples])
         candidate_setup = median([int(item["setup_ms"]) for item in candidate_samples])
-        if control_setup > 0 or candidate_setup > 0:
+        if target not in SETUP_TARGETS:
+            reduction_pct = None
+            setup_status = "not_applicable"
+        elif control_setup <= 0 or candidate_setup <= 0:
             measured_setup_tests += 1
-            reduction_pct = (control_setup - candidate_setup) * 100.0 / control_setup if control_setup else -100.0
+            setup_measurement_failures.append(target)
+            reduction_pct = None
+            setup_status = "missing"
+        else:
+            measured_setup_tests += 1
+            reduction_pct = (control_setup - candidate_setup) * 100.0 / control_setup
             improved = reduction_pct >= 20.0
             if improved:
                 measured_setup_improvements += 1
             setup_status = "pass" if improved else "fail"
-        else:
-            reduction_pct = None
-            setup_status = "control"
         tests.append(
             {
                 "test": target,
@@ -285,7 +300,11 @@ def build_card(
         if control_total_median
         else None
     )
-    setup_pass = measured_setup_tests >= 4 and measured_setup_improvements >= 4
+    setup_pass = (
+        measured_setup_tests == len(SETUP_TARGETS)
+        and measured_setup_improvements >= 4
+        and not setup_measurement_failures
+    )
     wall_pass = candidate_total_median <= control_total_median * 1.05
     accepted = not replay_failures and setup_pass and wall_pass
     return {
@@ -294,16 +313,24 @@ def build_card(
         "candidate_sha": candidate_sha,
         "comparison": "same candidate source and archive; control forces fresh schema for allowlisted file-backed fixtures, candidate uses the current-schema template",
         "control_mode": "candidate archive with allowlisted file-backed fixtures forced to fresh schema",
-        "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads",
+        "runner": "GitHub-hosted ubuntu-24.04; one candidate archive; 6 nextest threads; interleaved control/candidate pairs",
         "replay_order": ["cold", "warm"],
+        "paired_execution_order": [
+            "cold/1: control,candidate",
+            "cold/2: candidate,control",
+            "warm/1: candidate,control",
+            "warm/2: control,candidate",
+        ],
         "thresholds": {
             "minimum_setup_improvements": 4,
             "setup_reduction_pct": 20.0,
             "maximum_full_profile_regression_pct": 5.0,
         },
         "setup_gate": {
+            "required_tests": len(SETUP_TARGETS),
             "measured_tests": measured_setup_tests,
             "improved_tests": measured_setup_improvements,
+            "measurement_failures": setup_measurement_failures,
             "passed": setup_pass,
         },
         "full_profile_gate": {
@@ -334,6 +361,7 @@ def markdown_card(card: dict[str, object]) -> str:
         f"- Control mode: {card['control_mode']}",
         f"- Runner: {card['runner']}",
         f"- Replay order: `{', '.join(card['replay_order'])}`",
+        f"- Paired execution order: `{'; '.join(card['paired_execution_order'])}`",
         "",
     ]
     if card["replay_failures"]:
@@ -351,7 +379,7 @@ def markdown_card(card: dict[str, object]) -> str:
         [
             "## Setup gate",
             "",
-            f"{setup_gate['improved_tests']}/{setup_gate['measured_tests']} setup-bearing tests improved by at least 20%.",
+            f"{setup_gate['improved_tests']}/{setup_gate['required_tests']} setup-bearing tests improved by at least 20%.",
             "",
             "| Test | Control setup median (ms) | Candidate setup median (ms) | Reduction | Status |",
             "| --- | ---: | ---: | ---: | --- |",
@@ -359,7 +387,13 @@ def markdown_card(card: dict[str, object]) -> str:
     )
     for result in card["tests"]:
         reduction = result["setup_reduction_pct"]
-        reduction_text = "control" if reduction is None else f"{reduction:.1f}%"
+        reduction_text = (
+            "n/a"
+            if result["setup_status"] == "not_applicable"
+            else "missing"
+            if reduction is None
+            else f"{reduction:.1f}%"
+        )
         short_name = str(result["test"]).rsplit("::", 1)[-1]
         lines.append(
             f"| `{short_name}` | {result['control_setup_median_ms']} | "

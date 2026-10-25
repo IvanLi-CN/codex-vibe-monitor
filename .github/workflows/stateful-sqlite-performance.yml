@@ -3,10 +3,9 @@ name: Stateful SQLite Performance Acceptance
 on:
   workflow_dispatch:
     inputs:
-      candidate_ref:
-        description: Candidate commit or ref to measure
+      candidate_sha:
+        description: Candidate commit SHA to measure (exactly 40 lowercase hex characters)
         required: true
-        default: th/stateful-sqlite-fixture-timing
         type: string
 
 concurrency:
@@ -22,10 +21,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
+      - name: Validate candidate revision input
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
       - name: Checkout candidate
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.candidate_ref }}
+          ref: ${{ inputs.candidate_sha }}
           path: candidate
           fetch-depth: 1
           persist-credentials: false
@@ -61,11 +67,14 @@ jobs:
         id: revisions
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_ROOT"
           candidate_sha="$(git -C candidate rev-parse HEAD)"
-          printf 'candidate_sha=%s\n' "$candidate_sha" > "$EVIDENCE_ROOT/revisions.txt"
+          test "$candidate_sha" = "$REQUESTED_CANDIDATE_SHA"
+          printf 'requested_candidate_sha=%s\nresolved_candidate_sha=%s\n' \
+            "$REQUESTED_CANDIDATE_SHA" "$candidate_sha" > "$EVIDENCE_ROOT/revisions.txt"
           {
             printf 'runner_os=%s\n' "$RUNNER_OS"
             printf 'runner_arch=%s\n' "$RUNNER_ARCH"
@@ -125,13 +134,17 @@ jobs:
           : > "$wall_file"
           : > "$failure_file"
           overall_status=0
-          for ref_name in control candidate; do
-            repo="$GITHUB_WORKSPACE/candidate"
-            archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
-            workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
-            mkdir -p "$workspace"
-            for replay in cold warm; do
-              for shard in 1 2; do
+          for replay in cold warm; do
+            for shard in 1 2; do
+              case "$replay/$shard" in
+                cold/1|warm/2) ref_names=(control candidate) ;;
+                *) ref_names=(candidate control) ;;
+              esac
+              for ref_name in "${ref_names[@]}"; do
+                repo="$GITHUB_WORKSPACE/candidate"
+                archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
+                workspace="$EVIDENCE_ROOT/$ref_name/test-workspace"
+                mkdir -p "$workspace"
                 log="$EVIDENCE_ROOT/logs/$ref_name/$replay/shard-$shard.log"
                 mkdir -p "$(dirname "$log")"
                 replay_env=(
