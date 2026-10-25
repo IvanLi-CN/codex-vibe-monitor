@@ -705,6 +705,11 @@ test("single-client dense timeline stays below the long-task budget on desktop a
             { timeout: 15_000 },
           )
           .toBe(0);
+        await expect(page.getByTestId("dashboard-invocation-timeline-lanes")).toHaveAttribute(
+          "data-total-calls",
+          "550",
+        );
+        await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
       };
       await triggerDenseRefresh(beforeRefresh.releaseCount);
       const releaseCountAfterFirstRefresh = await page.evaluate(
