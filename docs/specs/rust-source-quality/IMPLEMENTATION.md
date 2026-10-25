@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 20 current explicit file budgets (4 production and 16 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 28 current explicit file budgets (4 production and 24 test/helper), and 126 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -456,6 +456,18 @@ The completed structural and compile checks are `cargo fmt --all -- --check`, `b
 The required `bash .github/scripts/run-backend-tests.sh --profile archive-file-io` was attempted with the repository defaults, retried, and retried again in an isolated temporary workspace; each attempt stopped before test execution because rustc 1.96.0 produced a `libsqlx_macros` dylib rejected by macOS with `mis-aligned LINKEDIT string pool`. No shared infrastructure or toolchain configuration was changed.
 
 As supplemental behavior evidence, `CARGO_PROFILE_TEST_DEBUG=2 RUST_MIN_STACK=8388608 cargo test --locked --all-features tests::archive_file_io:: -- --nocapture` built the test binary and ran 450 selected tests: 433 passed, 10 pre-existing archive/runtime concurrency or timing-sensitive tests failed, and 7 were ignored. None of the 10 failures belonged to the 121 migrated tests, so every migrated test passed in this fallback run; the fallback is not substituted for the blocked canonical profile.
+
+## Raw Payload Retention and Pool Recovery Test Helper Extraction
+
+The raw payload and pool recovery test-helper extraction starts from the verified mainline baseline `b1c523815090218499954e719b1b356b60d933cd` and removes the 9,723-line `src/tests/archive_file_io/raw_payload_retention_and_compression.rs` candidate. The 122 existing tests and six non-test helpers are moved exactly once, retaining their names, attributes, assertions, SQL, fixtures, timing and budget thresholds, lock and task lifetimes, cleanup, and `archive_file_io` resource bucket.
+
+The archive file I/O facade is 860 lines. The responsibility modules are `raw_payload_capture_and_ownership.rs` (383 lines), `raw_payload_archive_finalization.rs` (604), `raw_payload_cleanup_and_reconciliation.rs` (2,040), `raw_payload_compression.rs` (638), `archive_http_and_shutdown.rs` (1,175), `pool_attempt_lifecycle.rs` (1,050), `pool_invocation_orphan_recovery.rs` (1,465), `deferred_pool_cleanup_guards.rs` (675), and `stale_pool_orphan_recovery.rs` (1,711); every file is below the 3,000-line test/helper target.
+
+The old module declaration and its module-wide `clippy::await_holding_lock` expectation are removed. The exact expectation is retained only on the two reservation-observation test declarations that Clippy identified in `pool_invocation_orphan_recovery.rs` and `stale_pool_orphan_recovery.rs`; the existing facade `unused_imports` allow is unchanged. The policy removes only the obsolete parent entry, leaves 28 explicit inventory files (4 production and 24 test/helper) and 126 suppression entries, and records each final physical line count.
+
+The required structural and compile checks passed: `cargo fmt --all -- --check`, `bash .github/scripts/test-rust-source-quality.sh`, `bash .github/scripts/run-rust-source-quality.sh`, `cargo check --locked --all-targets --all-features`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `git diff --check`. The canonical `bash .github/scripts/run-backend-tests.sh --profile archive-file-io` was attempted with repository defaults and stopped before test execution because rustc 1.96.0 produced a `libsqlx_macros` macOS dylib rejected with `mis-aligned LINKEDIT string pool` at `/private/tmp/codex-vibe-monitor-backend-test/target/debug/deps/libsqlx_macros-5cb7ac4d48d7978e.dylib`; no shared infrastructure or toolchain configuration was changed.
+
+As focused fallback evidence, `CARGO_PROFILE_TEST_DEBUG=2 RUST_MIN_STACK=8388608 cargo test --locked --all-features tests::archive_file_io:: -- --nocapture` built and ran 450 selected tests: 434 passed, 9 pre-existing archive/runtime concurrency or timing-sensitive tests failed, and 7 were ignored. The nine failures were confined to unchanged maintenance runtime, proxy runtime pressure/routing, and system storage tests; no migrated test appeared in the failure list. This focused fallback is not substituted for the blocked canonical profile.
 
 ## CI Contract
 
