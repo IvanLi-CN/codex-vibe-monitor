@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       trusted_harness_sha:
-        description: Trusted workflow/parser commit SHA; must equal the dispatched workflow ref SHA
+        description: Trusted workflow/parser commit SHA; must equal the dispatched main or fixed harness ref SHA
         required: true
         type: string
 
@@ -30,10 +30,15 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
           WORKFLOW_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$TRUSTED_HARNESS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$WORKFLOW_REF" in
+            refs/heads/main|refs/heads/th/stateful-sqlite-performance-harness) ;;
+            *) exit 64 ;;
+          esac
           test "$TRUSTED_HARNESS_SHA" = "$WORKFLOW_SHA"
           test "$TRUSTED_HARNESS_SHA" != "$CANDIDATE_SHA"
 
@@ -219,6 +224,12 @@ jobs:
             'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline)'
             'test(=tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration)'
           )
+          setup_target_names=(
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline'
+            'tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration'
+          )
           for replay in cold warm; do
             case "$replay" in
               cold) ref_names=(control candidate) ;;
@@ -228,6 +239,7 @@ jobs:
               for target_position in "${!setup_target_indices[@]}"; do
                 target_index="${setup_target_indices[$target_position]}"
                 target_filter="${setup_target_filters[$target_position]}"
+                target_name="${setup_target_names[$target_position]}"
                 repo="$GITHUB_WORKSPACE/trusted"
                 archive_dir="$EVIDENCE_ROOT/candidate/archive-extract"
                 workspace="$EVIDENCE_ROOT/$ref_name/target-workspace/$replay/setup-$target_index"
@@ -257,14 +269,18 @@ jobs:
                 set -e
                 end_ms="$(date +%s%3N)"
                 wall_ms=$((end_ms - start_ms))
+                target_start_count="$(grep -F -c -- "stateful-test-timing target_start=$target_name" "$log" || true)"
+                target_end_count="$(grep -F -c -- "stateful-test-timing target_end=$target_name" "$log" || true)"
                 printf 'stateful-target-performance ref=%s replay=%s target=%s wall_ms=%s exit_code=%s\n' \
                   "$ref_name" "$replay" "$target_index" "$wall_ms" "$status" \
                   | tee -a "$target_wall_file"
-                if [ "$status" -ne 0 ]; then
+                if [ "$status" -ne 0 ] || [ "$target_start_count" -ne 1 ] || [ "$target_end_count" -ne 1 ]; then
                   overall_status=1
                   {
                     printf 'ref=%s replay=%s target=%s exit_code=%s\n' \
                       "$ref_name" "$replay" "$target_index" "$status"
+                    printf 'expected_target=%s target_start_count=%s target_end_count=%s\n' \
+                      "$target_name" "$target_start_count" "$target_end_count"
                     sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g' "$log" \
                       | grep -E '(backend_test_profile=|Summary|FAIL|failed|test result:|signal|timeout)' \
                       | tail -n 120 \

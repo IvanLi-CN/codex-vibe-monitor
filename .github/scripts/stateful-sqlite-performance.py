@@ -246,7 +246,9 @@ def parse_wall_file(path: Path) -> tuple[dict[tuple[str, str, str], int], list[s
     return values, failures
 
 
-def parse_target_wall_file(path: Path) -> tuple[dict[tuple[str, str, int], int], list[str]]:
+def parse_target_wall_file(
+    path: Path, root: Path
+) -> tuple[dict[tuple[str, str, int], int], list[str]]:
     values: dict[tuple[str, str, int], int] = {}
     failures: list[str] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -272,6 +274,22 @@ def parse_target_wall_file(path: Path) -> tuple[dict[tuple[str, str, int], int],
             "missing target wall-time records: "
             + ", ".join("/".join(map(str, key)) for key in missing)
         )
+    for ref, replay, target_index in sorted(values):
+        target_log = root / "logs" / ref / replay / f"setup-{target_index}.log"
+        if not target_log.is_file():
+            failures.append(f"missing target log: {ref}/{replay}/setup-{target_index}")
+            continue
+        try:
+            _, marker_counts = parse_log(target_log)
+        except ValueError as error:
+            failures.append(str(error))
+            continue
+        expected_target = TARGETS[target_index]
+        if marker_counts != {expected_target: 1}:
+            failures.append(
+                f"unexpected target markers in {ref}/{replay}/setup-{target_index}: "
+                f"expected={expected_target}=1 actual={marker_counts}"
+            )
     return values, failures
 
 
@@ -520,7 +538,7 @@ def main() -> int:
 
     try:
         wall, replay_failures = parse_wall_file(args.wall_file)
-        target_wall, target_failures = parse_target_wall_file(args.target_wall_file)
+        target_wall, target_failures = parse_target_wall_file(args.target_wall_file, args.root)
         card = build_card(
             args.root,
             args.control_source_sha,
