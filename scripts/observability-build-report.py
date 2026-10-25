@@ -290,7 +290,7 @@ def main() -> None:
             "runnerUsageSeconds": optional_sum(execution_seconds),
             "cacheRestoreSeconds": optional_sum(restore_seconds),
             "cacheSaveSeconds": optional_sum(save_seconds),
-            "cacheTimingComplete": len(restore_seconds) == len(components) and len(save_seconds) == len(components),
+            "cacheTimingComplete": bool(components) and len(restore_seconds) == len(components) and len(save_seconds) == len(components),
             "transferBytes": optional_sum(transfer_bytes),
             "phaseSeconds": {name: optional_sum(values) for name, values in phase_values.items()},
             "actionsObserved": True,

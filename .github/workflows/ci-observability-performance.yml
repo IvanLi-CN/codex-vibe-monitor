@@ -1130,15 +1130,6 @@ jobs:
           path: trusted
           persist-credentials: false
 
-      - name: Checkout build-only report generator from candidate
-        if: env.BUILD_ONLY == 'true'
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ needs.observability-performance-resolve.outputs.candidate_repository }}
-          ref: ${{ needs.observability-performance-resolve.outputs.candidate }}
-          path: candidate-report
-          persist-credentials: false
-
       - name: Download producer reports
         if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true' && needs.observability-performance-producer.result == 'success'
         uses: actions/download-artifact@v7
@@ -1158,11 +1149,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           gh run view "$RUN_ID" --repo "$REPOSITORY" --json jobs > "$RUNNER_TEMP/actions-jobs.json"
-          gh api "repos/$REPOSITORY/commits/$CANDIDATE/check-runs?per_page=100" > "$RUNNER_TEMP/actions-check-runs.json"
-          REPOSITORY="$REPOSITORY" CANDIDATE="$CANDIDATE" python3 - "$RUNNER_TEMP/actions-jobs.json" "$RUNNER_TEMP/actions-check-runs.json" <<'PY'
+          gh api "repos/$REPOSITORY/commits/$WORKFLOW_SHA/check-runs?per_page=100" > "$RUNNER_TEMP/actions-check-runs.json"
+          REPOSITORY="$REPOSITORY" WORKFLOW_SHA="$WORKFLOW_SHA" python3 - "$RUNNER_TEMP/actions-jobs.json" "$RUNNER_TEMP/actions-check-runs.json" <<'PY'
           import json
           import os
           import pathlib
@@ -1194,7 +1186,7 @@ jobs:
               ]
               if len(matches) != 1:
                   raise SystemExit(
-                      f"unable to match one check-run for {name!r} on {os.environ['CANDIDATE']}: "
+                      f"unable to match one check-run for {name!r} on workflow {os.environ['WORKFLOW_SHA']}: "
                       f"matches={len(matches)}"
                   )
               job["createdAt"] = matches[0].get("created_at")
@@ -1228,7 +1220,6 @@ jobs:
             args+=(--workflow-failure)
           fi
           report_root="$PWD/trusted"
-          if [ "$BUILD_ONLY" = "true" ]; then report_root="$PWD/candidate-report"; fi
           test -f "$report_root/scripts/observability-build-report.py"
           python3 "$report_root/scripts/observability-build-report.py" "${args[@]}"
 

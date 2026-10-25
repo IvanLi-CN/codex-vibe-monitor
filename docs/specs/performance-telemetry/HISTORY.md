@@ -4,9 +4,9 @@
   可能返回空值时保留 `queueSeconds=null` 与 `queueTimingComplete=false`，不以 run 起始时间或零值
   替代。producer/image 的执行、阶段、传输、缓存和镜像 ready 时间仍必须真实且完整。
 
-- 2026-10-26：明确 build-only 的 pre-merge 报告来源隔离：实现分支可使用自身的
-  `build-report` 生成器完成构建资格验证，但不启动 workload、预算汇总或性能通过卡；正式
-  性能模式仍只从 trusted `main` checkout 报告生成器，避免资格路径改变正式验收合同。
+- 2026-10-26：明确 build-only 的 pre-merge 报告来源隔离：实现分支可验证自身构建产物，
+  但 build report 生成器始终来自 trusted `main`，候选不能伪造构建证据；build-only 不启动
+  workload、预算汇总或性能通过卡，正式性能模式继续使用同一 trusted 生成器。
 
 - 2026-10-26：修复完整镜像 cache restore/save 的路径规范差异，避免相同 build identity 因
   cache version 不一致产生假 miss；质量合同现在严格要求两处路径相同。build report 通过只读

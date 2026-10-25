@@ -368,6 +368,9 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["status"], "passed")
             self.assertEqual(value["cache"]["image"]["status"], "hit")
             self.assertEqual([job["component"] for job in value["jobs"]], ["image"])
+            self.assertIsNone(value["timing"]["cacheRestoreSeconds"])
+            self.assertIsNone(value["timing"]["cacheSaveSeconds"])
+            self.assertFalse(value["timing"]["cacheTimingComplete"])
 
     def test_build_report_preserves_workflow_failure_as_failed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

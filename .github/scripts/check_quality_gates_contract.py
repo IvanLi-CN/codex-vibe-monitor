@@ -567,6 +567,8 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         "gh run view" in timestamp_run
         and "--json jobs" in timestamp_run
         and "check-runs?per_page=100" in timestamp_run
+        and "WORKFLOW_SHA" in timestamp_run
+        and "commits/$WORKFLOW_SHA/check-runs" in timestamp_run
         and "created_at" in timestamp_run
         and "started_at" in timestamp_run
         and "completed_at" in timestamp_run
@@ -576,19 +578,19 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         f"{workflow_path} build report must collect read-only Actions job and check-run timestamps",
     )
     report_step = step_config(report, "Generate build report", workflow_path)
-    report_checkout = step_config(report, "Checkout build-only report generator from candidate", workflow_path)
+    report_checkout = step_config(report, "Checkout report generator from trusted workflow revision", workflow_path)
     require(
-        report_checkout.get("if") == "env.BUILD_ONLY == 'true'"
-        and report_checkout.get("with", {}).get("repository") == "${{ needs.observability-performance-resolve.outputs.candidate_repository }}"
-        and report_checkout.get("with", {}).get("ref") == "${{ needs.observability-performance-resolve.outputs.candidate }}"
-        and report_checkout.get("with", {}).get("path") == "candidate-report",
-        f"{workflow_path} build-only reports must use the candidate generator without changing formal harness sources",
+        report_checkout.get("with", {}).get("repository") == "${{ github.repository }}"
+        and report_checkout.get("with", {}).get("ref") == "${{ needs.observability-performance-resolve.outputs.trusted_ref }}"
+        and report_checkout.get("with", {}).get("path") == "trusted",
+        f"{workflow_path} build reports must use the trusted generator in every mode",
     )
     report_run = str(report_step.get("run", ""))
     require(
         "observability-build-report.py" in report_run
         and "report_root" in report_run
-        and "candidate-report" in report_run
+        and 'report_root="$PWD/trusted"' in report_run
+        and "candidate-report" not in report_run
         and "--build-identity" in report_run
         and "--run-started" in report_run
         and "--jobs-json" in report_run
