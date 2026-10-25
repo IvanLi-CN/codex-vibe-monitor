@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1191 implementation candidate 642b49641f16e04a403fd57612c16f3914985b98; prior Linux CI, migration evidence, and formal review belong to the superseded validation head, while current-head validation and empirical acceptance remain required.",
+      "to_program_version": "PR #1191 implementation candidate 642b49641f16e04a403fd57612c16f3914985b98, validated at evidence head 5c3d6181dbd49da6e2d23987cd3df6ee064a65c5; current-head CI, migration evidence, and Tier 4 review are current, while empirical performance acceptance remains blocked.",
       "direct_major_skips_supported": false
     }
   },
@@ -159,32 +159,37 @@
   },
   "pending_execution_evidence": [
     {
-      "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-      "reason": "PR #1191 was rebased onto current main after the previous candidate-bound empirical acceptance was cancelled as stale. The current head requires fresh current-head evidence; no threshold relaxation or reuse of the old result is authorized by the plan."
+      "candidate_head_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
+      "reason": "The current-head PR and migration lanes passed, but candidate-bound empirical acceptance run 40199586495 failed closed because hardware comparability evidence was unavailable. The existing observability harness also lacks the planned summary-recovery fixture; no threshold relaxation or reuse of unavailable evidence is authorized."
     }
   ],
   "execution_evidence": {
-    "ci_run": "pending-current-head-ci-run",
-    "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-    "stateful_and_migration_profiles_passed": false,
-    "formal_review_passed": false,
+    "ci_run": "40199571804",
+    "candidate_head_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
+    "stateful_and_migration_profiles_passed": true,
+    "formal_review_passed": true,
+    "formal_review": {
+      "status": "passed-no-hard-findings",
+      "candidate_head_sha": "5c3d6181dbd49da6e2d23987cd3df6ee064a65c5",
+      "scope": "Fresh correctness and contract review lanes confirmed the snapshot-budget fix, tuple-cursor behavior, and current-head documentation binding; no hard findings remain."
+    },
     "performance_acceptance": {
-      "run": null,
-      "artifact": null,
-      "status": "pending",
+      "run": "40199586495",
+      "artifact": "observability-acceptance-40199586495-1 (12601969239)",
+      "status": "blocked",
       "functional_scenarios_passed": null,
       "fixture_coverage": "The existing observability harness does not seed the planned summary-recovery workload; a passing observability result is not sufficient A5 evidence.",
-      "reason": "Current-head performance acceptance is still pending."
+      "reason": "The runtime, pair-0, pair-1, and pair-2 workload lanes completed successfully, but Observability Performance Budget failed closed with hardware comparability evidence unavailable because default-observability-ab reported incompatible cpuModel."
     }
   },
   "delivery_context": {
     "candidate_head_sha": "642b49641f16e04a403fd57612c16f3914985b98",
-    "candidate_validation_status": "current-head-validation-pending",
+    "candidate_validation_status": "current-head-validation-blocked",
     "active_base_sha": "5167cd514f2efa30f2322e5407a754f8b7c56022",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
     "base_sync_scope": "The implementation candidate is linearly rebased onto current main 5167cd51; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 6d64e1413120dc821a4b92c669b3b8a3d5c71d74 onto current main 5167cd514f2efa30f2322e5407a754f8b7c56022, then received the snapshot-budget fix as 642b49641f16e04a403fd57612c16f3914985b98; all prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from validation head 6d64e1413120dc821a4b92c669b3b8a3d5c71d74 onto current main 5167cd514f2efa30f2322e5407a754f8b7c56022, then received the snapshot-budget fix as 642b49641f16e04a403fd57612c16f3914985b98. PR CI run 40199571804 and current-head Tier 4 review completed without hard findings; empirical run 40199586495 remains blocked by unavailable hardware comparability evidence and cannot establish Step 5C readiness.",
     "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }
