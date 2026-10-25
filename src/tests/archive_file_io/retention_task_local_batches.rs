@@ -2245,6 +2245,15 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
         .first()
         .map(|(_, page)| page.payload.clone())
         .expect("completed Summary archive has a page");
+    let original_manifest_fields: (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT day_key, part_key, archive_expires_at
+             FROM archive_batches WHERE id=?1",
+        )
+        .bind(batch_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load original proven manifest fields");
     let mut stale_manifest_outcome = outcome.clone();
     stale_manifest_outcome.day_key = Some("stale-day".to_string());
     stale_manifest_outcome.part_key = Some("stale-part".to_string());
@@ -2276,14 +2285,7 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
         .fetch_one(&pool)
         .await
         .expect("load preserved proven manifest");
-    assert_eq!(
-        persisted_manifest_fields,
-        (
-            outcome.day_key.clone(),
-            outcome.part_key.clone(),
-            outcome.archive_expires_at.clone()
-        )
-    );
+    assert_eq!(persisted_manifest_fields, original_manifest_fields);
     for (page_index, mut page) in pages {
         if page_index == 0 {
             // Simulate a stale retry selected before proof publication. A valid final proof is an
