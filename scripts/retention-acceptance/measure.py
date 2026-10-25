@@ -965,27 +965,36 @@ def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
                 keys,
             )
         ]
-        runs = [
-            {
-                "id": row[0],
-                "task_key": row[1],
-                "trigger_kind": row[2],
-                "status": row[3],
-                "started_at": row[4],
-                "actual_started_at": row[5],
-                "finished_at": row[6],
-                "actual_finished_at": row[7],
-                "summary": row[8],
-                "error_detail": row[9],
-                "completion": row[10],
-            }
-            for row in connection.execute(
-                "SELECT id,task_key,trigger_kind,status,started_at,actual_started_at,finished_at,"
-                "actual_finished_at,summary,error_detail,completion "
-                f"FROM managed_task_runs WHERE task_key IN ({placeholders}) ORDER BY id",
-                keys,
+        runs = []
+        for row in connection.execute(
+            "SELECT id,task_key,trigger_kind,status,started_at,actual_started_at,finished_at,"
+            "actual_finished_at,summary,error_detail,processed_count,updated_count,details,completion "
+            f"FROM managed_task_runs WHERE task_key IN ({placeholders}) ORDER BY id",
+            keys,
+        ):
+            raw_details = row[12]
+            try:
+                details = json.loads(raw_details) if raw_details else None
+            except (TypeError, json.JSONDecodeError):
+                details = {"raw": raw_details}
+            runs.append(
+                {
+                    "id": row[0],
+                    "task_key": row[1],
+                    "trigger_kind": row[2],
+                    "status": row[3],
+                    "started_at": row[4],
+                    "actual_started_at": row[5],
+                    "finished_at": row[6],
+                    "actual_finished_at": row[7],
+                    "summary": row[8],
+                    "error_detail": row[9],
+                    "processed_count": row[10],
+                    "updated_count": row[11],
+                    "details": details,
+                    "completion": row[13],
+                }
             )
-        ]
         retry_state = [
             {
                 "task_key": row[0],

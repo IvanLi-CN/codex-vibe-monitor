@@ -58,6 +58,53 @@ class MeasurementBudgetTests(unittest.TestCase):
         self.assertIn("error", snapshot)
         self.assertIn("unable to open database file", snapshot["error"])
 
+    def test_task_state_snapshot_preserves_terminal_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "maintenance.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "CREATE TABLE managed_tasks (task_key TEXT, enabled INTEGER, is_manual INTEGER, "
+                    "interval_secs INTEGER, next_trigger_at TEXT, next_catchup_at TEXT, catchup_reason TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE managed_task_runs (id INTEGER, task_key TEXT, trigger_kind TEXT, status TEXT, "
+                    "started_at TEXT, actual_started_at TEXT, finished_at TEXT, actual_finished_at TEXT, "
+                    "summary TEXT, error_detail TEXT, processed_count INTEGER, updated_count INTEGER, "
+                    "details TEXT, completion TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE maintenance_owner_retry_state (task_key TEXT, failure_count INTEGER, "
+                    "next_eligible_at TEXT, reason TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO managed_task_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        1,
+                        "retention_archive",
+                        "schedule",
+                        "failed",
+                        "2026-10-25T00:00:00.000Z",
+                        "2026-10-25T00:00:00.100Z",
+                        "2026-10-25T00:00:01.000Z",
+                        "2026-10-25T00:00:01.100Z",
+                        "retention_archive 执行失败",
+                        "fatal_error;failure_fingerprint:abc",
+                        0,
+                        0,
+                        '{"fatalError":"archive failed","waitReason":"owner_failed"}',
+                        "failed",
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            snapshot = task_state_snapshot(database)
+
+        self.assertEqual(snapshot["managed_task_runs"][0]["details"]["fatalError"], "archive failed")
+        self.assertEqual(snapshot["managed_task_runs"][0]["error_detail"], "fatal_error;failure_fingerprint:abc")
+
     def test_task_evidence_drain_uses_remaining_phase_budget(self) -> None:
         valid_runs = [
             {
