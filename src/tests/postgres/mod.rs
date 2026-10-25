@@ -1,10 +1,57 @@
+use std::sync::Arc;
+
+use anyhow::Result;
 use sqlx::SqlitePool;
+use tokio::sync::Mutex;
 
 use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId};
 use crate::storage::core::{
-    AdmissionDecision, BackendKind, MigrationState, MigrationStatus, ModuleAuthority,
-    ModuleGenerationGate, ModuleLease, StorageModule, StoragePools, validate_transaction_leases,
+    AdmissionDecision, AuthorityManifestStore, AuthorityPublication, BackendKind, MigrationState,
+    MigrationStatus, ModuleAuthority, ModuleAuthorityManifest, ModuleGenerationGate, ModuleLease,
+    StorageModule, StoragePools, validate_transaction_leases,
 };
+
+#[derive(Default)]
+struct TestAuthorityStore {
+    manifest: Mutex<Option<ModuleAuthorityManifest>>,
+}
+
+#[async_trait::async_trait]
+impl AuthorityManifestStore for TestAuthorityStore {
+    async fn load_authority_manifest(
+        &self,
+        module: StorageModule,
+    ) -> Result<Option<ModuleAuthorityManifest>> {
+        Ok(self
+            .manifest
+            .lock()
+            .await
+            .as_ref()
+            .filter(|manifest| manifest.module == module)
+            .cloned())
+    }
+
+    async fn publish_authority_manifest(
+        &self,
+        manifest: &ModuleAuthorityManifest,
+    ) -> Result<AuthorityPublication> {
+        *self.manifest.lock().await = Some(manifest.clone());
+        Ok(AuthorityPublication::Committed)
+    }
+}
+
+fn authority_manifest(generation: u64, backend: BackendKind) -> ModuleAuthorityManifest {
+    ModuleAuthorityManifest {
+        installation_id: "test-installation".into(),
+        module: StorageModule::TrafficArchive,
+        authority: ModuleAuthority {
+            backend,
+            generation,
+        },
+        source_watermark: 42,
+        target_identity: "test-target".into(),
+    }
+}
 
 #[tokio::test]
 async fn current_sqlite_schema_has_closed_ownership_catalog() {
@@ -175,15 +222,14 @@ async fn generation_gate_drains_old_leases_before_publishing_authority() {
     );
     let old = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     let switch_gate = gate.clone();
+    let store = Arc::new(TestAuthorityStore::default());
     let switch = tokio::spawn(async move {
         switch_gate
             .switch_authority(
                 StorageModule::TrafficArchive,
-                ModuleAuthority {
-                    backend: BackendKind::Postgres,
-                    generation: 2,
-                },
+                authority_manifest(2, BackendKind::Postgres),
                 std::time::Duration::from_secs(1),
+                store,
             )
             .await
     });
@@ -194,6 +240,120 @@ async fn generation_gate_drains_old_leases_before_publishing_authority() {
     let new = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     assert_eq!(new.lease.authority.backend, BackendKind::Postgres);
     assert_eq!(new.lease.authority.generation, 2);
+}
+
+#[tokio::test]
+async fn generation_gate_serializes_concurrent_authority_switches() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let old = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    let store = Arc::new(TestAuthorityStore::default());
+    let first_gate = gate.clone();
+    let first_store = Arc::clone(&store);
+    let first = tokio::spawn(async move {
+        first_gate
+            .switch_authority(
+                StorageModule::TrafficArchive,
+                authority_manifest(2, BackendKind::Postgres),
+                std::time::Duration::from_secs(1),
+                first_store,
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    let second_gate = gate.clone();
+    let second = tokio::spawn(async move {
+        second_gate
+            .switch_authority(
+                StorageModule::TrafficArchive,
+                authority_manifest(3, BackendKind::Postgres),
+                std::time::Duration::from_secs(1),
+                store,
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    drop(old);
+    let _ = first.await.unwrap();
+    let _ = second.await.unwrap();
+
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.generation, 3);
+}
+
+#[tokio::test]
+async fn cancelling_switch_waiter_does_not_cancel_authority_transition() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let old = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    let store = Arc::new(TestAuthorityStore::default());
+    let switch_gate = gate.clone();
+    let switch_store = Arc::clone(&store);
+    let waiter = tokio::spawn(async move {
+        switch_gate
+            .switch_authority(
+                StorageModule::TrafficArchive,
+                authority_manifest(2, BackendKind::Postgres),
+                std::time::Duration::from_secs(1),
+                switch_store,
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    waiter.abort();
+    drop(old);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if store.manifest.lock().await.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.generation, 2);
+    assert_eq!(
+        store
+            .manifest
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .authority
+            .generation,
+        2
+    );
+}
+
+#[tokio::test]
+async fn generation_gate_recovers_authority_from_durable_manifest() {
+    let store = Arc::new(TestAuthorityStore::default());
+    *store.manifest.lock().await = Some(authority_manifest(4, BackendKind::Postgres));
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    gate.recover_authority(store.as_ref()).await.unwrap();
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.backend, BackendKind::Postgres);
+    assert_eq!(current.lease.authority.generation, 4);
 }
 
 #[tokio::test]
@@ -215,15 +375,14 @@ async fn storage_transaction_holds_generation_lease_until_commit() {
         .await
         .unwrap();
     let switch_gate = gate.clone();
+    let store = Arc::new(TestAuthorityStore::default());
     let switch = tokio::spawn(async move {
         switch_gate
             .switch_authority(
                 StorageModule::TrafficArchive,
-                ModuleAuthority {
-                    backend: BackendKind::Postgres,
-                    generation: 2,
-                },
+                authority_manifest(2, BackendKind::Postgres),
                 std::time::Duration::from_secs(1),
+                store,
             )
             .await
     });

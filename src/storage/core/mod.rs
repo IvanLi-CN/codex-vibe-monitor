@@ -30,6 +30,22 @@ pub(crate) struct ModuleAuthority {
     pub(crate) generation: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleAuthorityManifest {
+    pub(crate) installation_id: String,
+    pub(crate) module: StorageModule,
+    pub(crate) authority: ModuleAuthority,
+    pub(crate) source_watermark: i64,
+    pub(crate) target_identity: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthorityPublication {
+    NotCommitted,
+    Committed,
+    Indeterminate,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ModuleLease {
     pub(crate) module: StorageModule,
@@ -104,6 +120,7 @@ struct AdmissionState {
 struct ModuleGate {
     module: StorageModule,
     state: Mutex<AdmissionState>,
+    switching: Mutex<()>,
     active: AtomicUsize,
     changed: Notify,
 }
@@ -132,6 +149,7 @@ impl ModuleGenerationGate {
                 authority,
                 accepting: true,
             }),
+            switching: Mutex::new(()),
             active: AtomicUsize::new(0),
             changed: Notify::new(),
         }))
@@ -158,36 +176,105 @@ impl ModuleGenerationGate {
     pub(crate) async fn switch_authority(
         &self,
         module: StorageModule,
-        authority: ModuleAuthority,
+        manifest: ModuleAuthorityManifest,
         drain_budget: Duration,
+        metadata: Arc<dyn AuthorityManifestStore>,
     ) -> Result<()> {
         if module != self.0.module {
             bail!("module generation gate cannot switch authority for another module");
         }
+        let gate = self.clone();
+        tokio::spawn(async move {
+            gate.switch_authority_inner(module, manifest, drain_budget, metadata)
+                .await
+        })
+        .await??;
+        Ok(())
+    }
+
+    async fn switch_authority_inner(
+        &self,
+        module: StorageModule,
+        manifest: ModuleAuthorityManifest,
+        drain_budget: Duration,
+        metadata: Arc<dyn AuthorityManifestStore>,
+    ) -> Result<()> {
+        let _switch = self.0.switching.lock().await;
         let deadline = tokio::time::Instant::now() + drain_budget;
         {
             let mut state = self.0.state.lock().await;
-            if authority.generation <= state.authority.generation {
-                bail!("module authority generation must increase monotonically");
+            if manifest.module != module
+                || manifest.authority.generation <= state.authority.generation
+            {
+                bail!("module authority manifest does not advance the selected module generation");
             }
             state.accepting = false;
         }
         loop {
             let notified = self.0.changed.notified();
-            let drained = self.0.active.load(Ordering::Acquire) == 0;
-            if drained {
-                let mut state = self.0.state.lock().await;
-                state.authority = authority;
-                state.accepting = true;
-                self.0.changed.notify_waiters();
-                return Ok(());
+            if self.0.active.load(Ordering::Acquire) == 0 {
+                break;
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                self.0.state.lock().await.accepting = true;
-                self.0.changed.notify_waiters();
+                self.reopen_admission().await;
                 bail!("timed out draining {module:?} before authority commit");
             }
         }
+
+        match metadata.publish_authority_manifest(&manifest).await? {
+            AuthorityPublication::NotCommitted => {
+                self.reopen_admission().await;
+                bail!(
+                    "module authority manifest was not committed; source authority remains active"
+                );
+            }
+            AuthorityPublication::Committed => {
+                let mut state = self.0.state.lock().await;
+                if manifest.authority.generation <= state.authority.generation {
+                    bail!("published module authority generation is no longer monotonic");
+                }
+                state.authority = manifest.authority;
+                state.accepting = true;
+                self.0.changed.notify_waiters();
+                Ok(())
+            }
+            AuthorityPublication::Indeterminate => {
+                bail!(
+                    "module authority publication is indeterminate; admission remains closed for recovery"
+                )
+            }
+        }
+    }
+
+    async fn reopen_admission(&self) {
+        self.0.state.lock().await.accepting = true;
+        self.0.changed.notify_waiters();
+    }
+
+    pub(crate) async fn recover_authority(
+        &self,
+        metadata: &dyn AuthorityManifestStore,
+    ) -> Result<()> {
+        let _switch = self.0.switching.lock().await;
+        self.0.state.lock().await.accepting = false;
+        if self.0.active.load(Ordering::Acquire) != 0 {
+            bail!("cannot recover module authority while generation leases are active");
+        }
+        if let Some(manifest) = metadata.load_authority_manifest(self.0.module).await? {
+            if manifest.module != self.0.module {
+                bail!("recovered authority manifest belongs to another module");
+            }
+            let mut state = self.0.state.lock().await;
+            if manifest.authority.generation < state.authority.generation
+                || (manifest.authority.generation == state.authority.generation
+                    && manifest.authority.backend != state.authority.backend)
+            {
+                bail!("recovered module authority manifest regresses the selected generation");
+            }
+            state.authority = manifest.authority;
+        }
+        self.reopen_admission().await;
+        Ok(())
     }
 
     pub(crate) async fn current_authorities(
@@ -274,7 +361,19 @@ pub(crate) trait MigrationTaskAdmission: Send + Sync {
     fn decision(&self, task_key: &str) -> AdmissionDecision;
 }
 
-pub(crate) trait MigrationMetadataStore: Send + Sync {
+#[async_trait::async_trait]
+pub(crate) trait AuthorityManifestStore: Send + Sync {
+    async fn load_authority_manifest(
+        &self,
+        module: StorageModule,
+    ) -> Result<Option<ModuleAuthorityManifest>>;
+    async fn publish_authority_manifest(
+        &self,
+        manifest: &ModuleAuthorityManifest,
+    ) -> Result<AuthorityPublication>;
+}
+
+pub(crate) trait MigrationMetadataStore: AuthorityManifestStore {
     async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>>;
     async fn save_status(&self, status: &MigrationStatus) -> Result<()>;
     async fn load_checkpoint(
