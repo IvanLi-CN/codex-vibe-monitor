@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "pr-open-linux-ci-passed-empirical-acceptance-pending",
-  "candidate_head_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-  "implementation_commit": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-  "active_base_sha": "8650fa1b47a455a8dc3e58452393a3788c9c1635",
+  "status": "pr-open-linux-ci-passed-empirical-acceptance-blocked",
+  "candidate_head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+  "implementation_commit": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+  "active_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
   "base_ref": "main",
   "pr_number": 1191,
   "candidate_branch": "th/summary-recovery-query-fairness",
   "base_sync": {
-    "previous_base_sha": "8650fa1b47a455a8dc3e58452393a3788c9c1635",
+    "previous_base_sha": "b1c523815090218499954e719b1b356b60d933cd",
     "merge_commit_sha": null,
-    "merge_strategy": "approved-baseline",
+    "merge_strategy": "linear-rebase-to-current-main",
     "shared_fix_deduplicated": [],
-    "mainline_scope": "The candidate starts from the approved origin/main baseline 8650fa1b; no merge commit or unrelated base merge is included.",
+    "mainline_scope": "The implementation candidate is linearly rebased onto current origin/main b3086216; no merge commit or unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
@@ -25,7 +25,7 @@
         "scope": "index-seek pagination and materialization budget",
         "evidence": [
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
-          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_covering_tuple_seek",
+          "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
           "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::page_selection_honors_adaptive_row_limit"
         ],
         "status": "passed on current-head Linux Stateful SQLite execution"
@@ -48,7 +48,7 @@
           "src/observability/contention.rs",
           "docs/specs/runtime-read-model-pressure-recovery/IMPLEMENTATION.md"
         ],
-        "status": "pending Linux contention and scheduler execution"
+        "status": "pending dedicated Linux contention and scheduler execution evidence"
       },
       {
         "id": "A4",
@@ -69,7 +69,7 @@
           "Observability Performance Budget",
           "GitHub CI candidate-bound evidence artifact"
         ],
-        "status": "pending current-head Linux/testbox evidence; no local production data used"
+        "status": "blocked: candidate-bound performance evidence classified as unavailable because metrics-mode CPU windows were unstable (CV 5.2146%; observed increase 7.2097%); p95 increase 1.011% passed; this is not a Dashboard regression conclusion"
       },
       {
         "id": "A6",
@@ -79,7 +79,7 @@
           "docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
           "docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json"
         ],
-        "status": "PR #1191 required CI passed at the recorded head; pending empirical acceptance, formal review, and Step 5C release decision card"
+        "status": "blocked: PR #1191 required CI and formal review passed at the implementation head, but empirical acceptance is blocked and Step 5C is not ready"
       }
     ]
   },
@@ -111,11 +111,27 @@
   "empirical_acceptance": {
     "required": true,
     "rationale": "Representative-scale recovery, SQLite contention, low-space-safe bounded behavior, and restart/cancellation interleaving require isolated CI/testbox observation; static checks and small deterministic tests are insufficient.",
-    "status": "pending",
-    "candidate_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-    "contract_digest": null,
-    "scenario_set_digest": null,
-    "evidence_locator": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1191"
+    "status": "blocked",
+    "candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+    "contract_digest": "2a3e47d2afc022281681956e95a566e57fcece92aaddb25308d387c0289b13bf",
+    "scenario_set_digest": "91e15552313348ade24b539822c79c92a495f0a5b3b51e2fdf84c3963c3d9694",
+    "evidence_locator": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081/attempts/1",
+    "failure": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "job": "Observability Performance Budget",
+      "functional_scenarios_passed": true,
+      "cpu_seconds_per_request": {
+        "observed_increase": 0.0720968518684939,
+        "coefficient_of_variation": 0.0521457846,
+        "stability_limit": 0.05,
+        "within_budget": false
+      },
+      "p95_seconds": {
+        "observed_increase": 0.0101117663,
+        "within_budget": true
+      },
+      "policy": "Do not rerun to manufacture a pass or relax the threshold; keep the empirical gate blocked and investigate with a separately authorized candidate."
+    }
   },
   "deployment_surfaces": {
     "github_release_and_ghcr": "No release publication is authorized by this candidate; release workflow policy applies only after PR validation and merge.",
@@ -134,7 +150,7 @@
     ],
     "blocked": [
       {
-        "command": "cargo test --locked compacted_source_recovery_key_page_uses_covering_tuple_seek -- --nocapture",
+        "command": "cargo test --locked compacted_source_recovery_key_page_uses_production_builder -- --nocapture",
         "reason": "The local macOS Rust test build is blocked before test execution by sqlx_macros dylib rejection: mis-aligned LINKEDIT string pool. Linux CI must execute the stateful SQLite tests."
       }
     ],
@@ -143,8 +159,8 @@
   "visual_evidence": [],
   "visual_evidence_owner_confirmation": "not_applicable",
   "execution_evidence": {
-    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40162410944",
-    "head_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
+    "head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
     "passed_lanes": [
       "Lint & Format Check",
       "Repository Tooling Checks",
@@ -163,6 +179,17 @@
       "Backend Tests (Archive / File I/O)",
       "Backend Tests (Stateful SQLite)",
       "Build Artifacts"
-    ]
+    ],
+    "performance_acceptance": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "artifact": "observability-acceptance-40167801081-1",
+      "candidate_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+      "status": "blocked",
+      "functional_scenarios_passed": true,
+      "cpu_observed_increase": 0.0720968518684939,
+      "cpu_window_cv": 0.0521457846,
+      "p95_observed_increase": 0.0101117663,
+      "reason": "The performance classifier rejected unavailable evidence because metrics-mode CPU windows exceeded the 5% stability limit and the observed CPU increase exceeded the 5% budget; p95 latency remained within budget."
+    }
   }
 }

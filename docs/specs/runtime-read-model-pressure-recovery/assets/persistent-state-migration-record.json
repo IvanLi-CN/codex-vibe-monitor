@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1191 candidate 70e523e4b8186dec95f6fce087c13066baa7f46d; Linux CI and migration evidence passed; empirical acceptance and formal review remain pending.",
+      "to_program_version": "PR #1191 implementation candidate 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19; Linux CI, migration evidence, and formal review passed; empirical acceptance is blocked by unstable CPU measurement windows, so this is not a release-ready version.",
       "direct_major_skips_supported": false
     }
   },
@@ -159,23 +159,34 @@
   },
   "pending_execution_evidence": [
     {
-      "candidate_head_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-      "reason": "PR #1191 empirical acceptance, contention, Tier 4 review, and Step 5C release decision must run against the current remote candidate head."
+      "candidate_head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+      "reason": "PR #1191 candidate-bound empirical acceptance classified the performance evidence as blocked: functional scenarios passed, p95 passed, but metrics-mode CPU windows exceeded the stability limit and the observed CPU increase exceeded budget. No rerun or threshold relaxation is authorized by the plan."
     }
   ],
   "execution_evidence": {
-    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40162410944",
-    "candidate_head_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-    "stateful_and_migration_profiles_passed": true
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
+    "candidate_head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+    "stateful_and_migration_profiles_passed": true,
+    "formal_review_passed": true,
+    "performance_acceptance": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "artifact": "observability-acceptance-40167801081-1",
+      "status": "blocked",
+      "functional_scenarios_passed": true,
+      "cpu_window_cv": 0.0521457846,
+      "cpu_observed_increase": 0.0720968518684939,
+      "p95_observed_increase": 0.0101117663,
+      "reason": "The classifier rejected unavailable evidence because CPU windows exceeded the 5% stability limit and the observed CPU increase exceeded the 5% budget; p95 latency remained within budget."
+    }
   },
   "delivery_context": {
-    "candidate_head_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-    "candidate_validation_status": "pr-open-linux-ci-passed-empirical-acceptance-pending",
-    "active_base_sha": "8650fa1b47a455a8dc3e58452393a3788c9c1635",
-    "previous_review_base_sha": "8650fa1b47a455a8dc3e58452393a3788c9c1635",
+    "candidate_head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+    "candidate_validation_status": "pr-open-linux-ci-passed-empirical-acceptance-blocked",
+    "active_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
+    "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The candidate starts from the approved origin/main baseline 8650fa1b; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 required CI passed at head 70e523e4b8186dec95f6fce087c13066baa7f46d; empirical acceptance and Tier 4 review must bind to the current candidate head; no older evidence is reused.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current origin/main b3086216; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 required CI and formal review passed for implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19; the candidate-bound performance run is recorded as blocked, so Step 5C is not ready.",
     "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }

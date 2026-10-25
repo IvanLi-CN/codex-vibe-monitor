@@ -67,7 +67,7 @@
         "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_matches_window_and_account_oracle",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::recovery_snapshot_window_ranges_expire_at_the_next_reporting_day",
         "web/src/hooks/useStats.integration.test.tsx::retries_a_pending_HTTP_recovery_summary_until_it_becomes_exact",
-        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_covering_tuple_seek",
+        "src/tests/stateful_sqlite/statistics_recovery.rs::compacted_source_recovery_key_page_uses_production_builder",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::deferred_recovery_uses_bounded_exponential_backoff"
       ]
     }
@@ -97,7 +97,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "PR #1191: th/summary-recovery-query-fairness@70e523e4b8186dec95f6fce087c13066baa7f46d",
+      "PR #1191: th/summary-recovery-query-fairness@9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "70e523e4b8186dec95f6fce087c13066baa7f46d",
-    "candidate_validation_status": "pr-open-linux-ci-passed-empirical-acceptance-pending",
-    "active_base_sha": "8650fa1b47a455a8dc3e58452393a3788c9c1635",
-    "previous_review_base_sha": "8650fa1b47a455a8dc3e58452393a3788c9c1635",
+    "candidate_head_sha": "9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19",
+    "candidate_validation_status": "pr-open-linux-ci-passed-empirical-acceptance-blocked",
+    "active_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
+    "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The candidate starts from the approved origin/main baseline 8650fa1b; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 required CI passed at head 70e523e4b8186dec95f6fce087c13066baa7f46d; empirical acceptance and formal review must bind to the current candidate head; no older evidence is reused.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current origin/main b3086216; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 required CI and formal review passed for implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19; the candidate-bound performance run is recorded as blocked, so Step 5C is not ready.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }
