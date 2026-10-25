@@ -9,7 +9,12 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Iterable
 
-from contract import COMPETITOR_FILE_COUNT, DATASETS, RETENTION_DAYS, SEED, canonical_json
+from contract import COMPETITOR_FILE_COUNT, COMPETITOR_TASK, DATASETS, RETENTION_DAYS, SEED, canonical_json
+
+
+CONTROLLED_TASK_KEYS = tuple(
+    [DATASETS[name]["task_key"] for name in DATASETS] + [COMPETITOR_TASK]
+)
 
 
 def shanghai_cutoff(now: datetime | None = None) -> str:
@@ -184,8 +189,15 @@ def prepare_competitor(
         for table in ("managed_task_work_runs", "managed_task_runs"):
             if table in table_names:
                 maintenance.execute(f"DELETE FROM {table}")
-        task_keys = [DATASETS[name]["task_key"] for name in DATASETS] + ["raw_orphan_sweep"]
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+        maintenance.execute(
+            f"UPDATE managed_tasks "
+            f"SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
+            f"WHERE task_key NOT IN ({placeholders})",
+            (now, *CONTROLLED_TASK_KEYS),
+        )
+        task_keys = CONTROLLED_TASK_KEYS
         for key in task_keys:
             cursor = maintenance.execute(
                 "UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,updated_at=? WHERE task_key=? AND enabled!=0",

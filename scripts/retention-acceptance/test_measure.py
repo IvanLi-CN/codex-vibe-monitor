@@ -16,12 +16,15 @@ from unittest.mock import patch
 from contract import (
     AcceptanceError,
     CLEANUP_RESERVE_SECONDS,
+    COMPETITOR_TASK,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
     CONTAINER_RUN_ID_LABEL,
     CONTAINER_TRIAL_LABEL,
+    DATASETS,
     TRIAL_EXECUTION_ORDER,
 )
+from fixture import CONTROLLED_TASK_KEYS, prepare_competitor
 from measure import (
     OwnedContainerLedger,
     cleanup_budget,
@@ -45,6 +48,95 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            main_database = root / "main.sqlite"
+            maintenance_database = root / "maintenance.sqlite"
+            raw_directory = root / "raw"
+            main = sqlite3.connect(main_database)
+            maintenance = sqlite3.connect(maintenance_database)
+            try:
+                main.execute(
+                    """
+                    CREATE TABLE retention_raw_reconciliation (
+                        raw_path TEXT,
+                        file_identity TEXT,
+                        byte_size INTEGER,
+                        quarantined_at TEXT,
+                        release_pending INTEGER,
+                        removal_evidence_persisted INTEGER
+                    )
+                    """
+                )
+                maintenance.execute(
+                    """
+                    CREATE TABLE managed_tasks (
+                        task_key TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL,
+                        next_trigger_at TEXT,
+                        next_catchup_at TEXT,
+                        catchup_reason TEXT,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                maintenance.execute("CREATE TABLE managed_task_runs (id INTEGER)")
+                maintenance.execute("CREATE TABLE managed_task_work_runs (id INTEGER)")
+                task_rows = [
+                    (key, 1, "old-trigger", "old-catchup", "old-reason", "old-updated")
+                    for key in (
+                        *CONTROLLED_TASK_KEYS,
+                        "summary_snapshot",
+                        "long_term_projection",
+                    )
+                ]
+                maintenance.executemany(
+                    "INSERT INTO managed_tasks VALUES (?,?,?,?,?,?)",
+                    task_rows,
+                )
+                main.commit()
+                maintenance.commit()
+            finally:
+                main.close()
+                maintenance.close()
+
+            prepare_competitor(
+                main_database,
+                maintenance_database,
+                raw_directory,
+                "/data/proxy_raw_payloads",
+                count=1,
+            )
+
+            connection = sqlite3.connect(maintenance_database)
+            try:
+                rows = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        "SELECT task_key,enabled,next_trigger_at,next_catchup_at,catchup_reason FROM managed_tasks"
+                    )
+                }
+            finally:
+                connection.close()
+
+            self.assertEqual(
+                set(CONTROLLED_TASK_KEYS),
+                {DATASETS[name]["task_key"] for name in DATASETS} | {COMPETITOR_TASK},
+            )
+            self.assertEqual(set(CONTROLLED_TASK_KEYS), {
+                key for key, (enabled, next_trigger, next_catchup, _) in rows.items()
+                if enabled == 1 and next_trigger is not None and next_catchup is None
+            })
+            self.assertEqual(
+                rows["summary_snapshot"],
+                (0, None, None, None),
+            )
+            self.assertEqual(
+                rows["long_term_projection"],
+                (0, None, None, None),
+            )
+
     def test_observed_attempt_states_counts_rows_from_five_column_query(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "attempts.sqlite"
