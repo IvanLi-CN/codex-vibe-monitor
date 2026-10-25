@@ -144,21 +144,18 @@ pub(crate) use summary_recovery::{
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    SummaryLiveTailReconciliationCheckpoint, load_summary_live_tail_reconciliation_checkpoint,
+    SummaryLiveTailReconciliationCheckpoint, explain_compacted_source_recovery_key_page_for_test,
+    hydrate_summary_snapshots, load_summary_live_tail_reconciliation_checkpoint,
     note_summary_projection_boundary_archive_hydration,
-    note_summary_projection_historical_identity_hydration,
+    note_summary_projection_historical_identity_hydration, refresh_summary_snapshots_with_mode,
+    refresh_summary_snapshots_with_test_setup_deadline,
     renew_summary_projection_freshness_if_generation_matches,
     renew_summary_projection_freshness_if_live_tail_matches,
     run_compacted_source_recovery_one_page_for_test,
     run_compacted_source_recovery_until_complete_for_test,
     store_summary_live_tail_reconciliation_checkpoint,
-    summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
-    summary_coverage_recovery_requires_second_v2_turn,
-};
-#[cfg(test)]
-pub(crate) use summary_projection_lifecycle::{
-    hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
-    refresh_summary_snapshots_with_test_setup_deadline,
+    summary_all_time_checkpoint_publication_required,
+    summary_coverage_recovery_requires_second_v2_turn, summary_coverage_recovery_scheduler_delay,
 };
 
 pub(crate) use invocation_query::{
@@ -3660,10 +3657,6 @@ const SUMMARY_LIVE_TAIL_RECONCILIATION_QUEUE_WAIT: Duration = Duration::from_sec
 const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_QUEUE_WAIT: Duration = Duration::from_secs(30);
 const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_CONTINUATION_QUEUE_WAIT: Duration =
     Duration::from_secs(1);
-// A V2 page first becomes durable authority. Publishing that authority is intentionally less
-// frequent than page commits: replacing the immutable read model copies its bounded resident
-// preview, so publishing every page turns long historical recovery into copy-bound work.
-const SUMMARY_HISTORICAL_COVERAGE_OVERLAY_PUBLICATION_PAGE_BATCHES: usize = 16;
 // Keep each low-priority recovery turn long enough to amortize archive open/hash/decode setup
 // across several bounded pages. The per-page 64 MiB/400-ID limits and pressure permit remain
 // unchanged; this is a scheduler batch budget, not an HTTP or rolling freshness deadline.
@@ -29294,10 +29287,30 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
     Query(params): Query<DashboardNetworkTimeseriesQuery>,
 ) -> Result<Json<DashboardNetworkTimeseriesResponse>, ApiError> {
     let started_at = Instant::now();
+    let response =
+        build_dashboard_network_timeseries_response_at(state.as_ref(), &params, Utc::now()).await?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    tracing::debug!(
+        endpoint = "/api/stats/dashboard-network-timeseries",
+        range = %params.range,
+        upstream_account_id = params.upstream_account_id,
+        bucket_count = response.points.len(),
+        elapsed_ms,
+        "dashboard network timeseries completed"
+    );
+
+    Ok(Json(response))
+}
+
+pub(crate) async fn build_dashboard_network_timeseries_response_at(
+    state: &AppState,
+    params: &DashboardNetworkTimeseriesQuery,
+    now: DateTime<Utc>,
+) -> Result<DashboardNetworkTimeseriesResponse, ApiError> {
     validate_dashboard_network_timeseries_range(params.range.as_str())?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let range_window =
-        resolve_range_window(params.range.as_str(), reporting_tz).map_err(ApiError::from)?;
+    let range_window = resolve_range_window_at(params.range.as_str(), reporting_tz, now)
+        .map_err(ApiError::from)?;
     let range = ExactUtcRange {
         start: range_window.start,
         end: range_window.end,
@@ -29367,7 +29380,7 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
             > range.start;
     if include_live_bucket {
         let live_bucket = load_dashboard_network_open_bucket_snapshot(
-            state.as_ref(),
+            state,
             source_scope,
             range.end,
             params.upstream_account_id,
@@ -29389,7 +29402,9 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
             .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS);
     let mut points = Vec::new();
     let mut bucket_epoch_second = first_bucket_epoch_second;
-    while bucket_epoch_second < range.end.timestamp() {
+    // Compare the complete bucket start with the subsecond range end so the current bucket is
+    // emitted even during the first fractional second after a bucket boundary.
+    loop {
         let bucket_start = Utc
             .timestamp_opt(bucket_epoch_second, 0)
             .single()
@@ -29420,24 +29435,14 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
         bucket_epoch_second = bucket_epoch_second.saturating_add(DASHBOARD_NETWORK_BUCKET_SECONDS);
     }
 
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    tracing::debug!(
-        endpoint = "/api/stats/dashboard-network-timeseries",
-        range = %params.range,
-        upstream_account_id = params.upstream_account_id,
-        bucket_count = points.len(),
-        elapsed_ms,
-        "dashboard network timeseries completed"
-    );
-
-    Ok(Json(DashboardNetworkTimeseriesResponse {
-        range: params.range,
+    Ok(DashboardNetworkTimeseriesResponse {
+        range: params.range.clone(),
         range_start: format_utc_iso_precise(range.start),
         range_end: format_utc_iso_precise(range.end),
         snapshot_id: range.end.timestamp_millis(),
         bucket_seconds: DASHBOARD_NETWORK_BUCKET_SECONDS,
         points,
-    }))
+    })
 }
 
 pub(crate) async fn fetch_upstream_account_activity(
@@ -35552,14 +35557,20 @@ mod request_compression_query_tests {
     }
 
     #[test]
-    fn summary_coverage_recovery_idle_cadence_waits_ten_seconds() {
+    fn summary_coverage_recovery_scheduler_cadence_waits_ten_seconds() {
         assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Immediate),
-            Duration::ZERO,
-            "startup and pending recovery turns must remain immediate"
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Immediate,
+                Duration::from_secs(10),
+            ),
+            Duration::from_secs(1),
+            "committed recovery pages must yield for one second before the next admission"
         );
         assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Idle),
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Idle,
+                Duration::from_secs(10),
+            ),
             SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
             "idle durable recovery must use the ten-second floor"
         );

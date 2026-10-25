@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -113,22 +114,126 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
     )
 
 
+def require_playwright_ci_config(workflow_path: Path, workflow_name: str) -> None:
+    config_path = workflow_path.parents[2] / "web" / "playwright.ci.config.ts"
+    require(config_path.is_file(), f"{workflow_name} must include web/playwright.ci.config.ts")
+    config = config_path.read_text(encoding="utf-8")
+    required_specs = (
+        "records-filter-overlay",
+        "dashboard-working-conversations-layout",
+        "demo-runtime",
+        "retention-maintenance-ownership",
+        "dashboard-render-performance",
+        "dashboard-timeline-capacity",
+    )
+    missing_specs = [
+        spec
+        for spec in required_specs
+        if not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(spec)}(?![A-Za-z0-9_-])", config)
+    ]
+    require(
+        not missing_specs,
+        f"{workflow_name} web/playwright.ci.config.ts is missing required specs: {', '.join(missing_specs)}",
+    )
+    require(
+        "workers: 1" in config and "fixtureBaseURL" in config and "demoBaseURL" in config,
+        f"{workflow_name} web/playwright.ci.config.ts must preserve per-project workers and dedicated base URLs",
+    )
+
+
 def require_observability_performance_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
+    require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
+    require_exact_named_jobs(
+        workflow,
+        {"Observability Performance Image", "Observability Acceptance (parallel workload lanes)", "Observability Performance Budget"},
+        workflow_path,
+    )
+    on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
+    require(set(on_section) == {"workflow_dispatch"}, f"{workflow_path} must have only the workflow_dispatch trigger")
+    dispatch = event_config(workflow, "workflow_dispatch", workflow_path)
+    dispatch_inputs = require_mapping(dispatch.get("inputs"), f"{workflow_path}.on.workflow_dispatch.inputs")
+    require(set(dispatch_inputs) == {"candidate_ref"}, f"{workflow_path} must expose only the candidate_ref input")
+    candidate_input = require_mapping(dispatch_inputs.get("candidate_ref"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_ref")
+    require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
+            f"{workflow_path} manual acceptance must require a string candidate_ref")
+    permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
+    require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")
     performance_job = job_config(workflow, "observability-performance", workflow_path)
     image_job = job_config(workflow, "observability-performance-image", workflow_path)
-    opt_in_if = "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance')"
-    require(performance_job.get("name") == "Observability Acceptance (serial bundle)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
+    resolver = step_config(image_job, "Resolve performance sources", f"{workflow_path}.jobs.observability-performance-image")
+    resolver_run = str(resolver.get("run", ""))
+    require(
+        resolver.get("id") == "refs"
+        and 'test "$EVENT_NAME" = "workflow_dispatch"' in resolver_run
+        and "WORKFLOW_REF" in resolver_run
+        and 'refs/heads/main' in resolver_run
+        and 'candidate_repository="$REPOSITORY"' in resolver_run
+        and "INPUT_CANDIDATE_REF" in resolver_run
+        and 'trusted_ref="$WORKFLOW_SHA"' in resolver_run
+        and "[0-9a-fA-F]{40}" in resolver_run
+        and "git check-ref-format --branch" in resolver_run
+        and 'candidate_ref="refs/heads/$candidate_input"' in resolver_run
+        and "github.event.pull_request" not in resolver_run,
+        f"{workflow_path} must resolve and bind the manual trusted/candidate sources",
+    )
+    image_checkout = checkout_step(image_job, "Checkout performance candidate", f"{workflow_path}.jobs.observability-performance-image")
+    require(
+        image_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
+        and image_checkout.get("path") == "candidate"
+        and image_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}",
+        f"{workflow_path} image job must build only the resolved candidate checkout",
+    )
+    identity = step_config(image_job, "Bind candidate identity", f"{workflow_path}.jobs.observability-performance-image")
+    identity_run = str(identity.get("run", ""))
+    require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run,
+            f"{workflow_path} must pin the candidate checkout to its resolved commit")
+    for job_id, job_name in [("observability-performance", "performance"), ("observability-performance-result", "aggregation")]:
+        job = job_config(workflow, job_id, workflow_path)
+        trusted = checkout_step(job, "Checkout trusted acceptance harness", f"{workflow_path}.jobs.{job_id}")
+        candidate = checkout_step(job, "Checkout candidate identity", f"{workflow_path}.jobs.{job_id}")
+        require(
+            trusted.get("repository") == "${{ github.repository }}"
+            and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}"
+            and trusted.get("path") == "trusted",
+            f"{workflow_path} {job_name} must run the harness from the resolved trusted checkout",
+        )
+        require(
+            candidate.get("repository") == "${{ needs.observability-performance-image.outputs.candidate_repository }}"
+            and candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}"
+            and candidate.get("path") == "candidate",
+            f"{workflow_path} {job_name} must use the resolved candidate checkout only for identity",
+        )
+    require(performance_job.get("name") == "Observability Acceptance (parallel workload lanes)" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("timeout-minutes") == 60 and image_job.get("timeout-minutes") == 15,
-            "the image job must finish within 15 minutes and the serial bundle within 60 minutes")
-    require("strategy" not in performance_job,
-            "the full acceptance bundle must run in one job instead of independent matrix runners")
-    clock = step_config(performance_job, "Start test wall clock", workflow_path)
-    require("env" not in clock
-            and str(clock.get("run", "")).strip().splitlines() == ["set -euo pipefail",
-                'started="$(date +%s)"',
-                'echo "OBSERVABILITY_TEST_STARTED_UTC=$started" >> "$GITHUB_ENV"']
-            and clock.get("timeout-minutes") == 1,
-            "the serial bundle must start one shared wall-clock budget on its own runner")
+            "the image job must finish within 15 minutes and each workload lane within 60 minutes")
+    strategy = require_mapping(performance_job.get("strategy"), f"{workflow_path}.jobs.observability-performance.strategy")
+    matrix = require_mapping(strategy.get("matrix"), f"{workflow_path}.jobs.observability-performance.strategy.matrix")
+    require(
+        strategy.get("fail-fast") is False
+        and strategy.get("max-parallel") == 4
+        and matrix.get("lane") == ["runtime", "pair-0", "pair-1", "pair-2"],
+        "performance workload lanes must run concurrently without cancelling sibling evidence",
+    )
+    concurrency = require_mapping(workflow.get("concurrency"), f"{workflow_path}.concurrency")
+    require(
+        concurrency.get("group") == "observability-performance-${{ inputs.candidate_ref || github.run_id }}"
+        and concurrency.get("cancel-in-progress") is False,
+        "performance acceptance runs must not cancel an in-flight candidate measurement",
+    )
+    clock = step_config(image_job, "Start shared acceptance wall clock", workflow_path)
+    require(
+        clock.get("id") == "acceptance_clock"
+        and str(clock.get("run", "")).strip().splitlines() == ["set -euo pipefail",
+            'started="$(date +%s)"',
+            'echo "started=$started" >> "$GITHUB_OUTPUT"']
+        and clock.get("timeout-minutes") == 1,
+        "the image producer must emit one shared acceptance wall-clock start",
+    )
+    image_outputs = require_mapping(image_job.get("outputs"), f"{workflow_path}.jobs.observability-performance-image.outputs")
+    require(
+        image_outputs.get("acceptance_started") == "${{ steps.acceptance_clock.outputs.started }}",
+        "every workload lane must consume the image producer's shared clock",
+    )
     for name in ("Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
         require(step_config(performance_job, name, workflow_path).get("timeout-minutes") == 1,
                 "checkout and artifact actions must fit bounded preparation before the shared deadline")
@@ -137,8 +242,15 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
                 in str(step_config(performance_job, name, workflow_path).get("run", "")),
                 "preparation including download retries must share the execution deadline")
     require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
-    require(image_job.get("if") == opt_in_if and performance_job.get("if") == opt_in_if,
-            "observability performance jobs must require explicit label or manual opt-in")
+    performance_env = require_mapping(performance_job.get("env"), f"{workflow_path}.jobs.observability-performance.env")
+    require(
+        performance_env.get("OBSERVABILITY_TEST_STARTED_UTC") == "${{ needs.observability-performance-image.outputs.acceptance_started }}"
+        and performance_env.get("OBSERVABILITY_LANE") == "${{ matrix.lane }}"
+        and performance_env.get("OBSERVABILITY_RUNNER_SCOPE") == "parallel-${{ matrix.lane }}",
+        "each workload lane must bind its shared clock, lane, and isolated runner scope",
+    )
+    require("if" not in image_job and "if" not in performance_job,
+            "observability performance jobs must run only from the workflow dispatch trigger")
     require_job_and_steps_fail_closed(
         performance_job,
         "ci-pr.yml.jobs.observability-performance",
@@ -156,7 +268,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     image_build_with = require_mapping(image_build.get("with"), "observability performance image build")
     require(
         "cache-to" not in image_build_with,
-        "pull_request_target performance builds must not export to the read-only Actions cache",
+        "performance builds must not export to the read-only Actions cache",
     )
     image_upload = uses_step_config(
         image_job,
@@ -193,8 +305,9 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require("scripts/observability-acceptance/bundle.py" in str(acceptance.get("run", ""))
             and "--source \"$PWD/trusted\"" in str(acceptance.get("run", ""))
             and "--candidate-source \"$PWD/candidate\"" in str(acceptance.get("run", ""))
+            and '--lane "$OBSERVABILITY_LANE"' in str(acceptance.get("run", ""))
             and "--seconds 60 --rate 5" in str(acceptance.get("run", "")),
-            "performance gate must use the fixed bounded single-runner Actions bundle")
+            "performance gate must use the fixed bounded workload lane Actions bundle")
     result_job = job_config(workflow, "observability-performance-result", workflow_path)
     require(result_job.get("name") == "Observability Performance Budget"
             and result_job.get("needs") == ["observability-performance-image", "observability-performance"]
@@ -220,18 +333,18 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
                          "run-config.json", "image-identity.json", "runner-context.json", "cpu-attribution.json",
                          "environment-admission.jsonl", "resource-observer.jsonl", "measurement-windows.json",
                          "cpu-verified/*.manifest.json", "cpu-verified/*.json.gz", "cpu-verified/*.syms.json"}
-    prefix = "${{ runner.temp }}/observability-acceptance/"
-    for lane in ("runtime", "pair-0", "pair-1", "pair-2"):
-        upload = step_config(performance_job, f"Upload {lane} acceptance evidence", "ci-pr.yml.jobs.observability-performance")
-        require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
-        evidence = str(upload.get("with", {}).get("path", "")).splitlines()
-        require({line.strip() for line in evidence if line.strip()} == {prefix + lane + "/" + name for name in expected_evidence},
-                "performance evidence must include exactly the declared artifact whitelist")
-        require(upload.get("with", {}).get("name") == f"observability-part-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{lane}",
-                "part evidence must be attempt/lane scoped")
+    upload = step_config(performance_job, "Upload workload acceptance evidence", workflow_path)
+    require(upload.get("if") == "always()", "failed performance lanes must preserve evidence")
+    prefix = "${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/"
+    evidence = str(upload.get("with", {}).get("path", "")).splitlines()
+    require({line.strip() for line in evidence if line.strip()} == {prefix + name for name in expected_evidence},
+            "performance evidence must include exactly the declared artifact whitelist")
+    require(upload.get("with", {}).get("name") == "observability-part-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane }}",
+            "workload evidence must be attempt/lane scoped")
     combined = step_config(result_job, "Upload aggregated acceptance evidence", workflow_path)
+    aggregate_prefix = "${{ runner.temp }}/observability-acceptance/"
     require(combined.get("if") == "always()" and set(str(combined.get("with", {}).get("path", "")).splitlines())
-            == {prefix + name for name in ("empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json")},
+            == {aggregate_prefix + name for name in ("empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json")},
             "aggregate evidence must use its exact safe whitelist")
 
 
@@ -261,102 +374,10 @@ def require_pr_smoke_artifact_contract(smoke_job: dict[str, Any], build_job: dic
     )
 
 
-def require_observability_diagnostic_contract(workflow: dict[str, Any], workflow_path: str = "ci-observability-performance.yml") -> None:
-    job = job_config(workflow, "observability-diagnostics", workflow_path)
-    require(job.get("name") == "Observability CPU Diagnosis"
-            and job.get("needs") == "observability-performance-image"
-            and job.get("runs-on") == RUNNER_X64 and job.get("timeout-minutes") == 15
-            and job.get("if") == ("github.event_name == 'pull_request_target' && github.event.action == 'labeled' "
-                                   "&& github.event.label.name == 'run:observability-performance' "
-                                   "&& (github.event.pull_request.number == 1071 || "
-                                   "github.event.pull_request.number == 1079)"),
-            "diagnosis must be the explicitly opted-in bounded hosted VM experiment")
-    require_job_and_steps_fail_closed(job, f"{workflow_path}.jobs.observability-diagnostics")
-    performance = job_config(workflow, "observability-performance", workflow_path)
-    require(performance.get("needs") == "observability-performance-image",
-            "diagnosis must not replace or certify the performance gate")
-    for name in ["Checkout trusted acceptance harness", "Download performance candidate image",
-                 "Verify and load candidate image", "Prepare pinned CPU sampler"]:
-        require(step_config(job, name, "diagnostics") == {key: value for key, value in step_config(performance, name, "performance").items() if key not in {"if", "timeout-minutes"}},
-                "diagnosis must use identical candidate image verification and pinned sampler")
-    run = step_config(job, "Run bounded CPU diagnosis", "diagnostics")
-    script = str(run.get("run", ""))
-    require("scripts/observability-diagnostics/run.py" in script
-            and '--candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE"' in script
-            and "--suite" not in script and "observability-acceptance/run.py" not in script,
-            "diagnosis must use the separate non-certifying entrypoint")
-    upload = step_config(job, "Upload bounded CPU diagnostic evidence", "diagnostics")
-    require(upload.get("if") == "always()" and upload.get("with", {}).get("retention-days") == 14,
-            "diagnosis must retain failed evidence with bounded retention")
-    expected = {"diagnostic-card.json", "diagnostic-windows.json", "cpu-timeseries.jsonl", "scenarios.json",
-                "run-config.json", "image-identity.json", "runner-context.json", "environment-admission.jsonl",
-                "resource-observer.jsonl", "measurement-windows.json", "profiles/*/*.manifest.json",
-                "profiles/*/*.json.gz", "profiles/*/*.syms.json"}
-    prefix = "${{ runner.temp }}/observability-diagnostics/"
-    paths = str(upload.get("with", {}).get("path", "")).splitlines()
-    require({p.strip() for p in paths if p.strip()} == {prefix + p for p in expected},
-            "diagnosis artifacts must exclude certificates, secrets, raw payloads, logs and databases")
-    build = workflow.get("jobs", {}).get("build")
-    if build is not None:
-        require("observability-diagnostics" not in build.get("needs", []),
-                "diagnosis must not replace or certify the performance gate")
-
-
 def validate_observability_performance(path: Path) -> None:
     workflow_path = "ci-observability-performance.yml"
     workflow = load_yaml(path)
-    require(workflow.get("name") == "Observability Performance", f"{workflow_path}: workflow name drifted")
-    require_exact_named_jobs(
-        workflow,
-        {"Observability Performance Image", "Observability Acceptance (serial bundle)", "Observability Performance Budget", "Observability CPU Diagnosis"},
-        workflow_path,
-    )
-    on_section = require_mapping(mapping_get(workflow, "on"), f"{workflow_path}.on")
-    require("pull_request" not in on_section and "merge_group" not in on_section, f"{workflow_path} must not run on untrusted pull_request or merge_group events")
-    dispatch = event_config(workflow, "workflow_dispatch", workflow_path)
-    dispatch_inputs = require_mapping(dispatch.get("inputs"), f"{workflow_path}.on.workflow_dispatch.inputs")
-    candidate_input = require_mapping(dispatch_inputs.get("candidate_sha"), f"{workflow_path}.on.workflow_dispatch.inputs.candidate_sha")
-    require(candidate_input.get("required") is True and candidate_input.get("type") == "string",
-            f"{workflow_path} manual acceptance must require a string candidate_sha")
-    assert_event_types(event_config(workflow, "pull_request_target", workflow_path), {"labeled"}, f"{workflow_path}.on.pull_request_target")
-    permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
-    require(permissions.get("contents") == "read", f"{workflow_path}.permissions.contents must stay read")
-    image = job_config(workflow, "observability-performance-image", workflow_path)
-    resolver = step_config(image, "Resolve performance sources", f"{workflow_path}.jobs.observability-performance-image")
-    resolver_run = str(resolver.get("run", ""))
-    require(
-        resolver.get("id") == "refs"
-        and "WORKFLOW_REF" in resolver_run
-        and 'refs/heads/main' in resolver_run
-        and "candidate_repository" in resolver_run
-        and "trusted_ref" in resolver_run,
-        f"{workflow_path} must resolve and bind the manual trusted/candidate sources",
-    )
-    image_checkout = checkout_step(image, "Checkout performance candidate", f"{workflow_path}.jobs.observability-performance-image")
-    require(
-        image_checkout.get("repository") == "${{ steps.refs.outputs.candidate_repository }}"
-        and image_checkout.get("path") == "candidate"
-        and image_checkout.get("ref") == "${{ steps.refs.outputs.candidate_ref }}",
-        f"{workflow_path} image job must build only the resolved candidate checkout",
-    )
-    for job_id, job_name in [("observability-performance", "performance"), ("observability-performance-result", "aggregation"), ("observability-diagnostics", "diagnosis")]:
-        job = job_config(workflow, job_id, workflow_path)
-        trusted = checkout_step(job, "Checkout trusted acceptance harness", f"{workflow_path}.jobs.{job_id}")
-        candidate = checkout_step(job, "Checkout candidate identity", f"{workflow_path}.jobs.{job_id}")
-        require(
-            trusted.get("repository") == "${{ github.repository }}"
-            and trusted.get("ref") == "${{ needs.observability-performance-image.outputs.trusted_ref }}"
-            and trusted.get("path") == "trusted",
-            f"{workflow_path} {job_name} must run the harness from the resolved trusted checkout",
-        )
-        require(
-            candidate.get("repository") == "${{ needs.observability-performance-image.outputs.candidate_repository }}"
-            and candidate.get("ref") == "${{ needs.observability-performance-image.outputs.candidate }}"
-            and candidate.get("path") == "candidate",
-            f"{workflow_path} {job_name} must use the resolved candidate checkout only for identity",
-        )
     require_observability_performance_contract(workflow, workflow_path)
-    require_observability_diagnostic_contract(workflow, workflow_path)
 
 
 def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:
@@ -541,10 +562,14 @@ def workflow_named_job_names(workflow: dict[str, Any], where: str) -> set[str]:
 
 
 def require_exact_named_jobs(workflow: dict[str, Any], expected_jobs: set[str], where: str) -> None:
+    jobs = workflow_jobs(workflow, where)
     actual_jobs = workflow_named_job_names(workflow, where)
     require(
-        actual_jobs == expected_jobs,
-        f"{where}: declared jobs drifted missing={sorted(expected_jobs - actual_jobs)} unexpected={sorted(actual_jobs - expected_jobs)}",
+        len(jobs) == len(expected_jobs)
+        and len(actual_jobs) == len(jobs)
+        and actual_jobs == expected_jobs,
+        f"{where}: declared jobs drifted count={len(jobs)} expected_count={len(expected_jobs)} "
+        f"missing={sorted(expected_jobs - actual_jobs)} unexpected={sorted(actual_jobs - expected_jobs)}",
     )
 
 
@@ -1196,6 +1221,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require_storybook_browser_install(workflow, "ci-pr.yml")
     require_retention_migration_validation_contract(workflow, expected_jobs, auxiliary_jobs)
     require_bun_caches(workflow, "ci-pr.yml")
+    require_playwright_ci_config(path, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -1348,8 +1374,6 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     )
     if performance_declared:
         require_observability_performance_contract(workflow)
-    if "Observability CPU Diagnosis" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ()):
-        require_observability_diagnostic_contract(workflow)
     require_exact_if(
         build_job,
         "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
@@ -1415,46 +1439,37 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         e2e_run = str(e2e_run_step.get("run", ""))
         require(
-            "records-filter-overlay.spec.ts" in e2e_run
-            and "demo-runtime.spec.ts" in e2e_run
-            and "dashboard-working-conversations-layout.spec.ts" in e2e_run
-            and "dashboard-render-performance.spec.ts" in e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression specs",
+            "playwright.ci.config.ts" in e2e_run
+            and "--project=fixtures-functional" in e2e_run
+            and "--project=demo-functional" in e2e_run
+            and "--project=performance" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression projects",
         )
         require(
-            "--output=test-results/records-overlay" in e2e_run
-            and "--output=test-results/demo-runtime" in e2e_run
-            and "--output=test-results/dashboard-working-conversations" in e2e_run
-            and "--output=test-results/dashboard-render-performance" in e2e_run,
+            "--output=test-results/functional" in e2e_run
+            and "--output=test-results/performance" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate all Playwright result directories",
         )
         expected_e2e_run = "\n".join(
             [
                 "set -euo pipefail",
-                "records_status=0",
-                "demo_status=0",
-                "dashboard_status=0",
+                "functional_status=0",
                 "performance_status=0",
-                "retention_status=0",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts || records_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts || demo_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-retention-ownership \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/retention-ownership retention-maintenance-ownership.spec.ts || retention_status=$?",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts || dashboard_status=$?",
-                "E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \\",
-                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?",
-                "exit $(( records_status || demo_status || dashboard_status || performance_status || retention_status ))",
+                "CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
+                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?",
+                "CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\",
+                "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
+                "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
+                "exit $(( functional_status || performance_status ))",
             ]
         )
         require(
             e2e_run.strip() == expected_e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all four Playwright specs serially and propagate each status",
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run the functional and performance batches serially and propagate each status",
         )
         require(
-            "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,
+            "E2E_DEMO_BASE_URL=http://127.0.0.1:60083" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must run Web Demo against its mock-only server",
         )
         smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
@@ -1610,6 +1625,43 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
     require_storybook_browser_install(workflow, "ci-main.yml")
     require_bun_caches(workflow, "ci-main.yml")
+    require_playwright_ci_config(path, "ci-main.yml")
+
+    e2e_job = named_job_config(workflow, "records-overlay-e2e", expected_jobs, "ci-main.yml")
+    require_no_if(e2e_job, "ci-main.yml.jobs.records-overlay-e2e")
+    require_fail_closed(e2e_job, "ci-main.yml.jobs.records-overlay-e2e")
+    e2e_run_step = step_config(
+        e2e_job,
+        "Run records overlay and Web Demo Playwright regression",
+        "ci-main.yml.jobs.records-overlay-e2e",
+    )
+    e2e_run = str(e2e_run_step.get("run", ""))
+    expected_e2e_run = "\n".join(
+        [
+            "set -euo pipefail",
+            "functional_status=0",
+            "performance_status=0",
+            "timeline_capacity_status=0",
+            "CI_PROFILE=main E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \\",
+            "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=2 --output=test-results/functional || functional_status=$?",
+            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \\",
+            "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?",
+            "CI_PROFILE=main E2E_DEMO_BASE_URL=http://127.0.0.1:60085 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=30000 \\",
+            "  PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-timeline-capacity \\",
+            "  bun run test:e2e -- --config=playwright.ci.config.ts --project=timeline-capacity --workers=1 --output=test-results/timeline-capacity || timeline_capacity_status=$?",
+            "exit $(( functional_status || performance_status || timeline_capacity_status ))",
+        ]
+    )
+    require(
+        e2e_run.strip() == expected_e2e_run,
+        "ci-main.yml.jobs.records-overlay-e2e must run functional, performance, and timeline batches serially and propagate each status",
+    )
+    require(
+        all(project in e2e_run for project in ("fixtures-functional", "demo-functional", "performance", "timeline-capacity")),
+        "ci-main.yml.jobs.records-overlay-e2e must run all required Playwright projects",
+    )
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
@@ -2445,6 +2497,10 @@ def materialize_default_repo_root(script_repo_root: Path) -> Path:
 
     tempdir = Path(tempfile.mkdtemp(prefix="quality-gates-contract-"))
     shutil.copytree(script_repo_root / ".github", tempdir / ".github", dirs_exist_ok=True)
+    playwright_config = script_repo_root / "web" / "playwright.ci.config.ts"
+    require(playwright_config.is_file(), "repository must include web/playwright.ci.config.ts")
+    (tempdir / "web").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(playwright_config, tempdir / "web" / "playwright.ci.config.ts")
     shutil.copyfile(fixtures_root / "quality-gates.json", tempdir / ".github" / "quality-gates.json")
     for filename in ("ci-pr.yml", "ci-main.yml", "release.yml", "label-gate.yml", "review-policy.yml", "release-snapshot-pr.yml"):
         shutil.copyfile(fixtures_root / filename, tempdir / ".github" / "workflows" / filename)

@@ -51,6 +51,10 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   and oracle run on the target commit in PR/Main CI. Release relies on that
   successful CI Main result and runtime-image smoke, never an external receipt
   or production-copy path.
+- Empirical acceptance is fail-closed: unstable measurement windows or a
+  threshold failure block release evidence and must be recorded against the
+  candidate; the threshold may not be relaxed and an unstable run may not be
+  silently relabeled as passed.
 - A published rolling Projection may consume only a continuous in-memory
   Summary Delta Journal or durable Summary Source Change Journal tail through
   `RollingDelta`. Pre-enqueue registration is not readable; only a matching
@@ -161,6 +165,9 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - All-time coverage uses independent global and account scope versions across manifest, archive replay and verified Snapshot V2 proof. Archive rollup materialization advances those versions through its replay proof; ordinary hot/live rollup writes advance only the independent live-tail cursor and bounded overlay. They do not invalidate a completed historical checkpoint or trigger full live admission. Only a changed historical coverage input restarts its affected scope, and an unknown impact remains fail-closed.
 - Dashboard compacted-source recovery uses an additive checkpoint and staging tables. It captures fixed Shanghai window boundaries, the live/rollup/account/manifest/coverage/terminal target fence, a `(occurred_at, id)` cursor, aggregate deltas, usage breakdowns, and bounded record identities; it never copies invocation payloads. A committed page advances all of these facts in one transaction, a concurrent worker must win a durable cursor compare-and-swap, and a restart resumes from the committed tuple without duplicate counting.
 - The dashboard recovery worker owns separate pending/running/deferred/failed/completed states. It yields at the first of the 512-row, 8 MiB, 250 ms transaction, or 2 s turn budgets; coverage-fence changes clear unpublishable staging and rebuild against the new target, while append-only live-tail changes preserve committed historical pages and are applied through the bounded exact delta overlay. Non-error source text that cannot be materialized within the page budget fails closed; only a completed staging set matching the current coverage fence is published to the in-memory Summary read model.
+- Dashboard compacted-source pages MUST merge the Shanghai `today`, `yesterday`, and `previous7d` ranges into one equivalent half-open interval. The first SQL stage MUST use the existing `idx_codex_invocations_occurred_at_id` covering index with an `(occurred_at, id)` tuple seek and a `512`-key limit. Subsequent key-restricted reads MUST share one bounded read snapshot: status normalization, JSON-derived failure classification, and byte estimation are computed once for those keys, then the materialization read may load only the selected necessary source fields and bounded error text. The materialization read MUST reuse the snapshot metadata and MUST NOT recompute byte estimates or classification for unselected rows. The actual SQLite plan MUST contain no multi-index OR, global scan, or temporary sort B-tree.
+- A key page that reaches a `running` or `pending` canonical row MUST stop the checked prefix at that row. The tuple cursor may advance only through fully examined terminal rows, so a later terminal transition remains recoverable; when no terminal row or cursor progress is available, the worker defers without a no-op checkpoint write.
+- Each recovery admission owns one bounded turn and releases its priority reservation and execution lease before scheduling another turn. A committed page waits at least one second before the next admission; deferred work backs off at `10/20/40/60` seconds, capped at 60 seconds, and pressure cooldowns may extend that deadline. Fixed-cardinality in-memory metrics and payload-free structured logs distinguish scanned keys, committed terminal rows, cursor advancement, budget exhaustion, pressure/contention defer, retry delay, and publication.
 - Summary Delta Journal 的 gap proof 预算耗尽时不得淘汰较早的 account/time/rank proof；必须保留一个广义 proof，直至 generation-fenced durable reconciliation 吸收该缺口。若已存在 last-good immutable Projection，intersecting selection 可以继续组合已确认 terminal overlay，但必须返回 `StatsResponse.dataQuality = { state: "degraded", proofPending: true, reason: "summary_delta_journal_pending" }`；没有已发布 Projection 或命中独立 archive/source coverage gap 时仍保持 `unavailable`。terminal journal 或 shutdown recovery 在 SQLite commit 后必须作为有界 exact replay overlay 接入 rolling Projection，不能让正常 Rolling 退化为完整 live admission。
 - Summary live-tail reconciliation MUST key absorption and proof retirement by
   the durable `(row_id, invoke_id, occurred_at)` identity. An ACK or restart
@@ -357,6 +364,7 @@ The detailed requirements and verification entries above define the durable cont
 - 每个 child PR 运行定向回归、`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features` 与 Clippy。
 - 与 archive/SQLite 行为相符的 backend resource profile 通过 CI；integration frontier 使用 `Backend Tests (Stateful SQLite)` 的 exact SHA 结果。
 - Summary Ticket 使用 production-shaped archive fixture、HTTP SQL/file counter 与 exactness 对账；long-term Ticket 使用 `EXPLAIN` 与 bounded-migration fixture。
+- 本次 query-fairness follow-up 不宣称相对生产性能改善，因此 generic observability A/B 或硬件可比性不是合并门槛；合并门槛仍是当前 head 的代表性规模、Stateful SQLite exactness、查询计划、预算让出和状态契约证据。需要相对性能结论时，另行提供带 Summary recovery fixture 的同机基线/候选测量，不得用 observability harness 代替。
 
 ### Quality checks
 

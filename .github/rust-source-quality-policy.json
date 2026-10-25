@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 28,
+    "inventory_entries": 47,
     "suppression_entries": 126
   },
   "loc_targets": {
@@ -73,22 +73,136 @@
       "next_module_workstream": "Split stale pool orphan fixtures by selectors, phase classification, active exclusion, rollback, batching, and owner availability."
     },
     {
-      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "path": "src/tests/lightweight/app_config_and_invocation_index_contracts.rs",
       "role": "test_helper",
-      "line_budget": 4214,
-      "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
+      "line_budget": 732,
+      "next_module_workstream": "Split application configuration and invocation-index fixtures by environment, retention, and query-plan concerns."
     },
     {
-      "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+      "path": "src/tests/lightweight/capture_snapshot_and_replay.rs",
       "role": "test_helper",
-      "line_budget": 9997,
-      "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
+      "line_budget": 140,
+      "next_module_workstream": "Split capture snapshot and replay fixtures by prebuffering, spill files, and partial-body recovery."
     },
     {
-      "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
+      "path": "src/tests/lightweight/forward_proxy_binding_and_capture_diagnostics.rs",
       "role": "test_helper",
-      "line_budget": 3869,
-      "next_module_workstream": "Split OAuth route rewrite/timeout fixtures by request preparation, response, and failure paths."
+      "line_budget": 837,
+      "next_module_workstream": "Split forward-proxy binding and capture diagnostics by route identity, runtime weight, and response classification."
+    },
+    {
+      "path": "src/tests/lightweight/forward_proxy_subscription_and_weights.rs",
+      "role": "test_helper",
+      "line_budget": 225,
+      "next_module_workstream": "Split forward-proxy subscription and weight fixtures by refresh, bootstrap probing, and endpoint selection."
+    },
+    {
+      "path": "src/tests/lightweight/lightweight_test_support.rs",
+      "role": "test_helper",
+      "line_budget": 457,
+      "next_module_workstream": "Split lightweight test support by configuration, filesystem fixtures, and retention database builders."
+    },
+    {
+      "path": "src/tests/lightweight/raw_capture_overflow_and_projection.rs",
+      "role": "test_helper",
+      "line_budget": 411,
+      "next_module_workstream": "Split raw capture overflow and projection fixtures by spool recovery, streaming capture, and terminal projection."
+    },
+    {
+      "path": "src/tests/lightweight/raw_payload_file_storage.rs",
+      "role": "test_helper",
+      "line_budget": 630,
+      "next_module_workstream": "Split raw payload file fixtures by path resolution, compression, streaming writes, and search diagnostics."
+    },
+    {
+      "path": "src/tests/lightweight/schema_migration_and_maintenance.rs",
+      "role": "test_helper",
+      "line_budget": 650,
+      "next_module_workstream": "Split schema migration and maintenance fixtures by raw codecs, manifest setup, and observability snapshots."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/invocation_list_queries_and_filters.rs",
+      "role": "test_helper",
+      "line_budget": 1242,
+      "next_module_workstream": "Maintain the completed invocation-list query and filter responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/invocation_summary_suggestions_and_stats.rs",
+      "role": "test_helper",
+      "line_budget": 1689,
+      "next_module_workstream": "Maintain the completed summary, suggestion, statistics, and timing responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_binding_and_affinity.rs",
+      "role": "test_helper",
+      "line_budget": 2052,
+      "next_module_workstream": "Maintain the completed prompt-cache binding and affinity responsibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_conversation_reads.rs",
+      "role": "test_helper",
+      "line_budget": 678,
+      "next_module_workstream": "Maintain the completed prompt-cache conversation-read and failure-classification boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_materialization_and_allocator.rs",
+      "role": "test_helper",
+      "line_budget": 1294,
+      "next_module_workstream": "Maintain the completed prompt-cache materialization, allocator, and recovery boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_schema_migration_contracts.rs",
+      "role": "test_helper",
+      "line_budget": 498,
+      "next_module_workstream": "Maintain the completed prompt-cache schema migration and policy contract boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_sticky_runtime.rs",
+      "role": "test_helper",
+      "line_budget": 1182,
+      "next_module_workstream": "Maintain the completed prompt-cache sticky runtime and model-scoped routing boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_capture_and_invocation_queries.rs",
+      "role": "test_helper",
+      "line_budget": 495,
+      "next_module_workstream": "Maintain the completed proxy capture and invocation-query foundation boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/schema_retirement_and_historical_fixtures.rs",
+      "role": "test_helper",
+      "line_budget": 841,
+      "next_module_workstream": "Maintain the completed schema retirement and historical fixture compatibility boundary below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_failure_diagnostics_and_terminal_streams.rs",
+      "role": "test_helper",
+      "line_budget": 1092,
+      "next_module_workstream": "Maintain the completed OAuth failure diagnostics, terminal-stream, retry, and persistence fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_response_rewrite_and_replay.rs",
+      "role": "test_helper",
+      "line_budget": 509,
+      "next_module_workstream": "Maintain the completed OAuth file-backed response rewrite, passthrough, replay-analysis, and sticky-projection fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_route_support_and_binding.rs",
+      "role": "test_helper",
+      "line_budget": 712,
+      "next_module_workstream": "Maintain the completed OAuth request-body, sticky-binding, route-preparation, and forwarding-observability fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_timeout_and_stream_lifecycle.rs",
+      "role": "test_helper",
+      "line_budget": 941,
+      "next_module_workstream": "Maintain the completed OAuth timeout, handshake, first-chunk, header, and stream-lifecycle fixtures below the test-helper target."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/sticky_key_queries_and_prompt_cache_views.rs",
+      "role": "test_helper",
+      "line_budget": 623,
+      "next_module_workstream": "Maintain the completed sticky-key query, activity-window, recent-invocation, limit, and prompt-cache view fixtures below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
@@ -579,16 +693,16 @@
       "reason": "Retain this targeted expect for the reservation assertion that intentionally observes the mock log after an async route-state query; remove it when the test fixture exposes an async-aware observation boundary."
     },
     {
-      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "path": "src/tests/lightweight/lightweight_test_support.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/tests/lightweight/forward_proxy_config_and_storage.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the retention invocation fixture's persisted argument bundle; remove it when the shared fixture boundary is redesigned."
     },
     {
-      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "path": "src/tests/lightweight/lightweight_test_support.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/tests/lightweight/forward_proxy_config_and_storage.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the retention upstream-attempt fixture's persisted argument bundle; remove it when the shared fixture boundary is redesigned."
     },
     {
       "path": "src/tests/lightweight/mod.rs",
@@ -645,10 +759,10 @@
       "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
     },
     {
-      "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
+      "path": "src/tests/stateful_sqlite/oauth_failure_diagnostics_and_terminal_streams.rs",
       "kind": "allow",
       "declaration": "#[allow(deprecated)]",
-      "reason": "Retain this targeted allow for the compatibility call sites in src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs; remove it when the listed module workstream removes the deprecated boundary."
+      "reason": "Retain this targeted allow for the compatibility call site in src/tests/stateful_sqlite/oauth_failure_diagnostics_and_terminal_streams.rs; remove it when the listed module workstream removes the deprecated boundary."
     },
     {
       "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",

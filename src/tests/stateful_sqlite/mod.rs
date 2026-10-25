@@ -111,14 +111,18 @@ pub(crate) async fn hydrate_stats_snapshot_for_test(state: &Arc<AppState>) {
 mod account_activity_v2_progress_handler;
 mod durable_attempt_ordering;
 mod gpt6_usage_integrity;
-mod invocation_query_filters_and_schema_migrations;
+mod invocation_list_queries_and_filters;
 mod invocation_range_recovery;
 mod invocation_ranges;
+mod invocation_summary_suggestions_and_stats;
 mod invocation_timeline_contention;
 mod managed_task_dispatcher_contention;
 mod models_dev_sync_memory;
 mod network_traffic_projection;
-mod oauth_route_body_rewrite_and_timeout;
+mod oauth_failure_diagnostics_and_terminal_streams;
+mod oauth_response_rewrite_and_replay;
+mod oauth_route_support_and_binding;
+mod oauth_timeout_and_stream_lifecycle;
 mod observability_retirement;
 #[expect(
     clippy::type_complexity,
@@ -128,13 +132,18 @@ mod parallel_work_stats_and_timeseries;
 mod performance_indexes;
 mod pricing_catalog_and_models_passthrough;
 mod projection_observability;
+mod prompt_cache_binding_and_affinity;
 #[expect(
     clippy::too_many_arguments,
     reason = "Test insertion helpers mirror persisted prompt-cache fields."
 )]
 mod prompt_cache_conversation_queries;
+mod prompt_cache_conversation_reads;
 mod prompt_cache_live_reads;
+mod prompt_cache_materialization_and_allocator;
 mod prompt_cache_materialization_control;
+mod prompt_cache_schema_migration_contracts;
+mod prompt_cache_sticky_runtime;
 mod prompt_cache_working_set_trigger;
 #[expect(
     clippy::too_many_arguments,
@@ -142,6 +151,7 @@ mod prompt_cache_working_set_trigger;
 )]
 mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
+mod proxy_capture_and_invocation_queries;
 mod proxy_long_wait_allocation_and_index;
 mod proxy_pool_roundtrip_and_retry_servers;
 mod proxy_routing_observer;
@@ -169,18 +179,23 @@ mod routing_failover_terminal_reasoning;
 )]
 mod routing_timeout_and_overload_failover;
 mod runtime_overlay_and_group_rule_behaviors;
+mod schema_retirement_and_historical_fixtures;
 mod schema_templates;
 mod sqlite_contention_boundaries;
 mod startup_bootstrap_cancellation;
 mod startup_rebuild_and_retention_basics;
 mod startup_recovery_readiness;
 mod statistics_recovery;
+mod sticky_key_queries_and_prompt_cache_views;
 mod summary_terminal_ordering;
 mod system_status_and_account_roster;
 mod task_workload_coverage;
 
 pub(crate) use parallel_work_stats_and_timeseries::*;
 pub(crate) use proxy_backfill_and_cost_repairs::*;
+pub(crate) use proxy_capture_and_invocation_queries::{
+    PromptCacheBindingPolicyMigrationRow, PromptCacheBindingTimeoutMigrationRow,
+};
 pub(crate) use proxy_pool_roundtrip_and_retry_servers::*;
 pub(crate) use request_preparation_and_handshake_failures::*;
 pub(crate) use routing_failover_terminal_reasoning::*;
