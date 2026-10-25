@@ -176,7 +176,7 @@ def normalize_approved_e2e_performance_change(path: Path, text: str) -> str:
         "        .toBeGreaterThan(beforeRefresh.releaseCount + 1);\n",
     )
     text = re.sub(
-        r"\n      const timelineControls = page\n.*?\n      await expectVisibleCallsAreVirtualized\(page, 550\);\n",
+        r"\n      const timelineControls = page.*?\n      await expectVisibleCallsAreVirtualized\(page, 550\);\n",
         """      await expect
         .poll(
           () =>
