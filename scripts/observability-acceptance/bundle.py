@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run all acceptance suites sequentially on one GitHub-hosted runner."""
+"""Run one candidate-bound acceptance workload on an isolated runner."""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source", "candidate-source", "run", "agent", "candidate", "image", "samply"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--lane", choices=LANES, required=True)
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--rate", type=int, default=5)
     return parser.parse_args()
@@ -25,17 +26,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.seconds != 60 or args.rate != 5:
-        raise SystemExit("serial performance acceptance requires 60-second windows and 5 request/s")
+        raise SystemExit("performance acceptance requires 60-second windows and 5 request/s")
     root = Path(args.run).resolve()
     root.mkdir(parents=True, exist_ok=True)
     run_script = Path(args.source).resolve() / "scripts/observability-acceptance/run.py"
     outcomes = {}
-    for lane in LANES:
+    for lane in (args.lane,):
         part = root / lane
         part.mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()
         environment["OBSERVABILITY_LANE"] = lane
-        environment["OBSERVABILITY_RUNNER_SCOPE"] = "serial-bundle"
+        environment["OBSERVABILITY_RUNNER_SCOPE"] = f"parallel-{lane}"
         command = [
             sys.executable,
             str(run_script),

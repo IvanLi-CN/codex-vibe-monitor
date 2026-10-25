@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 21 current explicit file budgets (4 production and 17 test/helper), and 124 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 43 current explicit file budgets (4 production and 39 test/helper), and 126 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -440,6 +440,50 @@ The statistics extraction starts from verified base `c215fc3ed7a4a0b3cf50bd3468e
 The extraction preserves crate-visible APIs and re-exports, SQL, transaction boundaries, archive replay and repair behavior, concurrency, resource classification, and all existing assertions. The `perf_stage_rollup_validation_tests` and `ttft_archive_compatibility_tests` modules remain in their coherent child modules, while the archive-rebuild `#[expect]` suppression moves to `repair_backfill.rs`; the suppression inventory remains 124. The frozen `src/api/slices/invocations_and_summary.rs` and complete `src/schema.rs` are unchanged, and no `include!` composition is introduced.
 
 Validation for this extraction is the canonical source-quality runner and fixture harness, focused performance-stage and archive-compatibility tests, locked all-target all-features checking, all-features Clippy, and `git diff --check`.
+
+## Archive File I/O Test Helper Extraction
+
+The archive file I/O test-helper extraction starts from the verified mainline baseline `224d36361b68c32fa3eb5e981f03022eaf6db49d` and removes the 12,908-line `src/tests/archive_file_io/archive_backfill_and_materialization.rs` candidate. The 121 existing tests are moved exactly once, retaining their names, attributes, assertions, SQL, fixtures, timing and budget thresholds, lock and task lifetimes, cleanup, and `archive_file_io` resource bucket.
+
+The new facade remains `src/tests/archive_file_io/mod.rs` at 856 lines. Shared fixture support is isolated in `archive_backfill_test_support.rs` at 104 lines, with `insert_summary_archive_snapshot_proof`, `write_valid_invocation_archive`, and `budgeted_archive_io_test_dir` kept behaviorally unchanged and exposed only to the parent module and its descendants. The responsibility modules are `archive_copy_summary_and_manifest.rs` (749 lines), `archive_startup_and_expiry.rs` (1,699), `historical_rollup_materialization.rs` (2,342), `archive_replay_recovery.rs` (2,004), `stale_archive_reconciliation.rs` (1,946), `retention_pool_archive_maintenance.rs` (2,115), and `archive_storage_schema_reconciliation.rs` (1,964); every file is below the 3,000-line test/helper target.
+
+The policy removes only the obsolete parent entry, leaving 20 explicit inventory files (4 production and 16 test/helper) and 125 suppression entries; the immutable preparation candidate counts remain 32 production and 23 test/helper. No `include!`, new `#[allow]` or `#[expect]`, production implementation, SQL/transaction semantics, schema, frozen invocation-summary source, or unrelated candidate changed.
+
+## Archive File I/O Verification Evidence
+
+The completed structural and compile checks are `cargo fmt --all -- --check`, `bash .github/scripts/test-rust-source-quality.sh`, `bash .github/scripts/run-rust-source-quality.sh`, `cargo check --locked --all-targets --all-features`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `git diff --check`; each passed on the candidate.
+
+The required `bash .github/scripts/run-backend-tests.sh --profile archive-file-io` was attempted with the repository defaults, retried, and retried again in an isolated temporary workspace; each attempt stopped before test execution because rustc 1.96.0 produced a `libsqlx_macros` dylib rejected by macOS with `mis-aligned LINKEDIT string pool`. No shared infrastructure or toolchain configuration was changed.
+
+As supplemental behavior evidence, `CARGO_PROFILE_TEST_DEBUG=2 RUST_MIN_STACK=8388608 cargo test --locked --all-features tests::archive_file_io:: -- --nocapture` built the test binary and ran 450 selected tests: 433 passed, 10 pre-existing archive/runtime concurrency or timing-sensitive tests failed, and 7 were ignored. None of the 10 failures belonged to the 121 migrated tests, so every migrated test passed in this fallback run; the fallback is not substituted for the blocked canonical profile.
+
+## Raw Payload Retention and Pool Recovery Test Helper Extraction
+
+The raw payload and pool recovery test-helper extraction starts from the verified mainline baseline `b1c523815090218499954e719b1b356b60d933cd` and removes the 9,723-line `src/tests/archive_file_io/raw_payload_retention_and_compression.rs` candidate. The 122 existing tests and six non-test helpers are moved exactly once, retaining their names, attributes, assertions, SQL, fixtures, timing and budget thresholds, lock and task lifetimes, cleanup, and `archive_file_io` resource bucket.
+
+The archive file I/O facade is 860 lines. The responsibility modules are `raw_payload_capture_and_ownership.rs` (383 lines), `raw_payload_archive_finalization.rs` (604), `raw_payload_cleanup_and_reconciliation.rs` (2,040), `raw_payload_compression.rs` (638), `archive_http_and_shutdown.rs` (1,175), `pool_attempt_lifecycle.rs` (1,050), `pool_invocation_orphan_recovery.rs` (1,465), `deferred_pool_cleanup_guards.rs` (675), and `stale_pool_orphan_recovery.rs` (1,711); every file is below the 3,000-line test/helper target.
+
+The old module declaration and its module-wide `clippy::await_holding_lock` expectation are removed. The exact expectation is retained only on the two reservation-observation test declarations that Clippy identified in `pool_invocation_orphan_recovery.rs` and `stale_pool_orphan_recovery.rs`; the existing facade `unused_imports` allow is unchanged. The policy removes only the obsolete parent entry, leaves 28 explicit inventory files (4 production and 24 test/helper) and 126 suppression entries, and records each final physical line count.
+
+The required structural and compile checks passed: `cargo fmt --all -- --check`, `bash .github/scripts/test-rust-source-quality.sh`, `bash .github/scripts/run-rust-source-quality.sh`, `cargo check --locked --all-targets --all-features`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `git diff --check`. The canonical `bash .github/scripts/run-backend-tests.sh --profile archive-file-io` was attempted with repository defaults and stopped before test execution because rustc 1.96.0 produced a `libsqlx_macros` macOS dylib rejected with `mis-aligned LINKEDIT string pool` at `/private/tmp/codex-vibe-monitor-backend-test/target/debug/deps/libsqlx_macros-5cb7ac4d48d7978e.dylib`; no shared infrastructure or toolchain configuration was changed.
+
+As focused fallback evidence, `CARGO_PROFILE_TEST_DEBUG=2 RUST_MIN_STACK=8388608 cargo test --locked --all-features tests::archive_file_io:: -- --nocapture` built and ran 450 selected tests: 434 passed, 9 pre-existing archive/runtime concurrency or timing-sensitive tests failed, and 7 were ignored. The nine failures were confined to unchanged maintenance runtime, proxy runtime pressure/routing, and system storage tests; no migrated test appeared in the failure list. This focused fallback is not substituted for the blocked canonical profile.
+
+## Forward Proxy Config and Storage Test Helper Extraction
+
+The forward-proxy config and storage extraction starts from `629df74fc06957dfaaf7c30df7adae4eeb9a7afd` and removes the complete 4,075-line `src/tests/lightweight/forward_proxy_config_and_storage.rs` parent in one source-quality PR. The 124 function declarations and 97 test attributes are moved exactly once into eight responsibility modules; the before/after name inventory and physical line evidence are recorded in `docs/specs/rust-source-quality/forward-proxy-config-storage-migration.md`.
+
+The extracted modules are `forward_proxy_subscription_and_weights.rs` (225 lines), `raw_capture_overflow_and_projection.rs` (411), `forward_proxy_binding_and_capture_diagnostics.rs` (837), `capture_snapshot_and_replay.rs` (140), `app_config_and_invocation_index_contracts.rs` (732), `raw_payload_file_storage.rs` (630), `lightweight_test_support.rs` (457), and `schema_migration_and_maintenance.rs` (650); `lightweight/mod.rs` is 27 lines. Every new test-helper module is below the 3,000-line target, the old parent is absent from the policy inventory, and the policy records 35 explicit files with 126 suppression declarations.
+
+The module facade keeps only the necessary parent import and explicit crate-visible re-exports for shared lightweight support and schema/backfill compatibility helpers. No production code, SQL, assertion semantics, resource bucket, concurrency capacity, timeout, compression, file format, or environment contract changes.
+
+## Invocation Query and Prompt-Cache Fixture Extraction
+
+The invocation-query and prompt-cache fixture extraction starts from baseline `9c8c8aeac7a40728a36b4159a51c8416465b4a64` and removes the complete 9,982-line `src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs` parent. The migration evidence and complete before/after function and test manifest are recorded in `docs/specs/rust-source-quality/invocation-query-filters-schema-migrations.md`.
+
+The nine responsibility modules are `schema_retirement_and_historical_fixtures.rs` (841 lines), `prompt_cache_materialization_and_allocator.rs` (1,294), `proxy_capture_and_invocation_queries.rs` (495), `prompt_cache_schema_migration_contracts.rs` (498), `invocation_list_queries_and_filters.rs` (1,242), `invocation_summary_suggestions_and_stats.rs` (1,689), `prompt_cache_conversation_reads.rs` (678), `prompt_cache_binding_and_affinity.rs` (2,052), and `prompt_cache_sticky_runtime.rs` (1,182). All are below the 3,000-line test/helper target. The 115 top-level functions, six nested helpers, and 111 tests remain exactly once; no facade retains the removed parent.
+
+The stateful SQLite module declares the nine children and exposes only the two migration row types needed by the schema-contract tests. The policy removes the obsolete parent entry, records 43 explicit inventory files (4 production and 39 test/helper), records each final physical line count, and retains 126 suppression entries and immutable candidate counts 32/23. Production code, SQL, transaction boundaries, pool settings, runtime timing, concurrency, test assertions, and cleanup behavior remain unchanged.
 
 ## CI Contract
 

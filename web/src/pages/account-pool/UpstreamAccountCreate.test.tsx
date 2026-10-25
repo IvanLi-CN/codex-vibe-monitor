@@ -4,7 +4,6 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import ts from "typescript";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
@@ -13,14 +12,14 @@ import {
   UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
 } from "../../lib/upstreamAccountGroups";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
-import suite6 from "./UpstreamAccountCreate.api-key.txt?raw";
-import suite1 from "./UpstreamAccountCreate.batch-oauth-a.txt?raw";
-import suite2 from "./UpstreamAccountCreate.batch-oauth-b.txt?raw";
-import suite3 from "./UpstreamAccountCreate.display-name-a.txt?raw";
-import suite4 from "./UpstreamAccountCreate.display-name-b.txt?raw";
-import suite7 from "./UpstreamAccountCreate.imported-oauth.txt?raw";
-import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?raw";
-import suite8 from "./UpstreamAccountCreate.relink-detail.txt?raw";
+import suite6 from "./UpstreamAccountCreate.api-key.txt?suite";
+import suite1 from "./UpstreamAccountCreate.batch-oauth-a.txt?suite";
+import suite2 from "./UpstreamAccountCreate.batch-oauth-b.txt?suite";
+import suite3 from "./UpstreamAccountCreate.display-name-a.txt?suite";
+import suite4 from "./UpstreamAccountCreate.display-name-b.txt?suite";
+import suite7 from "./UpstreamAccountCreate.imported-oauth.txt?suite";
+import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?suite";
+import suite8 from "./UpstreamAccountCreate.relink-detail.txt?suite";
 import {
   convertImportedWebSessionDocumentLocally,
   parseImportedOauthCredentialDocumentLocally,
@@ -109,7 +108,9 @@ class MockValidationEventSource implements EventTarget {
 
   dispatchEvent(event: Event): boolean {
     const current = Array.from(this.listeners.get(event.type) ?? []);
-    current.forEach((listener) => listener(event));
+    current.forEach((listener) => {
+      listener(event);
+    });
     return true;
   }
 
@@ -985,26 +986,14 @@ Object.defineProperties(scope, {
     },
   },
 });
-const evalChunk = (chunk: string) => {
-  const { outputText } = ts.transpileModule(chunk, {
-    compilerOptions: {
-      jsx: ts.JsxEmit.ReactJSX,
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-    },
-    fileName: "suite.tsx",
-  });
-  const code = outputText.replace(/^"use strict";\s*/, "");
-  new Function("scope", `with (scope) { ${code} }`)(scope);
-};
-evalChunk(suite1);
-evalChunk(suite2);
-evalChunk(suite3);
-evalChunk(suite4);
-evalChunk(suite5);
-evalChunk(suite6);
-evalChunk(suite7);
-evalChunk(suite8);
+suite1(scope);
+suite2(scope);
+suite3(scope);
+suite4(scope);
+suite5(scope);
+suite6(scope);
+suite7(scope);
+suite8(scope);
 
 function clickCreateTab(matcher: RegExp) {
   const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(

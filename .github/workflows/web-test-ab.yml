@@ -1,0 +1,271 @@
+name: Frontend Test A/B
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: Full immutable SHA of the old frontend test implementation (A)
+        required: true
+        type: string
+      candidate_sha:
+        description: Full immutable SHA of the complete PR implementation (B)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      baseline_sha:
+        required: true
+        type: string
+      candidate_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-test-ab-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare frontend A/B dependencies
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate immutable inputs
+        env:
+          BASELINE: ${{ inputs.baseline_sha }}
+          CANDIDATE: ${{ inputs.candidate_sha }}
+        run: |
+          [[ "$BASELINE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          test "$BASELINE" != "$CANDIDATE"
+
+      - name: Checkout measurement harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Checkout A
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          path: A
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout B
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: B
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up fixed Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Freeze full source workloads
+        env:
+          BASELINE: ${{ inputs.baseline_sha }}
+          CANDIDATE: ${{ inputs.candidate_sha }}
+        run: |
+          python3 harness/scripts/benchmark-web-tests.py prepare \
+            --baseline-src "$PWD/A" --candidate-src "$PWD/B" \
+            --baseline-sha "$BASELINE" --candidate-sha "$CANDIDATE" \
+            --output "$RUNNER_TEMP/web-test-ab"
+
+      - name: Install identical dependency surface without building or testing
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/web-test-ab/browsers
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          for source in A B; do
+            bun install --cwd "$source" --frozen-lockfile
+            bun install --cwd "$source/web" --frozen-lockfile
+            bun install --cwd "$source/docs-site" --frozen-lockfile
+          done
+          cd B/web
+          bunx --no-install playwright install chromium
+          cd ../..
+          tar -cf "$RUNNER_TEMP/web-test-ab-deps.tar" \
+            A/node_modules A/web/node_modules A/docs-site/node_modules \
+            B/node_modules B/web/node_modules B/docs-site/node_modules
+          tar -cf "$RUNNER_TEMP/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab" browsers
+          printf '{"install_seconds":%s}\n' "$(( $(date +%s) - started ))" > "$RUNNER_TEMP/web-test-ab/preparation.json"
+
+      - name: Upload run-bound dependencies
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-deps-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/web-test-ab-deps.tar
+            ${{ runner.temp }}/web-test-ab-browsers.tar
+            ${{ runner.temp }}/web-test-ab/manifest.json
+            ${{ runner.temp }}/web-test-ab/preparation.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload run-bound manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-manifest-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/web-test-ab/manifest.json
+            ${{ runner.temp }}/web-test-ab/preparation.json
+          retention-days: 1
+          if-no-files-found: error
+
+  measure-phase:
+    name: Frontend A/B ${{ matrix.phase }} (same runner)
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [unit, pwa, storybook-a11y, docs-demo-pages, e2e-pr, e2e-main, tooling-contracts]
+    # A and B are deliberately paired in one hosted job and run sequentially.
+    # This is the control variable: both groups observe the same runner CPU,
+    # memory, kernel, Bun, Chromium, and filesystem state without contention.
+    # This is the only measurement ceiling. The harness never terminates a
+    # naturally running test process for timing purposes.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout measurement harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Checkout A
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          path: A
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout B
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: B
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up fixed Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Download run-bound dependencies
+        uses: actions/download-artifact@v7
+        with:
+          name: web-test-ab-deps-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab-inputs
+
+      - name: Restore isolated dependency directories
+        run: |
+          set -euo pipefail
+          tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-deps.tar" -C "$PWD"
+          mkdir -p "$RUNNER_TEMP/web-test-ab"
+          if [ -f "$RUNNER_TEMP/web-test-ab-inputs/manifest.json" ]; then
+            cp "$RUNNER_TEMP/web-test-ab-inputs/manifest.json" "$RUNNER_TEMP/web-test-ab/manifest.json"
+          else
+            cp "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab/manifest.json" "$RUNNER_TEMP/web-test-ab/manifest.json"
+          fi
+          tar -xf "$RUNNER_TEMP/web-test-ab-inputs/web-test-ab-browsers.tar" -C "$RUNNER_TEMP/web-test-ab"
+
+      - name: Run paired workloads to natural completion
+        env:
+          PHASE: ${{ matrix.phase }}
+          BASELINE: ${{ inputs.baseline_sha }}
+          CANDIDATE: ${{ inputs.candidate_sha }}
+        run: |
+          set -uo pipefail
+          set +e
+          python3 harness/scripts/benchmark-web-tests.py phase \
+            --group A --phase "$PHASE" \
+            --source-src "$PWD/A" --source-sha "$BASELINE" \
+            --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
+            --output "$RUNNER_TEMP/web-test-ab"
+          a_status=$?
+          python3 harness/scripts/benchmark-web-tests.py phase \
+            --group B --phase "$PHASE" \
+            --source-src "$PWD/B" --source-sha "$CANDIDATE" \
+            --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
+            --output "$RUNNER_TEMP/web-test-ab"
+          b_status=$?
+          exit $(( a_status || b_status ))
+
+      - name: Upload phase evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-phase-${{ matrix.phase }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab/results
+          retention-days: 1
+          if-no-files-found: error
+
+  aggregate:
+    name: Whole PR A/B (natural execution times)
+    needs: [prepare, measure-phase]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout measurement harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Download run-bound manifest
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: web-test-ab-manifest-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab
+
+      - name: Download phase evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: web-test-ab-phase-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/web-test-ab/results
+          merge-multiple: true
+
+      - name: Aggregate complete A/B evidence
+        if: always()
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          test -f "$RUNNER_TEMP/web-test-ab/manifest.json"
+          python3 harness/scripts/benchmark-web-tests.py aggregate \
+            --manifest "$RUNNER_TEMP/web-test-ab/manifest.json" \
+            --results-root "$RUNNER_TEMP/web-test-ab/results" \
+            --output "$RUNNER_TEMP/web-test-ab"
+
+      - name: Upload complete A/B evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-ab-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/web-test-ab/manifest.json
+            ${{ runner.temp }}/web-test-ab/preparation.json
+            ${{ runner.temp }}/web-test-ab/summary.json
+            ${{ runner.temp }}/web-test-ab/summary.md
+            ${{ runner.temp }}/web-test-ab/A/raw.jsonl
+            ${{ runner.temp }}/web-test-ab/B/raw.jsonl
+            ${{ runner.temp }}/web-test-ab/results
+          retention-days: 1
+          if-no-files-found: warn

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiInvocation, StatsResponse } from "../lib/api";
-import { fetchSummary } from "../lib/api";
+import { ApiRequestError, fetchSummary } from "../lib/api";
 import { buildTopicDescriptor } from "../lib/sse";
 import { getBrowserTimeZone } from "../lib/timeZone";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
@@ -35,6 +35,9 @@ export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000;
 export const CURRENT_SUMMARY_RETRY_DELAY_MS = 2_000;
 export const CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS = 3;
 export const SUMMARY_REMOUNT_CACHE_TTL_MS = 30_000;
+export const SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS = [
+  1_000, 2_000, 5_000, 10_000, 30_000,
+] as const;
 
 export interface UnsupportedRefreshGate {
   inFlight: boolean;
@@ -298,9 +301,20 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     () => !supportsPureSse && initialCachedSummary == null,
   );
   const [httpError, setHttpError] = useState<string | null>(null);
+  const [httpErrorCode, setHttpErrorCode] = useState<string | null>(null);
+  const pendingRecoveryRetryAttempt = useRef(0);
+  const pendingRecoveryRetryRequestKey = useRef<string | null>(null);
+  const [pendingRecoveryRetryTick, setPendingRecoveryRetryTick] = useState(0);
 
   const loadHttpSummary = useCallback(async () => {
+    const requestKey = [window, options?.limit ?? "", options?.upstreamAccountId ?? ""].join("\0");
+    if (pendingRecoveryRetryRequestKey.current !== requestKey) {
+      pendingRecoveryRetryRequestKey.current = requestKey;
+      pendingRecoveryRetryAttempt.current = 0;
+    }
     setHttpLoading(true);
+    setHttpError(null);
+    setHttpErrorCode(null);
     try {
       const response = await fetchSummary(window, {
         limit: options?.limit,
@@ -315,8 +329,15 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         options?.upstreamAccountId,
       );
       setHttpError(null);
+      setHttpErrorCode(null);
+      pendingRecoveryRetryAttempt.current = 0;
     } catch (error) {
       setHttpError(error instanceof Error ? error.message : String(error));
+      const code = error instanceof ApiRequestError ? (error.code ?? null) : null;
+      setHttpErrorCode(code);
+      if (code !== "summary_recovery_pending") {
+        pendingRecoveryRetryAttempt.current = 0;
+      }
     } finally {
       setHttpLoading(false);
     }
@@ -327,6 +348,23 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       void loadHttpSummary();
     }
   }, [loadHttpSummary, supportsPureSse]);
+
+  useEffect(() => {
+    if (supportsPureSse || httpErrorCode !== "summary_recovery_pending") {
+      return undefined;
+    }
+    const attempt = pendingRecoveryRetryAttempt.current;
+    const delayMs =
+      SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS[
+        Math.min(attempt, SUMMARY_RECOVERY_PENDING_RETRY_DELAYS_MS.length - 1)
+      ];
+    const timerId = globalThis.setTimeout(() => {
+      pendingRecoveryRetryAttempt.current += 1;
+      setPendingRecoveryRetryTick((tick) => tick + 1);
+      void loadHttpSummary();
+    }, delayMs);
+    return () => globalThis.clearTimeout(timerId);
+  }, [httpErrorCode, loadHttpSummary, pendingRecoveryRetryTick, supportsPureSse]);
 
   useEffect(() => {
     if (supportsPureSse) {
@@ -375,12 +413,14 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     : httpSummary;
   const isLoading = supportsPureSse ? sse.isLoading && summary == null : httpLoading;
   const error = supportsPureSse ? sse.error : httpError;
+  const errorCode = supportsPureSse ? null : httpErrorCode;
   const refresh = supportsPureSse ? sse.refresh : loadHttpSummary;
 
   return {
     summary,
     isLoading,
     error,
+    errorCode,
     refresh,
   };
 }

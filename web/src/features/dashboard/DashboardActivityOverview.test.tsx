@@ -99,6 +99,8 @@ vi.mock("./TodayStatsOverview", () => ({
     showSurface,
     showHeader,
     showDayBadge,
+    error,
+    errorCode,
     rate,
     rateLoading,
     rateError,
@@ -118,6 +120,8 @@ vi.mock("./TodayStatsOverview", () => ({
     showSurface?: boolean;
     showHeader?: boolean;
     showDayBadge?: boolean;
+    error?: string | null;
+    errorCode?: string | null;
     rate?: { tokensPerMinute?: number; spendRate?: number } | null;
     rateLoading?: boolean;
     rateError?: string | null;
@@ -125,7 +129,11 @@ vi.mock("./TodayStatsOverview", () => ({
     parallelWorkError?: string | null;
     showInProgressConversations?: boolean;
   }) => (
-    <div data-testid="today-stats-overview-mock">
+    <div
+      data-testid="today-stats-overview-mock"
+      data-error={error ?? ""}
+      data-error-code={errorCode ?? ""}
+    >
       {`total:${stats?.totalCount ?? "null"};cacheWrite:${stats?.usageBreakdown?.total?.cacheWriteTokens ?? "null"};inProgress:${stats?.inProgressConversationCount ?? "null"};retry:${stats?.inProgressRetryConversationCount ?? "null"};wait:${stats?.inProgressAvgWaitMs ?? "null"};nonSuccessCost:${stats?.nonSuccessCost ?? "null"};nonSuccessTokens:${stats?.nonSuccessTokens ?? "null"};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? "null"};spendRate:${rate?.spendRate ?? "null"};rateLoading:${String(rateLoading)};rateError:${rateError ?? "null"};parallelAvg:${parallelWorkStats?.current?.avgCount ?? "null"};parallelError:${parallelWorkError ?? "null"};showInProgress:${String(showInProgressConversations)}`}
     </div>
   ),
@@ -283,6 +291,7 @@ function createSummaryStore() {
       summary: Record<string, unknown> | null;
       isLoading: boolean;
       error: string | null;
+      errorCode?: string | null;
     }
   >();
   const listeners = new Set<() => void>();
@@ -291,6 +300,7 @@ function createSummaryStore() {
     summary: null,
     isLoading: false,
     error: null,
+    errorCode: null,
   };
 
   return {
@@ -732,7 +742,9 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
       "total:21;cacheWrite:3200;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
     );
-    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain("today");
+    expect(hookMocks.useSummary.mock.calls.filter(([window]) => window === "today")).toHaveLength(
+      1,
+    );
 
     act(() => {
       emitSse({
@@ -756,6 +768,48 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
       "total:21;cacheWrite:3200;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
     );
+  });
+
+  it.each([
+    "summary_recovery_pending",
+    "summary_recovery_failed",
+  ] as const)("does not render an existing dashboard snapshot while summary recovery is %s", (errorCode) => {
+    installSummaryMocks();
+    summaryStore.set("today", {
+      summary: null,
+      isLoading: false,
+      error:
+        errorCode === "summary_recovery_pending"
+          ? "summary recovery is not complete"
+          : "summary recovery failed",
+      errorCode,
+    });
+
+    render(
+      <DashboardActivityOverview
+        dashboardActivity={{
+          range: "today",
+          rangeStart: "2026-07-05T00:00:00Z",
+          rangeEnd: "2026-07-05T12:00:00Z",
+          snapshotId: 1783233600000,
+          rateWindow: {
+            start: "2026-07-05T11:59:00Z",
+            end: "2026-07-05T12:00:00Z",
+            windowMinutes: 1,
+            mode: "rolling_60s_live_mean",
+          },
+          summary: {
+            stats: { totalCount: 21 },
+            tokensPerMinute: 1234,
+            spendRate: 0.45,
+          },
+        }}
+      />,
+    );
+
+    const overview = host?.querySelector('[data-testid="today-stats-overview-mock"]');
+    expect(overview?.getAttribute("data-error-code")).toBe(errorCode);
+    expect(overview?.textContent).not.toContain("total:21");
   });
 
   it("skips the duplicate yesterday summary hook when a snapshot-backed yesterday panel is visible", () => {
@@ -795,7 +849,9 @@ describe("DashboardActivityOverview", () => {
       />,
     );
 
-    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain("yesterday");
+    expect(
+      hookMocks.useSummary.mock.calls.filter(([window]) => window === "yesterday"),
+    ).toHaveLength(1);
   });
 
   it("loads only the active range and keeps per-range metric memory across the three tabs", async () => {

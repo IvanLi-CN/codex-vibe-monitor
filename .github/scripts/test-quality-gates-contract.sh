@@ -13,10 +13,10 @@ trap 'rm -rf "${tmp_dir}"' EXIT
 copy_repo_snapshot() {
   local source_root="$1"
   local dest_root="$2"
-  # The contract checker only reads .github; keep generated build, dependency and documentation
-  # artifacts out of repeated mutation repositories so this regression stays bounded.
+  # The contract checker reads only workflow metadata and the dedicated Playwright config; keep
+  # generated build, dependency and documentation artifacts out of repeated mutation repositories.
   mkdir -p "$dest_root"
-  tar -C "$source_root" -cf - .github | tar -C "$dest_root" -xf -
+  tar -C "$source_root" -cf - .github web/playwright.ci.config.ts | tar -C "$dest_root" -xf -
 }
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
@@ -292,8 +292,7 @@ PY
 expect_build_merge_group_condition_rejected
 
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
-mkdir -p "$observability_artifact_repo"
-cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
+copy_repo_snapshot "$repo_root" "$observability_artifact_repo"
 python3 - "$observability_artifact_repo/.github/workflows/ci-observability-performance.yml" <<'PY'
 from pathlib import Path
 import sys
@@ -324,8 +323,7 @@ fi
 grep -q "observability performance image artifact must be run-scoped and replace the prior attempt" "$tmp_dir/observability-artifact.log"
 
 smoke_artifact_repo="$tmp_dir/smoke-artifact-repo"
-mkdir -p "$smoke_artifact_repo"
-cp -R "$repo_root/.github" "$smoke_artifact_repo/.github"
+copy_repo_snapshot "$repo_root" "$smoke_artifact_repo"
 python3 - "$smoke_artifact_repo/.github/workflows/ci-pr.yml" <<'PY'
 from pathlib import Path
 import sys
@@ -1225,10 +1223,10 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "demo-runtime.spec.ts"
+needle = "--project=demo-functional"
 if needle not in text:
-    raise SystemExit("failed to locate Web Demo Playwright spec")
-path.write_text(text.replace(needle, "demo-runtime-removed.spec.ts", 1))
+    raise SystemExit("failed to locate Web Demo Playwright project")
+path.write_text(text.replace(needle, "--project=demo-functional-removed", 1))
 PY
 
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_spec_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-spec.log"; then
@@ -1236,7 +1234,28 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run all required Playwright regression specs" "$tmp_dir/e2e-spec.log"
+grep -q "must run the functional and performance batches serially" "$tmp_dir/e2e-spec.log"
+
+e2e_config_spec_repo="$tmp_dir/e2e-config-spec-repo"
+copy_repo_snapshot "$baseline_repo" "$e2e_config_spec_repo"
+python3 - <<'PY' "$e2e_config_spec_repo/web/playwright.ci.config.ts"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "retention-maintenance-ownership"
+if needle not in text:
+    raise SystemExit("failed to locate retention ownership spec in Playwright config")
+path.write_text(text.replace(needle, "retention-maintenance-ownership-removed", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_config_spec_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-config-spec.log"; then
+  echo "expected missing Playwright config spec fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "web/playwright.ci.config.ts is missing required specs" "$tmp_dir/e2e-config-spec.log"
 
 clippy_parallelism_repo="$tmp_dir/clippy-parallelism-repo"
 copy_repo_snapshot "$baseline_repo" "$clippy_parallelism_repo"
@@ -1289,8 +1308,8 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "dashboard-render-performance.spec.ts || performance_status=$?"
-replacement = "dashboard-render-performance.spec.ts &"
+needle = "--project=performance --workers=1 --output=test-results/performance || performance_status=$?"
+replacement = "--project=performance --workers=1 --output=test-results/performance &"
 if needle not in text:
     raise SystemExit("failed to locate serial dashboard performance command")
 path.write_text(text.replace(needle, replacement, 1))
@@ -1301,7 +1320,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run all four Playwright specs serially" "$tmp_dir/e2e-parallel.log"
+grep -q "must run the functional and performance batches serially" "$tmp_dir/e2e-parallel.log"
 
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"

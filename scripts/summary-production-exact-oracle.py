@@ -21,6 +21,7 @@ from typing import Any
 
 
 UTC = dt.timezone.utc
+SHANGHAI = dt.timezone(dt.timedelta(hours=8))
 SUCCESS_STATUSES = {"success", "completed", "warning_success"}
 
 
@@ -30,7 +31,9 @@ def parse_time(value: str) -> dt.datetime:
         normalized = normalized[:-1] + "+00:00"
     parsed = dt.datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        # SQLite stores occurred_at as a naive Asia/Shanghai timestamp; keep the canonical
+        # interpretation before comparing it with reporting-window UTC boundaries.
+        parsed = parsed.replace(tzinfo=SHANGHAI)
     return parsed.astimezone(UTC)
 
 
@@ -297,6 +300,10 @@ def canonical_rows_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def payload_text(row: dict[str, Any], key: str) -> str:
+    return payload_value_text(row, key).lower()
+
+
+def payload_value_text(row: dict[str, Any], key: str) -> str:
     payload = row.get("payload")
     if not payload:
         return ""
@@ -305,7 +312,24 @@ def payload_text(row: dict[str, Any], key: str) -> str:
     except (TypeError, json.JSONDecodeError):
         return ""
     candidate = value.get(key) if isinstance(value, dict) else None
-    return str(candidate or "").strip().lower()
+    return str(candidate or "").strip()
+
+
+def upstream_account_id(row: dict[str, Any]) -> int | None:
+    value = row.get("upstream_account_id")
+    if value is None:
+        payload = row.get("payload")
+        try:
+            decoded = json.loads(payload) if isinstance(payload, str) else payload
+        except (TypeError, json.JSONDecodeError):
+            decoded = None
+        if isinstance(decoded, dict):
+            value = decoded.get("upstreamAccountId", decoded.get("upstream_account_id"))
+    try:
+        account_id = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return account_id if account_id is not None and account_id > 0 else None
 
 
 def resolved_failure_class(row: dict[str, Any]) -> str:
@@ -343,6 +367,10 @@ def is_success(row: dict[str, Any]) -> bool:
     return resolved_failure_class(row) == "none" and str(row.get("status") or "").strip().lower() not in {"running", "pending"}
 
 
+def is_in_flight(row: dict[str, Any]) -> bool:
+    return str(row.get("status") or "").strip().lower() in {"running", "pending"}
+
+
 def is_terminal_failure(row: dict[str, Any]) -> bool:
     status = str(row.get("status") or "").strip().lower()
     return status not in {"running", "pending"} and not is_success(row)
@@ -353,17 +381,32 @@ def numeric(row: dict[str, Any], key: str) -> float:
     return float(value or 0)
 
 
-def expected(rows: list[dict[str, Any]], window: str, now: dt.datetime) -> dict[str, Any]:
+def expected(
+    rows: list[dict[str, Any]],
+    window: str,
+    now: dt.datetime,
+    account_id: int | None = None,
+) -> dict[str, Any]:
     parsed = [(parse_time(str(row["occurred_at"])), row) for row in rows]
+    if account_id is not None:
+        parsed = [(at, row) for at, row in parsed if upstream_account_id(row) == account_id]
     if window == "current":
         selected = [row for _at, row in sorted(parsed, key=lambda item: (item[0], int(item[1].get("id") or 0)), reverse=True)[:50]]
     else:
         if window == "all":
             start, end = None, None
-        elif window == "today":
-            local = now.astimezone(dt.timezone(dt.timedelta(hours=8)))
-            start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
-            end = start + dt.timedelta(days=1)
+        elif window in {"today", "yesterday", "previous7d"}:
+            local = now.astimezone(SHANGHAI)
+            today_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            if window == "today":
+                start = today_start.astimezone(UTC)
+                end = (today_start + dt.timedelta(days=1)).astimezone(UTC)
+            elif window == "yesterday":
+                start = (today_start - dt.timedelta(days=1)).astimezone(UTC)
+                end = today_start.astimezone(UTC)
+            else:
+                start = (today_start - dt.timedelta(days=7)).astimezone(UTC)
+                end = today_start.astimezone(UTC)
         else:
             days = {"1d": 1, "7d": 7, "30d": 30}[window]
             start, end = now - dt.timedelta(days=days), now
@@ -371,6 +414,7 @@ def expected(rows: list[dict[str, Any]], window: str, now: dt.datetime) -> dict[
             row for at, row in parsed
             if start is None or (start <= at < end)
         ]
+    selected = [row for row in selected if not is_in_flight(row)]
     total_count = len(selected)
     success_count = sum(1 for row in selected if is_success(row))
     failure_count = sum(1 for row in selected if is_terminal_failure(row))
@@ -410,8 +454,8 @@ def usage_breakdown(rows: list[dict[str, Any]]) -> dict[str, Any]:
         totals["cacheWriteTokens"] += cache_write
         totals["cacheReadTokens"] += cache_read
         totals["outputTokens"] += output
-        model = payload_text(row, "responseModel") or str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
-        reasoning = payload_text(row, "reasoningEffort") or (str(row["reasoning_effort"]).strip().lower() if row.get("reasoning_effort") else None)
+        model = payload_value_text(row, "responseModel") or str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
+        reasoning = payload_value_text(row, "reasoningEffort") or (str(row["reasoning_effort"]).strip() if row.get("reasoning_effort") else None)
         group = model_groups.setdefault(
             (model, reasoning),
             {"model": model, "reasoningEffort": reasoning, "cacheWriteTokens": 0, "cacheReadTokens": 0, "outputTokens": 0, "costs": None},
@@ -486,11 +530,25 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--archives", type=Path, required=True)
     parser.add_argument("--response", type=Path, required=True)
-    parser.add_argument("--window", choices=("current", "1d", "7d", "30d", "today", "all"), required=True)
+    parser.add_argument(
+        "--window",
+        choices=("current", "1d", "7d", "30d", "today", "yesterday", "previous7d", "all"),
+        required=True,
+    )
     parser.add_argument("--now", type=int, required=True)
+    parser.add_argument("--account-id", type=int)
     args = parser.parse_args()
     rows = load_rows(args.database, args.archives)
-    compare(args.response, expected(rows, args.window, dt.datetime.fromtimestamp(args.now, UTC)), args.window)
+    compare(
+        args.response,
+        expected(
+            rows,
+            args.window,
+            dt.datetime.fromtimestamp(args.now, UTC),
+            args.account_id,
+        ),
+        args.window,
+    )
     return 0
 
 

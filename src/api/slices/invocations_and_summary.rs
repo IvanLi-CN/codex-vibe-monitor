@@ -34,6 +34,7 @@ use tracing::{debug, info};
 mod invocation_query;
 #[path = "invocation_timeline.rs"]
 mod invocation_timeline;
+mod invocation_timing;
 mod invocation_workflow_detail;
 #[cfg(test)]
 mod model_performance_duration_override_tests;
@@ -46,6 +47,7 @@ mod summary_observability;
 #[path = "../../tests/lightweight/summary_fallback_contention.rs"]
 mod summary_projection_fallback_contention;
 mod summary_projection_lifecycle;
+mod summary_recovery;
 
 #[cfg(test)]
 pub(crate) use summary_live_tail_transaction::{
@@ -94,6 +96,8 @@ const _: () = {
         resolve_request_body_text_from_row,
         resolve_response_body_text_from_row,
         truncate_response_preview_text,
+        latest_pool_attempt_phase_sql,
+        latest_pool_attempt_phase_sql_at_snapshot,
     );
     let _: Option<InvocationResponseBodyRow> = None;
     let _: Option<InvocationWorkflowAttempt> = None;
@@ -127,6 +131,17 @@ pub(crate) use summary_projection_lifecycle::{
     spawn_summary_coverage_recovery_maintenance,
 };
 
+pub(crate) use summary_recovery::{
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_ERROR_MESSAGE_BYTES,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_BYTES, SUMMARY_COMPACTED_SOURCE_RECOVERY_PAGE_SIZE,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_SCOPE, SUMMARY_COMPACTED_SOURCE_RECOVERY_TIME_ZONE,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_TRANSACTION_BUDGET,
+    SUMMARY_COMPACTED_SOURCE_RECOVERY_TURN_BUDGET, SUMMARY_RECOVERY_FAILED_CODE,
+    SummaryCompactedSourceRecoveryState, SummaryDashboardRecoveryEntry,
+    SummaryDashboardRecoverySnapshot, dashboard_recovery_response_if_ready,
+    summary_source_gap_unavailable_error,
+};
+
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
     hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
@@ -134,11 +149,14 @@ pub(crate) use summary_projection_lifecycle::{
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    SummaryLiveTailReconciliationCheckpoint, load_summary_live_tail_reconciliation_checkpoint,
+    SummaryLiveTailReconciliationCheckpoint, explain_compacted_source_recovery_key_page_for_test,
+    load_summary_live_tail_reconciliation_checkpoint,
     note_summary_projection_boundary_archive_hydration,
     note_summary_projection_historical_identity_hydration,
     renew_summary_projection_freshness_if_generation_matches,
     renew_summary_projection_freshness_if_live_tail_matches,
+    run_compacted_source_recovery_one_page_for_test,
+    run_compacted_source_recovery_until_complete_for_test,
     store_summary_live_tail_reconciliation_checkpoint,
     summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
     summary_coverage_recovery_requires_second_v2_turn,
@@ -160,6 +178,13 @@ pub(crate) use invocation_query::{
 
 pub(crate) use invocation_query::build_invocation_filters;
 pub(crate) use invocation_timeline::*;
+pub(crate) use invocation_timing::{
+    final_pool_attempt_first_token_ms_sql, final_pool_invocation_timing_sql,
+    final_pool_invocation_timing_sql_at_snapshot, invocation_live_phase_sql,
+    invocation_live_phase_sql_with_timing_sql,
+    invocation_live_phase_sql_with_timing_sql_at_snapshot, invocation_timing_sql_for_source,
+    latest_pool_attempt_phase_sql, latest_pool_attempt_phase_sql_at_snapshot,
+};
 
 pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =
@@ -495,160 +520,6 @@ fn invocation_resolved_failure_class_sql_for(invocation_ref: &str) -> String {
         sql = sql.replace(column, &format!("{invocation_ref}.{column}"));
     }
     sql
-}
-
-pub(crate) fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
-    format!(
-        "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
-            FROM pool_upstream_request_attempts attempt \
-           WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
-             AND attempt.occurred_at = {invocation_ref}.occurred_at \
-           ORDER BY attempt.attempt_index DESC, attempt.id DESC \
-           LIMIT 1)"
-    )
-}
-
-pub(crate) fn final_pool_attempt_first_token_ms_sql(
-    attempt_ref: &str,
-    invocation_ref: &str,
-) -> String {
-    let first_token_sql =
-        sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
-    let final_attempt_evidence_sql =
-        final_pool_attempt_timing_evidence_sql(attempt_ref, invocation_ref, "first_token_ms");
-    format!(
-        "CASE WHEN {attempt_ref}.id = (SELECT final_attempt.id \
-           FROM pool_upstream_request_attempts AS final_attempt \
-           WHERE final_attempt.invoke_id = {attempt_ref}.invoke_id \
-             AND final_attempt.occurred_at = {attempt_ref}.occurred_at \
-             AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
-           ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
-           LIMIT 1) \
-          AND ({final_attempt_evidence_sql}) \
-        THEN CASE WHEN {first_token_sql} THEN {invocation_ref}.first_token_ms END END AS first_token_ms"
-    )
-}
-
-pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &str) -> String {
-    let timing_sql = match column {
-        "first_token_ms" => sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.{column}")),
-        "t_upstream_stream_ms" => sqlite_positive_timing_sql(&format!("{invocation_ref}.{column}")),
-        _ => panic!("unsupported pool invocation timing column: {column}"),
-    };
-    let final_attempt_evidence_sql =
-        final_pool_attempt_timing_evidence_sql("final_attempt", invocation_ref, column);
-    format!(
-        "CASE WHEN NOT EXISTS (SELECT 1 \
-           FROM pool_upstream_request_attempts AS final_attempt \
-          WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
-            AND final_attempt.occurred_at = {invocation_ref}.occurred_at) \
-           OR COALESCE((SELECT CASE \
-             WHEN ({final_attempt_evidence_sql}) THEN 1 \
-             ELSE 0 END \
-           FROM pool_upstream_request_attempts AS final_attempt \
-          WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
-            AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
-            AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
-           ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
-           LIMIT 1), 0) = 1 \
-        THEN CASE WHEN {timing_sql} THEN {invocation_ref}.{column} END END"
-    )
-}
-
-fn invocation_timing_sql_for_source(
-    invocation_ref: &str,
-    column: &str,
-    use_attempt_fallback: bool,
-) -> String {
-    if use_attempt_fallback {
-        return final_pool_invocation_timing_sql(invocation_ref, column);
-    }
-
-    let timing_sql = match column {
-        "first_token_ms" => sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.{column}")),
-        "t_upstream_stream_ms" => sqlite_positive_timing_sql(&format!("{invocation_ref}.{column}")),
-        _ => panic!("unsupported invocation timing column: {column}"),
-    };
-    format!("CASE WHEN {timing_sql} THEN {invocation_ref}.{column} END")
-}
-
-fn final_pool_attempt_timing_evidence_sql(
-    attempt_ref: &str,
-    invocation_ref: &str,
-    column: &str,
-) -> String {
-    let stream_measured_sql =
-        sqlite_positive_timing_sql(&format!("{attempt_ref}.stream_latency_ms"));
-    let zero_first_token_sql = if column == "first_token_ms" {
-        let first_byte_sql =
-            sqlite_nonnegative_timing_sql(&format!("{attempt_ref}.first_byte_latency_ms"));
-        format!(
-            " OR ({invocation_ref}.first_token_ms = 0 AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final') AND {first_byte_sql} AND {attempt_ref}.first_byte_latency_ms = 0)"
-        )
-    } else {
-        String::new()
-    };
-    let live_first_token_sql = if column == "first_token_ms" {
-        let first_token_sql =
-            sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
-        format!(
-            " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {first_token_sql} AND (LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) = 'responding' OR LOWER(TRIM(COALESCE({attempt_ref}.phase, ''))) IN ('responding', 'streaming_response')))"
-        )
-    } else {
-        String::new()
-    };
-    let stream_evidence_sql = format!(
-        "({stream_measured_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final'))"
-    );
-    if column == "first_token_ms" {
-        format!("{stream_evidence_sql}{zero_first_token_sql}{live_first_token_sql}")
-    } else {
-        stream_evidence_sql
-    }
-}
-
-fn invocation_live_phase_sql_with_first_token_predicate(
-    invocation_ref: &str,
-    first_token_measured_sql: &str,
-) -> String {
-    let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
-    let upstream_account_id_sql = format!(
-        "CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END"
-    );
-    format!(
-        "CASE \
-           WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) NOT IN ('running', 'pending') THEN NULL \
-           WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'pending' THEN '{queued}' \
-           WHEN {first_token_measured_sql} THEN '{responding}' \
-           WHEN {attempt_phase} IN ('connecting', 'sending_request', 'waiting_first_byte') \
-             OR {upstream_account_id} IS NOT NULL \
-             OR ({invocation_ref}.t_upstream_connect_ms IS NOT NULL AND {invocation_ref}.t_upstream_connect_ms > 0) \
-             OR ({invocation_ref}.t_req_read_ms IS NOT NULL AND {invocation_ref}.t_req_read_ms > 0) \
-             OR ({invocation_ref}.t_req_parse_ms IS NOT NULL AND {invocation_ref}.t_req_parse_ms > 0) THEN '{requesting}' \
-           ELSE '{queued}' \
-         END",
-        attempt_phase = attempt_phase_sql,
-        first_token_measured_sql = first_token_measured_sql,
-        upstream_account_id = upstream_account_id_sql,
-        queued = INVOCATION_LIVE_PHASE_QUEUED,
-        requesting = INVOCATION_LIVE_PHASE_REQUESTING,
-        responding = INVOCATION_LIVE_PHASE_RESPONDING,
-    )
-}
-
-pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
-    let first_token_measured_sql =
-        sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
-    invocation_live_phase_sql_with_first_token_predicate(invocation_ref, &first_token_measured_sql)
-}
-
-pub(crate) fn invocation_live_phase_sql_with_timing_sql(
-    invocation_ref: &str,
-    first_token_timing_sql: &str,
-) -> String {
-    let first_token_measured_sql =
-        sqlite_nonnegative_timing_sql(&format!("({first_token_timing_sql})"));
-    invocation_live_phase_sql_with_first_token_predicate(invocation_ref, &first_token_measured_sql)
 }
 
 fn has_positive_timing(values: &[Option<f64>]) -> bool {
@@ -3797,10 +3668,6 @@ const SUMMARY_LIVE_TAIL_RECONCILIATION_QUEUE_WAIT: Duration = Duration::from_sec
 const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_QUEUE_WAIT: Duration = Duration::from_secs(30);
 const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_CONTINUATION_QUEUE_WAIT: Duration =
     Duration::from_secs(1);
-// A V2 page first becomes durable authority. Publishing that authority is intentionally less
-// frequent than page commits: replacing the immutable read model copies its bounded resident
-// preview, so publishing every page turns long historical recovery into copy-bound work.
-const SUMMARY_HISTORICAL_COVERAGE_OVERLAY_PUBLICATION_PAGE_BATCHES: usize = 16;
 // Keep each low-priority recovery turn long enough to amortize archive open/hash/decode setup
 // across several bounded pages. The per-page 64 MiB/400-ID limits and pressure permit remain
 // unchanged; this is a scheduler batch budget, not an HTTP or rolling freshness deadline.
@@ -18030,7 +17897,7 @@ impl UsageBreakdownAccumulator {
         }
     }
 
-    fn into_response(self) -> UsageBreakdownResponse {
+    pub(crate) fn into_response(self) -> UsageBreakdownResponse {
         let mut models = self
             .models
             .into_iter()
@@ -29424,10 +29291,30 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
     Query(params): Query<DashboardNetworkTimeseriesQuery>,
 ) -> Result<Json<DashboardNetworkTimeseriesResponse>, ApiError> {
     let started_at = Instant::now();
+    let response =
+        build_dashboard_network_timeseries_response_at(state.as_ref(), &params, Utc::now()).await?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    tracing::debug!(
+        endpoint = "/api/stats/dashboard-network-timeseries",
+        range = %params.range,
+        upstream_account_id = params.upstream_account_id,
+        bucket_count = response.points.len(),
+        elapsed_ms,
+        "dashboard network timeseries completed"
+    );
+
+    Ok(Json(response))
+}
+
+pub(crate) async fn build_dashboard_network_timeseries_response_at(
+    state: &AppState,
+    params: &DashboardNetworkTimeseriesQuery,
+    now: DateTime<Utc>,
+) -> Result<DashboardNetworkTimeseriesResponse, ApiError> {
     validate_dashboard_network_timeseries_range(params.range.as_str())?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let range_window =
-        resolve_range_window(params.range.as_str(), reporting_tz).map_err(ApiError::from)?;
+    let range_window = resolve_range_window_at(params.range.as_str(), reporting_tz, now)
+        .map_err(ApiError::from)?;
     let range = ExactUtcRange {
         start: range_window.start,
         end: range_window.end,
@@ -29497,7 +29384,7 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
             > range.start;
     if include_live_bucket {
         let live_bucket = load_dashboard_network_open_bucket_snapshot(
-            state.as_ref(),
+            state,
             source_scope,
             range.end,
             params.upstream_account_id,
@@ -29519,7 +29406,9 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
             .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS);
     let mut points = Vec::new();
     let mut bucket_epoch_second = first_bucket_epoch_second;
-    while bucket_epoch_second < range.end.timestamp() {
+    // Compare the complete bucket start with the subsecond range end so the current bucket is
+    // emitted even during the first fractional second after a bucket boundary.
+    loop {
         let bucket_start = Utc
             .timestamp_opt(bucket_epoch_second, 0)
             .single()
@@ -29550,24 +29439,14 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
         bucket_epoch_second = bucket_epoch_second.saturating_add(DASHBOARD_NETWORK_BUCKET_SECONDS);
     }
 
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    tracing::debug!(
-        endpoint = "/api/stats/dashboard-network-timeseries",
-        range = %params.range,
-        upstream_account_id = params.upstream_account_id,
-        bucket_count = points.len(),
-        elapsed_ms,
-        "dashboard network timeseries completed"
-    );
-
-    Ok(Json(DashboardNetworkTimeseriesResponse {
-        range: params.range,
+    Ok(DashboardNetworkTimeseriesResponse {
+        range: params.range.clone(),
         range_start: format_utc_iso_precise(range.start),
         range_end: format_utc_iso_precise(range.end),
         snapshot_id: range.end.timestamp_millis(),
         bucket_seconds: DASHBOARD_NETWORK_BUCKET_SECONDS,
         points,
-    }))
+    })
 }
 
 pub(crate) async fn fetch_upstream_account_activity(
@@ -30325,18 +30204,24 @@ async fn fetch_summary_inner(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-        let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
-            projection.as_ref(),
-            &gaps,
-            &deltas,
-            &window,
-            reporting_tz,
-            params.upstream_account_id,
-        );
+        let (source_gap_pending, source_gap_unavailable, source_gap_recovery_applicable) =
+            summary_source_gap_status(
+                projection.as_ref(),
+                &gaps,
+                &deltas,
+                &window,
+                reporting_tz,
+                params.upstream_account_id,
+            );
         if source_gap_unavailable {
-            return Err(ApiError::unavailable(anyhow!(
-                "summary source journal has an unproven change for the requested selection"
-            )));
+            return Err(summary_source_gap_unavailable_error(
+                state.as_ref(),
+                &window,
+                reporting_tz,
+                source_gap_recovery_applicable,
+                "summary source journal has an unproven change for the requested selection",
+            )
+            .await);
         }
         let delta_gap_pending = summary_delta_gap_affects_selection(
             projection.as_ref(),
@@ -30386,19 +30271,15 @@ async fn fetch_summary_inner(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
-        projection.as_ref(),
-        &gaps,
-        &deltas,
-        &window,
-        reporting_tz,
-        account_id,
-    );
-    if source_gap_unavailable {
-        return Err(ApiError::unavailable(anyhow!(
-            "summary source journal has an unproven change for the requested selection"
-        )));
-    }
+    let (source_gap_pending, source_gap_unavailable, source_gap_recovery_applicable) =
+        summary_source_gap_status(
+            projection.as_ref(),
+            &gaps,
+            &deltas,
+            &window,
+            reporting_tz,
+            account_id,
+        );
     let delta_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
@@ -30410,6 +30291,31 @@ async fn fetch_summary_inner(
     );
     if matches!(window, SummaryWindow::Current(_)) && delta_gap_pending {
         return Err(ApiError::unavailable(anyhow!("current rank unproven")));
+    }
+    if (!source_gap_pending || source_gap_recovery_applicable)
+        && !delta_gap_pending
+        && let Some(response) = dashboard_recovery_response_if_ready(
+            state.as_ref(),
+            projection.as_ref(),
+            &window,
+            reporting_tz,
+            account_id,
+            &deltas,
+            source_gap_pending && source_gap_recovery_applicable,
+        )
+        .await?
+    {
+        return Ok(Json(response));
+    }
+    if source_gap_unavailable {
+        return Err(summary_source_gap_unavailable_error(
+            state.as_ref(),
+            &window,
+            reporting_tz,
+            source_gap_recovery_applicable,
+            "summary source journal has an unproven change for the requested selection",
+        )
+        .await);
     }
     let delta_overlay_affects_selection = summary_delta_affects_selection(
         projection.as_ref(),
@@ -33899,13 +33805,14 @@ mod request_compression_query_tests {
             .summary_projection()
             .await
             .expect("published projection");
+        let historical_gap_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
         let gap = DeltaGapProof {
             cursor: SummaryDeltaCursor(4),
             terminal_sequence: Some(4),
             source_gap: false,
             compaction_gap: false,
             upstream_account_id: Some(42),
-            occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
+            occurred_at: historical_gap_at,
             row_id: Some(i64::MAX),
             invoke_id: Some("summary-delta-gap-tail".to_string()),
         };
@@ -33997,6 +33904,21 @@ mod request_compression_query_tests {
             ),
             "a source proof must not be downgraded to a terminal-only gap"
         );
+        let mut compaction_gap = gap.clone();
+        compaction_gap.source_gap = true;
+        compaction_gap.compaction_gap = true;
+        let mut strict_scoped_gap = compaction_gap.clone();
+        strict_scoped_gap.compaction_gap = false;
+        strict_scoped_gap.upstream_account_id = Some(42);
+        let (pending, unavailable, recovery_applicable) = summary_source_gap_status(
+            projection.as_ref(),
+            &[compaction_gap, strict_scoped_gap],
+            &[],
+            &SummaryWindow::PreviousFullDays(7),
+            Shanghai,
+            None,
+        );
+        assert!(pending && unavailable && !recovery_applicable);
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
@@ -35642,8 +35564,8 @@ mod request_compression_query_tests {
     fn summary_coverage_recovery_idle_cadence_waits_ten_seconds() {
         assert_eq!(
             summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Immediate),
-            Duration::ZERO,
-            "startup and pending recovery turns must remain immediate"
+            Duration::from_secs(1),
+            "committed recovery pages must yield for one second before the next admission"
         );
         assert_eq!(
             summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Idle),

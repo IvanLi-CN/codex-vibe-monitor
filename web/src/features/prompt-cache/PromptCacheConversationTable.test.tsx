@@ -409,6 +409,10 @@ describe("PromptCacheConversationTable", () => {
     });
   }
 
+  async function waitFor<T>(callback: () => T | Promise<T>): Promise<T> {
+    return vi.waitFor(callback, { interval: 1, timeout: 1_000 });
+  }
+
   it("renders conversation metrics and unified 24h sparkline surfaces", () => {
     const stats: PromptCacheConversationsResponse = {
       rangeStart: "2026-03-02T00:00:00Z",
@@ -1946,7 +1950,7 @@ describe("PromptCacheConversationTable", () => {
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3));
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
       promptCacheKey: "pck-overview-pages",
@@ -2035,7 +2039,7 @@ describe("PromptCacheConversationTable", () => {
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3));
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
       promptCacheKey: "pck-overview-range",
@@ -2097,7 +2101,7 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.fetchPromptCacheConversationBinding).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("当前：分组 prod");
-    await vi.waitFor(() => expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1));
 
     detailTopicMocks.current.binding = {
       ...detailTopicMocks.current.binding,
@@ -2158,7 +2162,7 @@ describe("PromptCacheConversationTable", () => {
       "pck-binding-fallback",
       expect.any(AbortSignal),
     );
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       await flushInteractive();
       expect(document.body.textContent).toContain("当前：分组 http-fallback-group");
     });
@@ -2241,7 +2245,7 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
     await clickDrawerTab("路由");
 
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.fetchPromptCacheConversationBinding).toHaveBeenCalledWith(
         "pck-binding-second",
         expect.any(AbortSignal),
@@ -2439,7 +2443,7 @@ describe("PromptCacheConversationTable", () => {
     await act(async () => {
       confirm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.resetPromptCacheConversationAffinity).toHaveBeenCalledWith(
         "pck-reset-affinity",
       ),
@@ -2619,7 +2623,7 @@ describe("PromptCacheConversationTable", () => {
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
     );
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
@@ -3684,7 +3688,7 @@ describe("PromptCacheConversationTable", () => {
         infoType: "routing",
       }),
     );
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       await flushInteractive();
       expect(document.body.textContent).toContain("手工绑定已更新");
       expect(document.body.textContent).not.toContain("策略更新");
@@ -4029,13 +4033,13 @@ describe("PromptCacheConversationTable", () => {
     await user.click(document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement);
     await user.click(findSelectOption("保持当前上游")!);
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
     );
 
     await user.click(findButtonByAriaLabel("清除对话覆盖: 切出")!);
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2),
     );
 
@@ -4045,7 +4049,7 @@ describe("PromptCacheConversationTable", () => {
     );
     await user.click(findSelectOption("强制添加")!);
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
     );
 
@@ -4055,7 +4059,7 @@ describe("PromptCacheConversationTable", () => {
     );
     await user.click(findSelectOption("强制移除")!);
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
     );
 
@@ -4066,7 +4070,7 @@ describe("PromptCacheConversationTable", () => {
       await vi.advanceTimersByTimeAsync(600);
     });
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(5),
     );
 
@@ -4076,7 +4080,7 @@ describe("PromptCacheConversationTable", () => {
     await user.type(availableModelsInput!, "gpt-5.1-codex-max");
     await user.click(findButtonByAriaLabel("应用覆盖")!);
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(6),
     );
 
@@ -4089,7 +4093,7 @@ describe("PromptCacheConversationTable", () => {
     await user.type(timeoutInput!, "180");
     await user.tab();
     await flushInteractive();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(7),
     );
 
@@ -4218,7 +4222,7 @@ describe("PromptCacheConversationTable", () => {
       document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
     );
     await user.click(findSelectOption("强制添加")!);
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
     );
 
@@ -4434,7 +4438,7 @@ describe("PromptCacheConversationTable", () => {
     await user.click(findSelectOption("保持当前上游")!);
     await flushInteractive();
 
-    await vi.waitFor(() => expect(document.body.textContent).toContain("override update failed"));
+    await waitFor(() => expect(document.body.textContent).toContain("override update failed"));
   });
 
   it("does not allow saving a default binding draft after load failure", async () => {

@@ -2,16 +2,16 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
-    "release_unit_description": "PR-B runtime Summary read-model recovery.",
+    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then add the Dashboard compacted-source recovery checkpoint/staging set and repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions. The query-fairness follow-up reuses the existing format-1 Dashboard state and changes no DDL.",
+    "release_unit_description": "Dashboard Summary bounded source recovery.",
     "version_impact": "patch"
   },
   "durable_state": {
-    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, and invocation_rollup_hourly derived rows used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state.",
+    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, invocation_rollup_hourly derived rows, and additive Dashboard compacted-source checkpoint/staging tables used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state. Dashboard staging stores only normalized aggregates, a tuple cursor, generation-fence values, state, and list-limited record identities; it never stores invocation payloads. The query-fairness follow-up only changes the existing reader cursor, scheduler, and in-memory runtime page limit.",
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR-B candidate.",
+      "to_program_version": "PR #1191 implementation candidate c72088935b13e35807566ad77db70a3b497a6519; prior Linux CI, migration evidence, and formal review belong to the superseded pre-rebase head, while current-head validation and empirical acceptance remain required.",
       "direct_major_skips_supported": false
     }
   },
@@ -22,6 +22,13 @@
         "id": "ddl-001",
         "description": "During ensure_schema, create the partial idx_archive_batches_pending_summary_rollup_order and idx_archive_batches_summary_rollup_repair_seek indexes on existing archive_batches columns. CREATE INDEX IF NOT EXISTS makes installation idempotent; the indexes are optimizer-only and do not alter business rows.",
         "order": 1,
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "ddl-dashboard-compacted-source-recovery",
+        "description": "During ensure_schema, create the additive Dashboard compacted-source recovery checkpoint, aggregate, usage, and bounded record-identity tables. Existing databases receive missing usage columns through idempotent ensure-column operations; no existing business row is rewritten or deleted.",
+        "order": 4,
         "observable": true,
         "pauseable": true
       }
@@ -46,15 +53,33 @@
         ],
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "backfill-dashboard-compacted-source-recovery",
+        "description": "When a source compaction proof intersects the Dashboard day windows, create or resume the fixed-Shanghai today/yesterday/previous7d checkpoint. Read canonical terminal rows by occurred_at,id keyset pages of at most 512 rows, and commit aggregate, usage, bounded record identities, tuple cursor, target generation fence, processed-row count, and state atomically. Checkpoint initialization and generation-fence reset use the same dedicated SQLite connection, deadline-aligned busy timeout, progress handler, bounded rollback, and bounded close path as page staging and publication; reset never falls back to the shared pool under contention and its write transaction is capped at 250 ms. Candidate and source-row reads, page staging, and publication use dedicated SQLite connections with deadline-aligned busy timeouts, progress handlers, and bounded close paths; rollback and close cleanup also stop at the remaining transaction deadline and drop the dedicated connection when the budget is exhausted. A concurrent page must match the durable cursor and target before applying aggregate deltas; coverage-fence changes discard unpublishable staging, while append-only live-tail changes preserve progress and are overlaid by exact bounded deltas. Candidate byte preflight covers only text loaded into the source-row projection; raw invocation payload is not materialized, staged, or charged against the page budget. Yield at 8 MiB, 250 ms transaction including bounded commit wait, 2 s turn covering checkpoint/status/publication work, pressure, contention, cancellation, or shutdown; restart resumes the last committed page. Publication holds its writer fence while it verifies canonical terminal counts and rechecks the coverage window identity, then exposes the hub snapshot only after the durable publication commit; its transaction is also capped at 250 ms, and a late terminal transition resets staging for a bounded rescan. Non-error text over the materialization budget fails closed before loading. No request-path SQL, production copy, destructive cleanup, or payload staging is allowed.",
+        "order": 5,
+        "depends_on": [
+          "ddl-dashboard-compacted-source-recovery"
+        ],
+        "observable": true,
+        "pauseable": true
       }
     ]
+  },
+  "follow_up_compatibility": {
+    "version_impact": "patch",
+    "schema_change": false,
+    "format_version": 1,
+    "description": "The follow-up coalesces the Shanghai recovery range, seeks a bounded key page through the existing occurred_at,id covering index, removes payload work from the first-stage query, and changes only in-memory adaptive page sizing, backoff, and low-cardinality diagnostics. Existing checkpoint/staging rows remain readable and no old rows are rewritten or deleted."
   },
   "rollout_observability": {
     "operations_must_remain_separate": true,
     "operation_sequence": [
       "ddl-001",
       "dml-001",
-      "backfill-001"
+      "backfill-001",
+      "ddl-dashboard-compacted-source-recovery",
+      "backfill-dashboard-compacted-source-recovery"
     ],
     "progress_signals": [
       "sqlite_master and EXPLAIN QUERY PLAN show the partial index",
@@ -63,7 +88,15 @@
       "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass",
       "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail",
       "A full-repair page that clears the marker predicate still resumes from its durable archive and per-archive row cursors before any additive replay can run",
-      "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication"
+      "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication",
+      "A 10,001-row compacted canonical source range is accepted without a global COUNT(*) or LIMIT 10001 gate and converges through 512-row occurred_at,id pages",
+      "A committed Dashboard page resumes after restart without duplicate aggregate or usage contributions; a concurrent stale page is discarded by cursor compare-and-swap; a coverage-fence change leaves the old staging unpublished while live-tail changes preserve it",
+      "Publication rejects staging whose canonical terminal counts changed after scanning and forces a bounded rescan; stored Shanghai window ranges expire at the next reporting day",
+      "A cancelled or timed-out publication cannot expose an uncommitted hub snapshot; the complete recovery turn defers when checkpoint, state, or publication work cannot fit its remaining deadline",
+      "Dashboard pending, deferred, failed, and completed states remain observable through low-cardinality system status while request handlers retain the coded 503 contract; recovery state transitions are themselves bounded by the worker turn budget and defer when the state write cannot complete",
+      "The recovery key query uses a covering tuple seek with no temporary sort; candidate and source-row reads are constrained to the fetched key IDs and do not scan or stage payloads",
+      "A read timeout halves the in-memory page limit down to one, successful pages retain that limit, and a generation identity change or process restart restores the 512-key limit",
+      "A committed page resets the deferred retry delay, while repeated pressure, contention, timeout, or no-progress turns expose the current 10/20/40/60-second retry deadline"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",
@@ -82,24 +115,31 @@
       "required_test_evidence": [
         "The public API remains nonbreaking and candidate-written state uses existing representations readable by supported earlier same-Minor readers.",
         "Repeated ensure_schema recognizes the partial index without duplication and the real pending-rollup query uses it.",
-      "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
-      "NULL and blank replay markers fail closed; force repair deduplicates source invocation IDs across archive pages and clears safe buckets before later replacement pages when a materialized authority bucket is missing.",
-      "The id > cursor ORDER BY id force-repair query uses idx_archive_batches_summary_rollup_repair_seek and its EXPLAIN plan is covered by the schema regression.",
+        "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
+        "NULL and blank replay markers fail closed; force repair deduplicates source invocation IDs across archive pages and clears safe buckets before later replacement pages when a materialized authority bucket is missing.",
+        "The id > cursor ORDER BY id force-repair query uses idx_archive_batches_summary_rollup_repair_seek and its EXPLAIN plan is covered by the schema regression.",
         "Legacy blank or NULL replay-marker SHA values remain readable, while a stale nonblank SHA and a materialized archive missing Summary marker proof are reopened for idempotent repair.",
         "A stale-marker full repair converges across 129 archive batches, pages past the 4,096-archive transaction boundary even after the first page clears the marker predicate, deduplicates restored live rows, and persists the live cursor across an incomplete retry.",
         "An eligible broad Source Journal compaction gap with an acknowledged overlay is explicitly degraded for both HTTP and Summary SSE, while scoped source gaps and unproven current rank remain unavailable.",
         "An unproven current rank and an all-time response without a hydrated baseline remain unavailable instead of falling through to an approximate resident response.",
-        "No old-version allocator writeback or deployment action is part of the migration contract."
+        "No old-version allocator writeback or deployment action is part of the migration contract.",
+        "The Dashboard recovery key-page EXPLAIN uses idx_codex_invocations_occurred_at_id with tuple seek and no global scan or temporary sort.",
+        "Candidate and source-row read timeouts halve the in-memory page limit to one; restart and changed generation identity restore 512 without changing format-1 state.",
+        "Recovery scheduling releases the priority reservation and execution lease after each bounded turn, waits one second after committed progress, and applies capped deferred backoff without no-op checkpoint writes."
       ]
     },
     "minor": {
-      "required_test_evidence": []
+      "required_test_evidence": [
+        "ensure_schema creates all Dashboard recovery tables idempotently and adds missing usage columns to an existing database without rewriting or deleting old rows",
+        "the forward-only migration record explicitly excludes production backup, VACUUM/WAL truncation, proof/journal deletion, deployment, restart, rollback, and automatic repair"
+      ]
     },
     "major": {
       "required_test_evidence": []
     },
     "completed_evidence": [
       "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+      "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_migrates_dashboard_recovery_state_idempotently_without_rewriting_legacy_rows",
       "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
       "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
       "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
@@ -117,14 +157,36 @@
       "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
     ]
   },
+  "pending_execution_evidence": [
+    {
+      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+      "reason": "PR #1191 was rebased after its previous candidate-bound empirical acceptance classified performance evidence as blocked: functional scenarios passed, p95 passed, but metrics-mode CPU windows exceeded the stability limit and the observed CPU increase exceeded budget. The old evidence cannot authorize the rebased candidate; no threshold relaxation is authorized by the plan."
+    }
+  ],
+  "execution_evidence": {
+    "ci_run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167791746",
+      "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "stateful_and_migration_profiles_passed": true,
+    "formal_review_passed": true,
+    "performance_acceptance": {
+      "run": "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/40167801081",
+      "artifact": "observability-acceptance-40167801081-1",
+      "status": "blocked",
+      "functional_scenarios_passed": true,
+      "cpu_window_cv": 0.0521457846,
+      "cpu_observed_increase": 0.0720968518684939,
+      "p95_observed_increase": 0.0101117663,
+      "reason": "The classifier rejected unavailable evidence because CPU windows exceeded the 5% stability limit and the observed CPU increase exceeded the 5% budget; p95 latency remained within budget."
+    }
+  },
   "delivery_context": {
-    "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
-    "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
-    "previous_review_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
+    "candidate_validation_status": "pr-rebased-validation-required",
+    "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+    "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "PR-B was rebased onto origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0; no unrelated base merge is included.",
-    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the pushed PR-B candidate head; prior PR #1097 and older-head CI/review are superseded.",
-    "release_compatibility": "Index installation and bounded/full repair remain idempotent and forward-repairable; no old-version allocator writeback, deployment state, or deployment action is in scope."
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
+    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "release_compatibility": "The follow-up changes no durable representation; public API and persistent-state impact are assessed as patch; no backup, allocator writeback, deployment state, or deployment action is in scope."
   }
 }
