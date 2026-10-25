@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.5",
+  "base_stable_version": "4.13.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-25T08:14:34Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "53ab7cfe955fe53a4501b00efe1a51b24f672502",
+  "pr_number": 1187,
+  "pr_title": "fix: keep invocation timeline advancing during delayed refresh",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.5",
+  "target_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+  "type_label": "type:patch"
+}
