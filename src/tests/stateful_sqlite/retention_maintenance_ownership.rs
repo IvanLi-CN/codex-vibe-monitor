@@ -87,12 +87,13 @@ async fn ownership_settlement_serializes_deferred_finalization_from_timeline_wri
 
     let hooks = store.install_settlement_interleaving_hooks();
     let finish_store = store.clone();
+    let finish_at = finished_at.clone();
     let finish_task = tokio::spawn(async move {
         finish_store
             .finish_run_with_observation(
                 run_id,
                 "success",
-                &finished_at,
+                &finish_at,
                 900,
                 Some("已完成"),
                 None,
