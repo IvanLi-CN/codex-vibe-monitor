@@ -425,6 +425,36 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(producer_strategy.get("fail-fast") is False and producer_matrix.get("component") == ["rust", "web", "runtime-base"], f"{workflow_path} producer matrix drifted")
     for name in ("Restore Rust dependency and target cache", "Restore Bun dependency cache", "Save Rust dependency and target cache", "Save Bun dependency cache"):
         require(step_config(producer, name, workflow_path).get("continue-on-error") is True, f"{workflow_path} {name} must remain best effort")
+    rust_save = step_config(producer, "Save Rust dependency and target cache", workflow_path)
+    web_save = step_config(producer, "Save Bun dependency cache", workflow_path)
+    require(
+        rust_save.get("id") == "rust-cache-save"
+        and "cache-hit != 'true'" in str(rust_save.get("if", ""))
+        and web_save.get("id") == "web-cache-save"
+        and "cache-hit != 'true'" in str(web_save.get("if", "")),
+        f"{workflow_path} dependency cache saves must be skipped only after an exact cache hit",
+    )
+    for name in ("Finalize Rust cache report", "Finalize Web cache report"):
+        finalize = step_config(producer, name, workflow_path)
+        finalize_env = require_mapping(finalize.get("env"), f"{workflow_path}.{name}.env")
+        finalize_run = str(finalize.get("run", ""))
+        require(
+            "always()" in str(finalize.get("if", ""))
+            and "CACHE_SAVE_OUTCOME" in finalize_env
+            and '"cache"]["save"]' in finalize_run
+            and all(status in finalize_run for status in ("saved", "failed", "skipped", "unknown")),
+            f"{workflow_path} {name} must record the actual cache save outcome",
+        )
+    runtime_producer = step_config(producer, "Build runtime-base production artifact", workflow_path)
+    runtime_run = str(runtime_producer.get("run", ""))
+    require(
+        "--progress=plain" in runtime_run
+        and "CACHE_SAVE" in runtime_run
+        and "cache_save=\"failed\"" in runtime_run
+        and "cache_save=\"saved\"" in runtime_run
+        and "cache_save=\"unknown\"" in runtime_run,
+        f"{workflow_path} runtime-base producer must report observed cache export status",
+    )
     for name in ("Build Rust production artifact", "Build Web production artifact", "Build runtime-base production artifact"):
         step = step_config(producer, name, workflow_path)
         require("matrix.component" in str(step.get("if", "")) and "production" in str(step.get("run", "")), f"{workflow_path} {name} must remain required")

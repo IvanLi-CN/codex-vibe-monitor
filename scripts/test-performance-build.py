@@ -47,6 +47,23 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("production-build.sh rust", dockerfile)
         self.assertIn("production-build.sh web", dockerfile)
 
+    def test_build_identity_includes_web_compiler_inputs(self) -> None:
+        identity = next(
+            step for step in self.workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Bind candidate and build identity"
+        )
+        run = identity["run"]
+        for path in ("web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json"):
+            self.assertIn(path, run)
+
+    def test_cache_save_results_are_reported(self) -> None:
+        workflow = WORKFLOW_PATH.read_text()
+        self.assertIn("id: rust-cache-save", workflow)
+        self.assertIn("id: web-cache-save", workflow)
+        self.assertIn("Finalize Rust cache report", workflow)
+        self.assertIn("Finalize Web cache report", workflow)
+        self.assertNotIn("'save':'best-effort'", workflow)
+
     def test_auto_dag_has_three_required_producers_and_complete_image_join(self) -> None:
         producer = self.workflow["jobs"]["observability-performance-producer"]
         self.assertEqual(producer["strategy"]["matrix"]["component"], ["rust", "web", "runtime-base"])
@@ -153,6 +170,70 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertGreater(value["timing"]["imageReadySeconds"], 0)
             self.assertEqual(value["jobs"][0]["actions"]["databaseId"], 101)
             self.assertEqual(value["jobs"][0]["executionSeconds"], 60.0)
+
+    def test_build_report_rejects_missing_actions_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            component_dir = root / "rust"
+            component_dir.mkdir()
+            (component_dir / "component.json").write_text(json.dumps({
+                "schema": "cvm-performance-build-component-v1",
+                "component": "rust",
+                "candidate": "a" * 40,
+                "buildIdentity": "b" * 64,
+                "status": "ready",
+                "startedAt": "2026-10-25T00:00:10Z",
+                "finishedAt": "2026-10-25T00:01:10Z",
+                "elapsedSeconds": 60,
+                "cache": {"restore": "miss", "save": "saved"},
+            }))
+            image_dir = root / "image"
+            image_dir.mkdir()
+            (image_dir / "image.json").write_text(json.dumps({
+                "schema": "cvm-performance-build-image-v1",
+                "component": "image",
+                "candidate": "a" * 40,
+                "buildIdentity": "b" * 64,
+                "status": "ready",
+                "startedAt": "2026-10-25T00:01:15Z",
+                "finishedAt": "2026-10-25T00:01:45Z",
+                "cache": {"status": "assembled"},
+                "imageId": "sha256:image",
+            }))
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({
+                "jobs": [
+                    {
+                        "databaseId": 101,
+                        "name": "Observability Performance Producer (rust)",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "startedAt": "2026-10-25T00:00:12Z",
+                        "completedAt": None,
+                    },
+                    {
+                        "databaseId": 102,
+                        "name": "Observability Performance Image",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "startedAt": "2026-10-25T00:01:14Z",
+                        "completedAt": "2026-10-25T00:01:46Z",
+                    },
+                ]
+            }))
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(root), "--output", str(root / "report.json"),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
+                ]
+                with self.assertRaisesRegex(ValueError, "Actions job timestamps incomplete"):
+                    report.main()
+            finally:
+                sys.argv = old_argv
 
 
 if __name__ == "__main__":

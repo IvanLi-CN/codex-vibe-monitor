@@ -144,9 +144,9 @@ jobs:
 
           common = ["Dockerfile", ".dockerignore", "scripts/production-build.sh", "rust-toolchain.toml"]
           rust_inputs = common + ["Cargo.toml", "Cargo.lock", "vendor/hotpath", "src", "build.rs", ".cargo"]
-          web_inputs = common + ["web/package.json", "web/bun.lock", "web/src", "web/public", "web/index.html", "web/vite.config.ts", "web/vite.config.js"]
+          web_inputs = common + ["web/package.json", "web/bun.lock", "web/src", "web/public", "web/index.html", "web/vite.config.ts", "web/vite.config.js", "web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json"]
           runtime_inputs = ["Dockerfile", ".dockerignore", "vendor/hotpath/LICENSE.txt", "scripts/search-raw"]
-          recipe_inputs = common + ["Cargo.toml", "Cargo.lock", "vendor/hotpath", "src", "build.rs", ".cargo", "web/package.json", "web/bun.lock", "web/src", "web/public", "web/index.html", "web/vite.config.ts", "web/vite.config.js", "scripts/export-observability-symbols.py", "scripts/search-raw"]
+          recipe_inputs = common + ["Cargo.toml", "Cargo.lock", "vendor/hotpath", "src", "build.rs", ".cargo", "web/package.json", "web/bun.lock", "web/src", "web/public", "web/index.html", "web/vite.config.ts", "web/vite.config.js", "web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json", "scripts/export-observability-symbols.py", "scripts/search-raw"]
 
           recipe_digest = digest(recipe_inputs)
           rust_digest = digest(rust_inputs)
@@ -362,28 +362,43 @@ jobs:
           started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           root="$RUNNER_TEMP/observability-build/runtime-base"
           mkdir -p "$root"
+          build_log="$RUNNER_TEMP/observability-runtime-base-build.log"
+          set +e
           docker buildx build \
             --platform linux/amd64 \
             --target runtime-base \
+            --progress=plain \
             --output "type=oci,dest=$root/component.tar" \
             --cache-from "type=gha,scope=observability-performance-v2-runtime-base-${{ needs.observability-performance-resolve.outputs.runtime_cache_key }}" \
             --cache-to "type=gha,scope=observability-performance-v2-runtime-base-${{ needs.observability-performance-resolve.outputs.runtime_cache_key }},mode=max,ignore-error=true,timeout=60s" \
-            candidate
+            candidate 2>&1 | tee "$build_log"
+          build_status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$build_status" -ne 0 ]; then
+            exit "$build_status"
+          fi
+          cache_save="unknown"
+          if grep -Eqi "failed to export cache|error exporting cache|failed to push.*cache|cache export.*failed" "$build_log"; then
+            cache_save="failed"
+          elif grep -Eqi "exporting cache.*(done|complete)|cache export.*(done|complete)" "$build_log"; then
+            cache_save="saved"
+          fi
           gzip -1 "$root/component.tar"
           finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
+          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" CACHE_SAVE="$cache_save" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           from datetime import datetime
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'runtime-base'
           archive=root/'component.tar.gz'
           elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
           archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
-          card={'schema':'cvm-performance-build-component-v1','component':'runtime-base','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'buildkit','save':'best-effort','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'contextType':'oci-layout','contextPath':'oci'}
+          card={'schema':'cvm-performance-build-component-v1','component':'runtime-base','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'buildkit','save':os.environ['CACHE_SAVE'],'namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'contextType':'oci-layout','contextPath':'oci'}
           (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
           PY
 
       - name: Save Rust dependency and target cache
-        if: matrix.component == 'rust'
+        id: rust-cache-save
+        if: matrix.component == 'rust' && steps.rust-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
@@ -392,8 +407,29 @@ jobs:
             ${{ runner.temp }}/cvm-rust-target
           key: ${{ needs.observability-performance-resolve.outputs.rust_cache_key }}
 
+      - name: Finalize Rust cache report
+        if: always() && matrix.component == 'rust'
+        env:
+          CACHE_SAVE_OUTCOME: ${{ steps.rust-cache-save.outcome }}
+        run: |
+          python3 - "$RUNNER_TEMP/observability-build/rust/component.json" "$CACHE_SAVE_OUTCOME" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          value = json.loads(path.read_text())
+          value["cache"]["save"] = {
+              "success": "saved",
+              "failure": "failed",
+              "skipped": "skipped",
+          }.get(sys.argv[2], "unknown")
+          path.write_text(json.dumps(value, indent=2) + "\n")
+          PY
+
       - name: Save Bun dependency cache
-        if: matrix.component == 'web'
+        id: web-cache-save
+        if: matrix.component == 'web' && steps.web-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
@@ -401,6 +437,26 @@ jobs:
             ${{ runner.temp }}/cvm-bun
             candidate/web/node_modules
           key: ${{ needs.observability-performance-resolve.outputs.web_cache_key }}
+
+      - name: Finalize Web cache report
+        if: always() && matrix.component == 'web'
+        env:
+          CACHE_SAVE_OUTCOME: ${{ steps.web-cache-save.outcome }}
+        run: |
+          python3 - "$RUNNER_TEMP/observability-build/web/component.json" "$CACHE_SAVE_OUTCOME" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          value = json.loads(path.read_text())
+          value["cache"]["save"] = {
+              "success": "saved",
+              "failure": "failed",
+              "skipped": "skipped",
+          }.get(sys.argv[2], "unknown")
+          path.write_text(json.dumps(value, indent=2) + "\n")
+          PY
 
       - name: Upload verified producer artifact
         uses: actions/upload-artifact@v7

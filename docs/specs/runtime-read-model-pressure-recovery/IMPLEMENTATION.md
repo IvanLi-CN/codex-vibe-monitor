@@ -49,11 +49,14 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   ranges; a request in another reporting zone does not reinterpret the staged
   rows and remains generic unavailable until a matching range is prepared.
 - Each Dashboard recovery page is committed atomically with its tuple cursor;
-  the candidate query measures only text byte lengths that the source-row
-  projection will load before materializing source fields; raw `payload` is
-  neither materialized nor charged against the page budget,
-  then materializes only the selected rows. Candidate reads, source-row reads,
-  page staging, and publication use dedicated SQLite connections whose native
+  the key query first returns only the bounded `(occurred_at, id)` page, then a
+  bounded read snapshot restricted to those keys computes terminal status,
+  failure classification, and byte estimates once. Selection happens before a
+  final query materializes only the selected necessary source fields and bounded
+  error text, reusing the snapshot metadata. Raw `payload` is neither materialized
+  nor charged against the page budget, and concurrent metadata backfill cannot
+  make the selected materialization exceed the estimate snapshot.
+  Key-page reads, page staging, and publication use dedicated SQLite connections whose native
   busy-timeout and progress handler share the remaining recovery deadline. The
   page byte budget is 8 MiB, the
   write-transaction budget is 250 ms including a bounded commit wait, and a
@@ -218,7 +221,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 - The invocation-range recovery component has separate [API/version impact](assets/invocation-range-version-impact.json) and [durable reservation/re-entry](assets/invocation-range-persistent-state.json) records. They preserve the deployed v4.8 reservation representation and explicitly leave final integrated verification pending.
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-recovery-query-fairness`, with implementation code at `c72088935b13e35807566ad77db70a3b497a6519` linearly rebased onto current `main@0694732d4e0e2106e3e688510b460c24785d7570`. No merge commit or unrelated base merge is included. The PR head may contain a later evidence-only documentation commit, while implementation evidence remains bound to the recorded code SHA and every delivery check must identify the head it tested. The previous candidate-bound empirical run is stale after this rebase; its functional and p95 results remain historical, but its CPU measurement was blocked and cannot authorize the current head. The candidate is not Step 5C-ready.
+- The current implementation candidate is tracked in `assets/current-candidate-validation.json` on `th/summary-recovery-query-fairness`, with query-materialization optimization code at `19b657b3662a1613a759ad80242e4ffb18a347ba` linearly rebased onto current `main@0542af458161992d94ecc7d6236ddf9c553202ac`. The topic adds no merge commit or unrelated base change; final-head PR checks and fresh Tier 4 review are read from the live PR. The acceptance re-audit concluded that this follow-up makes no relative production-performance claim, so generic observability A/B and hardware comparability are not merge gates. The existing observability harness also does not seed the Summary recovery fixture; a Summary-specific baseline/candidate load test remains a separate follow-up before any relative latency or throughput claim. Fresh Tier 4 review remains required before Step 5C.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary
@@ -239,7 +242,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
   source range remains recoverable without a production database copy. The
   stateful oracle covers 10,001 historical rows plus today/yesterday rows
   across two accounts and asserts exact global and account aggregates.
-- The compacted-source reader now coalesces the Shanghai `today`, `yesterday`, and `previous7d` windows into one half-open scan range. Its first query is forced through `idx_codex_invocations_occurred_at_id`, seeks by the durable `(occurred_at, id)` tuple, and returns at most 512 keys. Expensive status, JSON classification, and byte-estimate expressions run only in a second query constrained by those keys; the stateful plan regression rejects multi-index OR, global scans, and temporary sorting.
+- The compacted-source reader now coalesces the Shanghai `today`, `yesterday`, and `previous7d` windows into one half-open scan range. Its first query is forced through `idx_codex_invocations_occurred_at_id`, seeks by the durable `(occurred_at, id)` tuple, and returns at most 512 keys. A bounded read snapshot then computes terminal status, JSON-derived failure classification, and byte estimates once for those keys; selection admits only rows within the 512-row and 8 MiB limits, and the final materialization query reads only selected necessary fields plus bounded error text while reusing that metadata. This keeps the estimate and materialization reads consistent under concurrent metadata backfill and removes duplicate budget/classification expressions; the stateful plan regression rejects multi-index OR, global scans, and temporary sorting.
 - Candidate selection treats a missing terminal projection as a live `running`/`pending` boundary and does not advance past it. A page with no terminal or cursor progress returns deferred without a durable no-op write, preserving late-terminal exactness while allowing already selected terminal rows before the boundary to commit.
 - The scheduler executes one bounded recovery turn per admission, drops any returned reservation before the next scheduler tick, yields one second after committed progress, and uses `10/20/40/60` second deferred retry backoff with a 60-second cap. Fixed-cardinality observability counters and a retry delay gauge are updated in memory; structured logs carry only counts, state, deadlines, and retry timing, never payload text.
 - Archive maintenance exposes the normalized Snapshot page writer and cleanup

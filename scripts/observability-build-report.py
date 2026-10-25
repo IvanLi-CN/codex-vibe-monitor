@@ -108,6 +108,8 @@ def main() -> None:
         if action_job is None:
             raise ValueError(f"Actions job timestamp missing for {action_name}")
         action = actions_timing(action_job, args.run_started)
+        if action["queueSeconds"] is None or action["executionSeconds"] is None:
+            raise ValueError(f"Actions job timestamps incomplete for {action_name}")
         card_execution = card.get("elapsedSeconds") or seconds_between(card.get("startedAt"), card.get("finishedAt"))
         jobs.append(
             {
@@ -116,7 +118,7 @@ def main() -> None:
                 "startedAt": card.get("startedAt"),
                 "finishedAt": card.get("finishedAt"),
                 "queueSeconds": action["queueSeconds"],
-                "executionSeconds": action["executionSeconds"] or card_execution,
+                "executionSeconds": action["executionSeconds"],
                 "cardExecutionSeconds": card_execution,
                 "actions": action,
                 "cache": card.get("cache", {}),

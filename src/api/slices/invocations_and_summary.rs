@@ -158,8 +158,8 @@ pub(crate) use summary_projection_lifecycle::{
     run_compacted_source_recovery_one_page_for_test,
     run_compacted_source_recovery_until_complete_for_test,
     store_summary_live_tail_reconciliation_checkpoint,
-    summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
-    summary_coverage_recovery_requires_second_v2_turn,
+    summary_all_time_checkpoint_publication_required,
+    summary_coverage_recovery_requires_second_v2_turn, summary_coverage_recovery_scheduler_delay,
 };
 
 pub(crate) use invocation_query::{
@@ -35561,14 +35561,20 @@ mod request_compression_query_tests {
     }
 
     #[test]
-    fn summary_coverage_recovery_idle_cadence_waits_ten_seconds() {
+    fn summary_coverage_recovery_scheduler_cadence_waits_ten_seconds() {
         assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Immediate),
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Immediate,
+                Duration::from_secs(10),
+            ),
             Duration::from_secs(1),
             "committed recovery pages must yield for one second before the next admission"
         );
         assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Idle),
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Idle,
+                Duration::from_secs(10),
+            ),
             SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
             "idle durable recovery must use the ten-second floor"
         );
