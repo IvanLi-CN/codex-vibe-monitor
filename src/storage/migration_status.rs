@@ -357,6 +357,8 @@ pub(crate) struct StorageMigrationRuntime {
     progress_flush: Arc<ProgressFlushCoordinator>,
     #[cfg(test)]
     progress_publish_count: Arc<AtomicUsize>,
+    #[cfg(test)]
+    progress_persisting: Arc<AtomicBool>,
 }
 
 pub(crate) async fn ensure_persistence_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -543,6 +545,8 @@ impl StorageMigrationRuntime {
             }),
             #[cfg(test)]
             progress_publish_count: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            progress_persisting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -574,11 +578,10 @@ impl StorageMigrationRuntime {
         let pool = self.pool.clone();
         #[cfg(test)]
         let progress_publish_count = self.progress_publish_count.clone();
+        #[cfg(test)]
+        let progress_persisting = self.progress_persisting.clone();
         tokio::spawn(async move {
-            loop {
-                let Some(state) = weak_state.upgrade() else {
-                    break;
-                };
+            while let Some(state) = weak_state.upgrade() {
                 let deadline = state.lock().await.progress_flush_deadline;
                 let Some(deadline) = deadline else {
                     tokio::select! {
@@ -596,20 +599,37 @@ impl StorageMigrationRuntime {
                 let Some(state) = weak_state.upgrade() else {
                     break;
                 };
-                let mut state = state.lock().await;
-                if state.progress_flush_deadline != Some(deadline) {
-                    continue;
-                }
-                if !state.progress_dirty {
-                    state.progress_flush_deadline = None;
-                    continue;
-                }
+                let snapshot = {
+                    let mut state = state.lock().await;
+                    if state.progress_flush_deadline != Some(deadline) {
+                        continue;
+                    }
+                    if !state.progress_dirty {
+                        state.progress_flush_deadline = None;
+                        continue;
+                    }
+                    state.clone()
+                };
 
-                let snapshot = state.clone();
-                if persist_state_to_pool(pool.as_ref(), &snapshot)
+                #[cfg(test)]
+                progress_persisting.store(true, Ordering::Release);
+                let persisted = persist_state_to_pool(pool.as_ref(), &snapshot)
                     .await
-                    .is_ok()
+                    .is_ok();
+                #[cfg(test)]
+                progress_persisting.store(false, Ordering::Release);
+
+                let Some(state) = weak_state.upgrade() else {
+                    break;
+                };
+                let mut state = state.lock().await;
+                if state.response.revision != snapshot.response.revision
+                    || state.progress_flush_deadline != Some(deadline)
                 {
+                    notify.notify_one();
+                    continue;
+                }
+                if persisted {
                     state.progress_dirty = false;
                     state.progress_flush_deadline = None;
                     state.last_progress_published_at = Some(Instant::now());
@@ -621,7 +641,7 @@ impl StorageMigrationRuntime {
                         revision: response.revision,
                         status: response,
                     });
-                } else {
+                } else if state.progress_dirty {
                     state.progress_flush_deadline =
                         Some(Instant::now() + STORAGE_MIGRATION_PROGRESS_INTERVAL);
                 }
@@ -632,6 +652,11 @@ impl StorageMigrationRuntime {
     #[cfg(test)]
     pub(crate) fn progress_publish_count_for_test(&self) -> usize {
         self.progress_publish_count.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn progress_persistence_in_flight_for_test(&self) -> bool {
+        self.progress_persisting.load(Ordering::Acquire)
     }
 
     pub(crate) async fn snapshot(&self) -> StorageMigrationResponse {

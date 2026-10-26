@@ -300,6 +300,73 @@ async fn progress_persistence_and_events_are_coalesced_to_one_hz() {
 }
 
 #[tokio::test]
+async fn progress_flush_releases_runtime_lock_during_persistence() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = StorageMigrationRuntime::load(&config, pool.clone())
+        .await
+        .expect("migration runtime should load");
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+    runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Copying,
+            pending_keys: Some(10),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("first progress is accepted");
+
+    let held_connection = pool
+        .acquire()
+        .await
+        .expect("the single SQLite connection should be available");
+    runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::CatchingUp,
+            pending_keys: Some(2),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("coalesced progress is accepted");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.progress_persistence_in_flight_for_test() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("progress flush should reach SQLite while the connection is held");
+
+    let snapshot = tokio::time::timeout(Duration::from_millis(250), runtime.snapshot())
+        .await
+        .expect("snapshot should not wait for the SQLite flush");
+    assert_eq!(snapshot.progress.pending_keys, Some(2));
+
+    drop(held_connection);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.progress_publish_count_for_test() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the blocked progress flush should complete after SQLite is released");
+}
+
+#[tokio::test]
 async fn durable_status_recovers_pause_progress_and_revision_after_restart() {
     let config = StorageConfig {
         postgres_database_url: Some("postgresql://private.example/db".to_string()),
