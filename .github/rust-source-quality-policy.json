@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 63,
-    "suppression_entries": 134
+    "inventory_entries": 70,
+    "suppression_entries": 135
   },
   "loc_targets": {
     "production": 2500,
@@ -309,8 +309,50 @@
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
       "role": "test_helper",
-      "line_budget": 4319,
-      "next_module_workstream": "Split proxy broadcast/runtime harness fixtures by forward-proxy history, settings, and timeseries."
+      "line_budget": 19,
+      "next_module_workstream": "Maintain only proxy harness module declarations and the shared invocation-source helper re-export."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/forward_proxy_live_stats_and_bindings.rs",
+      "role": "test_helper",
+      "line_budget": 363,
+      "next_module_workstream": "Maintain forward-proxy live stats, fixed 24-hour buckets, binding nodes, empty endpoint behavior, and source fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/forward_proxy_timeseries_archive_history.rs",
+      "role": "test_helper",
+      "line_budget": 1571,
+      "next_module_workstream": "Maintain forward-proxy timeseries, retention history, archive health fallbacks, edge ranges, real attempts, direct history, and retired metadata."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/forward_proxy_timezones_and_weight_buckets.rs",
+      "role": "test_helper",
+      "line_budget": 142,
+      "next_module_workstream": "Maintain reporting timezone rejection/fallback, local-hour preservation, and latest-sample hourly weight upsert fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/pricing_and_terminal_persistence.rs",
+      "role": "test_helper",
+      "line_budget": 162,
+      "next_module_workstream": "Maintain pricing settings persistence and normal HTTP terminal persistence without retired WebSocket state."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/proxy_forwarding_retries_and_streams.rs",
+      "role": "test_helper",
+      "line_budget": 667,
+      "next_module_workstream": "Maintain OpenAI/proxy forwarding, request replay, retries, stream failures, timeouts, latency, and capture persistence."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/proxy_model_settings_and_schema_migrations.rs",
+      "role": "test_helper",
+      "line_budget": 1159,
+      "next_module_workstream": "Maintain proxy model settings, encrypted owner routing, environment initialization, schema migrations, and origin policy."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/proxy_runtime_security_and_redirects.rs",
+      "role": "test_helper",
+      "line_budget": 168,
+      "next_module_workstream": "Maintain same-origin settings-write validation and proxy redirect path/header normalization fixtures."
     },
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
@@ -829,6 +871,12 @@
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for shared imports consumed by descendant proxy harness test modules; remove it when facade ownership is narrowed further."
     },
     {
       "path": "src/tests/stateful_sqlite/mod.rs",
