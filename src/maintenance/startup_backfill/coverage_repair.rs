@@ -46,10 +46,22 @@ async fn run_startup_backfill_coverage_repair_if_due_with_observation<Repair, Re
     repair: Repair,
 ) -> Result<StartupBackfillTaskRunOutcome>
 where
-    Repair: FnOnce(Box<dyn FnMut(usize) + Send>) -> RepairFuture,
+    Repair: FnOnce(Box<dyn FnMut(usize) -> bool + Send>) -> RepairFuture,
     RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
 {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
+    if crate::maintenance_store::migration_task_is_held(task.name()).await {
+        let retry_at = Utc::now()
+            + ChronoDuration::seconds(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+        return Ok(StartupBackfillTaskRunOutcome {
+            actionable: false,
+            failed: false,
+            deferred: true,
+            completed: false,
+            next_due: retry_at,
+        });
+    }
 
     // Coverage repair shares the hourly-rollup synchronization lock. Only admit work when the
     // lock is immediately available; waiting while holding P2 could deadlock another maintenance
@@ -138,8 +150,18 @@ where
         super::task_runner::TaskObservationChildGuard(observation.clone());
     let mut workload_observation = observation.begin_subtask_workload(child_key);
     let on_bucket_committed = workload_observation.processed_work_recorder();
+    let migration_hold_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let migration_hold_flag_for_callback = Arc::clone(&migration_hold_flag);
+    let mut on_bucket_committed = move |count| {
+        on_bucket_committed(count);
+        migration_hold_flag_for_callback.load(std::sync::atomic::Ordering::Acquire)
+    };
 
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let repair_future = repair(Box::new(on_bucket_committed));
+    tokio::pin!(repair_future);
+    let migration_hold_watcher =
+        super::task_runner::wait_for_startup_backfill_migration_hold(None, task);
     let repair_outcome = tokio::select! {
         biased;
         _ = coordinator.wait_for_p2_preemption() => {
@@ -155,8 +177,49 @@ where
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
             ));
         }
-        outcome = repair(Box::new(on_bucket_committed)) => outcome,
+        outcome = &mut repair_future => outcome,
+        _ = migration_hold_watcher => {
+            migration_hold_flag.store(true, std::sync::atomic::Ordering::Release);
+            repair_future.await
+        }
     };
+    if crate::maintenance_store::migration_task_is_held(task.name()).await {
+        let retry_at = Utc::now()
+            + ChronoDuration::seconds(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
+        let checkpoint = crate::maintenance_store::migration_task_hold_checkpoint(task.name())
+            .await
+            .ok()
+            .flatten();
+        drop(write_permit);
+        let reason = checkpoint
+            .as_deref()
+            .map(|checkpoint| {
+                format!(
+                    "{} at checkpoint {checkpoint}",
+                    crate::maintenance_store::MIGRATION_HOLD_REASON
+                )
+            })
+            .unwrap_or_else(|| crate::maintenance_store::MIGRATION_HOLD_REASON.to_string());
+        workload_observation.finish_with_status_and_reason(
+            "skipped",
+            Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+        );
+        if managed_run_id.is_none() {
+            observation.finish_with_status_and_reason(
+                "skipped",
+                Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+            );
+        }
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+        debug!(task = task.log_label(), detail = %reason, "account activity v2 coverage repair deferred by migration hold");
+        return Ok(StartupBackfillTaskRunOutcome {
+            actionable: false,
+            failed: false,
+            deferred: true,
+            completed: true,
+            next_due: retry_at,
+        });
+    }
     let repair_outcome = match repair_outcome {
         Ok(outcome) => {
             workload_observation.set_processed_work(

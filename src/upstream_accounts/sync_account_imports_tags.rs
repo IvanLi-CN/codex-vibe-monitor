@@ -311,6 +311,15 @@ pub(crate) async fn sync_upstream_account_by_id(
     id: i64,
     cause: SyncCause,
 ) -> Result<Option<UpstreamAccountDetail>> {
+    sync_upstream_account_by_id_with_options(state, id, cause, false).await
+}
+
+pub(crate) async fn sync_upstream_account_by_id_with_options(
+    state: &AppState,
+    id: i64,
+    cause: SyncCause,
+    skip_usage_snapshot: bool,
+) -> Result<Option<UpstreamAccountDetail>> {
     let row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
@@ -345,7 +354,7 @@ pub(crate) async fn sync_upstream_account_by_id(
                 )
                 .await?;
             }
-            sync_oauth_account(state, &row, cause).await
+            sync_oauth_account_with_options(state, &row, cause, skip_usage_snapshot).await
         }
         UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => {
             if group_metadata.node_shunt_enabled {
@@ -422,6 +431,15 @@ pub(crate) async fn sync_oauth_account(
     state: &AppState,
     row: &UpstreamAccountRow,
     cause: SyncCause,
+) -> Result<()> {
+    sync_oauth_account_with_options(state, row, cause, false).await
+}
+
+pub(crate) async fn sync_oauth_account_with_options(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    cause: SyncCause,
+    skip_usage_snapshot: bool,
 ) -> Result<()> {
     let sync_source = sync_cause_action_source(cause);
     let now = Utc::now();
@@ -567,6 +585,21 @@ pub(crate) async fn sync_oauth_account(
     let mut latest_row = load_upstream_account_row(&state.pool, row.id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared during sync"))?;
+    if skip_usage_snapshot {
+        mark_account_sync_success_with_proxy_snapshot(
+            &state.pool,
+            row.id,
+            sync_source,
+            if should_clear_route_failure_state_after_sync_success(&latest_row) {
+                SyncSuccessRouteState::ClearFailureState
+            } else {
+                SyncSuccessRouteState::PreserveFailureState
+            },
+            None,
+        )
+        .await?;
+        return Ok(());
+    }
     let decrypted = decrypt_credentials(
         crypto_key,
         latest_row

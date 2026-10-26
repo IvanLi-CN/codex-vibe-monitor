@@ -2881,6 +2881,7 @@ export interface QueuedTaskRun {
   requestedAt: string;
   waitingMs: number;
   position: number;
+  waitReason?: string | null;
 }
 
 export interface TaskAdmissionWait {

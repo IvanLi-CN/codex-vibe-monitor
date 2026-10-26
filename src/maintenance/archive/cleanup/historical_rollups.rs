@@ -185,7 +185,9 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
     let mut hit_budget = false;
 
     for candidate in candidate_batch {
-        if started_at.elapsed() >= max_elapsed {
+        if crate::maintenance::migration_hold_signal_reached()
+            || started_at.elapsed() >= max_elapsed
+        {
             hit_budget = true;
             break;
         }
@@ -599,8 +601,9 @@ pub(crate) fn historical_rollup_materialization_budget_exhausted(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> bool {
-    matches!(
-        historical_rollup_materialization_remaining_budget(started_at, max_elapsed),
-        Some(remaining) if remaining.is_zero()
-    )
+    crate::maintenance::migration_hold_signal_reached()
+        || matches!(
+            historical_rollup_materialization_remaining_budget(started_at, max_elapsed),
+            Some(remaining) if remaining.is_zero()
+        )
 }

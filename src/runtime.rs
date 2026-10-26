@@ -1973,6 +1973,17 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         continue;
                     };
                     let mut blocked_task_keys = blocked_task_keys.into_iter().collect::<Vec<_>>();
+                    let held_task_keys = match store.migration_held_managed_task_keys().await {
+                        Ok(held_task_keys) => held_task_keys,
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                "managed task dispatcher could not load migration hold state"
+                            );
+                            continue;
+                        }
+                    };
+                    blocked_task_keys.extend(held_task_keys);
                     blocked_task_keys.extend(
                         crate::maintenance_store::active_task_execution_task_keys(),
                     );
@@ -2017,6 +2028,44 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     let Some((run_id, task_key, requested_at, trigger_kind)) = claim else {
                         continue;
                     };
+                    let migration_hold_active = match store.migration_task_is_held(&task_key).await {
+                        Ok(active) => active,
+                        Err(error) => {
+                            warn!(
+                                task = %task_key,
+                                error = %error,
+                                "managed task admission could not verify migration hold"
+                            );
+                            true
+                        }
+                    };
+                    if migration_hold_active {
+                        let checkpoint = store
+                            .migration_task_hold_checkpoint(&task_key)
+                            .await
+                            .ok()
+                            .flatten();
+                        if let Err(error) = store
+                            .requeue_claimed_run_for_migration_hold(run_id, checkpoint.as_deref())
+                            .await
+                        {
+                            warn!(
+                                run_id,
+                                task = %task_key,
+                                error = %error,
+                                "migration-held managed task could not return to the queue"
+                            );
+                        }
+                        if let Err(error) = store.mark_task_migration_held(&task_key).await {
+                            warn!(
+                                task = %task_key,
+                                error = %error,
+                                "migration-held managed task progress could not be published"
+                            );
+                        }
+                        crate::task_timeline::notify_runtime_changed();
+                        continue;
+                    }
                     crate::task_timeline::notify_runtime_changed();
                     let Some(execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution(&task_key)
@@ -2323,8 +2372,57 @@ async fn run_managed_task_worker(
         .cloned()
         .expect("maintenance store available while managed task worker runs");
     let execution_started_at = Instant::now();
-    let result =
-        run_managed_task_once_with_observation(&state, &task_key, run_id, &observation).await;
+    let migration_hold_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let task_future = crate::maintenance::with_migration_hold_signal(
+        Arc::clone(&migration_hold_flag),
+        crate::maintenance::with_managed_task_key(
+            &task_key,
+            run_managed_task_once_with_observation(&state, &task_key, run_id, &observation),
+        ),
+    );
+    tokio::pin!(task_future);
+    let result = tokio::select! {
+        biased;
+        result = &mut task_future => result,
+        _ = wait_for_managed_task_migration_hold(&store, &task_key) => {
+            migration_hold_flag.store(true, std::sync::atomic::Ordering::Release);
+            (&mut task_future).await
+        }
+    };
+    let result = match result {
+        Ok(mut execution) => {
+            let migration_hold_active = migration_hold_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+                || match store.migration_task_is_held(&task_key).await {
+                    Ok(active) => active,
+                    Err(error) => {
+                        warn!(
+                            task = %task_key,
+                            error = %error,
+                            "managed task completion could not verify migration hold"
+                        );
+                        true
+                    }
+                };
+            if migration_hold_active {
+                let checkpoint = store
+                    .migration_task_hold_checkpoint(&task_key)
+                    .await
+                    .ok()
+                    .flatten();
+                apply_migration_hold_to_execution(&mut execution, checkpoint);
+                if let Err(error) = store.mark_task_migration_held(&task_key).await {
+                    warn!(
+                        task = %task_key,
+                        error = %error,
+                        "migration-held task progress could not be published after batch"
+                    );
+                }
+            }
+            Ok(execution)
+        }
+        Err(error) => Err(error),
+    };
     let (status, summary, detail, completion, core_completion, details) = match result {
         Ok(execution) => {
             let status = match execution.completion.as_deref() {
@@ -2484,7 +2582,15 @@ async fn run_managed_task_worker(
             } else {
                 "complete"
             });
-    if let Err(error) = store
+    if progress_wait_reason == Some(crate::maintenance_store::MIGRATION_HOLD_REASON) {
+        if let Err(error) = store.mark_task_migration_held(&finish.task_key).await {
+            warn!(
+                task = %finish.task_key,
+                error = %error,
+                "migration-held managed task final progress snapshot could not be published"
+            );
+        }
+    } else if let Err(error) = store
         .publish_progress(
             &finish.task_key,
             progress_total,
@@ -2502,6 +2608,38 @@ async fn run_managed_task_worker(
         warn!(task = %finish.task_key, error = %error, "managed task final progress snapshot could not be published");
     }
     finish
+}
+
+async fn wait_for_managed_task_migration_hold(
+    store: &crate::maintenance_store::MaintenanceStore,
+    task_key: &str,
+) {
+    loop {
+        let held = match store.migration_task_is_held(task_key).await {
+            Ok(held) => held,
+            Err(error) => {
+                warn!(
+                    task = %task_key,
+                    error = %error,
+                    "managed task migration hold watcher failed"
+                );
+                true
+            }
+        };
+        if held {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_legacy_task_migration_hold(task_key: &'static str) {
+    loop {
+        if crate::maintenance_store::migration_task_is_held(task_key).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 struct ManagedTaskFinish {
@@ -2686,6 +2824,37 @@ impl ManagedTaskExecution {
     }
 }
 
+fn apply_migration_hold_to_execution(
+    execution: &mut ManagedTaskExecution,
+    checkpoint: Option<String>,
+) {
+    execution.summary = if execution.summary.is_empty() {
+        "任务已完成当前有界批次，因 migration_hold 延后".to_string()
+    } else {
+        format!(
+            "{}；当前批次完成后因 migration_hold 延后",
+            execution.summary
+        )
+    };
+    execution.detail = Some("等待迁移释放后从任务 checkpoint 继续".to_string());
+    execution.completion = Some("deferred".to_string());
+    execution.core_completion = None;
+    let details = execution.details.get_or_insert_with(|| json!({}));
+    if !details.is_object() {
+        *details = json!({});
+    }
+    details["waitReason"] = json!(crate::maintenance_store::MIGRATION_HOLD_REASON);
+    details["migrationCheckpoint"] = checkpoint.map(Value::String).unwrap_or(Value::Null);
+    details["scheduleRetryAfterSecs"] = json!(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
+    details["scheduleRetryReason"] = json!(crate::maintenance_store::MIGRATION_HOLD_REASON);
+}
+
+fn migration_hold_execution(checkpoint: Option<String>) -> ManagedTaskExecution {
+    let mut execution = ManagedTaskExecution::simple(String::new());
+    apply_migration_hold_to_execution(&mut execution, checkpoint);
+    execution
+}
+
 async fn run_managed_task_once_with_observation(
     state: &Arc<AppState>,
     task_key: &str,
@@ -2693,6 +2862,26 @@ async fn run_managed_task_once_with_observation(
     observation: &crate::TaskExecutionObservation,
 ) -> Result<ManagedTaskExecution> {
     let store = crate::maintenance_store::global().context("maintenance store unavailable")?;
+    let migration_hold_active = match store.migration_task_is_held(task_key).await {
+        Ok(active) => active,
+        Err(error) => {
+            warn!(
+                task = task_key,
+                error = %error,
+                "managed task execution could not verify migration hold"
+            );
+            true
+        }
+    };
+    if migration_hold_active {
+        return Ok(migration_hold_execution(
+            store
+                .migration_task_hold_checkpoint(task_key)
+                .await
+                .ok()
+                .flatten(),
+        ));
+    }
     let (trigger, details): (String, Option<String>) =
         sqlx::query_as("SELECT trigger_kind,details FROM managed_task_runs WHERE id=?")
             .bind(run_id)
@@ -3248,6 +3437,9 @@ async fn run_managed_task_once(
         "raw_payload_metrics_inventory" => {
             let reset =
                 resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await?;
+            if crate::maintenance::migration_hold_boundary_reached().await {
+                return Ok("原始载荷指标盘点已在 reset 批次后因 migration_hold 延后".to_string());
+            }
             refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
             Ok(if reset {
                 "原始载荷指标盘点已推进".to_string()
@@ -3725,20 +3917,35 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 ));
 
             let hourly_rollups_started_at = Instant::now();
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
             let hourly_rollups = crate::with_managed_task_observation(
                 task_run
                     .observation
                     .clone()
                     .expect("hourly rollup observation is initialized before work"),
                 async {
+                    let hourly_rollups_future = crate::maintenance::with_migration_hold_signal(
+                        Arc::clone(&migration_hold_flag),
+                        crate::maintenance::with_managed_task_key(
+                            "startup_hourly_rollup_bootstrap",
+                            bootstrap_hourly_rollups_for_runtime_startup_with_work(
+                                &state.pool,
+                                Some(state.config.invocation_max_days),
+                            ),
+                        ),
+                    );
+                    tokio::pin!(hourly_rollups_future);
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => None,
                         _ = coordinator.wait_for_p2_preemption() => None,
-                        result = bootstrap_hourly_rollups_for_runtime_startup_with_work(
-                            &state.pool,
-                            Some(state.config.invocation_max_days),
-                        ) => Some(result),
+                        result = &mut hourly_rollups_future => Some(result),
+                        _ = wait_for_legacy_task_migration_hold(
+                            "startup_hourly_rollup_bootstrap",
+                        ) => {
+                            migration_hold_flag.store(true, Ordering::Release);
+                            Some((&mut hourly_rollups_future).await)
+                        }
                     }
                 },
             )
@@ -3772,6 +3979,23 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     _ = tokio::time::sleep(retry_after) => continue,
                 }
             };
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held(
+                    "startup_hourly_rollup_bootstrap",
+                )
+                .await;
+            if migration_hold_active {
+                drop(write_permit);
+                drop(pressure_permit);
+                drop(rollup_guard);
+                finish_runtime_startup_hourly_rollup_migration_hold(
+                    state.as_ref(),
+                    &cancel,
+                    &task_run,
+                )
+                .await;
+                return;
+            }
             if let Err(err) = hourly_rollups.as_ref() {
                 drop(write_permit);
                 drop(pressure_permit);
@@ -3845,6 +4069,17 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     return;
                 }
             };
+            if crate::maintenance_store::migration_task_is_held("startup_hourly_rollup_bootstrap")
+                .await
+            {
+                finish_runtime_startup_hourly_rollup_migration_hold(
+                    state.as_ref(),
+                    &cancel,
+                    &task_run,
+                )
+                .await;
+                return;
+            }
             if usage_breakdown_repair_pending {
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state.as_ref(),
@@ -3957,13 +4192,45 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             );
 
             let summary_rollups_started_at = Instant::now();
-            let summary_rollups = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => None,
-                _ = coordinator.wait_for_p2_preemption() => None,
-                result = ensure_invocation_summary_rollups_ready_best_effort(&state.pool) => Some(result),
+            let summary_rollups = {
+                let summary_rollups_future = crate::maintenance::with_migration_hold_signal(
+                    Arc::clone(&migration_hold_flag),
+                    crate::maintenance::with_managed_task_key(
+                        "startup_hourly_rollup_bootstrap",
+                        ensure_invocation_summary_rollups_ready_best_effort(&state.pool),
+                    ),
+                );
+                tokio::pin!(summary_rollups_future);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    _ = coordinator.wait_for_p2_preemption() => None,
+                    result = &mut summary_rollups_future => Some(result),
+                    _ = wait_for_legacy_task_migration_hold(
+                        "startup_hourly_rollup_bootstrap",
+                    ) => {
+                        migration_hold_flag.store(true, Ordering::Release);
+                        Some((&mut summary_rollups_future).await)
+                    }
+                }
             };
             drop(rollup_guard);
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held(
+                    "startup_hourly_rollup_bootstrap",
+                )
+                .await;
+            if migration_hold_active {
+                drop(write_permit);
+                drop(pressure_permit);
+                finish_runtime_startup_hourly_rollup_migration_hold(
+                    state.as_ref(),
+                    &cancel,
+                    &task_run,
+                )
+                .await;
+                return;
+            }
             let Some(summary_rollups) = summary_rollups else {
                 drop(write_permit);
                 drop(pressure_permit);
@@ -4172,6 +4439,32 @@ pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     }
 }
 
+async fn finish_runtime_startup_hourly_rollup_migration_hold(
+    state: &AppState,
+    cancel: &CancellationToken,
+    task_run: &SystemTaskRunHandle,
+) {
+    if let Some(store) = crate::maintenance_store::global()
+        && let Err(error) = store
+            .mark_task_migration_held("startup_hourly_rollup_bootstrap")
+            .await
+    {
+        warn!(
+            error = %error,
+            "startup hourly rollup migration-held progress could not be published"
+        );
+    }
+    finish_runtime_startup_hourly_rollup_bootstrap_task(
+        state,
+        cancel,
+        Some(task_run),
+        SystemTaskStatus::Skipped,
+        "background startup hourly rollup bootstrap deferred by migration hold",
+        Some(crate::maintenance_store::MIGRATION_HOLD_REASON.to_string()),
+    )
+    .await;
+}
+
 pub(crate) fn spawn_forward_proxy_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
@@ -4338,7 +4631,16 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             .await;
                         }
                     }
-                    if let Err(err) = flush_dashboard_network_socket_minute_rollups(
+                    if crate::maintenance_store::migration_task_is_held(
+                        "forward_proxy_subscription_refresh.rollups",
+                    )
+                    .await
+                    {
+                        debug!(
+                            wait_reason = crate::maintenance_store::MIGRATION_HOLD_REASON,
+                            "forward proxy dashboard rollups deferred by migration hold"
+                        );
+                    } else if let Err(err) = flush_dashboard_network_socket_minute_rollups(
                         &state.pool,
                         state.dashboard_network_speed_cache.as_ref(),
                         Utc::now(),

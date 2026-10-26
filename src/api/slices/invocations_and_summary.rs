@@ -25,7 +25,7 @@ use std::path::Path;
 use std::str::FromStr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use std::{fs, io};
@@ -16396,17 +16396,59 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 .subscription_hub
                 .summary_delta_journal_unabsorbed_identities()
                 .await;
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
+            let migration_hold_flag_for_refresh = Arc::clone(&migration_hold_flag);
+            let refresh_future = crate::maintenance::with_migration_hold_signal(
+                Arc::clone(&migration_hold_flag),
+                crate::maintenance::with_managed_task_key(
+                    "summary_snapshot",
+                    refresh_summary_snapshots(state.as_ref()),
+                ),
+            );
+            tokio::pin!(refresh_future);
             let refresh_result = crate::with_managed_task_observation(observation.clone(), async {
+                let migration_hold_watcher = async {
+                    loop {
+                        if crate::maintenance_store::migration_task_is_held("summary_snapshot")
+                            .await
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                };
                 tokio::select! {
                     biased;
                     _ = state.shutdown.cancelled() => None,
-                    result = refresh_summary_snapshots(state.as_ref()) => Some(result),
+                    result = &mut refresh_future => Some(result),
+                    _ = migration_hold_watcher => {
+                        migration_hold_flag_for_refresh.store(true, Ordering::Release);
+                        Some((&mut refresh_future).await)
+                    }
                 }
             })
             .await;
             let Some(refresh_result) = refresh_result else {
                 return;
             };
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held("summary_snapshot").await;
+            if migration_hold_active {
+                if let Some(store) = crate::maintenance_store::global()
+                    && let Err(error) = store.mark_task_migration_held("summary_snapshot").await
+                {
+                    warn!(
+                        error = %error,
+                        "summary snapshot migration-held progress could not be published"
+                    );
+                }
+                dirty = true;
+                observation.finish_with_status_and_reason(
+                    "skipped",
+                    Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+                );
+                continue;
+            }
             let status = match refresh_result {
                 Ok(()) => {
                     let journal_after = state

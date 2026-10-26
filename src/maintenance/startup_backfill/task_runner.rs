@@ -7,6 +7,25 @@ pub(crate) fn startup_backfill_task_enabled(state: &AppState, task: StartupBackf
     }
 }
 
+pub(super) async fn wait_for_startup_backfill_migration_hold(
+    store: Option<&crate::maintenance_store::MaintenanceStore>,
+    task: StartupBackfillTask,
+) {
+    loop {
+        let held = match store {
+            Some(store) => store
+                .migration_task_is_held(task.name())
+                .await
+                .unwrap_or(true),
+            None => crate::maintenance_store::migration_task_is_held(task.name()).await,
+        };
+        if held {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 pub(crate) async fn run_startup_backfill_task_if_due(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
@@ -85,6 +104,43 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 next_due: Utc::now() + ChronoDuration::days(1),
             },
             None,
+        ));
+    }
+
+    let (migration_hold_active, migration_hold_checkpoint) = match prompt_cache_store {
+        Some(store) => (
+            store.migration_task_is_held(task.name()).await?,
+            store.migration_task_hold_checkpoint(task.name()).await?,
+        ),
+        None => (
+            crate::maintenance_store::migration_task_is_held(task.name()).await,
+            crate::maintenance_store::migration_task_hold_checkpoint(task.name()).await,
+        ),
+    };
+    if migration_hold_active {
+        let retry_at = Utc::now()
+            + ChronoDuration::seconds(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+        let checkpoint = migration_hold_checkpoint.as_deref().unwrap_or("unknown");
+        debug!(
+            task = task.log_label(),
+            checkpoint,
+            next_eligibility = %retry_at,
+            wait_reason = crate::maintenance_store::MIGRATION_HOLD_REASON,
+            "startup backfill task deferred by migration hold"
+        );
+        return Ok((
+            StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: true,
+                completed: false,
+                next_due: retry_at,
+            },
+            Some(format!(
+                "{} at checkpoint {checkpoint}",
+                crate::maintenance_store::MIGRATION_HOLD_REASON
+            )),
         ));
     }
 
@@ -333,26 +389,58 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
     // writer arrives while one of those P2 tasks is active, cancel the in-flight future so its
     // transaction rolls back. Prompt-cache materialization is the exception: it observes the same
     // signal only after each committed micro-batch.
-    let prompt_cache_should_yield = || coordinator.p2_should_yield();
+    let migration_hold_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let migration_hold_flag_for_prompt = Arc::clone(&migration_hold_flag);
+    let prompt_cache_should_yield = || {
+        coordinator.p2_should_yield()
+            || migration_hold_flag_for_prompt.load(std::sync::atomic::Ordering::Acquire)
+    };
     observation.set_phase("processing");
     let task_result = if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
         // Prompt-cache materialization checks priority only between committed micro-batches. The
         // enclosing maintenance pass still cancels the task during process shutdown.
-        super::retention::retention_try_archive_locks_scope(
-            run_startup_backfill_task_with_pressure(
-                state,
-                task,
-                progress.cursor_id,
-                progress.zero_update_streak,
-                progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
-                Some(&prompt_cache_should_yield),
-                prompt_cache_materialization_control
-                    .as_ref()
-                    .map(|(control, generation)| (control, *generation)),
+        let task_future = super::retention::retention_try_archive_locks_scope(
+            crate::maintenance::with_migration_hold_signal(
+                Arc::clone(&migration_hold_flag),
+                run_startup_backfill_task_with_pressure(
+                    state,
+                    task,
+                    progress.cursor_id,
+                    progress.zero_update_streak,
+                    progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+                    Some(&prompt_cache_should_yield),
+                    prompt_cache_materialization_control
+                        .as_ref()
+                        .map(|(control, generation)| (control, *generation)),
+                ),
             ),
-        )
-        .await
+        );
+        let migration_hold_watcher =
+            wait_for_startup_backfill_migration_hold(prompt_cache_store, task);
+        tokio::pin!(task_future);
+        tokio::select! {
+            result = &mut task_future => result,
+            _ = migration_hold_watcher => {
+                migration_hold_flag.store(true, std::sync::atomic::Ordering::Release);
+                task_future.await
+            }
+        }
     } else {
+        let task_future = super::retention::retention_try_archive_locks_scope(
+            crate::maintenance::with_migration_hold_signal(
+                Arc::clone(&migration_hold_flag),
+                run_startup_backfill_task_with_pressure(
+                    state,
+                    task,
+                    progress.cursor_id,
+                    progress.zero_update_streak,
+                    progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+                    None,
+                    None,
+                ),
+            ),
+        );
+        tokio::pin!(task_future);
         tokio::select! {
             biased;
             _ = coordinator.wait_for_p2_preemption() => {
@@ -370,17 +458,11 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 .await
                 .map(|outcome| (outcome, None));
             }
-            result = super::retention::retention_try_archive_locks_scope(
-                run_startup_backfill_task_with_pressure(
-                    state,
-                    task,
-                    progress.cursor_id,
-                    progress.zero_update_streak,
-                    progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
-                    None,
-                    None,
-                )
-            ) => result,
+            _ = wait_for_startup_backfill_migration_hold(prompt_cache_store, task) => {
+                migration_hold_flag.store(true, std::sync::atomic::Ordering::Release);
+                (&mut task_future).await
+            }
+            result = &mut task_future => result,
         }
     };
     // Network/business work has finished. Do not hold online write admission
@@ -418,6 +500,47 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
         workload_observation
             .finish_with_status_and_reason("skipped", Some("stats_generation_changed"));
         return Ok((prompt_cache_stale_result_outcome(), None));
+    }
+    if task_result.is_ok() {
+        let migration_hold_active = match prompt_cache_store {
+            Some(store) => store.migration_task_is_held(task.name()).await?,
+            None => crate::maintenance_store::migration_task_is_held(task.name()).await,
+        };
+        if migration_hold_active {
+            let retry_at = Utc::now()
+                + ChronoDuration::seconds(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
+            let checkpoint = match prompt_cache_store {
+                Some(store) => store.migration_task_hold_checkpoint(task.name()).await?,
+                None => crate::maintenance_store::migration_task_hold_checkpoint(task.name()).await,
+            };
+            drop(write_permit.take());
+            let detail = format!(
+                "{} at checkpoint {}",
+                crate::maintenance_store::MIGRATION_HOLD_REASON,
+                checkpoint.as_deref().unwrap_or("unknown")
+            );
+            if managed_run_id.is_none() {
+                observation.finish_with_status_and_reason(
+                    "skipped",
+                    Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+                );
+            }
+            workload_observation.finish_with_status_and_reason(
+                "skipped",
+                Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+            );
+            STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+            return Ok((
+                StartupBackfillTaskRunOutcome {
+                    actionable: false,
+                    failed: false,
+                    deferred: true,
+                    completed: true,
+                    next_due: retry_at,
+                },
+                Some(detail),
+            ));
+        }
     }
     let outcome = match task_result {
         Ok((run, detail)) => {

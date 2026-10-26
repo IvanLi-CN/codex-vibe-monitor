@@ -58,6 +58,9 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
     invocation_full_detail_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
 ) -> Result<u64> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(0);
+    }
     let usage_breakdown_started_at = Instant::now();
     repair_live_invocation_usage_breakdown_rollups(pool).await?;
     info!(
@@ -65,6 +68,9 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
         elapsed_ms = usage_breakdown_started_at.elapsed().as_millis() as u64,
         "hourly rollup bootstrap step completed"
     );
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(0);
+    }
 
     let live_sync_started_at = Instant::now();
     let work_count = sync_hourly_rollups_from_live_tables_with_scope_and_work(
@@ -78,9 +84,15 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
         elapsed_ms = live_sync_started_at.elapsed().as_millis() as u64,
         "hourly rollup bootstrap step completed"
     );
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(work_count);
+    }
 
     let archive_usage_breakdown_started_at = Instant::now();
     for _ in 0..USAGE_BREAKDOWN_REPAIR_MAX_BOOTSTRAP_PAGES {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
         if !usage_breakdown_repair_is_pending(pool).await? {
             break;
@@ -91,6 +103,9 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
         elapsed_ms = archive_usage_breakdown_started_at.elapsed().as_millis() as u64,
         "hourly rollup bootstrap step completed"
     );
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(work_count);
+    }
 
     let archive_marker_started_at = Instant::now();
     repair_materialized_upstream_account_archive_markers(pool).await?;
@@ -99,6 +114,9 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
         elapsed_ms = archive_marker_started_at.elapsed().as_millis() as u64,
         "hourly rollup bootstrap step completed"
     );
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(work_count);
+    }
 
     let account_stats_probe_started_at = Instant::now();
     let account_stats_hourly_count: i64 =
@@ -109,6 +127,9 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
             .fetch_one(pool)
             .await?;
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(work_count);
+    }
     info!(
         rollup_bootstrap_step = "upstream_account_stats_probe",
         elapsed_ms = account_stats_probe_started_at.elapsed().as_millis() as u64,
@@ -117,8 +138,14 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
         "hourly rollup bootstrap step completed"
     );
     if account_stats_hourly_count == 0 || account_stats_minute_count == 0 {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         let account_stats_rebuild_started_at = Instant::now();
         rebuild_upstream_account_stats_rollups_from_sources(pool).await?;
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         repair_materialized_upstream_account_archive_markers(pool).await?;
         info!(
             rollup_bootstrap_step = "upstream_account_stats_rebuild",

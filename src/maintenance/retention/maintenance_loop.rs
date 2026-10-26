@@ -1336,6 +1336,19 @@ async fn prune_system_task_runs_inner(
     }
 
     for candidates in candidates.chunks(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS) {
+        if crate::maintenance::migration_hold_boundary_reached().await {
+            retention_record_defer(
+                "system_task_run_retention",
+                crate::maintenance_store::MIGRATION_HOLD_REASON,
+            );
+            if propagate_pressure {
+                return Err(system_task_run_retention_partial_error(
+                    pruned,
+                    anyhow!("{}", crate::maintenance_store::MIGRATION_HOLD_REASON),
+                ));
+            }
+            break;
+        }
         let Some(admission) = acquire_retention_write_admission("system_task_run_retention").await
         else {
             // Admission can be denied before a SQL call observes the pressure error. A

@@ -1,9 +1,12 @@
 use crate::observability::contention::{
     PerformanceCounter, PerformanceHistogram, StoreOperation, WakeOutcome, current_performance,
 };
+use crate::storage::core::{
+    AdmissionDecision, MigrationTaskAdmission, MigrationTaskPolicy, StorageModule,
+};
 use crate::{AppConfig, OnceCell, Result, Utc, anyhow, format_utc_iso_millis};
 use chrono::{Datelike, Duration as ChronoDuration, Timelike};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{
     Executor, FromRow, Pool, QueryBuilder, Sqlite,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
@@ -16,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex as AsyncMutex;
+use tracing::warn;
 
 const MIN_INTERVAL_SECS: i64 = 60;
 const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
@@ -35,6 +39,9 @@ const OWNERSHIP_INITIALIZATION_MARKER: &str = "retention_maintenance_ownership_v
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
+const MIGRATION_TASK_ADMISSION_METADATA_KEY: &str = "migration_task_admission_v1";
+pub(crate) const MIGRATION_HOLD_REASON: &str = "migration_hold";
+pub(crate) const MIGRATION_HOLD_RETRY_SECS: i64 = 60;
 type LegacyTaskRunRow = (
     i64,
     String,
@@ -86,6 +93,280 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "prompt_cache_materialization",
 ];
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct MigrationHoldState {
+    pub(crate) migration_id: String,
+    pub(crate) active_module: Option<String>,
+    pub(crate) checkpoint: Option<String>,
+    #[serde(default)]
+    pub(crate) hold_generation: u64,
+    #[serde(default)]
+    pub(crate) held_task_keys: Vec<String>,
+    #[serde(default)]
+    pub(crate) preserved_task_keys: Vec<String>,
+}
+
+impl MigrationHoldState {
+    pub(crate) fn for_module(
+        migration_id: impl Into<String>,
+        module: StorageModule,
+        checkpoint: Option<String>,
+    ) -> Self {
+        Self {
+            migration_id: migration_id.into(),
+            active_module: Some(migration_module_name(module).to_string()),
+            checkpoint,
+            hold_generation: 0,
+            held_task_keys: Vec::new(),
+            preserved_task_keys: Vec::new(),
+        }
+    }
+}
+
+const DEFAULT_PRESERVED_MIGRATION_TASK_KEYS: &[&str] = &[
+    "pool_orphan_recovery",
+    "upstream_account_maintenance",
+    "forward_proxy_subscription_refresh",
+    "startup_backfill.pool_attempt_public_id_live",
+    "startup_backfill.upstream_activity_live",
+    "startup_backfill.pool_upstream_node_health_archives",
+];
+
+fn migration_module_name(module: StorageModule) -> &'static str {
+    match module {
+        StorageModule::TrafficArchive => "traffic_archive",
+        StorageModule::Analytics => "analytics",
+        StorageModule::AccountRouting => "account_routing",
+        StorageModule::TaskOperations => "task_operations",
+        StorageModule::Performance => "performance",
+    }
+}
+
+fn parse_migration_module(value: &str) -> Option<StorageModule> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "traffic_archive" | "traffic-archive" => Some(StorageModule::TrafficArchive),
+        "analytics" => Some(StorageModule::Analytics),
+        "account_routing" | "account-routing" => Some(StorageModule::AccountRouting),
+        "task_operations" | "task-operations" => Some(StorageModule::TaskOperations),
+        "performance" => Some(StorageModule::Performance),
+        _ => None,
+    }
+}
+
+pub(crate) fn canonical_migration_task_key(task_key: &str) -> String {
+    let task_key = task_key.trim();
+    if let Some(suffix) = task_key.strip_prefix("startup_backfill.") {
+        return format!("startup_backfill.{suffix}");
+    }
+    if let Some(suffix) = managed_startup_backfill_suffix(task_key) {
+        return format!("startup_backfill.{suffix}");
+    }
+    task_key.to_string()
+}
+
+fn migration_task_keys_match(left: &str, right: &str) -> bool {
+    let left = canonical_migration_task_key(left);
+    let right = canonical_migration_task_key(right);
+    left == right || canonical_managed_task_key(&left) == canonical_managed_task_key(&right)
+}
+
+fn migration_task_modules(task_key: &str) -> &'static [StorageModule] {
+    let task_key = canonical_managed_task_key(task_key);
+    match task_key {
+        "invocation_identity_cleanup" => {
+            &[StorageModule::TrafficArchive, StorageModule::TaskOperations]
+        }
+        "raw_payload_metrics_inventory" => {
+            &[StorageModule::TrafficArchive, StorageModule::Performance]
+        }
+        "task_run_history_cleanup" => &[StorageModule::TaskOperations],
+        "retention_archive" => &[
+            StorageModule::TrafficArchive,
+            StorageModule::AccountRouting,
+            StorageModule::TaskOperations,
+        ],
+        "model_route_expiry" => &[StorageModule::AccountRouting],
+        "pool_upstream_attempt_archive"
+        | "forward_proxy_attempt_archive"
+        | "invocation_detail_prune"
+        | "quota_snapshot_compaction"
+        | "raw_orphan_sweep"
+        | "raw_compression"
+        | "archive_upstream_activity_manifest"
+        | "materialize_historical_rollups"
+        | "verify_archive_storage"
+        | "prune_archive_batches"
+        | "prune_legacy_archive_batches"
+        | "startup_backfill.proxy_usage"
+        | "startup_backfill.proxy_cost"
+        | "startup_backfill.prompt_cache_key"
+        | "startup_backfill.requested_service_tier"
+        | "startup_backfill.invocation_service_tier"
+        | "startup_backfill.reasoning_effort"
+        | "startup_backfill.failure_classification"
+        | "startup_backfill.pool_attempt_public_id_archives"
+        | "startup_backfill.upstream_activity_archives"
+        | "startup_backfill.legacy_detail_mirrors" => &[StorageModule::TrafficArchive],
+        "summary_snapshot"
+        | "summary_coverage_recovery"
+        | "dashboard_runtime_projection_reconcile"
+        | "long_term_projection"
+        | "timeseries_minute_projection"
+        | "invocation_timeline_snapshot"
+        | "prompt_cache_materialization"
+        | "startup_hourly_rollup_bootstrap"
+        | "forward_proxy_subscription_refresh.rollups"
+        | "startup_backfill.account_activity_v2_coverage"
+        | "startup_backfill.historical_rollups" => &[StorageModule::Analytics],
+        "upstream_account_maintenance.secondary" => &[StorageModule::AccountRouting],
+        "prepare_performance_indexes" => &[StorageModule::Performance],
+        _ => &[],
+    }
+}
+
+fn migration_task_policy(state: &MigrationHoldState) -> MigrationTaskPolicy {
+    let mut policy = MigrationTaskPolicy::default();
+    if let Some(module) = state
+        .active_module
+        .as_deref()
+        .and_then(parse_migration_module)
+    {
+        policy.hold_module(module);
+    }
+    for task_key in &state.held_task_keys {
+        policy.hold_task(canonical_migration_task_key(task_key));
+    }
+    for task_key in &state.preserved_task_keys {
+        policy.preserve_task_during_module(canonical_migration_task_key(task_key));
+    }
+    for task_key in DEFAULT_PRESERVED_MIGRATION_TASK_KEYS {
+        policy.preserve_task_during_module(canonical_migration_task_key(task_key));
+    }
+    policy
+}
+
+fn migration_hold_matches_task(state: &MigrationHoldState, task_key: &str) -> bool {
+    if state
+        .held_task_keys
+        .iter()
+        .any(|held| held.trim() == "*" || migration_task_keys_match(held, task_key))
+    {
+        return true;
+    }
+    if state
+        .preserved_task_keys
+        .iter()
+        .any(|preserved| migration_task_keys_match(preserved, task_key))
+        || DEFAULT_PRESERVED_MIGRATION_TASK_KEYS
+            .iter()
+            .any(|preserved| migration_task_keys_match(preserved, task_key))
+    {
+        return false;
+    }
+    let task_key = canonical_migration_task_key(task_key);
+    let policy = migration_task_policy(state);
+    migration_task_modules(&task_key).iter().any(|module| {
+        matches!(
+            policy.decision_for_module(*module, &task_key),
+            AdmissionDecision::Hold {
+                reason: MIGRATION_HOLD_REASON
+            }
+        )
+    })
+}
+
+fn migration_task_catalog() -> Vec<String> {
+    let mut keys = MANAGED_TASKS
+        .iter()
+        .map(|(key, ..)| (*key).to_string())
+        .collect::<Vec<_>>();
+    keys.extend(
+        STARTUP_BACKFILL_TASKS
+            .iter()
+            .map(|key| format!("startup_backfill.{key}")),
+    );
+    keys
+}
+
+fn migration_held_managed_task_keys_for_state(state: &MigrationHoldState) -> Vec<String> {
+    let mut held = migration_task_catalog()
+        .into_iter()
+        .filter(|task_key| migration_hold_matches_task(state, task_key))
+        .map(|task_key| canonical_managed_task_key(&task_key).to_string())
+        .collect::<Vec<_>>();
+    held.sort();
+    held.dedup();
+    held
+}
+
+fn migration_startup_backfill_suffix(task_key: &str) -> Option<String> {
+    let task_key = canonical_migration_task_key(task_key);
+    if let Some(suffix) = task_key.strip_prefix("startup_backfill.") {
+        return Some(suffix.to_string());
+    }
+    (task_key == "prompt_cache_materialization")
+        .then(|| "prompt_cache_conversations_materialization".to_string())
+}
+
+fn startup_backfill_task_name_for_suffix(suffix: &str) -> Option<&'static str> {
+    match suffix {
+        "proxy_usage" => Some(crate::STARTUP_BACKFILL_TASK_PROXY_USAGE),
+        "prompt_cache_key" => Some(crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY),
+        "prompt_cache_conversations_materialization" => {
+            Some(crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION)
+        }
+        "requested_service_tier" => Some(crate::STARTUP_BACKFILL_TASK_REQUESTED_SERVICE_TIER),
+        "invocation_service_tier" => Some(crate::STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER),
+        "proxy_cost" => Some(crate::STARTUP_BACKFILL_TASK_PROXY_COST),
+        "reasoning_effort" => Some(crate::STARTUP_BACKFILL_TASK_REASONING_EFFORT),
+        "failure_classification" => Some(crate::STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION),
+        "pool_attempt_public_id_live" => {
+            Some(crate::STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_LIVE)
+        }
+        "pool_attempt_public_id_archives" => {
+            Some(crate::STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_ARCHIVES)
+        }
+        "upstream_activity_live" => Some(crate::STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE),
+        "upstream_activity_archives" => {
+            Some(crate::STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES)
+        }
+        "pool_upstream_node_health_archives" => {
+            Some(crate::STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES)
+        }
+        "account_activity_v2_coverage" => {
+            Some(crate::STARTUP_BACKFILL_TASK_ACCOUNT_ACTIVITY_V2_COVERAGE)
+        }
+        "legacy_detail_mirrors" => Some(crate::STARTUP_BACKFILL_TASK_LEGACY_DETAIL_MIRRORS),
+        "historical_rollups" => Some(crate::STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS),
+        _ => None,
+    }
+}
+
+fn normalize_migration_hold_state(mut state: MigrationHoldState) -> MigrationHoldState {
+    let normalize = |keys: &mut Vec<String>| {
+        *keys = keys
+            .iter()
+            .map(|key| canonical_migration_task_key(key))
+            .filter(|key| !key.is_empty())
+            .collect();
+        keys.sort();
+        keys.dedup();
+    };
+    state.migration_id = state.migration_id.trim().to_string();
+    state.active_module = state
+        .active_module
+        .take()
+        .map(|module| module.trim().to_ascii_lowercase());
+    state.checkpoint = state
+        .checkpoint
+        .take()
+        .map(|checkpoint| checkpoint.trim().to_string())
+        .filter(|checkpoint| !checkpoint.is_empty());
+    normalize(&mut state.held_task_keys);
+    normalize(&mut state.preserved_task_keys);
+    state
+}
 
 fn push_task_key_exclusion<'a>(
     query: &mut QueryBuilder<'a, Sqlite>,
@@ -1156,6 +1437,8 @@ pub(crate) struct QueuedTaskRun {
     pub(crate) requested_at: String,
     pub(crate) waiting_ms: i64,
     pub(crate) position: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wait_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -2768,10 +3051,36 @@ pub(crate) fn global() -> Option<&'static std::sync::Arc<MaintenanceStore>> {
     GLOBAL.get()
 }
 
+pub(crate) async fn migration_task_is_held(task_key: &str) -> bool {
+    let Some(store) = global() else {
+        return false;
+    };
+    store.migration_task_is_held(task_key).await.unwrap_or(true)
+}
+
+pub(crate) async fn migration_task_hold_checkpoint(task_key: &str) -> Option<String> {
+    let Some(store) = global() else {
+        return None;
+    };
+    store
+        .migration_task_hold_checkpoint(task_key)
+        .await
+        .ok()
+        .flatten()
+}
+
 pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
     let Some(store) = global() else {
         return is_retention_maintenance_task(task_key);
     };
+    match store.migration_task_is_held(task_key).await {
+        Ok(true) => return true,
+        Ok(false) => {}
+        Err(error) => {
+            warn!(task = task_key, error = %error, "legacy worker could not verify migration hold");
+            return true;
+        }
+    }
     let Some((enabled, interval_secs, cron_expr, next_catchup_at)) =
         sqlx::query_as::<_, (bool, Option<i64>, Option<String>, Option<String>)>(
             "SELECT enabled,interval_secs,cron_expr,next_catchup_at FROM managed_tasks WHERE task_key=?",
@@ -2829,6 +3138,380 @@ impl MaintenanceStore {
             #[cfg(test)]
             settlement_interleaving_hooks: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) async fn migration_hold_state(&self) -> Result<Option<MigrationHoldState>> {
+        let value =
+            sqlx::query_scalar::<_, String>("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+                .fetch_optional(&self.pool)
+                .await?;
+        value
+            .map(|value| {
+                serde_json::from_str::<MigrationHoldState>(&value)
+                    .map(normalize_migration_hold_state)
+                    .map_err(|error| anyhow!("invalid migration hold state: {error}"))
+            })
+            .transpose()
+    }
+
+    pub(crate) async fn migration_task_is_held(&self, task_key: &str) -> Result<bool> {
+        Ok(self
+            .migration_hold_state()
+            .await?
+            .is_some_and(|state| migration_hold_matches_task(&state, task_key)))
+    }
+
+    pub(crate) async fn migration_task_hold_checkpoint(
+        &self,
+        task_key: &str,
+    ) -> Result<Option<String>> {
+        let Some(state) = self.migration_hold_state().await? else {
+            return Ok(None);
+        };
+        Ok(migration_hold_matches_task(&state, task_key)
+            .then_some(state.checkpoint)
+            .flatten())
+    }
+
+    pub(crate) async fn migration_held_managed_task_keys(&self) -> Result<Vec<String>> {
+        let Some(state) = self.migration_hold_state().await? else {
+            return Ok(Vec::new());
+        };
+        Ok(migration_held_managed_task_keys_for_state(&state))
+    }
+
+    pub(crate) async fn set_migration_hold(&self, state: MigrationHoldState) -> Result<u64> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.set_migration_hold_inner(state),
+        )
+        .await
+    }
+
+    async fn clear_requested_run_migration_hold_markers(
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    ) -> Result<()> {
+        let requested_runs = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT id,details FROM managed_task_runs WHERE status='requested'",
+        )
+        .fetch_all(&mut **transaction)
+        .await?;
+        for (run_id, existing_details) in requested_runs {
+            let Some(mut details) = existing_details
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .filter(|value| value.is_object())
+            else {
+                continue;
+            };
+            let details_empty = {
+                let Some(object) = details.as_object_mut() else {
+                    continue;
+                };
+                if object.get("waitReason").and_then(serde_json::Value::as_str)
+                    != Some(MIGRATION_HOLD_REASON)
+                {
+                    continue;
+                }
+                object.remove("waitReason");
+                object.remove("migrationCheckpoint");
+                object.remove("scheduleRetryAfterSecs");
+                object.remove("scheduleRetryReason");
+                object.is_empty()
+            };
+            let details = (!details_empty).then(|| details.to_string());
+            sqlx::query("UPDATE managed_task_runs SET details=? WHERE id=? AND status='requested'")
+                .bind(details)
+                .bind(run_id)
+                .execute(&mut **transaction)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn set_migration_hold_inner(&self, state: MigrationHoldState) -> Result<u64> {
+        let mut state = normalize_migration_hold_state(state);
+        if state.migration_id.is_empty() {
+            return Err(anyhow!("migration hold requires a migration id"));
+        }
+        if state
+            .active_module
+            .as_deref()
+            .is_some_and(|module| parse_migration_module(module).is_none())
+        {
+            return Err(anyhow!("migration hold contains an unknown storage module"));
+        }
+        let now = format_utc_iso_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let existing_state =
+            sqlx::query_scalar::<_, String>("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .map(|existing_value| {
+                    serde_json::from_str::<MigrationHoldState>(&existing_value)
+                        .map(normalize_migration_hold_state)
+                        .map_err(|error| anyhow!("invalid existing migration hold state: {error}"))
+                })
+                .transpose()?;
+        if let Some(existing_state) = existing_state.as_ref() {
+            if existing_state.migration_id != state.migration_id {
+                return Err(anyhow!(
+                    "migration hold is already owned by migration {}",
+                    existing_state.migration_id
+                ));
+            }
+        }
+        state.hold_generation = existing_state
+            .as_ref()
+            .map(|existing_state| existing_state.hold_generation.checked_add(1))
+            .transpose()?
+            .unwrap_or(1);
+        let encoded = serde_json::to_string(&state)?;
+        Self::clear_requested_run_migration_hold_markers(&mut transaction).await?;
+        // A migration can move between modules without releasing its identity. Remove only the
+        // previous overlay markers before applying the next module's hold; operator settings and
+        // durable checkpoints remain untouched.
+        sqlx::query(
+            "UPDATE managed_task_progress
+             SET phase=CASE WHEN phase='paused' THEN 'idle' ELSE phase END,
+                 wait_reason=NULL,
+                 updated_at=?
+             WHERE wait_reason=?",
+        )
+        .bind(&now)
+        .bind(MIGRATION_HOLD_REASON)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE startup_backfill_progress
+             SET last_status=CASE WHEN last_status='paused' THEN 'idle' ELSE last_status END,
+                 suspension_reason=NULL,
+                 next_probe_at=NULL
+             WHERE suspension_reason=?",
+        )
+        .bind(MIGRATION_HOLD_REASON)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO maintenance_metadata(key,value,updated_at) VALUES(?,?,?)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+        )
+        .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+        .bind(encoded)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+
+        let held_tasks = migration_task_catalog()
+            .into_iter()
+            .filter(|task_key| migration_hold_matches_task(&state, task_key))
+            .collect::<Vec<_>>();
+        for task_key in held_tasks {
+            let managed_task_key = canonical_managed_task_key(&task_key).to_string();
+            sqlx::query(
+                "UPDATE managed_task_progress
+                 SET phase=CASE
+                         WHEN phase IN ('running','complete','completed','failed') THEN phase
+                         ELSE 'paused'
+                     END,
+                     wait_reason=?,
+                     updated_at=?,
+                     freshness='fresh'
+                 WHERE task_key=?",
+            )
+            .bind(MIGRATION_HOLD_REASON)
+            .bind(&now)
+            .bind(&managed_task_key)
+            .execute(&mut *transaction)
+            .await?;
+
+            let requested_runs = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT id,details FROM managed_task_runs
+                 WHERE task_key=? AND status='requested'",
+            )
+            .bind(&managed_task_key)
+            .fetch_all(&mut *transaction)
+            .await?;
+            for (run_id, existing_details) in requested_runs {
+                let mut details = existing_details
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .filter(|value| value.is_object())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if let Some(details) = details.as_object_mut() {
+                    details.insert(
+                        "waitReason".to_string(),
+                        serde_json::json!(MIGRATION_HOLD_REASON),
+                    );
+                    details.insert(
+                        "migrationCheckpoint".to_string(),
+                        state
+                            .checkpoint
+                            .as_deref()
+                            .map(|checkpoint| serde_json::Value::String(checkpoint.to_string()))
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                sqlx::query(
+                    "UPDATE managed_task_runs SET details=? WHERE id=? AND status='requested'",
+                )
+                .bind(details.to_string())
+                .bind(run_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+
+            let Some(suffix) = migration_startup_backfill_suffix(&task_key) else {
+                continue;
+            };
+            let Some(task_name) = startup_backfill_task_name_for_suffix(&suffix) else {
+                continue;
+            };
+            let startup_managed_task_key = format!("startup_backfill.{suffix}");
+            let startup_managed_task_key = canonical_managed_task_key(&startup_managed_task_key);
+            sqlx::query(
+                "INSERT OR IGNORE INTO startup_backfill_progress(
+                    task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,
+                    last_finished_at,last_scanned,last_updated,last_status,suspension_reason,
+                    next_probe_at,wake_generation,enabled
+                 ) VALUES(?,0,NULL,0,NULL,NULL,0,0,'idle',NULL,NULL,0,
+                    COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?),1))",
+            )
+            .bind(task_name)
+            .bind(startup_managed_task_key)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET last_status=CASE
+                         WHEN last_status IN ('running','ok','failed','source_unavailable')
+                             THEN last_status
+                         ELSE 'paused'
+                     END,
+                     suspension_reason=?,
+                     next_probe_at=NULL
+                 WHERE (task_name=? OR task_name LIKE ?)
+                   AND enabled != 0
+                   AND (suspension_reason IS NULL OR suspension_reason=?)",
+            )
+            .bind(MIGRATION_HOLD_REASON)
+            .bind(task_name)
+            .bind(format!("{task_name}:%"))
+            .bind(MIGRATION_HOLD_REASON)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(state.hold_generation)
+    }
+
+    pub(crate) async fn clear_migration_hold(
+        &self,
+        migration_id: &str,
+        hold_generation: u64,
+    ) -> Result<bool> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.clear_migration_hold_inner(migration_id, hold_generation),
+        )
+        .await
+    }
+
+    pub(crate) async fn mark_task_migration_held(&self, task_key: &str) -> Result<()> {
+        let now = format_utc_iso_millis(Utc::now());
+        observe_store_write(StoreOperation::Progress, async {
+            sqlx::query(
+                "INSERT INTO managed_task_progress(
+                         task_key,phase,updated_at,freshness,wait_reason
+                     ) VALUES(?,'paused',?,'fresh',?)
+                     ON CONFLICT(task_key) DO UPDATE SET
+                         phase='paused',
+                         updated_at=excluded.updated_at,
+                         freshness='fresh',
+                         wait_reason=excluded.wait_reason",
+            )
+            .bind(task_key)
+            .bind(&now)
+            .bind(MIGRATION_HOLD_REASON)
+            .execute(&self.pool)
+            .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn clear_migration_hold_inner(
+        &self,
+        migration_id: &str,
+        hold_generation: u64,
+    ) -> Result<bool> {
+        let migration_id = migration_id.trim();
+        if migration_id.is_empty() {
+            return Err(anyhow!("clearing migration hold requires a migration id"));
+        }
+        if hold_generation == 0 {
+            return Err(anyhow!(
+                "clearing migration hold requires a non-zero hold generation"
+            ));
+        }
+        let now = format_utc_iso_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let Some(existing_value) =
+            sqlx::query_scalar::<_, String>("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+                .fetch_optional(&mut *transaction)
+                .await?
+        else {
+            return Ok(false);
+        };
+        let existing_state = serde_json::from_str::<MigrationHoldState>(&existing_value)
+            .map(normalize_migration_hold_state)
+            .map_err(|error| anyhow!("invalid existing migration hold state: {error}"))?;
+        if existing_state.migration_id != migration_id {
+            return Err(anyhow!(
+                "migration hold is owned by migration {}; release requested for {}",
+                existing_state.migration_id,
+                migration_id
+            ));
+        }
+        if existing_state.hold_generation != hold_generation {
+            return Err(anyhow!(
+                "migration hold generation {} is no longer current",
+                hold_generation
+            ));
+        }
+        Self::clear_requested_run_migration_hold_markers(&mut transaction).await?;
+        let deleted = sqlx::query("DELETE FROM maintenance_metadata WHERE key=?")
+            .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected()
+            > 0;
+        sqlx::query(
+            "UPDATE managed_task_progress
+             SET phase=CASE WHEN phase='paused' THEN 'idle' ELSE phase END,
+                 wait_reason=NULL,
+                 updated_at=?
+             WHERE wait_reason=?",
+        )
+        .bind(&now)
+        .bind(MIGRATION_HOLD_REASON)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE startup_backfill_progress
+             SET last_status=CASE WHEN last_status='paused' THEN 'idle' ELSE last_status END,
+                 suspension_reason=NULL,
+                 next_probe_at=NULL
+             WHERE suspension_reason=?",
+        )
+        .bind(MIGRATION_HOLD_REASON)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(deleted)
     }
 
     #[cfg(test)]
@@ -3487,14 +4170,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn list_queued_runs(&self) -> Result<Vec<QueuedTaskRun>> {
-        let rows = sqlx::query_as::<_, (i64, String, String, String, String)>("SELECT r.id,r.task_key,COALESCE(t.title,r.task_key),r.trigger_kind,r.started_at FROM managed_task_runs r LEFT JOIN managed_tasks t ON t.task_key=r.task_key WHERE r.status='requested' ORDER BY r.id LIMIT 500")
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>)>("SELECT r.id,r.task_key,COALESCE(t.title,r.task_key),r.trigger_kind,r.started_at,r.details FROM managed_task_runs r LEFT JOIN managed_tasks t ON t.task_key=r.task_key WHERE r.status='requested' ORDER BY r.id LIMIT 500")
             .fetch_all(&self.pool).await?;
         let now = Utc::now();
         Ok(rows
             .into_iter()
             .enumerate()
             .map(
-                |(index, (run_id, task_key, title, trigger_kind, requested_at))| {
+                |(index, (run_id, task_key, title, trigger_kind, requested_at, details))| {
                     let waiting_ms = chrono::DateTime::parse_from_rfc3339(&requested_at)
                         .map(|started| {
                             (now - started.with_timezone(&Utc))
@@ -3510,6 +4193,15 @@ impl MaintenanceStore {
                         requested_at,
                         waiting_ms,
                         position: index as i64 + 1,
+                        wait_reason: details
+                            .as_deref()
+                            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                            .and_then(|value| {
+                                value
+                                    .get("waitReason")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                            }),
                     }
                 },
             )
@@ -3602,6 +4294,63 @@ impl MaintenanceStore {
             .bind(run_id)
             .execute(&self.pool)
             .await?;
+            Ok(result.rows_affected() == 1)
+        })
+        .await
+    }
+
+    pub(crate) async fn requeue_claimed_run_for_migration_hold(
+        &self,
+        run_id: i64,
+        checkpoint: Option<&str>,
+    ) -> Result<bool> {
+        observe_store_write(StoreOperation::Run, async {
+            let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let Some(existing_details) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT details FROM managed_task_runs WHERE id=? AND status='running'",
+            )
+            .bind(run_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+            else {
+                transaction.commit().await?;
+                return Ok(false);
+            };
+            let mut details = existing_details
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .filter(|value| value.is_object())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(details) = details.as_object_mut() {
+                details.insert(
+                    "waitReason".to_string(),
+                    serde_json::json!(MIGRATION_HOLD_REASON),
+                );
+                details.insert(
+                    "migrationCheckpoint".to_string(),
+                    checkpoint
+                        .map(|value| serde_json::Value::String(value.to_string()))
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                details.insert(
+                    "scheduleRetryAfterSecs".to_string(),
+                    serde_json::json!(MIGRATION_HOLD_RETRY_SECS),
+                );
+                details.insert(
+                    "scheduleRetryReason".to_string(),
+                    serde_json::json!(MIGRATION_HOLD_REASON),
+                );
+            }
+            let result = sqlx::query(
+                "UPDATE managed_task_runs
+                 SET status='requested',details=?
+                 WHERE id=? AND status='running'",
+            )
+            .bind(details.to_string())
+            .bind(run_id)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
             Ok(result.rows_affected() == 1)
         })
         .await
@@ -3851,13 +4600,30 @@ impl MaintenanceStore {
 
     async fn request_run_with_mode_inner(&self, task_key: &str, dry_run: bool) -> Result<i64> {
         let task_key = canonical_managed_task_key(task_key);
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let exists: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM managed_tasks WHERE task_key=?")
                 .bind(task_key)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *transaction)
                 .await?;
         if exists.is_none() {
             return Err(anyhow!("managed task not found"));
+        }
+        if let Some(value) =
+            sqlx::query_scalar::<_, String>("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+                .fetch_optional(&mut *transaction)
+                .await?
+        {
+            let state = serde_json::from_str::<MigrationHoldState>(&value)
+                .map(normalize_migration_hold_state)
+                .map_err(|error| anyhow!("invalid migration hold state: {error}"))?;
+            if migration_hold_matches_task(&state, task_key) {
+                let checkpoint = state.checkpoint.unwrap_or_else(|| "unknown".to_string());
+                return Err(anyhow!(
+                    "task is held by {MIGRATION_HOLD_REASON} at checkpoint {checkpoint}"
+                ));
+            }
         }
         let result = sqlx::query_scalar(
             "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,error_detail,details)
@@ -3870,14 +4636,14 @@ impl MaintenanceStore {
         .bind(is_retention_maintenance_task(task_key).then(|| serde_json::json!({"ownershipVersion": 1, "ownerScope": task_key, "dryRun": dry_run}).to_string()))
         .bind(task_key)
         .bind(is_retention_maintenance_task(task_key))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await;
         let result = match result {
             Ok(Some(run_id)) => Ok(run_id),
             Ok(None) => Err(anyhow!("task is disabled; enable it before run-now")),
             Err(error) => Err(error.into()),
         };
-        result.map_err(|error| {
+        let result = result.map_err(|error| {
             if error
                 .to_string()
                 .contains("UNIQUE constraint failed: managed_task_runs.task_key")
@@ -3886,7 +4652,9 @@ impl MaintenanceStore {
             } else {
                 error
             }
-        })
+        });
+        transaction.commit().await?;
+        result
     }
 
     pub(crate) async fn migrate_legacy_state(&self, main_pool: &Pool<Sqlite>) -> Result<()> {
@@ -6079,13 +6847,15 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
-        TaskWorkloadMetric, TaskWorkloadSample, active_task_execution_task_keys,
-        calculate_task_workload_summary, canonical_managed_task_key, canonical_task_execution_key,
-        cron_day_matches, ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at,
-        sanitize_task_detail, seed_tasks, task_enabled_by_default, task_measurement_capabilities,
-        try_acquire_task_execution, validate_cron_expr,
+        MANAGED_TASKS, MIGRATION_HOLD_REASON, MaintenanceStore, MigrationHoldState,
+        RetentionBacklogObservation, STARTUP_BACKFILL_TASKS, TaskWorkloadMetric,
+        TaskWorkloadSample, active_task_execution_task_keys, calculate_task_workload_summary,
+        canonical_managed_task_key, canonical_task_execution_key, cron_day_matches, ensure_schema,
+        ensure_task_colors, floor_utc_hour, next_trigger_at, sanitize_task_detail, seed_tasks,
+        task_enabled_by_default, task_measurement_capabilities, try_acquire_task_execution,
+        validate_cron_expr,
     };
+    use crate::storage::core::StorageModule;
 
     #[test]
     fn prompt_cache_materialization_shares_startup_backfill_execution_lease() {
@@ -6131,6 +6901,322 @@ mod tests {
             "startup_backfill.prompt_cache_conversations_materialization",
             false
         ));
+    }
+
+    #[tokio::test]
+    async fn migration_hold_persists_progress_and_preserves_required_work() {
+        let store = super::ownership_test_store().await;
+        sqlx::query(
+            "INSERT INTO managed_task_progress(task_key,phase,checkpoint)
+             VALUES('retention_archive','idle','task:7')",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed managed progress");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress(task_name,last_status,enabled)
+             VALUES('proxy_usage_tokens_v1','idle',1)",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed startup progress");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress(task_name,last_status,suspension_reason,enabled)
+             VALUES('prompt_cache_key_v1','idle','operator_disabled',0)",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed operator-disabled startup progress");
+        sqlx::query(
+            "INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,status,summary)
+             VALUES('retention_archive','manual','2026-10-26T00:00:00.000Z','requested','手动运行请求')",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed requested managed run");
+
+        let hold_generation = store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::TrafficArchive,
+                Some("archive:42".to_string()),
+            ))
+            .await
+            .expect("set migration hold");
+
+        assert!(
+            store
+                .migration_task_is_held("retention_archive")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .set_migration_hold(MigrationHoldState::for_module(
+                    "migration-2",
+                    StorageModule::TrafficArchive,
+                    Some("other:checkpoint".to_string()),
+                ))
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .migration_task_is_held("proxy_usage_tokens_v1")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .migration_task_is_held("pool_orphan_recovery")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .migration_task_is_held("upstream_account_maintenance")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .migration_task_is_held("pool_attempt_public_id_live_v1")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .migration_held_managed_task_keys()
+                .await
+                .unwrap()
+                .contains(&"retention_archive".to_string())
+        );
+        assert_eq!(
+            store
+                .migration_task_hold_checkpoint("retention_archive")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("archive:42")
+        );
+        let run_error = store
+            .request_run("retention_archive")
+            .await
+            .expect_err("held manual task must not be accepted");
+        assert!(run_error.to_string().contains(MIGRATION_HOLD_REASON));
+
+        let progress: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT phase,checkpoint,wait_reason
+             FROM managed_task_progress WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load held managed progress");
+        assert_eq!(progress.0.as_deref(), Some("paused"));
+        assert_eq!(progress.1.as_deref(), Some("task:7"));
+        assert_eq!(progress.2.as_deref(), Some(MIGRATION_HOLD_REASON));
+        let queued = store.list_queued_runs().await.expect("load queued runs");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            queued[0].wait_reason.as_deref(),
+            Some(MIGRATION_HOLD_REASON)
+        );
+        let run_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM managed_task_runs WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load claimed managed run");
+        sqlx::query("UPDATE managed_task_runs SET status='running' WHERE id=?")
+            .bind(run_id)
+            .execute(&store.pool)
+            .await
+            .expect("claim managed run");
+        assert!(
+            store
+                .requeue_claimed_run_for_migration_hold(run_id, Some("archive:42"))
+                .await
+                .expect("requeue held managed run")
+        );
+        let requeued_details: Option<String> =
+            sqlx::query_scalar("SELECT details FROM managed_task_runs WHERE id=?")
+                .bind(run_id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("load requeued managed run");
+        let requeued_details: serde_json::Value =
+            serde_json::from_str(requeued_details.as_deref().expect("migration hold details"))
+                .expect("decode migration hold details");
+        assert_eq!(requeued_details["waitReason"], MIGRATION_HOLD_REASON);
+        assert_eq!(requeued_details["migrationCheckpoint"], "archive:42");
+        let startup_progress: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT last_status,suspension_reason,enabled
+             FROM startup_backfill_progress WHERE task_name='proxy_usage_tokens_v1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load held startup progress");
+        assert_eq!(startup_progress.0, "paused");
+        assert_eq!(startup_progress.1.as_deref(), Some(MIGRATION_HOLD_REASON));
+        assert_eq!(startup_progress.2, 1);
+        let operator_disabled: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT last_status,suspension_reason,enabled
+             FROM startup_backfill_progress WHERE task_name='prompt_cache_key_v1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load operator-disabled startup progress");
+        assert_eq!(operator_disabled.0, "idle");
+        assert_eq!(operator_disabled.1.as_deref(), Some("operator_disabled"));
+        assert_eq!(operator_disabled.2, 0);
+
+        assert!(
+            store
+                .clear_migration_hold("migration-2", hold_generation)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .migration_task_is_held("retention_archive")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .clear_migration_hold("migration-1", hold_generation)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .migration_task_is_held("retention_archive")
+                .await
+                .unwrap()
+        );
+        let resumed: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT phase,checkpoint,wait_reason
+             FROM managed_task_progress WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load resumed managed progress");
+        assert_eq!(resumed.0.as_deref(), Some("idle"));
+        assert_eq!(resumed.1.as_deref(), Some("task:7"));
+        assert_eq!(resumed.2, None);
+        let resumed_startup: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT last_status,suspension_reason,enabled
+             FROM startup_backfill_progress WHERE task_name='proxy_usage_tokens_v1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load resumed startup progress");
+        assert_eq!(resumed_startup.0, "idle");
+        assert_eq!(resumed_startup.1, None);
+        assert_eq!(resumed_startup.2, 1);
+        let operator_disabled_after_clear: (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT last_status,suspension_reason,enabled
+             FROM startup_backfill_progress WHERE task_name='prompt_cache_key_v1'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load operator-disabled startup progress after clear");
+        assert_eq!(operator_disabled_after_clear.0, "idle");
+        assert_eq!(
+            operator_disabled_after_clear.1.as_deref(),
+            Some("operator_disabled")
+        );
+        assert_eq!(operator_disabled_after_clear.2, 0);
+        let resumed_queue = store
+            .list_queued_runs()
+            .await
+            .expect("load resumed queued runs");
+        assert_eq!(resumed_queue.len(), 1);
+        assert!(resumed_queue[0].wait_reason.is_none());
+        assert!(
+            !store
+                .clear_migration_hold("migration-1", hold_generation)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_migration_hold_overrides_preserved_tasks() {
+        let store = super::ownership_test_store().await;
+        let mut state = MigrationHoldState::for_module(
+            "migration-2",
+            StorageModule::Analytics,
+            Some("summary:9".to_string()),
+        );
+        state
+            .held_task_keys
+            .push("upstream_account_maintenance".to_string());
+        state.held_task_keys.push("retention_archive".to_string());
+        store
+            .set_migration_hold(state)
+            .await
+            .expect("set explicit hold");
+
+        assert!(
+            store
+                .migration_task_is_held("upstream_account_maintenance")
+                .await
+                .is_ok_and(|held| held)
+        );
+        assert!(
+            store
+                .migration_task_is_held("retention_archive")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_hold_release_requires_current_generation() {
+        let store = super::ownership_test_store().await;
+        let first_generation = store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::TrafficArchive,
+                Some("archive:1".to_string()),
+            ))
+            .await
+            .expect("set first migration hold");
+        let second_generation = store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::Analytics,
+                Some("analytics:2".to_string()),
+            ))
+            .await
+            .expect("advance migration hold");
+        assert_eq!(first_generation, 1);
+        assert_eq!(second_generation, 2);
+        assert!(
+            store
+                .clear_migration_hold("migration-1", first_generation)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .migration_task_is_held("summary_snapshot")
+                .await
+                .expect("check current migration hold")
+        );
+        assert!(
+            store
+                .clear_migration_hold("migration-1", second_generation)
+                .await
+                .expect("clear current migration hold")
+        );
+        assert!(
+            !store
+                .migration_task_is_held("summary_snapshot")
+                .await
+                .expect("check cleared migration hold")
+        );
     }
 
     #[tokio::test]
