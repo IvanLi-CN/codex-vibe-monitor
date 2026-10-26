@@ -149,10 +149,10 @@ where
     let _child_observation_guard =
         super::task_runner::TaskObservationChildGuard(observation.clone());
     let mut workload_observation = observation.begin_subtask_workload(child_key);
-    let on_bucket_committed = workload_observation.processed_work_recorder();
+    let mut on_bucket_committed = workload_observation.processed_work_recorder();
     let migration_hold_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let migration_hold_flag_for_callback = Arc::clone(&migration_hold_flag);
-    let mut on_bucket_committed = move |count| {
+    let on_bucket_committed = move |count| {
         on_bucket_committed(count);
         migration_hold_flag_for_callback.load(std::sync::atomic::Ordering::Acquire)
     };
@@ -186,10 +186,8 @@ where
     if crate::maintenance_store::migration_task_is_held(task.name()).await {
         let retry_at = Utc::now()
             + ChronoDuration::seconds(crate::maintenance_store::MIGRATION_HOLD_RETRY_SECS);
-        let checkpoint = crate::maintenance_store::migration_task_hold_checkpoint(task.name())
-            .await
-            .ok()
-            .flatten();
+        let checkpoint =
+            crate::maintenance_store::migration_task_hold_checkpoint(task.name()).await;
         drop(write_permit);
         let reason = checkpoint
             .as_deref()

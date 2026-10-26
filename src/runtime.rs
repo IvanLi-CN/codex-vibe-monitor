@@ -2373,11 +2373,17 @@ async fn run_managed_task_worker(
         .expect("maintenance store available while managed task worker runs");
     let execution_started_at = Instant::now();
     let migration_hold_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let task_key_for_future = task_key.clone();
     let task_future = crate::maintenance::with_migration_hold_signal(
         Arc::clone(&migration_hold_flag),
         crate::maintenance::with_managed_task_key(
-            &task_key,
-            run_managed_task_once_with_observation(&state, &task_key, run_id, &observation),
+            &task_key_for_future,
+            run_managed_task_once_with_observation(
+                &state,
+                &task_key_for_future,
+                run_id,
+                &observation,
+            ),
         ),
     );
     tokio::pin!(task_future);

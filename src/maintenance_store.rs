@@ -3263,11 +3263,13 @@ impl MaintenanceStore {
                 ));
             }
         }
-        state.hold_generation = existing_state
-            .as_ref()
-            .map(|existing_state| existing_state.hold_generation.checked_add(1))
-            .transpose()?
-            .unwrap_or(1);
+        state.hold_generation = match existing_state.as_ref() {
+            Some(existing_state) => existing_state
+                .hold_generation
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("migration hold generation overflow"))?,
+            None => 1,
+        };
         let encoded = serde_json::to_string(&state)?;
         Self::clear_requested_run_migration_hold_markers(&mut transaction).await?;
         // A migration can move between modules without releasing its identity. Remove only the

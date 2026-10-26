@@ -986,33 +986,35 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 "processing",
             );
             let migration_hold_flag = Arc::new(AtomicBool::new(false));
-            let migration_hold_flag_for_turn = Arc::clone(&migration_hold_flag);
-            let turn_future = crate::maintenance::with_migration_hold_signal(
-                Arc::clone(&migration_hold_flag),
-                crate::maintenance::with_managed_task_key(
-                    "summary_coverage_recovery",
-                    SummaryCoverageRecoverySupervisor::run_with_priority_reservation_runtime(
-                        state.as_ref(),
-                        None,
-                        &mut recovery_runtime,
+            let result = {
+                let migration_hold_flag_for_turn = Arc::clone(&migration_hold_flag);
+                let turn_future = crate::maintenance::with_migration_hold_signal(
+                    Arc::clone(&migration_hold_flag),
+                    crate::maintenance::with_managed_task_key(
+                        "summary_coverage_recovery",
+                        SummaryCoverageRecoverySupervisor::run_with_priority_reservation_runtime(
+                            state.as_ref(),
+                            None,
+                            &mut recovery_runtime,
+                        ),
                     ),
-                ),
-            );
-            tokio::pin!(turn_future);
-            let result = crate::with_managed_task_observation(observation.clone(), async {
-                let migration_hold_watcher =
-                    wait_for_summary_legacy_task_migration_hold("summary_coverage_recovery");
-                tokio::select! {
-                    biased;
-                    _ = state.shutdown.cancelled() => None,
-                    result = &mut turn_future => Some(result),
-                    _ = migration_hold_watcher => {
-                        migration_hold_flag_for_turn.store(true, Ordering::Release);
-                        Some((&mut turn_future).await)
+                );
+                tokio::pin!(turn_future);
+                crate::with_managed_task_observation(observation.clone(), async {
+                    let migration_hold_watcher =
+                        wait_for_summary_legacy_task_migration_hold("summary_coverage_recovery");
+                    tokio::select! {
+                        biased;
+                        _ = state.shutdown.cancelled() => None,
+                        result = &mut turn_future => Some(result),
+                        _ = migration_hold_watcher => {
+                            migration_hold_flag_for_turn.store(true, Ordering::Release);
+                            Some((&mut turn_future).await)
+                        }
                     }
-                }
-            })
-            .await;
+                })
+                .await
+            };
             let Some(result) = result else {
                 return;
             };
