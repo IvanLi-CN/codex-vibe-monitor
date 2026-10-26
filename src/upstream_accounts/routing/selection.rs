@@ -692,7 +692,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut group_proxy_blocked_messages = Vec::new();
     let mut node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
     let route_binding_failure_penalties =
-        load_recent_route_binding_failure_penalties(&state.pool).await?;
+        load_recent_route_binding_failure_penalties_with_authority(
+            state.traffic_authority.as_ref(),
+        )
+        .await?;
     let mut resolved_candidates = Vec::new();
     let mut sticky_queue_reservation_conflict: Option<(i64, String)> = None;
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
@@ -736,9 +739,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     );
     let sticky_source_transport_decode_escape = if non_explicit_sticky_escape_enabled {
         if let Some(account_id) = sticky_source_id {
-            load_transport_decode_sticky_escape_states(&state.pool, &[account_id])
-                .await?
-                .contains_key(&account_id)
+            load_transport_decode_sticky_escape_states_with_authority(
+                state.traffic_authority.as_ref(),
+                &[account_id],
+            )
+            .await?
+            .contains_key(&account_id)
         } else {
             false
         }
@@ -1232,8 +1238,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let candidate_count =
         candidates.len() + usize::from(sticky_queue_reservation_conflict.is_some());
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
-        load_transport_decode_sticky_escape_states(
-            &state.pool,
+        load_transport_decode_sticky_escape_states_with_authority(
+            state.traffic_authority.as_ref(),
             &candidates
                 .iter()
                 .map(|candidate| candidate.id)

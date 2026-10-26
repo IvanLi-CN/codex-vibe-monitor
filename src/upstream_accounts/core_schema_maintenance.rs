@@ -115,6 +115,21 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_selected_touch_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            selected_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (account_id, selected_at)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_selected_touch_outbox table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS pool_upstream_account_model_catalogs (
             account_id INTEGER PRIMARY KEY,
             models_json TEXT NOT NULL DEFAULT '[]',

@@ -3,6 +3,7 @@ use super::*;
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_sqlite_batch_writer(
     pool: Pool<Sqlite>,
+    traffic_authority: Arc<crate::storage::traffic::TrafficFactStore>,
     database_path: std::path::PathBuf,
     mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
@@ -117,9 +118,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     "isolating oversized single P2 write"
                                 );
                             }
-                            let Some(retained) = flush_pending_batch_accounted(
+                            let Some(retained) = flush_pending_batch_accounted_with_authority(
                                 &accounting,
                                 &pool,
+                                traffic_authority.as_ref(),
                                 pricing_catalog.as_ref(),
                                 flush_batch,
                                 FlushReason::Barrier,
@@ -285,9 +287,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                             let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
                             let retained = match timeout_at(
                                 shutdown_deadline.into(),
-                                flush_pending_batch_accounted(
+                                flush_pending_batch_accounted_with_authority(
                                     &accounting,
                                     &pool,
+                                    traffic_authority.as_ref(),
                                     pricing_catalog.as_ref(),
                                     flush_batch,
                                     FlushReason::Shutdown,
@@ -467,9 +470,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                     );
                 }
                 if let Some(retained) =
-                    flush_pending_batch_accounted(
+                    flush_pending_batch_accounted_with_authority(
                         &accounting,
                         &pool,
+                        traffic_authority.as_ref(),
                         pricing_catalog.as_ref(),
                         flush_batch,
                         FlushReason::Interval,
@@ -610,9 +614,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
                         let retained = match timeout_at(
                             shutdown_deadline.into(),
-                            flush_pending_batch_accounted(
+                            flush_pending_batch_accounted_with_authority(
                                 &accounting,
                                 &pool,
+                                traffic_authority.as_ref(),
                                 pricing_catalog.as_ref(),
                                 flush_batch,
                                 FlushReason::Shutdown,
@@ -778,9 +783,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                     let submitted_p1 = !flush_batch.terminal_invocations.is_empty();
                     let submitted_p2 = flush_batch.has_p2();
                     if let Some(retained) =
-                        flush_pending_batch_accounted(
+                        flush_pending_batch_accounted_with_authority(
                             &accounting,
                             &pool,
+                            traffic_authority.as_ref(),
                             pricing_catalog.as_ref(),
                             flush_batch,
                             FlushReason::RowLimit,
@@ -879,9 +885,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                 let flush_batch = pending
                     .take_p1_terminal_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES);
                 if let Some(retained) =
-                    flush_pending_batch_accounted(
+                    flush_pending_batch_accounted_with_authority(
                         &accounting,
                         &pool,
+                        traffic_authority.as_ref(),
                         pricing_catalog.as_ref(),
                         flush_batch,
                         flush_reason,

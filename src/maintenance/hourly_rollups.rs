@@ -897,6 +897,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
     .await?;
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("invocation_id", "INTEGER"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -962,6 +963,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
             .await?;
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("invocation_id", "INTEGER"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
