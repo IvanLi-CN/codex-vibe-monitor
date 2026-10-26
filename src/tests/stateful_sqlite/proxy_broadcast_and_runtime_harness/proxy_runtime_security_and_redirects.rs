@@ -1,5 +1,6 @@
 use super::*;
 
+#[test]
 fn same_origin_settings_write_rejects_mismatched_origin() {
     let mut headers = HeaderMap::new();
     headers.insert(
