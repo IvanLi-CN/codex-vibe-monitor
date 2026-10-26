@@ -19,6 +19,18 @@ async fn default_status_exposes_safe_target_and_unknown_progress() {
     assert_eq!(status.target.identity, "postgres:unconfigured");
     assert!(status.progress.committed_rows.is_none());
     assert!(status.progress.eta_ms.is_none());
+    assert!(status.tables.is_empty());
+    assert!(status.verification.dirty_chunks.is_none());
+    assert!(status.verification.verified_chunks.is_none());
+    assert!(status.verification.last_error.is_none());
+    assert!(status.switch.result.is_none());
+    assert!(status.switch.failure_reason.is_none());
+    assert!(status.task_holds.last_safe_checkpoint.is_none());
+    assert_eq!(status.authority.backend, StorageMigrationBackend::Sqlite);
+    assert_eq!(status.modules.len(), 1);
+    assert!(status.modules[0].dependency_ready.is_none());
+    assert!(status.modules[0].final_proof_coverage.is_none());
+    assert!(status.modules[0].switch_result.is_none());
     assert!(status.heartbeat.healthy);
     assert_eq!(status.queued_modules, Vec::<String>::new());
     assert_eq!(status.completed_modules, Vec::<String>::new());
@@ -392,6 +404,18 @@ async fn durable_status_recovers_pause_progress_and_revision_after_restart() {
         .publish_progress(StorageMigrationProgress {
             phase: StorageMigrationState::Copying,
             committed_rows: Some(12),
+            committed_bytes: Some(4_096),
+            source_rows: Some(100),
+            source_bytes: Some(32_768),
+            scan_cursor: Some("codex_invocations:12".to_string()),
+            captured_through: Some(42),
+            applied_through: Some(41),
+            pending_keys: Some(3),
+            oldest_change_age_ms: Some(250),
+            replay_throughput_per_sec: Some(12.5),
+            incoming_rate_per_sec: Some(4.5),
+            converged: Some(true),
+            eta_ms: Some(1_234),
             ..StorageMigrationProgress::default()
         })
         .await
@@ -409,6 +433,22 @@ async fn durable_status_recovers_pause_progress_and_revision_after_restart() {
     assert_eq!(status.state, StorageMigrationState::Paused);
     assert_eq!(status.revision, paused.revision);
     assert_eq!(status.progress.committed_rows, Some(12));
+    assert_eq!(status.progress.committed_bytes, Some(4_096));
+    assert_eq!(status.progress.source_rows, Some(100));
+    assert_eq!(status.progress.source_bytes, Some(32_768));
+    assert_eq!(
+        status.progress.scan_cursor.as_deref(),
+        Some("codex_invocations:12")
+    );
+    assert_eq!(status.progress.captured_through, Some(42));
+    assert_eq!(status.progress.applied_through, Some(41));
+    assert_eq!(status.progress.pending_keys, Some(3));
+    assert_eq!(status.progress.oldest_change_age_ms, Some(250));
+    assert_eq!(status.progress.replay_throughput_per_sec, Some(12.5));
+    assert_eq!(status.progress.incoming_rate_per_sec, Some(4.5));
+    assert_eq!(status.progress.converged, Some(true));
+    assert_eq!(status.progress.eta_ms, Some(1_234));
+    assert_eq!(status.progress.phase, StorageMigrationState::Paused);
     assert_eq!(status.task_holds.reason.as_deref(), Some("operator_pause"));
     assert!(!status.task_holds.held);
     assert_eq!(status.authority.backend, StorageMigrationBackend::Sqlite);
