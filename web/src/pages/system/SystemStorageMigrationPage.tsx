@@ -29,7 +29,7 @@ export default function SystemStorageMigrationPage() {
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const next = await fetchStorageMigrationStatus(signal);
-    setStatus(next);
+    setStatus((current) => (current && next.revision < current.revision ? current : next));
     setError(null);
     setIsLoading(false);
   }, []);
@@ -65,7 +65,7 @@ export default function SystemStorageMigrationPage() {
             const next = normalizeStorageMigrationResponse(
               JSON.parse((event as MessageEvent<string>).data) as unknown,
             );
-            setStatus(next);
+            setStatus((current) => (current && next.revision < current.revision ? current : next));
             setError(null);
             setIsLoading(false);
           } catch (cause) {
@@ -94,8 +94,8 @@ export default function SystemStorageMigrationPage() {
   const handleAction = async (action: StorageMigrationControlAction) => {
     setIsActionPending(true);
     try {
-      const next = await updateStorageMigrationControl(action);
-      setStatus(next);
+      const next = await updateStorageMigrationControl(action === "pause");
+      setStatus((current) => (current && next.revision < current.revision ? current : next));
       setError(null);
     } catch (cause) {
       setError(errorText(cause));

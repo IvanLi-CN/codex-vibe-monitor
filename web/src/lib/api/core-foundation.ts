@@ -2733,6 +2733,10 @@ export type StorageMigrationState =
   | "failed";
 export type StorageMigrationControlAction = "start" | "pause" | "resume";
 
+export interface StorageMigrationControlRequest {
+  paused: boolean;
+}
+
 export interface StorageMigrationEndpoint {
   backend: StorageMigrationBackend;
   configured: boolean;
@@ -2861,6 +2865,7 @@ export interface StorageMigrationControls {
 }
 
 export interface StorageMigrationResponse {
+  revision: number;
   migrationId: string | null;
   active: boolean;
   module: string;
@@ -6066,6 +6071,11 @@ function normalizeStorageMigrationIndexPreparation(raw: unknown): StorageMigrati
   };
 }
 
+function normalizeStorageMigrationRevision(value: unknown): number {
+  const revision = normalizeFiniteNumber(value);
+  return revision != null && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+}
+
 export function normalizeStorageMigrationResponse(raw: unknown): StorageMigrationResponse {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("invalid storage migration response");
@@ -6129,6 +6139,7 @@ export function normalizeStorageMigrationResponse(raw: unknown): StorageMigratio
       ? (payload.authority as Record<string, unknown>)
       : {};
   return {
+    revision: normalizeStorageMigrationRevision(payload.revision),
     migrationId: typeof payload.migrationId === "string" ? payload.migrationId : null,
     active: payload.active === true,
     module: typeof payload.module === "string" ? payload.module : "unknown",
@@ -6782,12 +6793,13 @@ export async function fetchStorageMigrationStatus(
 }
 
 export async function updateStorageMigrationControl(
-  action: StorageMigrationControlAction,
+  paused: boolean,
   signal?: AbortSignal,
 ): Promise<StorageMigrationResponse> {
+  const request: StorageMigrationControlRequest = { paused };
   const response = await fetchJson<unknown>("/api/system/storage-migration", {
     method: "PATCH",
-    body: JSON.stringify({ action }),
+    body: JSON.stringify(request),
     signal,
   });
   return normalizeStorageMigrationResponse(response);

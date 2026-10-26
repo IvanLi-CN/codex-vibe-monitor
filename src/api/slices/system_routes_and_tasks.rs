@@ -1994,24 +1994,45 @@ pub(crate) async fn stream_storage_migration_events(
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
 {
     let runtime = state.storage_migration.clone();
-    let initial_status = runtime.snapshot().await;
-    let initial =
-        stream::once(async move { Ok(storage_migration_sse_event("snapshot", initial_status)) });
-    let updates = BroadcastStream::new(runtime.subscribe()).filter_map(|event| async move {
-        match event {
-            Ok(event) => Some(Ok(storage_migration_sse_event(event.kind, event.status))),
-            Err(error) => {
-                warn!(?error, "storage migration sse stream lagged");
-                None
-            }
-        }
+    let events = runtime.subscribe();
+    let initial_event = events.borrow().clone();
+    let initial_revision = initial_event.revision;
+    let initial = stream::once(async move {
+        Ok(storage_migration_sse_event(
+            initial_event.kind,
+            initial_event.revision,
+            initial_event.status,
+        ))
     });
+    let updates = async_stream::stream! {
+        let mut last_revision = initial_revision;
+        let mut cadence = tokio::time::interval(Duration::from_secs(1));
+        cadence.tick().await;
+        loop {
+            cadence.tick().await;
+            let event = events.borrow().clone();
+            if event.revision <= last_revision {
+                continue;
+            }
+            last_revision = event.revision;
+            yield Ok(storage_migration_sse_event(
+                event.kind,
+                event.revision,
+                event.status,
+            ));
+        }
+    };
     Ok(Sse::new(initial.chain(updates))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
-fn storage_migration_sse_event(kind: &'static str, status: StorageMigrationResponse) -> Event {
+fn storage_migration_sse_event(
+    kind: &'static str,
+    revision: u64,
+    status: StorageMigrationResponse,
+) -> Event {
     Event::default()
+        .id(revision.to_string())
         .event(kind)
         .json_data(status)
         .expect("storage migration status must be serializable")

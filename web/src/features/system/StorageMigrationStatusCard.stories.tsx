@@ -7,6 +7,7 @@ import { ThemeProvider } from "../../theme";
 import StorageMigrationStatusCard from "./StorageMigrationStatusCard";
 
 const baseStatus: StorageMigrationResponse = {
+  revision: 7,
   migrationId: "storage-migration",
   active: true,
   module: "traffic_archive",

@@ -3,7 +3,7 @@ use super::core::{BackendKind, MigrationState, MigrationStatus, StorageModule};
 use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, watch};
 
 const MIGRATION_ID: &str = "storage-migration";
 const INSTALLATION_ID: &str = "local";
@@ -249,6 +249,7 @@ pub(crate) struct StorageMigrationControls {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationResponse {
+    pub(crate) revision: u64,
     pub(crate) migration_id: Option<String>,
     pub(crate) active: bool,
     pub(crate) module: String,
@@ -272,8 +273,7 @@ pub(crate) struct StorageMigrationResponse {
     pub(crate) updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum StorageMigrationControlAction {
     Start,
     Pause,
@@ -283,12 +283,13 @@ pub(crate) enum StorageMigrationControlAction {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationControlRequest {
-    pub(crate) action: StorageMigrationControlAction,
+    pub(crate) paused: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct StorageMigrationEvent {
     pub(crate) kind: &'static str,
+    pub(crate) revision: u64,
     pub(crate) status: StorageMigrationResponse,
 }
 
@@ -304,7 +305,7 @@ struct StorageMigrationRuntimeState {
 #[derive(Debug)]
 pub(crate) struct StorageMigrationRuntime {
     state: Mutex<StorageMigrationRuntimeState>,
-    events: broadcast::Sender<StorageMigrationEvent>,
+    events: watch::Sender<StorageMigrationEvent>,
 }
 
 impl Default for StorageMigrationRuntime {
@@ -348,7 +349,11 @@ impl StorageMigrationRuntime {
             None,
             None,
         );
-        let (events, _) = broadcast::channel(32);
+        let (events, _) = watch::channel(StorageMigrationEvent {
+            kind: "snapshot",
+            revision: response.revision,
+            status: response.clone(),
+        });
         Self {
             state: Mutex::new(StorageMigrationRuntimeState {
                 status,
@@ -365,7 +370,7 @@ impl StorageMigrationRuntime {
         self.state.lock().await.response.clone()
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<StorageMigrationEvent> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<StorageMigrationEvent> {
         self.events.subscribe()
     }
 
@@ -375,19 +380,28 @@ impl StorageMigrationRuntime {
     ) -> Result<StorageMigrationResponse> {
         let mut state = self.state.lock().await;
         let now = Utc::now();
-        match request.action {
+        let action = if request.paused {
+            if !can_pause_state(state.status.state) {
+                bail!("pause control is unavailable in {:?}", state.status.state);
+            }
+            StorageMigrationControlAction::Pause
+        } else if matches!(state.status.state, MigrationState::Pending) {
+            if !state.target_configured {
+                bail!("PostgreSQL storage is not configured");
+            }
+            StorageMigrationControlAction::Start
+        } else if can_resume_state(state.status.state) {
+            StorageMigrationControlAction::Resume
+        } else {
+            bail!("resume control is unavailable in {:?}", state.status.state);
+        };
+        match action {
             StorageMigrationControlAction::Start => {
-                if !state.target_configured {
-                    bail!("PostgreSQL storage is not configured");
-                }
                 state
                     .status
                     .transition_to(MigrationState::Preparing, now.timestamp_millis())?;
             }
             StorageMigrationControlAction::Pause => {
-                if state.status.state.is_terminal() {
-                    bail!("terminal migration state cannot be paused");
-                }
                 state.status.hold_reason = Some("operator_pause".to_string());
                 state
                     .status
@@ -407,18 +421,19 @@ impl StorageMigrationRuntime {
             }
         }
 
-        let action = match request.action {
+        let action = match action {
             StorageMigrationControlAction::Start => "start",
             StorageMigrationControlAction::Pause => "pause",
             StorageMigrationControlAction::Resume => "resume",
         };
         state.last_action = Some(action.to_string());
         state.last_action_at = Some(now.to_rfc3339());
+        advance_revision(&mut state.response)?;
         refresh_response(&mut state);
         let response = state.response.clone();
-        drop(state);
         let _ = self.events.send(StorageMigrationEvent {
             kind: "status",
+            revision: response.revision,
             status: response.clone(),
         });
         Ok(response)
@@ -456,10 +471,11 @@ impl StorageMigrationRuntime {
         state.status.updated_at_epoch_ms =
             now.timestamp_millis().max(state.status.updated_at_epoch_ms);
         refresh_response(&mut state);
+        advance_revision(&mut state.response)?;
         let response = state.response.clone();
-        drop(state);
         let _ = self.events.send(StorageMigrationEvent {
             kind: "progress",
+            revision: response.revision,
             status: response.clone(),
         });
         Ok(response)
@@ -475,6 +491,7 @@ fn build_response(
 ) -> StorageMigrationResponse {
     let state = StorageMigrationState::from(status.state);
     StorageMigrationResponse {
+        revision: 0,
         migration_id: Some(status.migration_id.clone()),
         active: !matches!(
             status.state,
@@ -571,6 +588,7 @@ fn build_response(
 }
 
 fn refresh_response(state: &mut StorageMigrationRuntimeState) {
+    let revision = state.response.revision;
     let progress = state.response.progress.clone();
     let tables = state.response.tables.clone();
     let modules = state.response.modules.clone();
@@ -586,7 +604,9 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
         state.last_action.clone(),
         state.last_action_at.clone(),
     );
+    response.revision = revision;
     response.progress = progress;
+    response.progress.phase = response.state;
     response.tables = tables;
     if !modules.is_empty() {
         response.modules = modules;
@@ -612,6 +632,29 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
         module.failure_reason = response.switch.failure_reason.clone();
     }
     state.response = response;
+}
+
+fn advance_revision(response: &mut StorageMigrationResponse) -> Result<()> {
+    response.revision = response
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("storage migration revision overflowed"))?;
+    Ok(())
+}
+
+fn can_pause_state(state: MigrationState) -> bool {
+    matches!(
+        state,
+        MigrationState::Preparing
+            | MigrationState::Copying
+            | MigrationState::CatchingUp
+            | MigrationState::Verifying
+            | MigrationState::Ready
+    )
+}
+
+fn can_resume_state(state: MigrationState) -> bool {
+    matches!(state, MigrationState::Paused | MigrationState::Blocked)
 }
 
 fn module_name(module: StorageModule) -> &'static str {

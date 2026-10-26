@@ -43,6 +43,7 @@ class FakeEventSource {
 }
 
 const response: StorageMigrationResponse = {
+  revision: 7,
   migrationId: "storage-migration",
   active: true,
   module: "traffic_archive",
@@ -228,6 +229,6 @@ describe("SystemStorageMigrationPage", () => {
       pauseButton?.click();
       await Promise.resolve();
     });
-    expect(apiMocks.updateStorageMigrationControl).toHaveBeenCalledWith("pause");
+    expect(apiMocks.updateStorageMigrationControl).toHaveBeenCalledWith(true);
   });
 });
