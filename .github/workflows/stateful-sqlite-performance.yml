@@ -76,12 +76,20 @@ jobs:
         with:
           tool: cargo-nextest@0.9.138
 
+      - name: Prepare Cargo dependency cache
+        env:
+          CARGO_HOME: /opt/stateful-sqlite-performance-work/cargo-home
+        run: |
+          set -euo pipefail
+          sudo install -d -m 755 "$CARGO_HOME"
+
       - name: Restore Cargo registry
+        id: cargo-registry-cache
         uses: actions/cache/restore@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            /opt/stateful-sqlite-performance-work/cargo-home/registry
+            /opt/stateful-sqlite-performance-work/cargo-home/git
           key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('candidate/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-stateful-sqlite-performance-registry-
@@ -511,6 +519,16 @@ jobs:
           path: ${{ runner.temp }}/stateful-sqlite-performance/sanitized
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            /opt/stateful-sqlite-performance-work/cargo-home/registry
+            /opt/stateful-sqlite-performance-work/cargo-home/git
+          key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('candidate/Cargo.lock') }}
 
       - name: Report replay outcome
         if: always()
