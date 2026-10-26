@@ -351,7 +351,7 @@
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness/proxy_runtime_security_and_redirects.rs",
       "role": "test_helper",
-      "line_budget": 167,
+      "line_budget": 168,
       "next_module_workstream": "Maintain same-origin settings-write validation and proxy redirect path/header normalization fixtures."
     },
     {
