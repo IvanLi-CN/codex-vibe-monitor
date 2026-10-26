@@ -521,9 +521,32 @@ impl SourcePage {
 pub(crate) struct TableCopyPlan {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
+    pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) scan_lower_bound: Option<String>,
     pub(crate) scan_upper_bound: Option<String>,
     pub(crate) capture_start: i64,
+}
+
+impl TableCopyPlan {
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_persisted_identity(
+            "migration plan",
+            &self.migration_id,
+            &self.installation_id,
+            &self.source_identity,
+            &self.target_identity,
+        )?;
+        if self.table_name.trim().is_empty() || self.capture_start < 0 {
+            bail!("migration plan has an invalid table or capture boundary");
+        }
+        validate_table_bounds(
+            "migration plan",
+            &self.scan_lower_bound,
+            &self.scan_upper_bound,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -582,6 +605,9 @@ impl ChangeBatchLimits {
 pub(crate) struct EngineCheckpoint {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
+    pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) cursor: Option<String>,
     pub(crate) scan_upper_bound: Option<String>,
     pub(crate) capture_start: i64,
@@ -593,7 +619,26 @@ pub(crate) struct EngineCheckpoint {
 }
 
 impl EngineCheckpoint {
-    fn as_contract(&self, source_identity: &str, generation: u64) -> MigrationCheckpoint {
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_persisted_identity(
+            "migration checkpoint",
+            &self.migration_id,
+            &self.installation_id,
+            &self.source_identity,
+            &self.target_identity,
+        )?;
+        if self.table_name.trim().is_empty()
+            || self.capture_start < 0
+            || self.captured_through < 0
+            || self.applied_through < 0
+            || self.captured_through < self.applied_through
+        {
+            bail!("migration checkpoint has an invalid identity or watermark");
+        }
+        Ok(())
+    }
+
+    fn as_contract(&self, authority_generation: u64) -> MigrationCheckpoint {
         MigrationCheckpoint {
             migration_id: self.migration_id.clone(),
             table_name: self.table_name.clone(),
@@ -606,8 +651,10 @@ impl EngineCheckpoint {
             cursor: self.cursor.clone(),
             captured_through: Some(self.captured_through),
             applied_through: Some(self.applied_through),
-            source_identity: source_identity.to_owned(),
-            authority_generation: generation,
+            installation_id: self.installation_id.clone(),
+            source_identity: self.source_identity.clone(),
+            target_identity: self.target_identity.clone(),
+            authority_generation,
         }
     }
 }
@@ -638,6 +685,9 @@ impl ChunkRange {
 pub(crate) struct ChunkProof {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
+    pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) range: ChunkRange,
     pub(crate) source_watermark: i64,
     pub(crate) row_count: u64,
@@ -645,10 +695,32 @@ pub(crate) struct ChunkProof {
     pub(crate) digest: String,
 }
 
+impl ChunkProof {
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_persisted_identity(
+            "migration chunk proof",
+            &self.migration_id,
+            &self.installation_id,
+            &self.source_identity,
+            &self.target_identity,
+        )?;
+        if self.source_watermark < 0 || self.range.first_key > self.range.last_key {
+            bail!("migration chunk proof has an invalid range or watermark");
+        }
+        if self.digest.trim().is_empty() {
+            bail!("migration chunk proof requires a digest");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TableCoverageProof {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
+    pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) source_watermark: i64,
     pub(crate) range: Option<ChunkRange>,
     pub(crate) source_lower_bound: Option<String>,
@@ -665,8 +737,15 @@ pub(crate) struct TableCoverageProof {
 
 impl TableCoverageProof {
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.migration_id.trim().is_empty() || self.table_name.trim().is_empty() {
-            bail!("table coverage proof requires migration and table identities");
+        validate_persisted_identity(
+            "table coverage proof",
+            &self.migration_id,
+            &self.installation_id,
+            &self.source_identity,
+            &self.target_identity,
+        )?;
+        if self.table_name.trim().is_empty() {
+            bail!("table coverage proof requires a table identity");
         }
         if self.source_watermark < 0 {
             bail!("table coverage proof watermark must not be negative");
@@ -691,6 +770,9 @@ impl TableCoverageProof {
 pub(crate) struct CoverageCheckpoint {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
+    pub(crate) installation_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) lower_bound: Option<String>,
     pub(crate) upper_bound: Option<String>,
     pub(crate) cursor: Option<String>,
@@ -706,8 +788,15 @@ pub(crate) struct CoverageCheckpoint {
 
 impl CoverageCheckpoint {
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.migration_id.trim().is_empty() || self.table_name.trim().is_empty() {
-            bail!("coverage checkpoint requires migration and table identities");
+        validate_persisted_identity(
+            "coverage checkpoint",
+            &self.migration_id,
+            &self.installation_id,
+            &self.source_identity,
+            &self.target_identity,
+        )?;
+        if self.table_name.trim().is_empty() {
+            bail!("coverage checkpoint requires a table identity");
         }
         if self.source_watermark < 0 {
             bail!("coverage checkpoint watermark must not be negative");
@@ -737,6 +826,23 @@ impl CoverageCheckpoint {
         }
         Ok(())
     }
+}
+
+fn validate_persisted_identity(
+    label: &str,
+    migration_id: &str,
+    installation_id: &str,
+    source_identity: &str,
+    target_identity: &str,
+) -> Result<()> {
+    if migration_id.trim().is_empty()
+        || installation_id.trim().is_empty()
+        || source_identity.trim().is_empty()
+        || target_identity.trim().is_empty()
+    {
+        bail!("{label} requires migration, installation, source and target identities");
+    }
+    Ok(())
 }
 
 fn validate_table_bounds(
@@ -802,6 +908,7 @@ pub(crate) struct MigrationProgress {
 pub(crate) trait MigrationSource: Send + Sync {
     async fn capture_watermark(&self) -> Result<i64>;
     async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint>;
+    async fn mark_baseline_complete(&self, capture_generation: u64, through: i64) -> Result<()>;
     async fn fence_source_writes(
         &self,
         expected_generation: u64,
@@ -1471,6 +1578,50 @@ pub(crate) fn select_change_batch(
     Ok(selected)
 }
 
+pub(crate) fn validate_contiguous_change_prefix(
+    changes: &[CapturedChange],
+    after: i64,
+    through: i64,
+) -> Result<()> {
+    if after < 0 || through < after {
+        bail!("source change prefix watermarks are invalid");
+    }
+    if after == through {
+        if !changes.is_empty() {
+            bail!("source returned changes for an empty watermark prefix");
+        }
+        return Ok(());
+    }
+    let first = changes
+        .first()
+        .ok_or_else(|| anyhow!("source change prefix is empty"))?;
+    let expected_first = after
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("source change watermark overflowed"))?;
+    if first.source_version != expected_first {
+        bail!("source change prefix does not start at the next watermark");
+    }
+    let mut previous_version = first.source_version;
+    for change in changes.iter().skip(1) {
+        if change.source_version < previous_version {
+            bail!("source changes are not ordered by watermark");
+        }
+        if change.source_version > previous_version {
+            let expected = previous_version
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("source change watermark overflowed"))?;
+            if change.source_version != expected {
+                bail!("source change prefix contains a watermark gap");
+            }
+            previous_version = change.source_version;
+        }
+    }
+    if previous_version > through {
+        bail!("source change prefix exceeds its requested watermark");
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl MigrationSource for InMemoryMigrationSource {
     async fn capture_watermark(&self) -> Result<i64> {
@@ -1483,6 +1634,10 @@ impl MigrationSource for InMemoryMigrationSource {
 
     async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint> {
         InMemoryMigrationSource::capture_checkpoint(self).await
+    }
+
+    async fn mark_baseline_complete(&self, capture_generation: u64, through: i64) -> Result<()> {
+        InMemoryMigrationSource::mark_baseline_complete(self, capture_generation, through).await
     }
 
     async fn fence_source_writes(
@@ -1789,12 +1944,7 @@ impl MigrationTarget for InMemoryMigrationTarget {
     }
 
     async fn save_plan(&self, plan: &TableCopyPlan) -> Result<()> {
-        if plan.migration_id.trim().is_empty() || plan.table_name.trim().is_empty() {
-            bail!("migration plan requires migration and table identities");
-        }
-        if plan.capture_start < 0 {
-            bail!("migration plan capture start must not be negative");
-        }
+        plan.validate()?;
         let mut state = self.state.lock().await;
         Self::maybe_fail(&mut state)?;
         let key = (plan.migration_id.clone(), plan.table_name.clone());
@@ -1813,6 +1963,9 @@ impl MigrationTarget for InMemoryMigrationTarget {
             .or_insert_with(|| EngineCheckpoint {
                 migration_id: plan.migration_id.clone(),
                 table_name: plan.table_name.clone(),
+                installation_id: plan.installation_id.clone(),
+                source_identity: plan.source_identity.clone(),
+                target_identity: plan.target_identity.clone(),
                 cursor: None,
                 scan_upper_bound: plan.scan_upper_bound.clone(),
                 capture_start: plan.capture_start,
@@ -1845,6 +1998,7 @@ impl MigrationTarget for InMemoryMigrationTarget {
         page: &SourcePage,
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
+        checkpoint.validate()?;
         let cursor = self
             .load_checkpoint(&plan.migration_id, &plan.table_name)
             .await?
@@ -1855,7 +2009,11 @@ impl MigrationTarget for InMemoryMigrationTarget {
             plan.scan_upper_bound.as_deref(),
             CopyLimits::default(),
         )?;
-        if checkpoint.migration_id != plan.migration_id || checkpoint.table_name != plan.table_name
+        if checkpoint.migration_id != plan.migration_id
+            || checkpoint.table_name != plan.table_name
+            || checkpoint.installation_id != plan.installation_id
+            || checkpoint.source_identity != plan.source_identity
+            || checkpoint.target_identity != plan.target_identity
         {
             bail!("baseline checkpoint does not match its plan");
         }
@@ -1885,9 +2043,18 @@ impl MigrationTarget for InMemoryMigrationTarget {
         changes: &[CapturedChange],
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
-        if checkpoint.migration_id != migration_id {
+        checkpoint.validate()?;
+        if checkpoint.migration_id != migration_id || checkpoint.source_identity != source_identity
+        {
             bail!("replay checkpoint does not match its migration");
         }
+        validate_persisted_identity(
+            "replay checkpoint",
+            &checkpoint.migration_id,
+            &checkpoint.installation_id,
+            &checkpoint.source_identity,
+            &checkpoint.target_identity,
+        )?;
         let mut state = self.state.lock().await;
         Self::maybe_fail(&mut state)?;
         let key = (migration_id.to_owned(), checkpoint.table_name.clone());
@@ -1989,13 +2156,7 @@ impl MigrationTarget for InMemoryMigrationTarget {
     }
 
     async fn save_chunk_proof(&self, proof: &ChunkProof) -> Result<()> {
-        if proof.migration_id.trim().is_empty()
-            || proof.table_name.trim().is_empty()
-            || proof.source_watermark < 0
-            || proof.range.first_key > proof.range.last_key
-        {
-            bail!("invalid migration chunk proof");
-        }
+        proof.validate()?;
         let mut state = self.state.lock().await;
         Self::maybe_fail(&mut state)?;
         let key = (
@@ -2004,6 +2165,11 @@ impl MigrationTarget for InMemoryMigrationTarget {
             proof.range.first_key.clone(),
             proof.range.last_key.clone(),
         );
+        if let Some(existing) = state.chunk_proofs.get(&key)
+            && existing != proof
+        {
+            bail!("migration chunk proof conflicts with an existing identity");
+        }
         state.chunk_proofs.insert(key, proof.clone());
         Ok(())
     }
@@ -2028,13 +2194,18 @@ impl MigrationTarget for InMemoryMigrationTarget {
         checkpoint.validate()?;
         let mut state = self.state.lock().await;
         Self::maybe_fail(&mut state)?;
-        state.coverage_checkpoints.insert(
-            (
-                checkpoint.migration_id.clone(),
-                checkpoint.table_name.clone(),
-            ),
-            checkpoint.clone(),
+        let key = (
+            checkpoint.migration_id.clone(),
+            checkpoint.table_name.clone(),
         );
+        if let Some(existing) = state.coverage_checkpoints.get(&key)
+            && (existing.installation_id != checkpoint.installation_id
+                || existing.source_identity != checkpoint.source_identity
+                || existing.target_identity != checkpoint.target_identity)
+        {
+            bail!("migration coverage checkpoint belongs to another identity");
+        }
+        state.coverage_checkpoints.insert(key, checkpoint.clone());
         Ok(())
     }
 
@@ -2056,10 +2227,15 @@ impl MigrationTarget for InMemoryMigrationTarget {
         proof.validate()?;
         let mut state = self.state.lock().await;
         Self::maybe_fail(&mut state)?;
-        state.coverage_proofs.insert(
-            (proof.migration_id.clone(), proof.table_name.clone()),
-            proof.clone(),
-        );
+        let key = (proof.migration_id.clone(), proof.table_name.clone());
+        if let Some(existing) = state.coverage_proofs.get(&key)
+            && (existing.installation_id != proof.installation_id
+                || existing.source_identity != proof.source_identity
+                || existing.target_identity != proof.target_identity)
+        {
+            bail!("migration coverage proof belongs to another identity");
+        }
+        state.coverage_proofs.insert(key, proof.clone());
         Ok(())
     }
 
@@ -2163,7 +2339,7 @@ struct StoredMigrationState {
     reservations: Vec<StoredReservation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredRecoveryContext {
     migration_id: String,
     installation_id: String,
@@ -2173,7 +2349,7 @@ struct StoredRecoveryContext {
     target_identity: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredManifest {
     migration_id: String,
     installation_id: String,
@@ -2208,11 +2384,15 @@ struct StoredCheckpoint {
     cursor: Option<String>,
     captured_through: Option<i64>,
     applied_through: Option<i64>,
+    #[serde(default)]
+    installation_id: String,
     source_identity: String,
+    #[serde(default)]
+    target_identity: String,
     authority_generation: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredOutboxItem {
     outbox_id: String,
     migration_id: String,
@@ -2288,7 +2468,21 @@ impl FileMigrationStore {
         }
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
-        state.recovery_context = Some(value_to_stored_recovery_context(context));
+        let stored_context = value_to_stored_recovery_context(context);
+        if let Some(existing) = state.recovery_context.as_ref()
+            && existing != &stored_context
+        {
+            bail!("migration recovery context conflicts with the durable marker");
+        }
+        if let Some(existing) = state.manifest.as_ref() {
+            let existing = stored_manifest_to_value(existing.clone())?;
+            if !manifest_matches_recovery_context(&existing, context) {
+                bail!("migration recovery context conflicts with the durable authority manifest");
+            }
+            state.recovery_context = None;
+        } else {
+            state.recovery_context = Some(stored_context);
+        }
         self.write_state(&state).await?;
         *self.context.lock().await = context.clone();
         Ok(())
@@ -2335,10 +2529,17 @@ impl AuthorityManifestStore for FileMigrationStore {
         let state = self.read_state().await?;
         let Some(stored) = state.manifest else {
             let context = if let Some(stored) = state.recovery_context {
-                stored_recovery_context_to_value(stored)?
+                let context = stored_recovery_context_to_value(stored)?;
+                if context.module != module {
+                    return Ok(AuthorityRecoveryRecord::Indeterminate);
+                }
+                context
             } else {
                 self.context.lock().await.clone()
             };
+            if context.module != module {
+                return Ok(AuthorityRecoveryRecord::Indeterminate);
+            }
             return Ok(AuthorityRecoveryRecord::NeverMigrated {
                 migration_id: context.migration_id,
                 installation_id: context.installation_id,
@@ -2378,11 +2579,22 @@ impl AuthorityManifestStore for FileMigrationStore {
         if let Some(existing) = state.manifest.as_ref() {
             let existing = stored_manifest_to_value(existing.clone())?;
             if existing == *manifest {
+                if state.recovery_context.take().is_some() {
+                    self.write_state(&state).await?;
+                }
                 return Ok(AuthorityPublication::Committed);
             }
             return Ok(AuthorityPublication::Conflict);
         }
+        let Some(stored_context) = state.recovery_context.as_ref() else {
+            return Ok(AuthorityPublication::Conflict);
+        };
+        let durable_context = stored_recovery_context_to_value(stored_context.clone())?;
+        if durable_context != *expected {
+            return Ok(AuthorityPublication::Conflict);
+        }
         state.manifest = Some(value_to_stored_manifest(manifest));
+        state.recovery_context = None;
         self.write_state(&state).await?;
         Ok(AuthorityPublication::Committed)
     }
@@ -2424,13 +2636,22 @@ impl MigrationMetadataStore for FileMigrationStore {
     ) -> Result<Option<MigrationCheckpoint>> {
         let _guard = self.lock.lock().await;
         let state = self.read_state().await?;
+        let identity_context = if let Some(stored) = state.recovery_context.clone() {
+            stored_recovery_context_to_value(stored)?
+        } else {
+            self.context.lock().await.clone()
+        };
         state
             .checkpoints
             .into_iter()
             .find(|checkpoint| {
                 checkpoint.migration_id == migration_id && checkpoint.table_name == table_name
             })
-            .map(stored_checkpoint_to_value)
+            .map(|stored| {
+                let checkpoint = stored_checkpoint_to_value(stored)?;
+                validate_checkpoint_identity_against_context(&checkpoint, &identity_context)?;
+                Ok(checkpoint)
+            })
             .transpose()
     }
 
@@ -2438,6 +2659,12 @@ impl MigrationMetadataStore for FileMigrationStore {
         checkpoint.validate()?;
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        let identity_context = if let Some(stored) = state.recovery_context.clone() {
+            stored_recovery_context_to_value(stored)?
+        } else {
+            self.context.lock().await.clone()
+        };
+        validate_checkpoint_identity_against_context(checkpoint, &identity_context)?;
         state.checkpoints.retain(|stored| {
             stored.migration_id != checkpoint.migration_id
                 || stored.table_name != checkpoint.table_name
@@ -2452,14 +2679,18 @@ impl MigrationMetadataStore for FileMigrationStore {
         item.validate()?;
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
-        if state
+        let incoming = value_to_stored_outbox(item);
+        if let Some(existing) = state
             .outbox
             .iter()
-            .any(|stored| stored.outbox_id == item.outbox_id)
+            .find(|stored| stored.outbox_id == item.outbox_id)
         {
-            return Ok(false);
+            if existing == &incoming {
+                return Ok(false);
+            }
+            bail!("migration outbox id conflicts with an existing payload or identity");
         }
-        state.outbox.push(value_to_stored_outbox(item));
+        state.outbox.push(incoming);
         self.write_state(&state).await?;
         Ok(true)
     }
@@ -2631,6 +2862,32 @@ fn stored_manifest_to_value(stored: StoredManifest) -> Result<ModuleAuthorityMan
     })
 }
 
+fn manifest_matches_recovery_context(
+    manifest: &ModuleAuthorityManifest,
+    context: &AuthorityRecoveryContext,
+) -> bool {
+    manifest.migration_id == context.migration_id
+        && manifest.installation_id == context.installation_id
+        && manifest.source_identity == context.source_identity
+        && manifest.module == context.module
+        && manifest.source_watermark == context.source_watermark
+        && manifest.target_identity == context.target_identity
+}
+
+fn validate_checkpoint_identity_against_context(
+    checkpoint: &MigrationCheckpoint,
+    context: &AuthorityRecoveryContext,
+) -> Result<()> {
+    if checkpoint.migration_id != context.migration_id
+        || checkpoint.installation_id != context.installation_id
+        || checkpoint.source_identity != context.source_identity
+        || checkpoint.target_identity != context.target_identity
+    {
+        bail!("migration checkpoint belongs to another durable migration identity");
+    }
+    Ok(())
+}
+
 fn value_to_stored_status(status: &MigrationStatus) -> StoredStatus {
     StoredStatus {
         migration_id: status.migration_id.clone(),
@@ -2671,7 +2928,9 @@ fn value_to_stored_checkpoint(checkpoint: &MigrationCheckpoint) -> StoredCheckpo
         cursor: checkpoint.cursor.clone(),
         captured_through: checkpoint.captured_through,
         applied_through: checkpoint.applied_through,
+        installation_id: checkpoint.installation_id.clone(),
         source_identity: checkpoint.source_identity.clone(),
+        target_identity: checkpoint.target_identity.clone(),
         authority_generation: checkpoint.authority_generation,
     }
 }
@@ -2684,7 +2943,9 @@ fn stored_checkpoint_to_value(stored: StoredCheckpoint) -> Result<MigrationCheck
         cursor: stored.cursor,
         captured_through: stored.captured_through,
         applied_through: stored.applied_through,
+        installation_id: stored.installation_id,
         source_identity: stored.source_identity,
+        target_identity: stored.target_identity,
         authority_generation: stored.authority_generation,
     };
     checkpoint.validate()?;
@@ -2797,17 +3058,72 @@ where
         self.run_control.clone()
     }
 
+    async fn ensure_capture_ready(&self) -> Result<CaptureCheckpoint> {
+        let checkpoint = self.source.capture_checkpoint().await?;
+        if checkpoint.continuity_lost || checkpoint.baseline_required {
+            bail!(
+                "migration capture is not baseline-complete; complete a fresh source baseline before continuing"
+            );
+        }
+        Ok(checkpoint)
+    }
+
+    pub(crate) async fn mark_baseline_complete(&self, through: i64) -> Result<()> {
+        self.ensure_running().await?;
+        let checkpoint = self.source.capture_checkpoint().await?;
+        if checkpoint.continuity_lost {
+            bail!("migration capture continuity has been lost; start a new capture generation");
+        }
+        self.source
+            .mark_baseline_complete(checkpoint.capture_generation, through)
+            .await
+    }
+
+    fn validate_plan_identity(&self, plan: &TableCopyPlan) -> Result<()> {
+        if plan.migration_id != self.source.migration_id()
+            || plan.installation_id != self.installation_id
+            || plan.source_identity != self.source.source_identity()
+            || plan.target_identity != self.target_identity
+        {
+            bail!("durable migration plan belongs to another migration identity");
+        }
+        Ok(())
+    }
+
+    fn validate_checkpoint_identity(&self, checkpoint: &EngineCheckpoint) -> Result<()> {
+        if checkpoint.migration_id != self.source.migration_id()
+            || checkpoint.installation_id != self.installation_id
+            || checkpoint.source_identity != self.source.source_identity()
+            || checkpoint.target_identity != self.target_identity
+        {
+            bail!("durable migration checkpoint belongs to another migration identity");
+        }
+        Ok(())
+    }
+
+    fn validate_coverage_identity(
+        &self,
+        migration_id: &str,
+        installation_id: &str,
+        source_identity: &str,
+        target_identity: &str,
+    ) -> Result<()> {
+        if migration_id != self.source.migration_id()
+            || installation_id != self.installation_id
+            || source_identity != self.source.source_identity()
+            || target_identity != self.target_identity
+        {
+            bail!("durable migration coverage state belongs to another migration identity");
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare(&self, table_names: &[String]) -> Result<()> {
         self.ensure_running().await?;
         if table_names.is_empty() {
             bail!("migration preparation requires at least one table");
         }
-        let capture_checkpoint = self.source.capture_checkpoint().await?;
-        if capture_checkpoint.continuity_lost {
-            bail!(
-                "migration capture continuity has been lost; start a new capture generation and baseline"
-            );
-        }
+        self.ensure_capture_ready().await?;
         let source_table_set = self
             .source
             .module_tables(self.module)
@@ -2832,6 +3148,7 @@ where
                 {
                     bail!("durable migration plan has an invalid identity");
                 }
+                self.validate_plan_identity(&plan)?;
                 validate_table_bounds(
                     "durable migration plan",
                     &plan.scan_lower_bound,
@@ -2864,6 +3181,9 @@ where
                 TableCopyPlan {
                     migration_id: self.source.migration_id().to_owned(),
                     table_name: table_name.clone(),
+                    installation_id: self.installation_id.clone(),
+                    source_identity: self.source.source_identity().to_owned(),
+                    target_identity: self.target_identity.clone(),
                     scan_lower_bound,
                     scan_upper_bound,
                     capture_start,
@@ -2882,6 +3202,7 @@ where
                 .load_checkpoint(&plan.migration_id, &plan.table_name)
                 .await?
             {
+                self.validate_checkpoint_identity(&checkpoint)?;
                 if checkpoint.migration_id != plan.migration_id
                     || checkpoint.table_name != plan.table_name
                     || checkpoint.capture_start != plan.capture_start
@@ -2890,10 +3211,7 @@ where
                     bail!("durable migration checkpoint does not match its plan");
                 }
                 self.store
-                    .save_checkpoint(
-                        &checkpoint
-                            .as_contract(self.source.source_identity(), self.authority_generation),
-                    )
+                    .save_checkpoint(&checkpoint.as_contract(self.authority_generation))
                     .await?;
             }
         }
@@ -2902,16 +3220,19 @@ where
 
     pub(crate) async fn copy_next(&self, table_name: &str) -> Result<MigrationProgress> {
         self.ensure_running().await?;
+        self.ensure_capture_ready().await?;
         let plan = self
             .target
             .load_plan(self.source.migration_id(), table_name)
             .await?
             .ok_or_else(|| anyhow!("migration plan is missing for table {table_name}"))?;
+        self.validate_plan_identity(&plan)?;
         let checkpoint = self
             .target
             .load_checkpoint(&plan.migration_id, table_name)
             .await?
             .ok_or_else(|| anyhow!("migration checkpoint is missing for table {table_name}"))?;
+        self.validate_checkpoint_identity(&checkpoint)?;
         if checkpoint.complete {
             return self.progress_for(&checkpoint).await;
         }
@@ -2973,6 +3294,7 @@ where
         table_name: &str,
         watermark: i64,
     ) -> Result<MigrationProgress> {
+        self.ensure_capture_ready().await?;
         if watermark < 0 {
             bail!("migration catch-up watermark must not be negative");
         }
@@ -2983,6 +3305,7 @@ where
         else {
             bail!("migration checkpoint is missing for table {table_name}");
         };
+        self.validate_checkpoint_identity(&checkpoint)?;
         if checkpoint.applied_through > watermark {
             bail!("migration checkpoint is ahead of the requested catch-up watermark");
         }
@@ -3005,6 +3328,7 @@ where
                 .last()
                 .map(|change| change.source_version)
                 .ok_or_else(|| anyhow!("migration change batch is unexpectedly empty"))?;
+            validate_contiguous_change_prefix(&changes, checkpoint.applied_through, watermark)?;
             if through <= checkpoint.applied_through || through > watermark {
                 bail!("source capture returned an invalid migration watermark batch");
             }
@@ -3036,6 +3360,7 @@ where
         table_name: &str,
         range: ChunkRange,
     ) -> Result<ChunkVerification> {
+        self.ensure_capture_ready().await?;
         let source_snapshot = self
             .source
             .rows_in_range_snapshot(table_name, &range)
@@ -3054,6 +3379,9 @@ where
         let proof = ChunkProof {
             migration_id: self.source.migration_id().to_owned(),
             table_name: table_name.to_owned(),
+            installation_id: self.installation_id.clone(),
+            source_identity: self.source.source_identity().to_owned(),
+            target_identity: self.target_identity.clone(),
             range,
             source_watermark,
             row_count: source_rows.len() as u64,
@@ -3069,6 +3397,7 @@ where
         table_name: &str,
         source_watermark: i64,
     ) -> Result<TableCoverageProof> {
+        self.ensure_capture_ready().await?;
         if source_watermark < 0 {
             bail!("migration coverage watermark must not be negative");
         }
@@ -3089,6 +3418,14 @@ where
             .target
             .load_coverage_checkpoint(self.source.migration_id(), table_name)
             .await?;
+        if let Some(checkpoint) = &checkpoint {
+            self.validate_coverage_identity(
+                &checkpoint.migration_id,
+                &checkpoint.installation_id,
+                &checkpoint.source_identity,
+                &checkpoint.target_identity,
+            )?;
+        }
         let resume = checkpoint.filter(|checkpoint| {
             !checkpoint.complete
                 && checkpoint.lower_bound == lower_bound
@@ -3225,6 +3562,9 @@ where
                 .save_coverage_checkpoint(&CoverageCheckpoint {
                     migration_id: self.source.migration_id().to_owned(),
                     table_name: table_name.to_owned(),
+                    installation_id: self.installation_id.clone(),
+                    source_identity: self.source.source_identity().to_owned(),
+                    target_identity: self.target_identity.clone(),
                     lower_bound: lower_bound.clone(),
                     upper_bound: upper_bound.clone(),
                     cursor: next_cursor.clone(),
@@ -3249,6 +3589,9 @@ where
         let proof = TableCoverageProof {
             migration_id: self.source.migration_id().to_owned(),
             table_name: table_name.to_owned(),
+            installation_id: self.installation_id.clone(),
+            source_identity: self.source.source_identity().to_owned(),
+            target_identity: self.target_identity.clone(),
             source_watermark: fixed_watermark,
             range,
             source_lower_bound: source_bounds.0,
@@ -3273,6 +3616,7 @@ where
         after: i64,
         through: i64,
     ) -> Result<()> {
+        self.ensure_capture_ready().await?;
         if after < 0 || through < after {
             bail!("migration tail delta watermark is invalid");
         }
@@ -3283,6 +3627,10 @@ where
             .source
             .changes_through(after, through, self.limits.change_batch)
             .await?;
+        for change in &changes {
+            change.validate_for(self.source.migration_id(), self.source.source_identity())?;
+        }
+        validate_contiguous_change_prefix(&changes, after, through)?;
         let last_change = changes
             .iter()
             .map(|change| change.source_version)
@@ -3406,6 +3754,7 @@ where
     ) -> Result<()> {
         let _switch = self.switching.lock().await;
         self.ensure_running().await?;
+        self.ensure_capture_ready().await?;
         if expected.migration_id != self.source.migration_id()
             || expected.source_identity != self.source.source_identity()
             || expected.installation_id != self.installation_id
@@ -3534,9 +3883,7 @@ where
 
     async fn persist_checkpoint(&self, checkpoint: &EngineCheckpoint) -> Result<()> {
         self.store
-            .save_checkpoint(
-                &checkpoint.as_contract(self.source.source_identity(), self.authority_generation),
-            )
+            .save_checkpoint(&checkpoint.as_contract(self.authority_generation))
             .await
     }
 

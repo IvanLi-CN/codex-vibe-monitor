@@ -10,15 +10,17 @@ use sqlx::{PgPool, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 
 use crate::storage::{
     core::{
-        AuthorityRecoveryContext, BackendKind, MigrationMetadataStore, ModuleAuthority,
-        ModuleGenerationGate, StorageModule,
+        AuthorityRecoveryContext, BackendKind, MigrationCheckpoint, MigrationMetadataStore,
+        MigrationOutboxItem, ModuleAuthority, ModuleAuthorityManifest, ModuleGenerationGate,
+        StorageModule,
     },
     migration::{
-        CapturedChange, ChangeBatchLimits, ChangeInput, ChangeKind, ChunkRange, CopyLimits,
-        DEFAULT_COPY_MAX_BYTES, DEFAULT_COPY_MAX_ROWS, EngineCheckpoint, FileMigrationStore,
-        InMemoryMigrationSource, InMemoryMigrationTarget, MigrationEngine, MigrationLimits,
-        MigrationSource, MigrationTarget, SourcePage, SourceWriteFence, TableCopyPlan,
-        TableCoverageProof, VersionCapture, VersionedRow,
+        CapturedChange, ChangeBatchLimits, ChangeInput, ChangeKind, ChunkProof, ChunkRange,
+        CopyLimits, CoverageCheckpoint, DEFAULT_COPY_MAX_BYTES, DEFAULT_COPY_MAX_ROWS,
+        EngineCheckpoint, FileMigrationStore, InMemoryMigrationSource, InMemoryMigrationTarget,
+        MigrationEngine, MigrationLimits, MigrationSource, MigrationTarget, SourcePage,
+        SourceWriteFence, TableCopyPlan, TableCoverageProof, VersionCapture, VersionedRow,
+        validate_contiguous_change_prefix,
     },
     migration_sqlx::{MigrationTableSpec, PostgresMigrationTarget, SqliteMigrationSource},
 };
@@ -158,6 +160,297 @@ async fn file_migration_store_reopens_after_parent_synced_replace() -> Result<()
         }
     ));
 
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn file_migration_store_rejects_stale_recovery_marker_and_consumes_valid_marker() -> Result<()>
+{
+    let (directory, path) = state_path("recovery-marker");
+    let context = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 2,
+    };
+    let stale = AuthorityRecoveryContext {
+        source_watermark: 1,
+        ..context.clone()
+    };
+    let manifest = ModuleAuthorityManifest {
+        migration_id: context.migration_id.clone(),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        module: context.module,
+        authority: ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        },
+        source_watermark: context.source_watermark,
+        target_identity: context.target_identity.clone(),
+    };
+    let store = FileMigrationStore::new(&path, context.clone());
+    store.set_recovery_context(&stale).await?;
+    assert_eq!(
+        store
+            .publish_authority_manifest(&manifest, &context)
+            .await?,
+        crate::storage::core::AuthorityPublication::Conflict
+    );
+    assert!(matches!(
+        store
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::NeverMigrated {
+            source_watermark: 1,
+            ..
+        }
+    ));
+
+    fs::remove_dir_all(&directory)?;
+    let (directory, path) = state_path("recovery-marker-consume");
+    let store = FileMigrationStore::new(&path, context.clone());
+    store.set_recovery_context(&context).await?;
+    assert_eq!(
+        store
+            .publish_authority_manifest(&manifest, &context)
+            .await?,
+        crate::storage::core::AuthorityPublication::Committed
+    );
+    let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    assert!(
+        stored
+            .get("recovery_context")
+            .is_some_and(serde_json::Value::is_null)
+    );
+    assert!(matches!(
+        store
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::Manifest(_)
+    ));
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_engine_requires_explicit_baseline_completion_at_every_stage() -> Result<()> {
+    let (directory, path) = state_path("baseline-guard");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    source.start_new_capture_generation().await?;
+    assert!(migration.prepare(&["events".into()]).await.is_err());
+    assert!(migration.copy_next("events").await.is_err());
+    assert!(migration.catch_up("events").await.is_err());
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    assert!(
+        migration
+            .switch_authority(
+                &gate,
+                AuthorityRecoveryContext {
+                    migration_id: "migration-engine-test".into(),
+                    installation_id: "installation-test".into(),
+                    module: StorageModule::TrafficArchive,
+                    source_identity: "sqlite-test".into(),
+                    target_identity: "postgres-test".into(),
+                    source_watermark: 1,
+                },
+                Duration::from_secs(1),
+            )
+            .await
+            .is_err()
+    );
+    migration.mark_baseline_complete(1).await?;
+    assert!(!source.capture_checkpoint().await?.baseline_required);
+    assert!(migration.copy_next("events").await?.complete);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn migration_replay_rejects_non_contiguous_watermark_prefixes() -> Result<()> {
+    let first = CapturedChange::from_input(
+        "migration-engine-test",
+        "sqlite-test",
+        1,
+        change("events", "a", ChangeKind::Insert, b"a"),
+    )?;
+    let gap = CapturedChange::from_input(
+        "migration-engine-test",
+        "sqlite-test",
+        3,
+        change("events", "c", ChangeKind::Insert, b"c"),
+    )?;
+    assert!(validate_contiguous_change_prefix(&[first, gap], 0, 3).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_target_persistence_rejects_identity_reuse() -> Result<()> {
+    let target = InMemoryMigrationTarget::default();
+    let plan = TableCopyPlan {
+        migration_id: "migration-engine-test".into(),
+        table_name: "events".into(),
+        installation_id: "installation-a".into(),
+        source_identity: "sqlite-a".into(),
+        target_identity: "postgres-a".into(),
+        scan_lower_bound: Some("a".into()),
+        scan_upper_bound: Some("a".into()),
+        capture_start: 0,
+    };
+    target.save_plan(&plan).await?;
+    let conflicting_plan = TableCopyPlan {
+        target_identity: "postgres-b".into(),
+        ..plan.clone()
+    };
+    assert!(target.save_plan(&conflicting_plan).await.is_err());
+
+    let coverage = CoverageCheckpoint {
+        migration_id: plan.migration_id.clone(),
+        table_name: plan.table_name.clone(),
+        installation_id: plan.installation_id.clone(),
+        source_identity: plan.source_identity.clone(),
+        target_identity: plan.target_identity.clone(),
+        lower_bound: Some("a".into()),
+        upper_bound: Some("a".into()),
+        cursor: Some("a".into()),
+        source_watermark: 0,
+        source_row_count: 1,
+        target_row_count: 1,
+        source_byte_count: 1,
+        target_byte_count: 1,
+        source_digest: "source".into(),
+        target_digest: "target".into(),
+        complete: true,
+    };
+    target.save_coverage_checkpoint(&coverage).await?;
+    assert!(
+        target
+            .save_coverage_checkpoint(&CoverageCheckpoint {
+                source_identity: "sqlite-b".into(),
+                ..coverage.clone()
+            })
+            .await
+            .is_err()
+    );
+
+    let proof = ChunkProof {
+        migration_id: plan.migration_id.clone(),
+        table_name: plan.table_name.clone(),
+        installation_id: plan.installation_id.clone(),
+        source_identity: plan.source_identity.clone(),
+        target_identity: plan.target_identity.clone(),
+        range: ChunkRange::new("a", "a")?,
+        source_watermark: 0,
+        row_count: 1,
+        byte_count: 1,
+        digest: "digest".into(),
+    };
+    target.save_chunk_proof(&proof).await?;
+    assert!(
+        target
+            .save_chunk_proof(&ChunkProof {
+                installation_id: "installation-b".into(),
+                ..proof
+            })
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn file_migration_store_rejects_checkpoint_identity_reuse_and_outbox_payload_conflict()
+-> Result<()> {
+    let (directory, path) = state_path("identity-reuse");
+    let context = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-a".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-a".into(),
+        target_identity: "postgres-a".into(),
+        source_watermark: 0,
+    };
+    let store = FileMigrationStore::new(&path, context.clone());
+    let checkpoint = MigrationCheckpoint {
+        migration_id: context.migration_id.clone(),
+        table_name: "events".into(),
+        stable_key: "a".into(),
+        cursor: Some("a".into()),
+        captured_through: Some(0),
+        applied_through: Some(0),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        target_identity: context.target_identity.clone(),
+        authority_generation: 1,
+    };
+    store.save_checkpoint(&checkpoint).await?;
+    assert!(
+        store
+            .save_checkpoint(&MigrationCheckpoint {
+                installation_id: "installation-b".into(),
+                ..checkpoint
+            })
+            .await
+            .is_err()
+    );
+    let item = MigrationOutboxItem {
+        outbox_id: "outbox-1".into(),
+        migration_id: context.migration_id.clone(),
+        source_identity: context.source_identity.clone(),
+        source_version: 1,
+        module: context.module,
+        authority_generation: 1,
+        payload_digest: "digest-a".into(),
+    };
+    assert!(store.enqueue_outbox(&item).await?);
+    assert!(!store.enqueue_outbox(&item).await?);
+    assert!(
+        store
+            .enqueue_outbox(&MigrationOutboxItem {
+                payload_digest: "digest-b".into(),
+                ..item
+            })
+            .await
+            .is_err()
+    );
     fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -743,6 +1036,9 @@ async fn migration_prepare_reuses_durable_plans_after_partial_restart() -> Resul
     let events_plan = TableCopyPlan {
         migration_id: source.migration_id().to_owned(),
         table_name: "events".into(),
+        installation_id: "installation-test".into(),
+        source_identity: source.source_identity().to_owned(),
+        target_identity: "postgres-test".into(),
         scan_lower_bound,
         scan_upper_bound,
         capture_start,
@@ -2398,15 +2694,6 @@ async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture(
                 "payload",
             )?],
         )?);
-        sqlx::query(&format!(
-            "CREATE TABLE \"{target_table}\" (
-            \"stable_key\" TEXT PRIMARY KEY,
-            \"source_version\" BIGINT NOT NULL,
-            \"payload\" BYTEA NOT NULL
-        )"
-        ))
-        .execute(&pool)
-        .await?;
         target.ensure_schema().await?;
 
         let source_pool = SqlitePoolOptions::new()
@@ -2626,20 +2913,14 @@ async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Res
                 "payload",
             )?],
         )?;
-        sqlx::query(&format!(
-            "CREATE TABLE \"{target_table}\" (
-            \"stable_key\" TEXT PRIMARY KEY,
-            \"source_version\" BIGINT NOT NULL,
-            \"payload\" BYTEA NOT NULL
-        )"
-        ))
-        .execute(&pool)
-        .await?;
         target.ensure_schema().await?;
 
         let plan = TableCopyPlan {
             migration_id: "migration-engine-test".into(),
             table_name: "events".into(),
+            installation_id: "installation-test".into(),
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
             scan_lower_bound: Some("a".into()),
             scan_upper_bound: Some("a".into()),
             capture_start: 0,
@@ -2648,6 +2929,9 @@ async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Res
         let baseline_checkpoint = EngineCheckpoint {
             migration_id: plan.migration_id.clone(),
             table_name: plan.table_name.clone(),
+            installation_id: plan.installation_id.clone(),
+            source_identity: plan.source_identity.clone(),
+            target_identity: plan.target_identity.clone(),
             cursor: Some("a".into()),
             scan_upper_bound: plan.scan_upper_bound.clone(),
             capture_start: 0,
@@ -2699,6 +2983,9 @@ async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Res
         let proof = TableCoverageProof {
             migration_id: plan.migration_id.clone(),
             table_name: plan.table_name.clone(),
+            installation_id: plan.installation_id.clone(),
+            source_identity: plan.source_identity.clone(),
+            target_identity: plan.target_identity.clone(),
             source_watermark: 1,
             range: Some(ChunkRange::new("a", "a")?),
             source_lower_bound: Some("a".into()),

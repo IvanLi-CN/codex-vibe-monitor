@@ -1521,7 +1521,9 @@ fn migration_progress_contract_covers_checkpoint_outbox_and_capacity_obligations
         cursor: Some("42".into()),
         captured_through: Some(10),
         applied_through: Some(10),
+        installation_id: "installation-01".into(),
         source_identity: "sqlite-main-installation-01".into(),
+        target_identity: "postgres-main-installation-01".into(),
         authority_generation: 1,
     }
     .validate()

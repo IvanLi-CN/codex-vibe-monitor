@@ -964,7 +964,9 @@ pub(crate) struct MigrationCheckpoint {
     pub(crate) cursor: Option<String>,
     pub(crate) captured_through: Option<i64>,
     pub(crate) applied_through: Option<i64>,
+    pub(crate) installation_id: String,
     pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) authority_generation: u64,
 }
 
@@ -976,8 +978,11 @@ impl MigrationCheckpoint {
         {
             bail!("migration checkpoint requires identity, table and stable key");
         }
-        if self.source_identity.trim().is_empty() {
-            bail!("migration checkpoint requires a source identity");
+        if self.installation_id.trim().is_empty()
+            || self.source_identity.trim().is_empty()
+            || self.target_identity.trim().is_empty()
+        {
+            bail!("migration checkpoint requires installation, source and target identities");
         }
         if self.authority_generation == 0 {
             bail!("migration checkpoint requires a non-zero authority generation");

@@ -5,7 +5,10 @@
 //! stable identity, source version, and serialized payload. That keeps traffic and
 //! archive schema ownership in pg03/pg04 instead of guessing it here.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -35,6 +38,7 @@ pub(crate) struct MigrationTableSpec {
     pub(crate) target_key_column: String,
     pub(crate) target_version_column: String,
     pub(crate) target_payload_column: String,
+    pub(crate) target_schema: MigrationTableSchema,
 }
 
 impl MigrationTableSpec {
@@ -62,6 +66,7 @@ impl MigrationTableSpec {
             target_key_column: target_key_column.into(),
             target_version_column: target_version_column.into(),
             target_payload_column: target_payload_column.into(),
+            target_schema: MigrationTableSchema::default(),
         };
         for (value, label) in [
             (&spec.logical_table_name, "logical migration table"),
@@ -77,6 +82,11 @@ impl MigrationTableSpec {
             validate_identifier(value, label)?;
         }
         Ok(spec)
+    }
+
+    pub(crate) fn with_target_schema(mut self, target_schema: MigrationTableSchema) -> Self {
+        self.target_schema = target_schema;
+        self
     }
 
     pub(crate) fn canonical(module: StorageModule, table_name: impl Into<String>) -> Result<Self> {
@@ -112,6 +122,48 @@ fn validate_identifier(identifier: &str, label: &str) -> Result<()> {
 fn quote_identifier(identifier: &str, label: &str) -> Result<String> {
     validate_identifier(identifier, label)?;
     Ok(format!("\"{identifier}\""))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationColumnType {
+    Text,
+    BigInt,
+    Bytea,
+}
+
+impl MigrationColumnType {
+    fn postgres_name(self) -> &'static str {
+        match self {
+            Self::Text => "TEXT",
+            Self::BigInt => "BIGINT",
+            Self::Bytea => "BYTEA",
+        }
+    }
+
+    fn information_schema_name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::BigInt => "bigint",
+            Self::Bytea => "bytea",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MigrationTableSchema {
+    pub(crate) key_type: MigrationColumnType,
+    pub(crate) version_type: MigrationColumnType,
+    pub(crate) payload_type: MigrationColumnType,
+}
+
+impl Default for MigrationTableSchema {
+    fn default() -> Self {
+        Self {
+            key_type: MigrationColumnType::Text,
+            version_type: MigrationColumnType::BigInt,
+            payload_type: MigrationColumnType::Bytea,
+        }
+    }
 }
 
 fn spec_map(specs: Vec<MigrationTableSpec>) -> Result<BTreeMap<String, MigrationTableSpec>> {
@@ -987,6 +1039,10 @@ impl MigrationSource for SqliteMigrationSource {
         SqliteMigrationSource::capture_checkpoint(self).await
     }
 
+    async fn mark_baseline_complete(&self, capture_generation: u64, through: i64) -> Result<()> {
+        SqliteMigrationSource::mark_baseline_complete(self, capture_generation, through).await
+    }
+
     async fn fence_source_writes(
         &self,
         expected_generation: u64,
@@ -1268,7 +1324,79 @@ impl PostgresMigrationTarget {
         })
     }
 
+    async fn ensure_target_table_schema(&self, spec: &MigrationTableSpec) -> Result<()> {
+        let table = quote_identifier(&spec.target_table_name, "target migration table")?;
+        let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
+        let version = quote_identifier(&spec.target_version_column, "target version column")?;
+        let payload = quote_identifier(&spec.target_payload_column, "target payload column")?;
+        let query = format!(
+            "CREATE TABLE IF NOT EXISTS {table} (
+                {key} {} PRIMARY KEY,
+                {version} {} NOT NULL,
+                {payload} {} NOT NULL
+            )",
+            spec.target_schema.key_type.postgres_name(),
+            spec.target_schema.version_type.postgres_name(),
+            spec.target_schema.payload_type.postgres_name(),
+        );
+        sqlx::query(&query)
+            .execute(&self.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "create PostgreSQL migration target table {}",
+                    spec.target_table_name
+                )
+            })?;
+
+        let rows = sqlx::query(
+            "SELECT column_name, data_type, is_nullable
+               FROM information_schema.columns
+              WHERE table_schema = current_schema() AND table_name = $1",
+        )
+        .bind(&spec.target_table_name)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| {
+            format!(
+                "inspect PostgreSQL migration target table {}",
+                spec.target_table_name
+            )
+        })?;
+        for (column, expected_type) in [
+            (&spec.target_key_column, spec.target_schema.key_type),
+            (&spec.target_version_column, spec.target_schema.version_type),
+            (&spec.target_payload_column, spec.target_schema.payload_type),
+        ] {
+            let row = rows
+                .iter()
+                .find(|row| row.try_get::<String, _>("column_name").ok().as_deref() == Some(column))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "PostgreSQL migration target table {} is missing column {column}",
+                        spec.target_table_name
+                    )
+                })?;
+            let actual_type: String = row.try_get("data_type")?;
+            let nullable: String = row.try_get("is_nullable")?;
+            if actual_type != expected_type.information_schema_name() || nullable != "NO" {
+                bail!(
+                    "PostgreSQL migration target column {}.{} has incompatible schema",
+                    spec.target_table_name,
+                    column
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn ensure_schema(&self) -> Result<()> {
+        let mut target_tables = BTreeSet::new();
+        for spec in self.specs.values() {
+            if target_tables.insert(spec.target_table_name.clone()) {
+                self.ensure_target_table_schema(spec).await?;
+            }
+        }
         let plans = quote_identifier(&self.metadata.plans, "PostgreSQL migration plans table")?;
         let checkpoints = quote_identifier(
             &self.metadata.checkpoints,
@@ -1291,6 +1419,9 @@ impl PostgresMigrationTarget {
                 "CREATE TABLE IF NOT EXISTS {plans} (
                     migration_id TEXT NOT NULL,
                     table_name TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    source_identity TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
                     scan_lower_bound TEXT,
                     scan_upper_bound TEXT,
                     capture_start BIGINT NOT NULL,
@@ -1301,6 +1432,9 @@ impl PostgresMigrationTarget {
                 "CREATE TABLE IF NOT EXISTS {checkpoints} (
                     migration_id TEXT NOT NULL,
                     table_name TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    source_identity TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
                     cursor TEXT,
                     scan_upper_bound TEXT,
                     capture_start BIGINT NOT NULL,
@@ -1316,6 +1450,9 @@ impl PostgresMigrationTarget {
                 "CREATE TABLE IF NOT EXISTS {chunk_proofs} (
                     migration_id TEXT NOT NULL,
                     table_name TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    source_identity TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
                     first_key TEXT NOT NULL,
                     last_key TEXT NOT NULL,
                     source_watermark BIGINT NOT NULL,
@@ -1329,6 +1466,9 @@ impl PostgresMigrationTarget {
                 "CREATE TABLE IF NOT EXISTS {coverage_checkpoints} (
                     migration_id TEXT NOT NULL,
                     table_name TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    source_identity TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
                     lower_bound TEXT,
                     upper_bound TEXT,
                     cursor TEXT,
@@ -1347,6 +1487,9 @@ impl PostgresMigrationTarget {
                 "CREATE TABLE IF NOT EXISTS {coverage_proofs} (
                     migration_id TEXT NOT NULL,
                     table_name TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    source_identity TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
                     source_watermark BIGINT NOT NULL,
                     range_first_key TEXT,
                     range_last_key TEXT,
@@ -1369,6 +1512,32 @@ impl PostgresMigrationTarget {
                 .await
                 .context("create PostgreSQL migration metadata table")?;
         }
+        for (table, column) in [
+            (&plans, "installation_id"),
+            (&plans, "source_identity"),
+            (&plans, "target_identity"),
+            (&checkpoints, "installation_id"),
+            (&checkpoints, "source_identity"),
+            (&checkpoints, "target_identity"),
+            (&chunk_proofs, "installation_id"),
+            (&chunk_proofs, "source_identity"),
+            (&chunk_proofs, "target_identity"),
+            (&coverage_checkpoints, "installation_id"),
+            (&coverage_checkpoints, "source_identity"),
+            (&coverage_checkpoints, "target_identity"),
+            (&coverage_proofs, "installation_id"),
+            (&coverage_proofs, "source_identity"),
+            (&coverage_proofs, "target_identity"),
+        ] {
+            let column = quote_identifier(column, "PostgreSQL migration identity column")?;
+            let query = format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT NOT NULL DEFAULT ''"
+            );
+            sqlx::query(&query)
+                .execute(&self.pool)
+                .await
+                .context("upgrade PostgreSQL migration metadata identity columns")?;
+        }
         Ok(())
     }
 
@@ -1386,7 +1555,8 @@ impl PostgresMigrationTarget {
     ) -> Result<Option<TableCopyPlan>> {
         let plans = quote_identifier(&self.metadata.plans, "PostgreSQL migration plans table")?;
         let query = format!(
-            "SELECT migration_id, table_name, scan_lower_bound, scan_upper_bound, capture_start
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    scan_lower_bound, scan_upper_bound, capture_start
                FROM {plans}
               WHERE migration_id = $1 AND table_name = $2 FOR UPDATE"
         );
@@ -1411,7 +1581,8 @@ impl PostgresMigrationTarget {
             "PostgreSQL migration checkpoints table",
         )?;
         let query = format!(
-            "SELECT migration_id, table_name, cursor, scan_upper_bound, capture_start,
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    cursor, scan_upper_bound, capture_start,
                     captured_through, applied_through, copied_rows, copied_bytes, complete
                FROM {checkpoints}
               WHERE migration_id = $1 AND table_name = $2 FOR UPDATE"
@@ -1431,16 +1602,34 @@ impl PostgresMigrationTarget {
         transaction: &mut Transaction<'_, Postgres>,
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
+        checkpoint.validate()?;
+        if let Some(existing) = self
+            .load_checkpoint_tx(
+                transaction,
+                &checkpoint.migration_id,
+                &checkpoint.table_name,
+            )
+            .await?
+            && (existing.installation_id != checkpoint.installation_id
+                || existing.source_identity != checkpoint.source_identity
+                || existing.target_identity != checkpoint.target_identity)
+        {
+            bail!("PostgreSQL migration checkpoint belongs to another identity");
+        }
         let checkpoints = quote_identifier(
             &self.metadata.checkpoints,
             "PostgreSQL migration checkpoints table",
         )?;
         let query = format!(
             "INSERT INTO {checkpoints}
-             (migration_id, table_name, cursor, scan_upper_bound, capture_start,
+             (migration_id, table_name, installation_id, source_identity, target_identity,
+              cursor, scan_upper_bound, capture_start,
               captured_through, applied_through, copied_rows, copied_bytes, complete)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (migration_id, table_name) DO UPDATE SET
+                installation_id = EXCLUDED.installation_id,
+                source_identity = EXCLUDED.source_identity,
+                target_identity = EXCLUDED.target_identity,
                 cursor = EXCLUDED.cursor, scan_upper_bound = EXCLUDED.scan_upper_bound,
                 capture_start = EXCLUDED.capture_start, captured_through = EXCLUDED.captured_through,
                 applied_through = EXCLUDED.applied_through, copied_rows = EXCLUDED.copied_rows,
@@ -1449,6 +1638,9 @@ impl PostgresMigrationTarget {
         sqlx::query(&query)
             .bind(&checkpoint.migration_id)
             .bind(&checkpoint.table_name)
+            .bind(&checkpoint.installation_id)
+            .bind(&checkpoint.source_identity)
+            .bind(&checkpoint.target_identity)
             .bind(&checkpoint.cursor)
             .bind(&checkpoint.scan_upper_bound)
             .bind(checkpoint.capture_start)
@@ -1574,7 +1766,8 @@ impl MigrationTarget for PostgresMigrationTarget {
     ) -> Result<Option<TableCopyPlan>> {
         let plans = quote_identifier(&self.metadata.plans, "PostgreSQL migration plans table")?;
         let query = format!(
-            "SELECT migration_id, table_name, scan_lower_bound, scan_upper_bound, capture_start
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    scan_lower_bound, scan_upper_bound, capture_start
                FROM {plans} WHERE migration_id = $1 AND table_name = $2"
         );
         sqlx::query(&query)
@@ -1589,9 +1782,7 @@ impl MigrationTarget for PostgresMigrationTarget {
 
     async fn save_plan(&self, plan: &TableCopyPlan) -> Result<()> {
         self.spec(&plan.table_name)?;
-        if plan.capture_start < 0 {
-            bail!("PostgreSQL migration plan capture start must not be negative");
-        }
+        plan.validate()?;
         let plans = quote_identifier(&self.metadata.plans, "PostgreSQL migration plans table")?;
         let checkpoints = quote_identifier(
             &self.metadata.checkpoints,
@@ -1600,13 +1791,17 @@ impl MigrationTarget for PostgresMigrationTarget {
         let mut transaction = self.pool.begin().await?;
         let query = format!(
             "INSERT INTO {plans}
-             (migration_id, table_name, scan_lower_bound, scan_upper_bound, capture_start)
-             VALUES ($1, $2, $3, $4, $5)
+             (migration_id, table_name, installation_id, source_identity, target_identity,
+              scan_lower_bound, scan_upper_bound, capture_start)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (migration_id, table_name) DO NOTHING"
         );
         sqlx::query(&query)
             .bind(&plan.migration_id)
             .bind(&plan.table_name)
+            .bind(&plan.installation_id)
+            .bind(&plan.source_identity)
+            .bind(&plan.target_identity)
             .bind(&plan.scan_lower_bound)
             .bind(&plan.scan_upper_bound)
             .bind(plan.capture_start)
@@ -1622,14 +1817,18 @@ impl MigrationTarget for PostgresMigrationTarget {
         }
         let checkpoint_query = format!(
             "INSERT INTO {checkpoints}
-             (migration_id, table_name, cursor, scan_upper_bound, capture_start,
+             (migration_id, table_name, installation_id, source_identity, target_identity,
+              cursor, scan_upper_bound, capture_start,
               captured_through, applied_through, copied_rows, copied_bytes, complete)
-             VALUES ($1, $2, NULL, $3, $4, $4, $4, 0, 0, FALSE)
+             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $7, $7, 0, 0, FALSE)
              ON CONFLICT (migration_id, table_name) DO NOTHING"
         );
         sqlx::query(&checkpoint_query)
             .bind(&plan.migration_id)
             .bind(&plan.table_name)
+            .bind(&plan.installation_id)
+            .bind(&plan.source_identity)
+            .bind(&plan.target_identity)
             .bind(&plan.scan_upper_bound)
             .bind(plan.capture_start)
             .execute(&mut *transaction)
@@ -1652,7 +1851,8 @@ impl MigrationTarget for PostgresMigrationTarget {
             "PostgreSQL migration checkpoints table",
         )?;
         let query = format!(
-            "SELECT migration_id, table_name, cursor, scan_upper_bound, capture_start,
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    cursor, scan_upper_bound, capture_start,
                     captured_through, applied_through, copied_rows, copied_bytes, complete
                FROM {checkpoints} WHERE migration_id = $1 AND table_name = $2"
         );
@@ -1672,7 +1872,12 @@ impl MigrationTarget for PostgresMigrationTarget {
         page: &SourcePage,
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
-        if checkpoint.migration_id != plan.migration_id || checkpoint.table_name != plan.table_name
+        checkpoint.validate()?;
+        if checkpoint.migration_id != plan.migration_id
+            || checkpoint.table_name != plan.table_name
+            || checkpoint.installation_id != plan.installation_id
+            || checkpoint.source_identity != plan.source_identity
+            || checkpoint.target_identity != plan.target_identity
         {
             bail!("PostgreSQL baseline checkpoint does not match its plan");
         }
@@ -1681,6 +1886,12 @@ impl MigrationTarget for PostgresMigrationTarget {
             .load_checkpoint_tx(&mut transaction, &plan.migration_id, &plan.table_name)
             .await?
             .ok_or_else(|| anyhow!("PostgreSQL migration checkpoint is missing"))?;
+        if existing.installation_id != checkpoint.installation_id
+            || existing.source_identity != checkpoint.source_identity
+            || existing.target_identity != checkpoint.target_identity
+        {
+            bail!("PostgreSQL baseline checkpoint belongs to another identity");
+        }
         validate_checkpoint_progress(Some(&existing), checkpoint)?;
         let spec = self.spec(&plan.table_name)?;
         for row in &page.rows {
@@ -1702,6 +1913,7 @@ impl MigrationTarget for PostgresMigrationTarget {
         changes: &[CapturedChange],
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
+        checkpoint.validate()?;
         if checkpoint.migration_id != migration_id {
             bail!("PostgreSQL replay checkpoint does not match its migration");
         }
@@ -1710,6 +1922,12 @@ impl MigrationTarget for PostgresMigrationTarget {
             .load_checkpoint_tx(&mut transaction, migration_id, &checkpoint.table_name)
             .await?
             .ok_or_else(|| anyhow!("PostgreSQL migration checkpoint is missing"))?;
+        if existing.installation_id != checkpoint.installation_id
+            || existing.source_identity != checkpoint.source_identity
+            || existing.target_identity != checkpoint.target_identity
+        {
+            bail!("PostgreSQL replay checkpoint belongs to another identity");
+        }
         validate_checkpoint_progress(Some(&existing), checkpoint)?;
         for change in changes {
             change.validate_for(migration_id, source_identity)?;
@@ -1873,29 +2091,33 @@ impl MigrationTarget for PostgresMigrationTarget {
     }
 
     async fn save_chunk_proof(&self, proof: &ChunkProof) -> Result<()> {
-        if proof.migration_id.trim().is_empty()
-            || proof.table_name.trim().is_empty()
-            || proof.source_watermark < 0
-            || proof.range.first_key > proof.range.last_key
-        {
-            bail!("invalid PostgreSQL migration chunk proof");
-        }
+        proof.validate()?;
         let chunk_proofs = quote_identifier(
             &self.metadata.chunk_proofs,
             "PostgreSQL migration chunk proofs table",
         )?;
         let query = format!(
             "INSERT INTO {chunk_proofs}
-             (migration_id, table_name, first_key, last_key, source_watermark, row_count, byte_count, digest)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (migration_id, table_name, installation_id, source_identity, target_identity,
+              first_key, last_key, source_watermark, row_count, byte_count, digest)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (migration_id, table_name, first_key, last_key) DO UPDATE SET
+                installation_id = EXCLUDED.installation_id,
+                source_identity = EXCLUDED.source_identity,
+                target_identity = EXCLUDED.target_identity,
                 source_watermark = EXCLUDED.source_watermark,
                 row_count = EXCLUDED.row_count, byte_count = EXCLUDED.byte_count,
-                digest = EXCLUDED.digest"
+                digest = EXCLUDED.digest
+             WHERE {chunk_proofs}.installation_id = EXCLUDED.installation_id
+               AND {chunk_proofs}.source_identity = EXCLUDED.source_identity
+               AND {chunk_proofs}.target_identity = EXCLUDED.target_identity"
         );
-        sqlx::query(&query)
+        let result = sqlx::query(&query)
             .bind(&proof.migration_id)
             .bind(&proof.table_name)
+            .bind(&proof.installation_id)
+            .bind(&proof.source_identity)
+            .bind(&proof.target_identity)
             .bind(&proof.range.first_key)
             .bind(&proof.range.last_key)
             .bind(proof.source_watermark)
@@ -1905,6 +2127,9 @@ impl MigrationTarget for PostgresMigrationTarget {
             .execute(&self.pool)
             .await
             .context("persist PostgreSQL migration chunk proof")?;
+        if result.rows_affected() != 1 {
+            bail!("PostgreSQL migration chunk proof belongs to another identity");
+        }
         Ok(())
     }
 
@@ -1918,7 +2143,8 @@ impl MigrationTarget for PostgresMigrationTarget {
             "PostgreSQL migration chunk proofs table",
         )?;
         let query = format!(
-            "SELECT migration_id, table_name, first_key, last_key, source_watermark,
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    first_key, last_key, source_watermark,
                     row_count, byte_count, digest
                FROM {chunk_proofs}
               WHERE migration_id = $1 AND table_name = $2
@@ -1932,9 +2158,12 @@ impl MigrationTarget for PostgresMigrationTarget {
             .context("load PostgreSQL migration chunk proofs")?;
         rows.into_iter()
             .map(|row| {
-                Ok(ChunkProof {
+                let proof = ChunkProof {
                     migration_id: row.try_get("migration_id")?,
                     table_name: row.try_get("table_name")?,
+                    installation_id: row.try_get("installation_id")?,
+                    source_identity: row.try_get("source_identity")?,
+                    target_identity: row.try_get("target_identity")?,
                     range: ChunkRange::new(
                         row.try_get::<String, _>("first_key")?,
                         row.try_get::<String, _>("last_key")?,
@@ -1943,7 +2172,9 @@ impl MigrationTarget for PostgresMigrationTarget {
                     row_count: u64_from_i64(row.try_get("row_count")?, "chunk proof row count")?,
                     byte_count: u64_from_i64(row.try_get("byte_count")?, "chunk proof byte count")?,
                     digest: row.try_get("digest")?,
-                })
+                };
+                proof.validate()?;
+                Ok(proof)
             })
             .collect()
     }
@@ -1956,11 +2187,15 @@ impl MigrationTarget for PostgresMigrationTarget {
         )?;
         let query = format!(
             "INSERT INTO {coverage_checkpoints}
-             (migration_id, table_name, lower_bound, upper_bound, cursor, source_watermark,
+             (migration_id, table_name, installation_id, source_identity, target_identity,
+              lower_bound, upper_bound, cursor, source_watermark,
               source_row_count, target_row_count, source_byte_count, target_byte_count,
               source_digest, target_digest, complete)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT (migration_id, table_name) DO UPDATE SET
+                installation_id = EXCLUDED.installation_id,
+                source_identity = EXCLUDED.source_identity,
+                target_identity = EXCLUDED.target_identity,
                 lower_bound = EXCLUDED.lower_bound, upper_bound = EXCLUDED.upper_bound,
                 cursor = EXCLUDED.cursor, source_watermark = EXCLUDED.source_watermark,
                 source_row_count = EXCLUDED.source_row_count,
@@ -1968,12 +2203,18 @@ impl MigrationTarget for PostgresMigrationTarget {
                 source_byte_count = EXCLUDED.source_byte_count,
                 target_byte_count = EXCLUDED.target_byte_count,
                 source_digest = EXCLUDED.source_digest, target_digest = EXCLUDED.target_digest,
-                complete = EXCLUDED.complete"
+                complete = EXCLUDED.complete
+             WHERE {coverage_checkpoints}.installation_id = EXCLUDED.installation_id
+               AND {coverage_checkpoints}.source_identity = EXCLUDED.source_identity
+               AND {coverage_checkpoints}.target_identity = EXCLUDED.target_identity"
         );
         let mut transaction = self.pool.begin().await?;
-        sqlx::query(&query)
+        let result = sqlx::query(&query)
             .bind(&checkpoint.migration_id)
             .bind(&checkpoint.table_name)
+            .bind(&checkpoint.installation_id)
+            .bind(&checkpoint.source_identity)
+            .bind(&checkpoint.target_identity)
             .bind(&checkpoint.lower_bound)
             .bind(&checkpoint.upper_bound)
             .bind(&checkpoint.cursor)
@@ -2000,6 +2241,9 @@ impl MigrationTarget for PostgresMigrationTarget {
             .execute(&mut *transaction)
             .await
             .context("persist PostgreSQL migration coverage checkpoint")?;
+        if result.rows_affected() != 1 {
+            bail!("PostgreSQL migration coverage checkpoint belongs to another identity");
+        }
         transaction
             .commit()
             .await
@@ -2017,7 +2261,8 @@ impl MigrationTarget for PostgresMigrationTarget {
             "PostgreSQL migration coverage checkpoints table",
         )?;
         let query = format!(
-            "SELECT migration_id, table_name, lower_bound, upper_bound, cursor,
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    lower_bound, upper_bound, cursor,
                     source_watermark, source_row_count, target_row_count,
                     source_byte_count, target_byte_count, source_digest, target_digest, complete
                FROM {coverage_checkpoints}
@@ -2051,12 +2296,16 @@ impl MigrationTarget for PostgresMigrationTarget {
             .unwrap_or((None, None));
         let query = format!(
             "INSERT INTO {coverage_proofs}
-             (migration_id, table_name, source_watermark, range_first_key, range_last_key,
+             (migration_id, table_name, installation_id, source_identity, target_identity,
+              source_watermark, range_first_key, range_last_key,
               source_lower_bound, source_upper_bound, target_lower_bound, target_upper_bound,
               source_row_count, target_row_count, source_byte_count, target_byte_count,
               source_digest, target_digest)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
              ON CONFLICT (migration_id, table_name) DO UPDATE SET
+                installation_id = EXCLUDED.installation_id,
+                source_identity = EXCLUDED.source_identity,
+                target_identity = EXCLUDED.target_identity,
                 source_watermark = EXCLUDED.source_watermark,
                 range_first_key = EXCLUDED.range_first_key,
                 range_last_key = EXCLUDED.range_last_key,
@@ -2069,12 +2318,18 @@ impl MigrationTarget for PostgresMigrationTarget {
                 source_byte_count = EXCLUDED.source_byte_count,
                 target_byte_count = EXCLUDED.target_byte_count,
                 source_digest = EXCLUDED.source_digest,
-                target_digest = EXCLUDED.target_digest"
+                target_digest = EXCLUDED.target_digest
+             WHERE {coverage_proofs}.installation_id = EXCLUDED.installation_id
+               AND {coverage_proofs}.source_identity = EXCLUDED.source_identity
+               AND {coverage_proofs}.target_identity = EXCLUDED.target_identity"
         );
         let mut transaction = self.pool.begin().await?;
-        sqlx::query(&query)
+        let result = sqlx::query(&query)
             .bind(&proof.migration_id)
             .bind(&proof.table_name)
+            .bind(&proof.installation_id)
+            .bind(&proof.source_identity)
+            .bind(&proof.target_identity)
             .bind(proof.source_watermark)
             .bind(range_first_key)
             .bind(range_last_key)
@@ -2103,6 +2358,9 @@ impl MigrationTarget for PostgresMigrationTarget {
             .execute(&mut *transaction)
             .await
             .context("persist PostgreSQL migration coverage proof")?;
+        if result.rows_affected() != 1 {
+            bail!("PostgreSQL migration coverage proof belongs to another identity");
+        }
         transaction
             .commit()
             .await
@@ -2120,7 +2378,8 @@ impl MigrationTarget for PostgresMigrationTarget {
             "PostgreSQL migration coverage proofs table",
         )?;
         let query = format!(
-            "SELECT migration_id, table_name, source_watermark, range_first_key, range_last_key,
+            "SELECT migration_id, table_name, installation_id, source_identity, target_identity,
+                    source_watermark, range_first_key, range_last_key,
                     source_lower_bound, source_upper_bound, target_lower_bound, target_upper_bound,
                     source_row_count, target_row_count, source_byte_count, target_byte_count,
                     source_digest, target_digest
@@ -2147,6 +2406,9 @@ impl MigrationTarget for PostgresMigrationTarget {
         let proof = TableCoverageProof {
             migration_id: row.try_get("migration_id")?,
             table_name: row.try_get("table_name")?,
+            installation_id: row.try_get("installation_id")?,
+            source_identity: row.try_get("source_identity")?,
+            target_identity: row.try_get("target_identity")?,
             source_watermark: row.try_get("source_watermark")?,
             range,
             source_lower_bound: row.try_get("source_lower_bound")?,
@@ -2178,19 +2440,27 @@ impl MigrationTarget for PostgresMigrationTarget {
 }
 
 fn decode_plan(row: sqlx::postgres::PgRow) -> Result<TableCopyPlan> {
-    Ok(TableCopyPlan {
+    let plan = TableCopyPlan {
         migration_id: row.try_get("migration_id")?,
         table_name: row.try_get("table_name")?,
+        installation_id: row.try_get("installation_id")?,
+        source_identity: row.try_get("source_identity")?,
+        target_identity: row.try_get("target_identity")?,
         scan_lower_bound: row.try_get("scan_lower_bound")?,
         scan_upper_bound: row.try_get("scan_upper_bound")?,
         capture_start: row.try_get("capture_start")?,
-    })
+    };
+    plan.validate()?;
+    Ok(plan)
 }
 
 fn decode_checkpoint(row: sqlx::postgres::PgRow) -> Result<EngineCheckpoint> {
-    Ok(EngineCheckpoint {
+    let checkpoint = EngineCheckpoint {
         migration_id: row.try_get("migration_id")?,
         table_name: row.try_get("table_name")?,
+        installation_id: row.try_get("installation_id")?,
+        source_identity: row.try_get("source_identity")?,
+        target_identity: row.try_get("target_identity")?,
         cursor: row.try_get("cursor")?,
         scan_upper_bound: row.try_get("scan_upper_bound")?,
         capture_start: row.try_get("capture_start")?,
@@ -2199,13 +2469,18 @@ fn decode_checkpoint(row: sqlx::postgres::PgRow) -> Result<EngineCheckpoint> {
         copied_rows: u64_from_i64(row.try_get("copied_rows")?, "copied rows")?,
         copied_bytes: u64_from_i64(row.try_get("copied_bytes")?, "copied bytes")?,
         complete: row.try_get("complete")?,
-    })
+    };
+    checkpoint.validate()?;
+    Ok(checkpoint)
 }
 
 fn decode_coverage_checkpoint(row: sqlx::postgres::PgRow) -> Result<CoverageCheckpoint> {
     let checkpoint = CoverageCheckpoint {
         migration_id: row.try_get("migration_id")?,
         table_name: row.try_get("table_name")?,
+        installation_id: row.try_get("installation_id")?,
+        source_identity: row.try_get("source_identity")?,
+        target_identity: row.try_get("target_identity")?,
         lower_bound: row.try_get("lower_bound")?,
         upper_bound: row.try_get("upper_bound")?,
         cursor: row.try_get("cursor")?,
