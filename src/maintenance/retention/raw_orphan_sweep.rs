@@ -18,7 +18,7 @@ pub(crate) struct RawOrphanSweepPassResult {
     pub(crate) admission_cause: Option<String>,
 }
 
-fn is_raw_orphan_sweep_deferred(error: &anyhow::Error) -> bool {
+pub(crate) fn is_raw_orphan_sweep_deferred(error: &anyhow::Error) -> bool {
     is_retention_write_deferred(error) || crate::is_sqlite_lock_error(error)
 }
 

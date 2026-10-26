@@ -2329,7 +2329,14 @@ async fn run_managed_task_worker(
                     "invocation_identity_cleanup" | "raw_orphan_sweep"
                 )
                 && let Err(retry_error) = store
-                    .record_owned_retry(&task_key, is_retention_write_deferred(&error))
+                    .record_owned_retry(
+                        &task_key,
+                        if task_key == "raw_orphan_sweep" {
+                            is_raw_orphan_sweep_deferred(&error)
+                        } else {
+                            is_retention_write_deferred(&error)
+                        },
+                    )
                     .await
             {
                 warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");
