@@ -431,7 +431,7 @@ impl Drop for ProxyRequestConcurrencyPermit {
     fn drop(&mut self) {
         let _ = self
             .in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_sub(1))
             });
     }

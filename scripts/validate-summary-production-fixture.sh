@@ -453,7 +453,7 @@ print(f"summary-production-archive-remap=verified={len(rows)}")
 PY
 
   mkdir -p "$runtime_dir/proxy-raw" "$runtime_dir/xray"
-  export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.96.0-x86_64-unknown-linux-gnu}"
+  export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.99.1-x86_64-unknown-linux-gnu}"
   cargo build --locked --manifest-path "$repo_root/Cargo.toml" --target-dir "$target_dir"
 
   DATABASE_PATH="$database_path" \

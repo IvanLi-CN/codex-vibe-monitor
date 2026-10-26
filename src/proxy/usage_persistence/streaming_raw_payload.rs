@@ -501,7 +501,7 @@ fn write_direct_streaming_raw_payload_to_file_tracked(
 }
 
 fn release_raw_async_writer_queued_bytes(bytes: usize) {
-    let _ = RAW_ASYNC_WRITER_QUEUED_BYTES.fetch_update(
+    let _ = RAW_ASYNC_WRITER_QUEUED_BYTES.try_update(
         std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,
         |queued| Some(queued.saturating_sub(bytes)),

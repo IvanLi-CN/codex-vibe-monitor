@@ -432,7 +432,7 @@ impl<E: SpanExporter> SpanExporter for CountedExporter<E> {
         let count = batch.len() as u64;
         self.state
             .queued
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 Some(queued.saturating_sub(batch.len()))
             })
             .expect("queued counter update cannot fail");
@@ -465,7 +465,7 @@ impl SpanProcessor for CountedProcessor {
             || self
                 .state
                 .queued
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                     (n < ADMISSION_LIMIT).then_some(n + 1)
                 })
                 .is_err()

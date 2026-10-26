@@ -1,3 +1,8 @@
+#![expect(
+    clippy::result_large_err,
+    reason = "Proxy retry and failover errors intentionally retain structured response diagnostics."
+)]
+
 use super::*;
 
 #[expect(

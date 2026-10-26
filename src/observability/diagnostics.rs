@@ -441,7 +441,7 @@ impl DiagnosticContext {
         if traces
             .state
             .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < super::traces::ACTIVE_LIMIT).then_some(n + 1)
             })
             .is_err()
