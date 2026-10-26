@@ -46,6 +46,24 @@ def _archive_projection_columns(dataset: str, source_columns: list[str]) -> list
     return projection
 
 
+def _validated_archive_columns(
+    dataset: str,
+    source_columns: list[str],
+    archived_columns: list[str],
+) -> list[str]:
+    source_set = set(source_columns)
+    archived_set = set(archived_columns)
+    missing = source_set - archived_set
+    extra = archived_set - source_set
+    allowed_missing = ARCHIVE_OMITTED_SOURCE_COLUMNS.get(dataset, set())
+    if extra or missing - allowed_missing or not archived_columns:
+        raise AcceptanceError(
+            f"{dataset} archive columns differ from the production archive projection "
+            f"(missing={sorted(missing)}, extra={sorted(extra)})"
+        )
+    return archived_columns
+
+
 def _row_digest(row: tuple[Any, ...]) -> str:
     values = [{"blob": value.hex()} if isinstance(value, bytes) else value for value in row]
     return hashlib.sha256(canonical_json(values)).hexdigest()
@@ -281,6 +299,7 @@ def verify_dataset(
     connection.row_factory = sqlite3.Row
     template = sqlite3.connect(f"file:{template_database}?mode=ro", uri=True)
     archive_counts: Counter[str] = Counter()
+    archive_column_counts: set[int] = set()
     content_records: list[tuple[str, str, str]] = []
     summary_proof_verified = True
     try:
@@ -288,11 +307,10 @@ def verify_dataset(
         template_columns = _table_columns(template, table)
         if not source_columns or source_columns != template_columns:
             raise AcceptanceError(f"{dataset} pristine template schema differs from the trial source schema")
-        archive_projection_columns = _archive_projection_columns(dataset, source_columns)
         template_column_list = ",".join(template_columns)
         identity_index = template_columns.index(identity_column)
-        archive_projection_indexes = [template_columns.index(column) for column in archive_projection_columns]
-        source_projection_indexes = [source_columns.index(column) for column in archive_projection_columns]
+        source_column_indexes = {column: index for index, column in enumerate(source_columns)}
+        seed_rows: dict[str, tuple[Any, ...]] = {}
         seed_fingerprints: dict[str, str] = {}
         for index, row in enumerate(template.execute(f"SELECT {template_column_list} FROM {table}")):
             if budget_check is not None and index % 256 == 0:
@@ -302,7 +320,9 @@ def verify_dataset(
                 continue
             if identity in seed_fingerprints:
                 raise AcceptanceError(f"{dataset} pristine template contains a duplicate seed identity")
-            seed_fingerprints[identity] = _row_digest(tuple(row[index] for index in archive_projection_indexes))
+            seed_row = tuple(row)
+            seed_rows[identity] = seed_row
+            seed_fingerprints[identity] = _row_digest(seed_row)
         if set(seed_fingerprints) != seed_ids:
             raise AcceptanceError(f"{dataset} pristine template does not contain every seed source row")
 
@@ -345,9 +365,8 @@ def verify_dataset(
             archive = sqlite3.connect(f"file:{decompressed}?mode=ro", uri=True)
             try:
                 archived_columns = _table_columns(archive, dataset)
-                if set(archived_columns) != set(archive_projection_columns):
-                    raise AcceptanceError(f"{dataset} archive columns differ from the production archive projection")
-                archived_column_indexes = {column: archived_columns.index(column) for column in archive_projection_columns}
+                _validated_archive_columns(dataset, source_columns, archived_columns)
+                archived_column_indexes = {column: archived_columns.index(column) for column in archived_columns}
                 archived_identity_index = archived_column_indexes[identity_column]
                 occurred_at_index = archived_column_indexes["occurred_at"]
                 selected_columns = ",".join(archived_columns)
@@ -366,11 +385,14 @@ def verify_dataset(
                         raise AcceptanceError(f"{dataset} archive contains rows outside the seeded and measured input")
                     if identity not in seed_ids:
                         raise AcceptanceError(f"{dataset} archive converted a measured input row past the fixed retention cutoff")
-                    row_fingerprint = _row_digest(tuple(row[archived_column_indexes[column]] for column in archive_projection_columns))
-                    if row_fingerprint != seed_fingerprints[identity]:
+                    archive_fingerprint = _row_digest(tuple(row))
+                    seed_row = seed_rows[identity]
+                    source_projection = tuple(seed_row[source_column_indexes[column]] for column in archived_columns)
+                    if archive_fingerprint != _row_digest(source_projection):
                         raise AcceptanceError(f"{dataset} archive changed full source row content for {identity}")
                     archive_counts[identity] += 1
-                    content_records.append((identity, "archive", row_fingerprint))
+                    content_records.append((identity, "archive", archive_fingerprint))
+                    archive_column_counts.add(len(archived_columns))
                     actual_count += 1
                 if actual_count != manifest["row_count"]:
                     raise AcceptanceError(f"{dataset} artifact row count disagrees with its completed manifest")
@@ -390,7 +412,7 @@ def verify_dataset(
             identity = row[source_identity_index]
             if not isinstance(identity, str) or identity not in expected_ids:
                 raise AcceptanceError(f"{dataset} live source contains an unrecognized row identity")
-            row_fingerprint = _row_digest(tuple(row[index] for index in source_projection_indexes))
+            row_fingerprint = _row_digest(tuple(row))
             if identity in seed_ids and row_fingerprint != seed_fingerprints[identity]:
                 raise AcceptanceError(f"{dataset} live source changed full seed row content for {identity}")
             if identity in added_ids:
@@ -435,7 +457,7 @@ def verify_dataset(
         "lost_rows": lost_rows,
         "duplicate_rows": duplicate_rows,
         "archive_manifest_count": len(manifests),
-        "row_content_columns": len(archive_projection_columns),
+        "row_content_columns": min(archive_column_counts, default=len(source_columns)),
         "row_content_rows_checked": len(content_records),
         "row_content_sha256": content_digest.hexdigest(),
         "summary_proof_required": require_summary_proof,

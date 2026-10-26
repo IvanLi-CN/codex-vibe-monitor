@@ -9,7 +9,13 @@ import unittest
 from unittest.mock import patch
 
 from contract import AcceptanceError, sha256_json
-from oracle import _archive_path, _archive_projection_columns, _verify_summary_proof, verify_dataset
+from oracle import (
+    _archive_path,
+    _archive_projection_columns,
+    _validated_archive_columns,
+    _verify_summary_proof,
+    verify_dataset,
+)
 
 
 DATASET = "pool_upstream_request_attempts"
@@ -189,6 +195,38 @@ class OracleTests(unittest.TestCase):
             ),
             ["id", "attempt_public_id"],
         )
+
+    def test_archive_columns_accept_current_and_legacy_known_shapes_only(self) -> None:
+        source_columns = [
+            "id",
+            "attempt_public_id",
+            "invoke_id",
+            "occurred_at",
+            "occurred_epoch_ms",
+            "status",
+            "request_summary_json",
+        ]
+        self.assertEqual(
+            _validated_archive_columns("pool_upstream_request_attempts", source_columns, source_columns),
+            source_columns,
+        )
+        legacy_columns = [column for column in source_columns if column != "occurred_epoch_ms"]
+        self.assertEqual(
+            _validated_archive_columns("pool_upstream_request_attempts", source_columns, legacy_columns),
+            legacy_columns,
+        )
+        with self.assertRaisesRegex(AcceptanceError, "missing=.*status"):
+            _validated_archive_columns(
+                "pool_upstream_request_attempts",
+                source_columns,
+                [column for column in source_columns if column != "status"],
+            )
+        with self.assertRaisesRegex(AcceptanceError, "extra=.*unexpected"):
+            _validated_archive_columns(
+                "pool_upstream_request_attempts",
+                source_columns,
+                [*source_columns, "unexpected"],
+            )
 
     def test_container_archive_mount_path_maps_into_the_trial_volume(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
