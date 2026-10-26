@@ -439,6 +439,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     identity = step_config(resolve, "Bind candidate and build identity", f"{workflow_path}.jobs.observability-performance-resolve")
     identity_run = str(identity.get("run", ""))
     require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "rust_deps_cache_key", "rust_target_cache_key", "web_cache_key", "web_deps_cache_key", "runtime_cache_key", "base_image_digests", "trusted_recipe_digest", "rust_image", "web_image", "runtime_image", "def pinned", "cache_digest", 'build_only == "true"')), f"{workflow_path} must bind candidate, pinned base images and build identity")
+    require('candidate_recipe_contract_digest == trusted_recipe_digest or build_only == "true"' not in identity_run, f"{workflow_path} build_only must not bypass the trusted recipe fallback")
     outputs = require_mapping(resolve.get("outputs"), f"{workflow_path}.jobs.observability-performance-resolve.outputs")
     require(outputs.get("candidate") == "${{ steps.identity.outputs.candidate }}" and outputs.get("trusted_ref") == "${{ steps.refs.outputs.trusted_ref }}" and outputs.get("effective_build_path") == "${{ steps.identity.outputs.effective_build_path }}" and outputs.get("complete_image_cache_hit") == "${{ steps.complete-image-cache-check.outputs.valid }}", f"{workflow_path} resolver outputs drifted")
     complete_cache = uses_step_config(resolve, "Restore complete candidate image cache", "actions/cache/restore@v4", workflow_path)
@@ -520,6 +521,19 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and "git -C candidate checkout --detach FETCH_HEAD" in str(pin_candidate.get("run", "")),
         f"{workflow_path} image assembly must explicitly pin the candidate SHA",
     )
+    trusted_validator = checkout_step(image, "Checkout trusted archive validator", f"{workflow_path}.jobs.observability-performance-image")
+    require(
+        trusted_validator.get("repository") == "${{ github.repository }}"
+        and trusted_validator.get("ref") == "${{ needs.observability-performance-resolve.outputs.trusted_ref }}"
+        and trusted_validator.get("path") == "trusted",
+        f"{workflow_path} image assembly must use the trusted archive validator",
+    )
+    archive_load = step_config(image, "Load and verify producer artifacts", workflow_path)
+    require(
+        "trusted/scripts/safe-extract-tar.py" in str(archive_load.get("run", ""))
+        and "tar -xzf" not in str(archive_load.get("run", "")),
+        f"{workflow_path} producer archives must use trusted safe extraction",
+    )
     for name in ("Assemble production image from verified contexts", "Build canonical production image"):
         build = uses_step_config(image, name, "docker/build-push-action@v7", workflow_path)
         build_with = require_mapping(build.get("with"), f"{workflow_path}.{name}")
@@ -537,6 +551,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     auto_args = str(auto_build_with.get("build-args", ""))
     require(
         "RUST_CONTEXT=rust-builder" in auto_args
+        and "RUST_SYMBOLS_CONTEXT=rust-symbols" in auto_args
         and "WEB_CONTEXT=web-builder" in auto_args
         and "RUNTIME_CONTEXT=runtime-base" in auto_args,
         f"{workflow_path} auto image must select the verified named contexts",

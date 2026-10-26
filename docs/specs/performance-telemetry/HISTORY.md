@@ -1,8 +1,12 @@
 # 独立性能遥测历史
 
 - 2026-10-26：Bun cache 只复用 lockfile 兼容的下载目录；不再跨 candidate 保存或恢复
-  `web/node_modules`，每次生产构建清理后执行 `bun install --frozen-lockfile`，避免候选构建
-  产生的依赖树污染后续 trusted candidate。
+  `web/node_modules`，外部 producer 每次清理后执行 `bun install --frozen-lockfile`，避免候选
+  构建产生的依赖树污染后续 trusted candidate。
+
+- 2026-10-26：修正 canonical Docker stage 的重复 Web 依赖安装：外部 producer 仍清理候选
+  `node_modules` 后按 lockfile 安装，Docker 内已验证的依赖层通过显式模式复用，避免冷构建
+  重复下载而不放宽 producer cache 的隔离边界。
 
 - 2026-10-26：为 build report 补齐 `checks: read` 只读权限，使 `gh api` 获取同一 trusted
   workflow SHA 的 check-run 时间戳与既有 `contents: read`、`actions: read` 权限合同一致；不改变
@@ -21,6 +25,11 @@
   cache version 不一致产生假 miss；质量合同现在严格要求两处路径相同。build report 通过只读
   `gh run view --json jobs` 绑定 Actions job ID、状态和真实 job 时间戳，保留 producer 卡的
   编译时间并额外报告 job 排队/执行时间。
+
+- 2026-10-26：收紧并行构建交接边界：`build_only` 遇到未知或不一致 recipe 也必须回退候选
+  canonical Dockerfile；producer archive 由 trusted revision 的安全解包器校验并拒绝路径穿越、
+  链接和特殊文件；Rust symbols 与 binary 一起交接，并由 named-context 装入 production image
+  的 `/usr/local/share/codex-vibe-monitor/symbols`，保持 canonical 与 auto 的运行镜像布局一致。
 
 - 2026-10-26：补齐构建证据边界：报告 job 获得只读 `actions` 权限并对 Actions 失败状态、
   candidate/build identity 不匹配和缺失 producer card fail-closed；Rust 下载与 target、Bun

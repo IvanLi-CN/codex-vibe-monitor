@@ -3,6 +3,7 @@
 # These defaults keep ordinary Docker builds on the canonical in-file stages.
 # Performance assembly overrides them with verified named contexts.
 ARG RUST_CONTEXT=rust-builder-canonical
+ARG RUST_SYMBOLS_CONTEXT=observability-symbols
 ARG WEB_CONTEXT=web-builder-canonical
 ARG RUNTIME_CONTEXT=runtime-base-builder
 ARG BUN_BASE=oven/bun:1.3.14-alpine
@@ -20,7 +21,7 @@ COPY web/ ./
 ARG APP_EFFECTIVE_VERSION
 COPY scripts/production-build.sh /usr/local/bin/production-build.sh
 ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
-RUN sh /usr/local/bin/production-build.sh web
+RUN PRODUCTION_BUILD_USE_EXISTING_NODE_MODULES=1 sh /usr/local/bin/production-build.sh web
 
 # Stage 2: build the Rust binary
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
@@ -101,15 +102,18 @@ COPY scripts/search-raw /usr/local/bin/search-raw
 # selected contexts through fixed aliases so canonical and named-context builds
 # share one production image layout.
 FROM ${RUST_CONTEXT} AS production-rust-context
+FROM ${RUST_SYMBOLS_CONTEXT} AS production-rust-symbols-context
 FROM ${WEB_CONTEXT} AS production-web-context
 FROM ${RUNTIME_CONTEXT} AS production-runtime
 ARG RUST_CONTEXT
+ARG RUST_SYMBOLS_CONTEXT
 ARG WEB_CONTEXT
 ARG APP_EFFECTIVE_VERSION
 ARG APP_GIT_REVISION
 ARG FRONTEND_EFFECTIVE_VERSION
 
 COPY --from=production-rust-context /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
+COPY --from=production-rust-symbols-context /symbols /usr/local/share/codex-vibe-monitor/symbols
 COPY --from=production-web-context /app/web/dist ./web
 
 RUN chmod 0755 /usr/local/bin/search-raw

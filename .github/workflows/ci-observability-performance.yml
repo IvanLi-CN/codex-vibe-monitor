@@ -232,7 +232,7 @@ jobs:
           if requested == "auto" and not (
               shared_recipe
               and known_layout
-              and (candidate_recipe_contract_digest == trusted_recipe_digest or build_only == "true")
+              and candidate_recipe_contract_digest == trusted_recipe_digest
           ):
               effective = "canonical"
               fallback_reason = "candidate recipe is not identical to the trusted producer contract"
@@ -747,6 +747,15 @@ jobs:
           git -C candidate fetch --no-tags --force origin "$CANDIDATE"
           git -C candidate checkout --detach FETCH_HEAD
 
+      - name: Checkout trusted archive validator
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.observability-performance-resolve.outputs.trusted_ref }}
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -801,13 +810,13 @@ jobs:
               rust|web)
                 test "$(jq -r .contextType "$root/component.json")" = local
                 mkdir -p "$root/context"
-                tar -xzf "$root/component.tar.gz" -C "$root/context"
+                python3 trusted/scripts/safe-extract-tar.py "$root/component.tar.gz" "$root/context"
                 test -f "$root/context/app/target/release/codex-vibe-monitor" || test -d "$root/context/app/web/dist"
                 ;;
               runtime-base)
                 test "$(jq -r .contextType "$root/component.json")" = oci-layout
                 mkdir -p "$root/oci"
-                tar -xzf "$root/component.tar.gz" -C "$root/oci"
+                python3 trusted/scripts/safe-extract-tar.py "$root/component.tar.gz" "$root/oci"
                 test -f "$root/oci/index.json" -a -f "$root/oci/oci-layout"
                 ;;
             esac
@@ -832,12 +841,14 @@ jobs:
             RUST_BASE=${{ needs.observability-performance-resolve.outputs.rust_image }}
             RUNTIME_BASE=${{ needs.observability-performance-resolve.outputs.runtime_image }}
             RUST_CONTEXT=rust-builder
+            RUST_SYMBOLS_CONTEXT=rust-symbols
             WEB_CONTEXT=web-builder
             RUNTIME_CONTEXT=runtime-base
             APP_GIT_REVISION=${{ needs.observability-performance-resolve.outputs.candidate }}
             APP_EFFECTIVE_VERSION=${{ needs.observability-performance-resolve.outputs.app_effective_version }}
           build-contexts: |
             rust-builder=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
+            rust-symbols=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
             web-builder=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-web/context
             runtime-base=oci-layout://${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-runtime-base/oci
           cache-from: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }}

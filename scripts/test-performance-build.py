@@ -6,7 +6,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import io
 import json
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / ".github/scripts/check_quality_gates_contract.py"
 WORKFLOW_PATH = ROOT / ".github/workflows/ci-observability-performance.yml"
 REPORT_PATH = ROOT / "scripts/observability-build-report.py"
+SAFE_EXTRACT_PATH = ROOT / "scripts/safe-extract-tar.py"
 
 
 def load_module(path: Path, name: str):
@@ -32,6 +35,7 @@ def load_module(path: Path, name: str):
 
 contract = load_module(CONTRACT_PATH, "performance_build_contract")
 report = load_module(REPORT_PATH, "performance_build_report")
+safe_extract = load_module(SAFE_EXTRACT_PATH, "safe_extract_tar")
 
 
 class PerformanceBuildContractTests(unittest.TestCase):
@@ -43,15 +47,18 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("cargo build --release --locked", recipe)
         self.assertIn("bun install --frozen-lockfile", recipe)
         self.assertIn("rm -rf node_modules", recipe)
+        self.assertIn("PRODUCTION_BUILD_USE_EXISTING_NODE_MODULES", recipe)
         self.assertNotIn("if [ ! -d node_modules ]", recipe)
         self.assertIn("bun run build", recipe)
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertIn("production-build.sh rust", dockerfile)
-        self.assertIn("production-build.sh web", dockerfile)
+        self.assertIn("PRODUCTION_BUILD_USE_EXISTING_NODE_MODULES=1 sh /usr/local/bin/production-build.sh web", dockerfile)
         self.assertIn("FROM ${RUNTIME_CONTEXT} AS production-runtime", dockerfile)
         self.assertIn("FROM ${RUST_CONTEXT} AS production-rust-context", dockerfile)
+        self.assertIn("FROM ${RUST_SYMBOLS_CONTEXT} AS production-rust-symbols-context", dockerfile)
         self.assertIn("FROM ${WEB_CONTEXT} AS production-web-context", dockerfile)
         self.assertIn("COPY --from=production-rust-context", dockerfile)
+        self.assertIn("COPY --from=production-rust-symbols-context /symbols /usr/local/share/codex-vibe-monitor/symbols", dockerfile)
         self.assertIn("COPY --from=production-web-context", dockerfile)
         self.assertIn("AS rust-builder-canonical", dockerfile)
         self.assertIn("AS web-builder-canonical", dockerfile)
@@ -485,6 +492,67 @@ class PerformanceBuildContractTests(unittest.TestCase):
         resolver["run"] = mutated
         with self.assertRaises(contract.ContractError):
             contract.require_observability_performance_contract(workflow)
+
+    def test_build_only_cannot_bypass_recipe_fallback(self) -> None:
+        identity = next(
+            step for step in self.workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Bind candidate and build identity"
+        )
+        self.assertNotIn('candidate_recipe_contract_digest == trusted_recipe_digest or build_only == "true"', identity["run"])
+        workflow = copy.deepcopy(self.workflow)
+        mutated = next(
+            step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Bind candidate and build identity"
+        )
+        mutated["run"] = mutated["run"].replace(
+            "candidate_recipe_contract_digest == trusted_recipe_digest",
+            'candidate_recipe_contract_digest == trusted_recipe_digest or build_only == "true"',
+        )
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
+
+    def test_producer_archives_use_trusted_safe_extraction(self) -> None:
+        image = self.workflow["jobs"]["observability-performance-image"]
+        validator = next(step for step in image["steps"] if step["name"] == "Checkout trusted archive validator")
+        self.assertEqual(validator["with"]["path"], "trusted")
+        loader = next(step for step in image["steps"] if step["name"] == "Load and verify producer artifacts")
+        self.assertIn("trusted/scripts/safe-extract-tar.py", loader["run"])
+        self.assertNotIn("tar -xzf", loader["run"])
+
+    def test_safe_extractor_rejects_traversal_and_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traversal = root / "traversal.tar.gz"
+            with tarfile.open(traversal, "w:gz") as archive:
+                member = tarfile.TarInfo("../escape")
+                member.size = 1
+                archive.addfile(member, io.BytesIO(b"x"))
+            with self.assertRaisesRegex(ValueError, "escapes destination"):
+                safe_extract.extract(traversal, root / "out")
+
+            link_archive = root / "link.tar.gz"
+            with tarfile.open(link_archive, "w:gz") as archive:
+                member = tarfile.TarInfo("link")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "/tmp/escape"
+                archive.addfile(member)
+            with self.assertRaisesRegex(ValueError, "links are not allowed"):
+                safe_extract.extract(link_archive, root / "out-link")
+
+    def test_safe_extractor_preserves_valid_context_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "valid.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                member = tarfile.TarInfo("app/target/release/codex-vibe-monitor")
+                member.mode = 0o755
+                member.size = 3
+                archive.addfile(member, io.BytesIO(b"bin"))
+            destination = root / "out"
+            safe_extract.extract(archive_path, destination)
+            binary = destination / "app/target/release/codex-vibe-monitor"
+            self.assertEqual(binary.read_bytes(), b"bin")
+            self.assertFalse(binary.is_symlink())
 
     def test_run_scoped_build_artifacts_replace_prior_attempts(self) -> None:
         for job_id, step_name in (
