@@ -1778,17 +1778,8 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         Ok("complete")
     }
     .await;
-    let archive_pool_for_close = archive_pool.clone();
-    let close_result = run_summary_archive_temp_read_phase(async move {
-        archive_pool_for_close.close().await;
-        Ok(())
-    })
-    .await;
-    if close_result.is_ok() {
-        pool_drain.complete().await;
-    }
+    pool_drain.complete().await;
     result?;
-    close_result?;
     Ok("complete")
 }
 
