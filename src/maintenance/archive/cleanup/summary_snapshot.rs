@@ -1120,14 +1120,19 @@ impl SummaryArchivePoolDrain {
     }
 
     async fn complete(&mut self) {
-        let pool = self.pool.take();
-        let cleanup = self.cleanup.take();
         let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
-        crate::maintenance::with_file_phase_permit(file_phase, async move {
-            drop(pool);
-            drop(cleanup);
-        })
-        .await;
+        let (Some(pool), Some(cleanup)) = (self.pool.take(), self.cleanup.take()) else {
+            drop(file_phase);
+            return;
+        };
+        let worker = tokio::spawn(crate::maintenance::with_file_phase_permit(
+            file_phase,
+            async move {
+                pool.close().await;
+                drop(cleanup);
+            },
+        ));
+        let _ = worker.await;
     }
 }
 

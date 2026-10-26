@@ -1132,11 +1132,23 @@ impl ArchiveBatchPoolOpenDrain {
         result
     }
 
-    fn complete(&mut self) {
+    async fn complete(&mut self) {
         debug_assert!(self.open_task.is_none());
-        self.pool.take();
-        self.cleanup.take();
-        self.file_phase.take();
+        let (Some(pool), Some(cleanup), Some(file_phase)) = (
+            self.pool.take(),
+            self.cleanup.take(),
+            self.file_phase.take(),
+        ) else {
+            return;
+        };
+        let worker = tokio::spawn(crate::maintenance::with_file_phase_permit(
+            file_phase,
+            async move {
+                pool.close().await;
+                drop(cleanup);
+            },
+        ));
+        let _ = worker.await;
     }
 
     fn disarm(mut self) -> TempSqliteCleanup {
@@ -1250,8 +1262,8 @@ async fn open_archive_batch_pool(
         let has_expected_table = match pool_drain.wait_for_open_task().await {
             Ok(value) => value != 0,
             Err(err) => {
-                archive_pool.close().await;
-                pool_drain.complete();
+                drop(archive_pool);
+                pool_drain.complete().await;
                 if is_unreadable_invocation_summary_archive_error(&err) {
                     warn!(
                         read_surface,
@@ -1265,8 +1277,8 @@ async fn open_archive_batch_pool(
             }
         };
         if !has_expected_table {
-            archive_pool.close().await;
-            pool_drain.complete();
+            drop(archive_pool);
+            pool_drain.complete().await;
             return Ok(None);
         }
         if expected_table == "codex_invocations" {

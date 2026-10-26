@@ -18,6 +18,28 @@ pub(crate) struct RawOrphanSweepPassResult {
     pub(crate) admission_cause: Option<String>,
 }
 
+fn defer_raw_orphan_sweep_candidate(
+    result: &mut RawOrphanSweepPassResult,
+    traversal: &mut RetentionRawDirectoryTraversal,
+    candidate_entries: &[RetentionRawDirectoryEntry],
+    candidate_index: usize,
+    error: &anyhow::Error,
+) -> bool {
+    if !is_retention_write_deferred(error) {
+        return false;
+    }
+    result.complete = false;
+    result.deferred = true;
+    if let Some((stage, cause)) = raw_orphan_sweep_admission_details(error) {
+        result.admission_stage = Some(stage.to_string());
+        result.admission_cause = Some(cause.to_string());
+    }
+    traversal
+        .pending_candidates
+        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+    true
+}
+
 pub(crate) async fn sweep_orphan_proxy_raw_files(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -231,6 +253,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
                 break;
             }
             Err(_) => {
@@ -617,6 +650,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
+                drop(directory_lock);
+                drop(inventory_admission);
+                break;
+            }
             Err(_) => {
                 drop(directory_lock);
                 drop(inventory_admission);
@@ -713,6 +759,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     traversal
                         .pending_candidates
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
+                Err(error)
+                    if defer_raw_orphan_sweep_candidate(
+                        &mut result,
+                        traversal,
+                        &candidate_entries,
+                        candidate_index,
+                        &error,
+                    ) =>
+                {
+                    drop(directory_lock);
+                    drop(inventory_admission);
                     break;
                 }
                 Err(_) => {
