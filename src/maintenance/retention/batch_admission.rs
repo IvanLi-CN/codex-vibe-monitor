@@ -641,30 +641,22 @@ pub(super) async fn acquire_write_admission(
                     }
                     continue;
                 }
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+                    if nested_pressure_slot =>
+                {
+                    // The enclosing recovery turn already owns the sole pressure slot. It still
+                    // needs a fresh SQLite coordinator permit for this write, but must not request
+                    // a second process-wide pressure slot and self-defer.
+                }
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                    if nested_pressure_slot {
-                        // The enclosing recovery turn already owns the sole pressure slot. It
-                        // still needs a fresh SQLite coordinator permit for this write, but must
-                        // not request a second process-wide pressure slot and self-defer.
-                    } else if wait_for_busy
+                    if wait_for_busy
                         && wait_for_background_change(gate, operation, generation).await
                     {
                         continue;
-                    } else if nested_pressure_slot {
-                        // Continue to the coordinator admission below.
-                    } else {
-                        retention_record_defer(operation, reason);
-                        return None;
                     }
+                    retention_record_defer(operation, reason);
+                    return None;
                 }
-            }
-            if !matches!(
-                reason,
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-            ) || !nested_pressure_slot
-            {
-                retention_record_defer(operation, reason);
-                return None;
             }
         }
         if retention_run_budget_expired() {
@@ -745,6 +737,40 @@ pub(super) async fn acquire_write_admission(
     }
 }
 
+async fn wait_for_background_change(
+    gate: &crate::db_pressure::DbPressureGate,
+    operation: &'static str,
+    generation: u64,
+) -> bool {
+    let (remaining, timeout_reason) = if let Some(remaining) = retention_run_remaining_budget() {
+        (remaining, "retention_work_budget")
+    } else {
+        retention_write_admission_budget()
+    };
+    if remaining.is_zero() {
+        retention_record_defer(operation, timeout_reason);
+        return false;
+    }
+    let eligible = tokio::time::timeout(remaining, gate.wait_for_eligibility_change(generation));
+    let result = if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                return false;
+            }
+            result = eligible => result,
+        }
+    } else {
+        eligible.await
+    };
+    if result.is_err() {
+        retention_record_defer(operation, timeout_reason);
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,38 +809,4 @@ mod tests {
         drop(parent);
         assert!(gate.try_begin_background("other_background_work").is_ok());
     }
-}
-
-async fn wait_for_background_change(
-    gate: &crate::db_pressure::DbPressureGate,
-    operation: &'static str,
-    generation: u64,
-) -> bool {
-    let (remaining, timeout_reason) = if let Some(remaining) = retention_run_remaining_budget() {
-        (remaining, "retention_work_budget")
-    } else {
-        retention_write_admission_budget()
-    };
-    if remaining.is_zero() {
-        retention_record_defer(operation, timeout_reason);
-        return false;
-    }
-    let eligible = tokio::time::timeout(remaining, gate.wait_for_eligibility_change(generation));
-    let result = if let Some(shutdown) = retention_run_shutdown_token() {
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                retention_record_defer(operation, "shutdown");
-                return false;
-            }
-            result = eligible => result,
-        }
-    } else {
-        eligible.await
-    };
-    if result.is_err() {
-        retention_record_defer(operation, timeout_reason);
-        return false;
-    }
-    true
 }
