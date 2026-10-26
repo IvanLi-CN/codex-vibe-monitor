@@ -395,6 +395,30 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["status"], "failed")
             self.assertIn("workflow dependency result was not successful", value["validationErrors"])
 
+    def test_build_report_writes_failure_when_input_directory_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "missing-input"
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({"jobs": []}))
+            output = root / "report.json"
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(input_dir), "--output", str(output),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123",
+                    "--workflow-failure",
+                ]
+                report.main()
+            finally:
+                sys.argv = old_argv
+            value = json.loads(output.read_text())
+            self.assertEqual(value["status"], "failed")
+            self.assertIn("workflow dependency result was not successful", value["validationErrors"])
+
     def test_canonical_build_only_treats_skipped_producers_as_expected(self) -> None:
         report_step = next(
             step for step in self.workflow["jobs"]["observability-performance-build-report"]["steps"]
@@ -413,6 +437,28 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("git -C candidate-report checkout --detach FETCH_HEAD", workflow)
         self.assertNotIn('checkout --detach "$CANDIDATE"', workflow)
         self.assertNotIn('checkout --detach "$CANDIDATE_REF"', workflow)
+
+    def test_build_only_workflow_definition_is_trusted_main_only(self) -> None:
+        resolver = next(
+            step for step in self.workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Resolve performance sources"
+        )
+        run = resolver["run"]
+        self.assertIn('if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then', run)
+        self.assertIn('echo "workflow must be dispatched from trusted main"', run)
+        self.assertIn("exit 1", run)
+        mutated = run.replace(
+            'if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then',
+            'if [ "$WORKFLOW_REF" != "refs/heads/not-main" ]; then',
+        )
+        workflow = copy.deepcopy(self.workflow)
+        resolver = next(
+            step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Resolve performance sources"
+        )
+        resolver["run"] = mutated
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
 
     def test_build_report_rejects_corrupt_component_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

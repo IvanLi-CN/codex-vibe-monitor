@@ -170,6 +170,9 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and 'candidate_repository="$REPOSITORY"' in resolver_run
         and "INPUT_CANDIDATE_REF" in resolver_run
         and 'trusted_ref="$WORKFLOW_SHA"' in resolver_run
+        and 'if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then' in resolver_run
+        and 'echo "workflow must be dispatched from trusted main"' in resolver_run
+        and 'exit 1' in resolver_run
         and "[0-9a-fA-F]{40}" in resolver_run
         and "git check-ref-format --branch" in resolver_run
         and 'candidate_ref="refs/heads/$candidate_input"' in resolver_run
@@ -406,6 +409,9 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and 'candidate_repository="$REPOSITORY"' in resolver_run
         and "INPUT_CANDIDATE_REF" in resolver_run
         and 'trusted_ref="$WORKFLOW_SHA"' in resolver_run
+        and 'if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then' in resolver_run
+        and 'echo "workflow must be dispatched from trusted main"' in resolver_run
+        and 'exit 1' in resolver_run
         and "[0-9a-fA-F]{40}" in resolver_run
         and "git check-ref-format --branch" in resolver_run
         and 'candidate_ref="refs/heads/$candidate_input"' in resolver_run

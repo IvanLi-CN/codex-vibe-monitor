@@ -29,6 +29,8 @@ def seconds_between(start: str | None, end: str | None) -> float | None:
 
 
 def load_cards(root: pathlib.Path) -> list[dict[str, Any]]:
+    if not root.is_dir():
+        return []
     cards: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*.json")):
         try:
