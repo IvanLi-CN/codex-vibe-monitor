@@ -18,6 +18,10 @@ pub(crate) struct RawOrphanSweepPassResult {
     pub(crate) admission_cause: Option<String>,
 }
 
+pub(crate) fn is_raw_orphan_sweep_deferred(error: &anyhow::Error) -> bool {
+    is_retention_write_deferred(error) || crate::is_sqlite_lock_error(error)
+}
+
 fn defer_raw_orphan_sweep_candidate(
     result: &mut RawOrphanSweepPassResult,
     traversal: &mut RetentionRawDirectoryTraversal,
@@ -25,7 +29,7 @@ fn defer_raw_orphan_sweep_candidate(
     candidate_index: usize,
     error: &anyhow::Error,
 ) -> bool {
-    if !is_retention_write_deferred(error) {
+    if !is_raw_orphan_sweep_deferred(error) {
         return false;
     }
     result.complete = false;
@@ -103,7 +107,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     result.complete = false;
                 }
             }
-            Err(error) if is_retention_write_deferred(&error) => {
+            Err(error) if is_raw_orphan_sweep_deferred(&error) => {
                 result.complete = false;
                 result.deferred = true;
                 if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -134,7 +138,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         .await
         {
             Ok(scan) => scan,
-            Err(error) if is_retention_write_deferred(&error) => {
+            Err(error) if is_raw_orphan_sweep_deferred(&error) => {
                 result.complete = false;
                 result.deferred = true;
                 if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -186,7 +190,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             traversal.pending_candidates.extend(candidate_entries);
             return Ok(result);
         }
-        Err(error) if is_retention_write_deferred(&error) => {
+        Err(error) if is_raw_orphan_sweep_deferred(&error) => {
             result.complete = false;
             result.deferred = true;
             if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -252,7 +256,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
-            Err(error) if is_retention_write_deferred(&error) => {
+            Err(error) if is_raw_orphan_sweep_deferred(&error) => {
                 result.complete = false;
                 result.deferred = true;
                 if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -334,7 +338,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
-                if is_retention_write_deferred(&error) {
+                if is_raw_orphan_sweep_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
                     if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -374,7 +378,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
-                if is_retention_write_deferred(&error) {
+                if is_raw_orphan_sweep_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
                     if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -434,7 +438,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                             .extend(candidate_entries.iter().skip(candidate_index).cloned());
                         break;
                     }
-                    if is_retention_write_deferred(&error) {
+                    if is_raw_orphan_sweep_deferred(&error) {
                         result.complete = false;
                         result.deferred = true;
                         if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -532,7 +536,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
-                if is_retention_write_deferred(&error) {
+                if is_raw_orphan_sweep_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
                     if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -961,7 +965,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
-            if is_retention_write_deferred(&error) {
+            if is_raw_orphan_sweep_deferred(&error) {
                 result.complete = false;
                 result.deferred = true;
                 if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -1532,7 +1536,7 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
         }
         Err(error) => {
             if !dry_run {
-                let pressure = is_retention_write_deferred(&error);
+                let pressure = is_raw_orphan_sweep_deferred(&error);
                 let retry = if pressure {
                     RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS
                 } else {
@@ -1557,5 +1561,24 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
             }
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_lock_errors_are_deferred_for_raw_sweep() {
+        let error = anyhow::anyhow!("error returned from database: (code: 5) database is locked");
+
+        assert!(is_raw_orphan_sweep_deferred(&error));
+    }
+
+    #[test]
+    fn non_transient_raw_sweep_errors_remain_failures() {
+        let error = anyhow::anyhow!("raw reconciliation ledger row was corrupted");
+
+        assert!(!is_raw_orphan_sweep_deferred(&error));
     }
 }
