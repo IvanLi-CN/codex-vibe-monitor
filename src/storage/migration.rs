@@ -1783,6 +1783,7 @@ fn epoch_ms() -> i64 {
 pub(crate) struct InMemoryMigrationSource {
     migration_id: String,
     source_identity: String,
+    module_tables: Arc<Mutex<BTreeSet<String>>>,
     rows: Arc<Mutex<BTreeMap<String, BTreeMap<String, VersionedRow>>>>,
     capture: VersionCapture,
 }
@@ -1795,8 +1796,23 @@ impl InMemoryMigrationSource {
             capture: VersionCapture::new(migration_id.clone(), source_identity.clone()),
             migration_id,
             source_identity,
+            module_tables: Arc::new(Mutex::new(BTreeSet::new())),
             rows: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    pub(crate) async fn register_module_table(&self, table_name: impl Into<String>) -> Result<()> {
+        let table_name = table_name.into();
+        if table_name.trim().is_empty() {
+            bail!("migration module table names must not be empty");
+        }
+        self.module_tables.lock().await.insert(table_name);
+        Ok(())
+    }
+
+    async fn register_change_tables(&self, changes: &[ChangeInput]) {
+        let mut tables = self.module_tables.lock().await;
+        tables.extend(changes.iter().map(|change| change.table_name.clone()));
     }
 
     pub(crate) async fn write(
@@ -1806,6 +1822,7 @@ impl InMemoryMigrationSource {
     ) -> Result<i64> {
         let lease = fence.begin_write().await?;
         let version = self.capture.append(changes.clone()).await?;
+        self.register_change_tables(&changes).await;
         let mut rows = self.rows.lock().await;
         for change in changes {
             let table = rows.entry(change.table_name.clone()).or_default();
@@ -1847,7 +1864,9 @@ impl InMemoryMigrationSource {
     }
 
     async fn capture_transaction(&self, changes: Vec<ChangeInput>) -> Result<i64> {
-        self.capture.append(changes).await
+        let version = self.capture.append(changes.clone()).await?;
+        self.register_change_tables(&changes).await;
+        Ok(version)
     }
 
     pub(crate) fn capture_log(&self) -> VersionCapture {
@@ -1865,7 +1884,7 @@ impl MigrationSource for InMemoryMigrationSource {
         if module != StorageModule::TrafficArchive {
             return Ok(Vec::new());
         }
-        Ok(self.rows.lock().await.keys().cloned().collect())
+        Ok(self.module_tables.lock().await.iter().cloned().collect())
     }
 
     async fn table_lower_bound(&self, table_name: &str) -> Result<Option<String>> {

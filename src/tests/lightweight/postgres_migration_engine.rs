@@ -14,7 +14,7 @@ use crate::storage::{
     migration::{
         ChangeInput, ChangeKind, ChunkRange, CopyLimits, FileMigrationStore,
         InMemoryMigrationSource, InMemoryMigrationTarget, MigrationEngine, MigrationLimits,
-        MigrationTarget, SourceWriteFence,
+        MigrationSource, MigrationTarget, SourceWriteFence,
     },
 };
 
@@ -79,6 +79,18 @@ fn new_engine(
         fence,
     )
     .expect("migration engine construction")
+}
+
+#[tokio::test]
+async fn module_catalog_retains_empty_tables() -> Result<()> {
+    let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
+    source.register_module_table("empty_events").await?;
+
+    assert_eq!(
+        source.module_tables(StorageModule::TrafficArchive).await?,
+        vec!["empty_events".to_owned()]
+    );
+    Ok(())
 }
 
 #[tokio::test]
