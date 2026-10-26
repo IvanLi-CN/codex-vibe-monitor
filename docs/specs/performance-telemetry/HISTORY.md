@@ -1,5 +1,10 @@
 # 独立性能遥测历史
 
+- 2026-10-26：收紧构建信任与复用边界：performance workflow 的第三方 action 固定到完整
+  commit SHA，并授予仅用于隔离 cache save 的最小 `actions: write`；Rust producer 新增按
+  固定基础镜像和系统包配方隔离的 APT archives/lists cache，报告记录其恢复与保存结果。
+  trusted archive extractor 在 resolve 前拒绝目标路径及父路径 symlink，并补齐路径安全回归。
+
 - 2026-10-26：Bun cache 只复用 lockfile 兼容的下载目录；不再跨 candidate 保存或恢复
   `web/node_modules`，外部 producer 每次清理后执行 `bun install --frozen-lockfile`，避免候选
   构建产生的依赖树污染后续 trusted candidate。

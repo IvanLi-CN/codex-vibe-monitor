@@ -49,7 +49,7 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 [指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式 parallel workload lane 的 60 分钟共享上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
 
 性能镜像构建使用 `observability-performance-v2` 命名空间：Rust 依赖下载、Rust target、
-Bun 下载 cache、runtime-base 和完整镜像分别按有效输入恢复，外部 Web producer 每次按
+Rust 基础镜像系统包（APT archives/lists）、Bun 下载 cache、runtime-base 和完整镜像分别按有效输入恢复，外部 Web producer 每次按
 lockfile 重新安装 `web/node_modules`，canonical Docker stage 复用其已验证的依赖层；BuildKit 使用 `mode=max`、60 秒超时和
 `ignore-error=true` 保存；cache restore/save 失败只回退到干净构建，必需编译、产物
 交接和身份校验仍 fail-closed。Rust/Web producer 在独立 runner 上调用
@@ -63,7 +63,8 @@ cache restore/save phase timing、传输和镜像 ready 时间；报告 job
 通过只读 `gh run view --json jobs` 绑定 GitHub Actions 的 job ID、成功状态和实际时间戳，
 任一失败或身份不匹配都会拒绝生成 passed 报告。完整镜像 cache 的 restore/save 使用完全相同的路径，
 避免 cache version 漂移造成假 miss。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
-使用 `contents: read`、`actions: read` 和 `checks: read` 的只读权限读取构建 job/check-run 时间戳；
+使用 `contents: read`、`actions: write` 和 `checks: read` 的最小权限：`actions: write` 仅用于保存隔离的性能构建 cache，
+构建 job/check-run 仍按只读方式读取；第三方 action 均固定到完整 commit SHA；
 可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
 合成夹具使用与应用校验一致的 HTTPS `/v1/traces` endpoint。隔离入口在该摄入路径接受应用专属的固定非秘密测试 token 或可信客户端的独立摄入凭据；固定 token 不获得查询能力，应用容器不挂载随机生成的 Tempo 摄入或查询凭据。配置和请求处理的定向回归验证路径、凭据隔离及拒绝边界；生产 endpoint 校验、真实鉴权和性能验收断言不变。

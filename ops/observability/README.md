@@ -209,7 +209,8 @@ verified named contexts 装配生产镜像，并从同一 Rust context 装入精
 namespace，缓存写入为 60 秒 best-effort；命中完整镜像时跳过 producer，未知配方回退到
 候选自己的 canonical Dockerfile。每个 build run 上传保留 14 天的
 `cvm-performance-build-report-v1`，报告实际恢复/保存、队列/执行、传输、装配和镜像 ready
-时间；workflow 使用 `contents: read`、`actions: read` 和 `checks: read` 读取 Actions job/check-run，
+时间；workflow 使用 `contents: read`、`actions: write` 和 `checks: read`：`actions: write` 仅用于保存隔离的性能构建 cache，
+Actions job/check-run 仍按只读方式读取；第三方 action 均固定到完整 commit SHA，
 队列时间只在 Actions check-run 提供 `created_at` 时计算，否则记录为 unavailable，
 不以 run 起始时间或零值替代。报告 job 用只读 `gh run view --json jobs` 和同一 candidate
 check-runs 记录构建 job ID、状态和实际时间戳。

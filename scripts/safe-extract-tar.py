@@ -48,13 +48,21 @@ def _ensure_parent(root: Path, parts: tuple[str, ...]) -> Path:
     return current
 
 
+def _reject_symlink_components(path: Path) -> Path:
+    """Reject a symlink destination before resolving its real path."""
+    absolute = Path(os.path.abspath(path))
+    if absolute.is_symlink():
+        raise ArchiveError(f"destination path contains a symlink: {absolute}")
+    return absolute
+
+
 def extract(archive_path: Path, destination: Path) -> None:
+    destination = _reject_symlink_components(destination)
     destination = destination.resolve(strict=False)
-    if destination.exists() and (destination.is_symlink() or not destination.is_dir()):
+    if destination.exists() and not destination.is_dir():
         raise ArchiveError(f"destination is not a real directory: {destination}")
     destination.mkdir(parents=True, exist_ok=True)
-    if destination.is_symlink():
-        raise ArchiveError(f"destination is a symlink: {destination}")
+    _reject_symlink_components(destination)
 
     with tarfile.open(archive_path, mode="r:*") as archive:
         entries: list[tuple[tarfile.TarInfo, Path, tuple[str, ...]]] = []

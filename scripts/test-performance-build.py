@@ -74,13 +74,27 @@ class PerformanceBuildContractTests(unittest.TestCase):
         for path in ("web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json"):
             self.assertIn(path, run)
 
-    def test_build_report_has_read_only_check_run_permission(self) -> None:
+    def test_build_report_has_cache_write_and_check_run_permissions(self) -> None:
         self.assertEqual(
             self.workflow["permissions"],
-            {"contents": "read", "actions": "read", "checks": "read"},
+            {"contents": "read", "actions": "write", "checks": "read"},
         )
         workflow = copy.deepcopy(self.workflow)
         workflow["permissions"].pop("checks")
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
+
+    def test_performance_actions_are_immutable_commit_pins(self) -> None:
+        action_refs = {
+            step["uses"]
+            for job in self.workflow["jobs"].values()
+            for step in job["steps"]
+            if "uses" in step
+        }
+        self.assertTrue(action_refs)
+        self.assertTrue(all(len(reference.rsplit("@", 1)[-1]) == 40 for reference in action_refs))
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["observability-performance-resolve"]["steps"][0]["uses"] = "actions/checkout@v7"
         with self.assertRaises(contract.ContractError):
             contract.require_observability_performance_contract(workflow)
 
@@ -538,6 +552,13 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 archive.addfile(member)
             with self.assertRaisesRegex(ValueError, "links are not allowed"):
                 safe_extract.extract(link_archive, root / "out-link")
+
+            destination_target = root / "outside"
+            destination_target.mkdir()
+            destination_link = root / "destination-link"
+            destination_link.symlink_to(destination_target, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "destination path contains a symlink"):
+                safe_extract.extract(link_archive, destination_link)
 
     def test_safe_extractor_preserves_valid_context_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

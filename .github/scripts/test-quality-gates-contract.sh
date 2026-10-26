@@ -300,7 +300,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 needle = """      - name: Upload performance candidate image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: observability-image-${{ github.run_id }}
 """
