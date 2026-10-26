@@ -134,6 +134,15 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         .await
         {
             Ok(scan) => scan,
+            Err(error) if is_retention_write_deferred(&error) => {
+                result.complete = false;
+                result.deferred = true;
+                if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                    result.admission_stage = Some(stage.to_string());
+                    result.admission_cause = Some(cause.to_string());
+                }
+                return Ok(result);
+            }
             Err(error) => return Err(error),
         };
         result.inspected_entries += scan.inspected_entries;
@@ -255,17 +264,6 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
-            Err(error)
-                if defer_raw_orphan_sweep_candidate(
-                    &mut result,
-                    traversal,
-                    &candidate_entries,
-                    candidate_index,
-                    &error,
-                ) =>
-            {
-                break;
-            }
             Err(_) => {
                 result.complete = false;
                 result.failures += 1;
@@ -299,6 +297,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
                 break;
             }
             Err(_) => {
@@ -450,6 +459,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
                 break;
             }
             Err(_) => {
@@ -835,6 +855,8 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             drop(inventory_admission);
             result.complete = false;
             result.deferred = true;
+            result.admission_stage = Some("file_phase".to_string());
+            result.admission_cause = Some("file_phase_busy".to_string());
             traversal
                 .pending_candidates
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());

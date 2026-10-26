@@ -1240,6 +1240,9 @@ async fn open_archive_batch_pool(
         // SQLite initialization, starts under the drain guard below rather than before it.
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
+            // Do not let SQLx cancel connection acquisition before the owner can drain the
+            // native worker. The bounded file-operation path owns cancellation and cleanup.
+            .acquire_timeout(Duration::from_secs(24 * 60 * 60))
             .connect_lazy(&sqlite_url_for_path(&temp_path))
             .context("failed to configure archive batch")?;
         let mut pool_drain =
