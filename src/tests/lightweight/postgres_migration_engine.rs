@@ -94,6 +94,94 @@ async fn module_catalog_retains_empty_tables() -> Result<()> {
 }
 
 #[tokio::test]
+async fn final_coverage_tracks_empty_table_becoming_nonempty() -> Result<()> {
+    let (directory, path) = state_path("coverage-empty-to-nonempty");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    source.register_module_table("empty_events").await?;
+    let fence = SourceWriteFence::new(1);
+    let target = Arc::new(InMemoryMigrationTarget::new());
+    let store = Arc::new(FileMigrationStore::new(&path, recovery_context(0)));
+    let engine = new_engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+        migration_limits(8),
+    );
+
+    engine.prepare(&["empty_events".into()]).await?;
+    assert!(engine.copy_next("empty_events").await?.complete);
+    let empty_proof = engine.verify_table_coverage_at("empty_events", 0).await?;
+    assert!(empty_proof.range.is_none());
+    assert_eq!(empty_proof.source_row_count, 0);
+
+    source
+        .write(
+            &fence,
+            vec![change("empty_events", "new", ChangeKind::Insert, b"value")],
+        )
+        .await?;
+    let watermark = source.capture_watermark().await?;
+    engine.catch_up("empty_events").await?;
+    let nonempty_proof = engine
+        .verify_table_coverage_at("empty_events", watermark)
+        .await?;
+    assert_eq!(nonempty_proof.range, Some(ChunkRange::new("new", "new")?));
+    assert_eq!(nonempty_proof.source_row_count, 1);
+    assert_eq!(nonempty_proof.source_digest, nonempty_proof.target_digest);
+
+    target.remove_row_for_test("empty_events", "new").await;
+    assert!(
+        engine
+            .verify_table_coverage_at("empty_events", watermark)
+            .await
+            .is_err()
+    );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_coverage_rejects_target_extra_rows() -> Result<()> {
+    let (directory, path) = state_path("coverage-target-extra-row");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::new());
+    let store = Arc::new(FileMigrationStore::new(&path, recovery_context(1)));
+    let engine = new_engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence,
+        migration_limits(8),
+    );
+
+    engine.prepare(&["events".into()]).await?;
+    while !engine.copy_next("events").await?.complete {}
+    engine.verify_table_coverage_at("events", 1).await?;
+    target
+        .seed_row_for_test("events", "z", 1, b"target-only")
+        .await;
+    assert!(engine.verify_table_coverage_at("events", 1).await.is_err());
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn migration_copies_pages_and_applies_incremental_replace_delete() -> Result<()> {
     let (directory, path) = state_path("copy-catch-up");
     let source = Arc::new(InMemoryMigrationSource::new(
@@ -181,6 +269,12 @@ async fn migration_copies_pages_and_applies_incremental_replace_delete() -> Resu
         crate::storage::core::AuthorityRecoveryRecord::Manifest(manifest)
             if manifest.authority.backend == BackendKind::Postgres
     ));
+    let coverage = target
+        .load_table_coverage_proof("migration-engine-test", "events")
+        .await?
+        .expect("final table coverage proof");
+    assert_eq!(coverage.source_watermark, 3);
+    assert_eq!(coverage.source_digest, coverage.target_digest);
 
     fs::remove_dir_all(directory)?;
     Ok(())

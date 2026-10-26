@@ -485,6 +485,94 @@ pub(crate) struct ChunkProof {
     pub(crate) digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TableCoverageProof {
+    pub(crate) migration_id: String,
+    pub(crate) table_name: String,
+    pub(crate) source_watermark: i64,
+    pub(crate) range: Option<ChunkRange>,
+    pub(crate) source_lower_bound: Option<String>,
+    pub(crate) source_upper_bound: Option<String>,
+    pub(crate) target_lower_bound: Option<String>,
+    pub(crate) target_upper_bound: Option<String>,
+    pub(crate) source_row_count: u64,
+    pub(crate) target_row_count: u64,
+    pub(crate) source_byte_count: u64,
+    pub(crate) target_byte_count: u64,
+    pub(crate) source_digest: String,
+    pub(crate) target_digest: String,
+}
+
+impl TableCoverageProof {
+    fn validate(&self) -> Result<()> {
+        if self.migration_id.trim().is_empty() || self.table_name.trim().is_empty() {
+            bail!("table coverage proof requires migration and table identities");
+        }
+        if self.source_watermark < 0 {
+            bail!("table coverage proof watermark must not be negative");
+        }
+        let (first_key, last_key) = union_table_bounds(
+            &self.source_lower_bound,
+            &self.source_upper_bound,
+            &self.target_lower_bound,
+            &self.target_upper_bound,
+        )?;
+        match (first_key, last_key, &self.range) {
+            (None, None, None) => {}
+            (Some(first_key), Some(last_key), Some(range))
+                if range.first_key == first_key && range.last_key == last_key => {}
+            _ => bail!("table coverage proof range does not match its table bounds"),
+        }
+        Ok(())
+    }
+}
+
+fn validate_table_bounds(
+    label: &str,
+    lower_bound: &Option<String>,
+    upper_bound: &Option<String>,
+) -> Result<()> {
+    if lower_bound.is_some() != upper_bound.is_some() {
+        bail!("{label} table bounds must include both lower and upper keys");
+    }
+    if lower_bound
+        .as_ref()
+        .is_some_and(|bound| bound.trim().is_empty())
+        || upper_bound
+            .as_ref()
+            .is_some_and(|bound| bound.trim().is_empty())
+    {
+        bail!("{label} table bounds must not contain empty keys");
+    }
+    if let (Some(lower_bound), Some(upper_bound)) = (lower_bound, upper_bound)
+        && lower_bound > upper_bound
+    {
+        bail!("{label} table bounds are reversed");
+    }
+    Ok(())
+}
+
+fn union_table_bounds(
+    source_lower_bound: &Option<String>,
+    source_upper_bound: &Option<String>,
+    target_lower_bound: &Option<String>,
+    target_upper_bound: &Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    validate_table_bounds("source", source_lower_bound, source_upper_bound)?;
+    validate_table_bounds("target", target_lower_bound, target_upper_bound)?;
+    let first_key = source_lower_bound
+        .iter()
+        .chain(target_lower_bound.iter())
+        .min()
+        .cloned();
+    let last_key = source_upper_bound
+        .iter()
+        .chain(target_upper_bound.iter())
+        .max()
+        .cloned();
+    Ok((first_key, last_key))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChunkVerification {
     Verified,
@@ -562,12 +650,19 @@ pub(crate) trait MigrationTarget: Send + Sync {
         table_name: &str,
         range: &ChunkRange,
     ) -> Result<Vec<VersionedRow>>;
+    async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)>;
     async fn save_chunk_proof(&self, proof: &ChunkProof) -> Result<()>;
     async fn verified_chunks(
         &self,
         migration_id: &str,
         table_name: &str,
     ) -> Result<Vec<ChunkProof>>;
+    async fn save_table_coverage_proof(&self, proof: &TableCoverageProof) -> Result<()>;
+    async fn load_table_coverage_proof(
+        &self,
+        migration_id: &str,
+        table_name: &str,
+    ) -> Result<Option<TableCoverageProof>>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1312,6 +1407,109 @@ where
         Ok(ChunkVerification::Verified)
     }
 
+    pub(crate) async fn verify_table_coverage_at(
+        &self,
+        table_name: &str,
+        watermark: i64,
+    ) -> Result<TableCoverageProof> {
+        self.ensure_ownership().await?;
+        self.control.check().await?;
+        if watermark < 0 {
+            bail!("table coverage watermark must not be negative");
+        }
+        let plan = self
+            .target
+            .load_plan(self.source.migration_id(), table_name)
+            .await?
+            .ok_or_else(|| anyhow!("migration table has not been prepared: {table_name}"))?;
+        if plan.migration_id != self.source.migration_id() || plan.table_name != table_name {
+            bail!("table coverage plan does not match its migration table");
+        }
+        let checkpoint = self
+            .target
+            .load_checkpoint(self.source.migration_id(), table_name)
+            .await?
+            .ok_or_else(|| anyhow!("migration checkpoint is missing for {table_name}"))?;
+        if checkpoint.migration_id != self.source.migration_id()
+            || checkpoint.table_name != table_name
+            || !checkpoint.complete
+            || checkpoint.applied_through != watermark
+        {
+            bail!("migration table is not caught up through the coverage watermark: {table_name}");
+        }
+
+        let before = self.source.capture_watermark().await?;
+        if before != watermark {
+            bail!("source watermark changed before table coverage verification: {table_name}");
+        }
+        let source_lower_bound = self.source.table_lower_bound(table_name).await?;
+        let source_upper_bound = self.source.table_upper_bound(table_name).await?;
+        let (target_lower_bound, target_upper_bound) = self.target.table_bounds(table_name).await?;
+        let (first_key, last_key) = union_table_bounds(
+            &source_lower_bound,
+            &source_upper_bound,
+            &target_lower_bound,
+            &target_upper_bound,
+        )?;
+        let range = match (first_key, last_key) {
+            (None, None) => None,
+            (Some(first_key), Some(last_key)) => Some(ChunkRange::new(first_key, last_key)?),
+            _ => bail!("table coverage bounds are incomplete: {table_name}"),
+        };
+        let (source_rows, target_rows) = match range.as_ref() {
+            Some(range) => (
+                self.source.rows_in_range(table_name, range).await?,
+                self.target.rows_in_range(table_name, range).await?,
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        let target_bounds_after = self.target.table_bounds(table_name).await?;
+        if target_bounds_after != (target_lower_bound.clone(), target_upper_bound.clone()) {
+            bail!("target table changed during table coverage verification: {table_name}");
+        }
+        let after = self.source.capture_watermark().await?;
+        if after != watermark {
+            bail!("source watermark changed during table coverage verification: {table_name}");
+        }
+        let source_digest = normalized_rows_digest(&source_rows);
+        let target_digest = normalized_rows_digest(&target_rows);
+        let proof = TableCoverageProof {
+            migration_id: self.source.migration_id().to_owned(),
+            table_name: table_name.to_owned(),
+            source_watermark: watermark,
+            range,
+            source_lower_bound,
+            source_upper_bound,
+            target_lower_bound,
+            target_upper_bound,
+            source_row_count: source_rows.len() as u64,
+            target_row_count: target_rows.len() as u64,
+            source_byte_count: source_rows.iter().map(|row| row.payload.len() as u64).sum(),
+            target_byte_count: target_rows.iter().map(|row| row.payload.len() as u64).sum(),
+            source_digest,
+            target_digest,
+        };
+        proof.validate()?;
+        if proof.source_row_count != proof.target_row_count
+            || proof.source_byte_count != proof.target_byte_count
+            || proof.source_digest != proof.target_digest
+        {
+            bail!("source and target table coverage differ at watermark {watermark}: {table_name}");
+        }
+        self.target.save_table_coverage_proof(&proof).await?;
+        let persisted = self
+            .target
+            .load_table_coverage_proof(self.source.migration_id(), table_name)
+            .await?
+            .ok_or_else(|| {
+                anyhow!("table coverage proof was not durably persisted: {table_name}")
+            })?;
+        if persisted != proof {
+            bail!("durable table coverage proof changed after persistence: {table_name}");
+        }
+        Ok(proof)
+    }
+
     pub(crate) async fn switch_authority(
         &self,
         gate: &ModuleGenerationGate,
@@ -1384,6 +1582,11 @@ where
                         bail!("migration chunk changed during final authority verification");
                     }
                 }
+                if tokio::time::Instant::now() >= deadline {
+                    bail!("migration switch budget expired while verifying final table coverage");
+                }
+                self.verify_table_coverage_at(&table_name, watermark)
+                    .await?;
             }
             let manifest = ModuleAuthorityManifest {
                 migration_id: authority_context.migration_id.clone(),
@@ -1602,6 +1805,8 @@ where
             {
                 bail!("migration table has stale verified chunks: {table_name}");
             }
+            self.verify_table_coverage_at(&table_name, watermark)
+                .await?;
         }
         Ok(())
     }
@@ -2011,6 +2216,7 @@ struct InMemoryTargetState {
     tables: BTreeMap<String, BTreeMap<String, VersionedRow>>,
     tombstones: BTreeMap<(String, String), i64>,
     proofs: BTreeMap<(String, String, String, String), ChunkProof>,
+    coverage_proofs: BTreeMap<(String, String), TableCoverageProof>,
     fail_next_operation: bool,
 }
 
@@ -2030,6 +2236,37 @@ impl InMemoryMigrationTarget {
             .tables
             .get(table_name)
             .and_then(|table| table.get(stable_key).cloned())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn seed_row_for_test(
+        &self,
+        table_name: &str,
+        stable_key: &str,
+        source_version: i64,
+        payload: &[u8],
+    ) {
+        self.state
+            .lock()
+            .await
+            .tables
+            .entry(table_name.to_owned())
+            .or_default()
+            .insert(
+                stable_key.to_owned(),
+                VersionedRow {
+                    stable_key: stable_key.to_owned(),
+                    source_version,
+                    payload: payload.to_vec(),
+                },
+            );
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn remove_row_for_test(&self, table_name: &str, stable_key: &str) {
+        if let Some(table) = self.state.lock().await.tables.get_mut(table_name) {
+            table.remove(stable_key);
+        }
     }
 
     async fn take_failure(state: &mut InMemoryTargetState) -> Result<()> {
@@ -2301,6 +2538,17 @@ impl MigrationTarget for InMemoryMigrationTarget {
             .unwrap_or_default())
     }
 
+    async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
+        let state = self.state.lock().await;
+        let bounds = state.tables.get(table_name).map(|table| {
+            (
+                table.keys().next().cloned(),
+                table.keys().next_back().cloned(),
+            )
+        });
+        Ok(bounds.unwrap_or((None, None)))
+    }
+
     async fn save_chunk_proof(&self, proof: &ChunkProof) -> Result<()> {
         let mut state = self.state.lock().await;
         Self::take_failure(&mut state).await?;
@@ -2330,6 +2578,31 @@ impl MigrationTarget for InMemoryMigrationTarget {
             .filter(|proof| proof.migration_id == migration_id && proof.table_name == table_name)
             .cloned()
             .collect())
+    }
+
+    async fn save_table_coverage_proof(&self, proof: &TableCoverageProof) -> Result<()> {
+        proof.validate()?;
+        let mut state = self.state.lock().await;
+        Self::take_failure(&mut state).await?;
+        state.coverage_proofs.insert(
+            (proof.migration_id.clone(), proof.table_name.clone()),
+            proof.clone(),
+        );
+        Ok(())
+    }
+
+    async fn load_table_coverage_proof(
+        &self,
+        migration_id: &str,
+        table_name: &str,
+    ) -> Result<Option<TableCoverageProof>> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .coverage_proofs
+            .get(&(migration_id.to_owned(), table_name.to_owned()))
+            .cloned())
     }
 }
 
