@@ -1138,10 +1138,10 @@ async fn finish_archive_batch_pool_cleanup(guard: &mut ArchiveBatchPoolCleanupGu
         if let Some(pool) = guard.pool.as_ref() {
             pool.close().await;
         }
+        guard.pool.take();
+        guard.cleanup.take();
     })
     .await;
-    guard.pool.take();
-    guard.cleanup.take();
     guard.file_phase.take();
 }
 
@@ -1189,7 +1189,10 @@ impl ArchiveBatchPoolOpenDrain {
             file_phase: Some(file_phase),
             open_task: None,
         };
-        finish_archive_batch_pool_cleanup(&mut guard).await;
+        let worker = tokio::spawn(async move {
+            finish_archive_batch_pool_cleanup(&mut guard).await;
+        });
+        let _ = worker.await;
     }
 
     fn disarm(mut self) -> TempSqliteCleanup {
