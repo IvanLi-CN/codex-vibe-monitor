@@ -129,7 +129,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
     let candidate_entries = if traversal.pending_candidates.is_empty() {
         let scan = match read_retention_raw_directory_slice_with_budget(
             &raw_root,
-            traversal.directory.take(),
+            &mut traversal.directory,
         )
         .await
         {
