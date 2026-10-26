@@ -206,27 +206,35 @@ def task_run_is_accepted_zero_contribution_competitor_defer(row: dict[str, Any])
         return False
     if row.get("error_detail") is not None:
         return False
-    if row.get("committed_work") is not None or row.get("committed_bytes") is not None:
+    if (
+        "committed_work" not in row
+        or row["committed_work"] is not None
+        or "committed_bytes" not in row
+        or row["committed_bytes"] is not None
+    ):
         return False
     details = row.get("details")
     if not isinstance(details, dict):
         return False
-    if details.get("admissionStage") not in ("file_phase", "archive_file_phase"):
+    admission_pair = (details.get("admissionStage"), details.get("waitReason"))
+    if admission_pair not in {
+        ("file_phase", "file_phase_busy"),
+        ("archive_file_phase", "archive_directory_lock_busy"),
+    }:
         return False
-    if details.get("waitReason") not in ("file_phase_busy", "archive_directory_lock_busy"):
-        return False
+    required_null_fields = (
+        "filesChecked",
+        "directoryEntriesChecked",
+        "reconciliationRowsChecked",
+        "filesReleased",
+        "bytesReleased",
+        "referencedSkipped",
+        "quarantined",
+        "failures",
+    )
     return all(
-        details.get(field) is None
-        for field in (
-            "filesChecked",
-            "directoryEntriesChecked",
-            "reconciliationRowsChecked",
-            "filesReleased",
-            "bytesReleased",
-            "referencedSkipped",
-            "quarantined",
-            "failures",
-        )
+        field in details and details[field] is None
+        for field in required_null_fields
     )
 
 
@@ -448,24 +456,20 @@ def _validate_task_runs(
     ]
     competitor_work = sum(row["committed_work"] for row in counted_competitor)
     _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
-    competitor_bytes = [
-        row.get("committed_bytes")
-        for row in counted_competitor
-        if row.get("committed_bytes") is not None
-    ]
-    if competitor_bytes:
-        _require(
-            len(competitor_bytes) == len(counted_competitor)
-            and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in competitor_bytes)
-            and sum(competitor_bytes) == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
-            "background competitor released an unexpected byte count",
-        )
+    competitor_bytes = [row.get("committed_bytes") for row in counted_competitor]
+    _require(
+        len(competitor_bytes) == len(counted_competitor)
+        and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in competitor_bytes)
+        and sum(competitor_bytes) == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+        "background competitor released an unexpected byte count",
+    )
     target_rows = [row for key in targets for row in by_key.get(key, [])]
+    productive_competitor = [row for row in counted_competitor if row["committed_work"] > 0]
     overlap = any(
         max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
         < min(parse_time(left["actual_finished_at"]), parse_time(right["actual_finished_at"]))
         for left in target_rows
-        for right in competitor
+        for right in productive_competitor
     )
     if require_competitor_overlap:
         _require(overlap, "candidate raw orphan-sweep did not overlap a retention owner run")

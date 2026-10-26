@@ -1476,6 +1476,102 @@ async fn load_task_month_snapshot_pages(
     })
 }
 
+struct TaskSnapshotArchivePoolDrain {
+    pool: Option<Pool<Sqlite>>,
+    cleanup_path: Option<PathBuf>,
+}
+
+struct TaskSnapshotArchivePoolCleanupGuard {
+    pool: Option<Pool<Sqlite>>,
+    cleanup_path: Option<PathBuf>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+impl Drop for TaskSnapshotArchivePoolCleanupGuard {
+    fn drop(&mut self) {
+        // A cancelled cleanup task has not acknowledged SQLite worker drain. Retain the pool,
+        // temporary file and permit through process exit instead of releasing live ownership.
+        if let Some(pool) = self.pool.take() {
+            std::mem::forget(pool);
+        }
+        if let Some(path) = self.cleanup_path.take() {
+            std::mem::forget(path);
+        }
+        if let Some(file_phase) = self.file_phase.take() {
+            std::mem::forget(file_phase);
+        }
+    }
+}
+
+async fn finish_task_snapshot_archive_pool_cleanup(
+    guard: &mut TaskSnapshotArchivePoolCleanupGuard,
+) {
+    let Some(file_phase) = guard.file_phase.as_ref().cloned() else {
+        return;
+    };
+    crate::with_file_phase_permit(file_phase, async {
+        if let Some(pool) = guard.pool.as_ref() {
+            pool.close().await;
+        }
+        guard.pool.take();
+        if let Some(path) = guard.cleanup_path.take() {
+            remove_temp_sqlite_artifacts_unchecked(&path);
+        }
+    })
+    .await;
+    guard.file_phase.take();
+}
+
+impl TaskSnapshotArchivePoolDrain {
+    fn new(pool: Pool<Sqlite>, cleanup_path: PathBuf) -> Self {
+        Self {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+        }
+    }
+
+    async fn complete(&mut self) {
+        let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+        let (Some(pool), Some(cleanup_path)) = (self.pool.take(), self.cleanup_path.take()) else {
+            drop(file_phase);
+            return;
+        };
+        let mut guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+            file_phase: Some(file_phase),
+        };
+        let worker = tokio::spawn(async move {
+            finish_task_snapshot_archive_pool_cleanup(&mut guard).await;
+        });
+        let _ = worker.await;
+    }
+}
+
+impl Drop for TaskSnapshotArchivePoolDrain {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup_path)) = (self.pool.take(), self.cleanup_path.take()) else {
+            return;
+        };
+        let mut guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+            file_phase: None,
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                guard.file_phase =
+                    Some(super::super::acquire_file_phase_permit_for_cleanup().await);
+                finish_task_snapshot_archive_pool_cleanup(&mut guard).await;
+            }));
+        } else {
+            // Runtime teardown cannot acknowledge native drain. Keep every ownership part until
+            // process exit rather than advertising that the file operation is released.
+            drop(guard);
+        }
+    }
+}
+
 async fn prepare_task_month_snapshot_pages(
     pool: &Pool<Sqlite>,
     work_path: &Path,
@@ -1483,14 +1579,26 @@ async fn prepare_task_month_snapshot_pages(
     batch_id: i64,
 ) -> Result<Vec<TaskArchiveSnapshotPage>> {
     let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
-    let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await?;
-    let result = async {
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    let archive_pool = super::super::spawn_file_phase_task(file_phase, async move {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(Into::into)
+    })
+    .await?;
+    let mut archive_pool_drain =
+        TaskSnapshotArchivePoolDrain::new(archive_pool, work_path.to_path_buf());
+    let result = {
+        let archive_pool = archive_pool_drain
+            .pool
+            .as_ref()
+            .expect("snapshot archive pool drain owns the pool");
+        async {
         let columns = {
             let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-            load_archive_table_columns(&archive_pool, "codex_invocations").await?
+            load_archive_table_columns(archive_pool, "codex_invocations").await?
         };
         // Tuple keyset pagination must seek rather than sort/scan the month once per 400-row
         // page. The index was installed before the artifact was compressed.
@@ -1505,7 +1613,7 @@ async fn prepare_task_month_snapshot_pages(
         );
         let loaded_pages = load_task_month_snapshot_pages(
             pool,
-            &archive_pool,
+            archive_pool,
             &first_query,
             &next_query,
             batch_id,
@@ -1551,11 +1659,11 @@ async fn prepare_task_month_snapshot_pages(
                 let rows = if let Some(cursor) = occurred_at.as_deref() {
                     sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
                         .bind(cursor).bind(row_id).bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                        .fetch_all(&archive_pool).await?
+                        .fetch_all(archive_pool).await?
                 } else {
                     sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
                         .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                        .fetch_all(&archive_pool).await?
+                        .fetch_all(archive_pool).await?
                 };
                 if rows.is_empty() {
                     None
@@ -1567,7 +1675,7 @@ async fn prepare_task_month_snapshot_pages(
                     for row in &rows { ids.push_bind(row.id); }
                     ids.push_unseparated(")");
                     let invoke_ids = identities.build_query_as::<(i64, String)>()
-                        .fetch_all(&archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
+                        .fetch_all(archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
                     let first = rows.first().expect("nonempty snapshot page");
                     let last = rows.last().expect("nonempty snapshot page");
                     let page = TaskArchiveSnapshotPage {
@@ -1634,9 +1742,10 @@ async fn prepare_task_month_snapshot_pages(
             }
         }
         Ok::<_, anyhow::Error>(pages)
-    }.await;
-    let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-    archive_pool.close().await;
+        }
+        .await
+    };
+    archive_pool_drain.complete().await;
     result
 }
 

@@ -383,6 +383,15 @@ class ContractTests(unittest.TestCase):
         row["details"]["waitReason"] = "sqlite_pressure"
         self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
         row["details"]["waitReason"] = "file_phase_busy"
+        row["details"]["admissionStage"] = "archive_file_phase"
+        row["details"]["waitReason"] = "archive_directory_lock_busy"
+        self.assertTrue(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["waitReason"] = "file_phase_busy"
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["admissionStage"] = "file_phase"
+        del row["details"]["failures"]
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["failures"] = None
         row["committed_work"] = 0
         self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
 
@@ -459,6 +468,60 @@ class ContractTests(unittest.TestCase):
             }
         )
         self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_evidence_validator_requires_productive_competitor_overlap(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        row = next(item for item in trial["task_runs"] if item["task_key"] == "raw_orphan_sweep")
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "deferred",
+                "error_detail": None,
+                "committed_work": None,
+                "committed_bytes": None,
+                "details": {
+                    "filesChecked": None,
+                    "directoryEntriesChecked": None,
+                    "reconciliationRowsChecked": None,
+                    "filesReleased": None,
+                    "bytesReleased": None,
+                    "referencedSkipped": None,
+                    "quarantined": None,
+                    "failures": None,
+                    "waitReason": "file_phase_busy",
+                    "admissionStage": "file_phase",
+                },
+            }
+        )
+        trial_start = datetime.fromisoformat(trial["window"]["setup_started_at"].replace("Z", "+00:00"))
+        trial["task_runs"].append(
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(trial_start + timedelta(seconds=20)),
+                "actual_finished_at": timestamp(trial_start + timedelta(seconds=21)),
+                "status": "success",
+                "committed_work": COMPETITOR_FILE_COUNT,
+                "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+                "details": {},
+                "error_detail": None,
+                "completion": "complete",
+            }
+        )
+        with self.assertRaisesRegex(AcceptanceError, "did not overlap"):
+            validate_evidence(evidence)
+
+    def test_evidence_validator_requires_bytes_for_each_productive_chunk(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row["committed_bytes"] = None
+        with self.assertRaisesRegex(AcceptanceError, "unexpected byte count"):
+            validate_evidence(evidence)
 
     def test_evidence_validator_rejects_recoverable_competitor_without_retry(self) -> None:
         evidence = valid_evidence()
