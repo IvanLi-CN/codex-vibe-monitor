@@ -1111,6 +1111,43 @@ struct SummaryArchivePoolDrain {
     cleanup: Option<super::super::retention::TempSqliteCleanup>,
 }
 
+struct SummaryArchivePoolCleanupGuard {
+    pool: Option<Pool<Sqlite>>,
+    cleanup: Option<super::super::retention::TempSqliteCleanup>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+impl Drop for SummaryArchivePoolCleanupGuard {
+    fn drop(&mut self) {
+        // A cancelled cleanup task has not acknowledged native SQLite drain. Retain the pool,
+        // temporary file and permit through process exit instead of releasing live ownership.
+        if let Some(pool) = self.pool.take() {
+            std::mem::forget(pool);
+        }
+        if let Some(cleanup) = self.cleanup.take() {
+            std::mem::forget(cleanup);
+        }
+        if let Some(file_phase) = self.file_phase.take() {
+            std::mem::forget(file_phase);
+        }
+    }
+}
+
+async fn finish_summary_archive_pool_cleanup(guard: &mut SummaryArchivePoolCleanupGuard) {
+    let Some(file_phase) = guard.file_phase.as_ref().cloned() else {
+        return;
+    };
+    crate::with_file_phase_permit(file_phase, async {
+        if let Some(pool) = guard.pool.as_ref() {
+            pool.close().await;
+        }
+        guard.pool.take();
+        guard.cleanup.take();
+    })
+    .await;
+    guard.file_phase.take();
+}
+
 impl SummaryArchivePoolDrain {
     fn new(pool: &Pool<Sqlite>, cleanup: super::super::retention::TempSqliteCleanup) -> Self {
         Self {
@@ -1125,13 +1162,14 @@ impl SummaryArchivePoolDrain {
             drop(file_phase);
             return;
         };
-        let worker = tokio::spawn(crate::maintenance::with_file_phase_permit(
-            file_phase,
-            async move {
-                pool.close().await;
-                drop(cleanup);
-            },
-        ));
+        let mut guard = SummaryArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup: Some(cleanup),
+            file_phase: Some(file_phase),
+        };
+        let worker = tokio::spawn(async move {
+            finish_summary_archive_pool_cleanup(&mut guard).await;
+        });
         let _ = worker.await;
     }
 }
@@ -1141,19 +1179,20 @@ impl Drop for SummaryArchivePoolDrain {
         let (Some(pool), Some(cleanup)) = (self.pool.take(), self.cleanup.take()) else {
             return;
         };
+        let mut guard = SummaryArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup: Some(cleanup),
+            file_phase: None,
+        };
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             drop(runtime.spawn(async move {
-                let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
-                crate::maintenance::with_file_phase_permit(file_phase, async move {
-                    pool.close().await;
-                    drop(cleanup);
-                })
-                .await;
+                guard.file_phase =
+                    Some(crate::maintenance::acquire_file_phase_permit_for_cleanup().await);
+                finish_summary_archive_pool_cleanup(&mut guard).await;
             }));
         } else {
             // Runtime teardown cannot provide a native SQLite drain acknowledgement.
-            std::mem::forget(pool);
-            std::mem::forget(cleanup);
+            drop(guard);
         }
     }
 }
