@@ -779,7 +779,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: observability-build-${{ github.run_id }}-${{ matrix.component }}
-          path: ${{ runner.temp }}/observability-build/${{ matrix.component }}/
+          path: |
+            ${{ runner.temp }}/observability-build/${{ matrix.component }}/component.json
+            ${{ runner.temp }}/observability-build/${{ matrix.component }}/component.tar.gz
           if-no-files-found: error
           overwrite: true
           retention-days: 1

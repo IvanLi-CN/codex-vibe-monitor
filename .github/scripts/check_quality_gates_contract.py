@@ -339,6 +339,13 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(cached_upload.get("with", {}).get("name") == "observability-cached-image-${{ github.run_id }}" and cached_upload.get("with", {}).get("overwrite") is True, f"{workflow_path} cached image artifacts must replace the prior attempt")
     producer_upload = uses_step_config(producer, "Upload verified producer artifact", PERF_ACTION_UPLOAD_ARTIFACT, workflow_path)
     require(producer_upload.get("with", {}).get("name") == "observability-build-${{ github.run_id }}-${{ matrix.component }}" and producer_upload.get("with", {}).get("overwrite") is True, f"{workflow_path} producer artifacts must be run/component scoped and replace the prior attempt")
+    require(
+        str(producer_upload.get("with", {}).get("path", "")).splitlines() == [
+            "${{ runner.temp }}/observability-build/${{ matrix.component }}/component.json",
+            "${{ runner.temp }}/observability-build/${{ matrix.component }}/component.tar.gz",
+        ],
+        f"{workflow_path} producer artifacts must contain only the manifest and archive",
+    )
 
     require(image.get("needs") == ["observability-performance-resolve", "observability-performance-producer"] and "always()" in str(image.get("if", "")) and "effective_build_path == 'canonical'" in str(image.get("if", "")) and "complete_image_cache_hit == 'true'" in str(image.get("if", "")) and image.get("runs-on") == RUNNER_X64 and image.get("timeout-minutes") == 15, f"{workflow_path} image join must distinguish canonical skip, complete-image hit and producer failure")
     image_checkout = performance_checkout_step(image, "Checkout candidate assembly sources", f"{workflow_path}.jobs.observability-performance-image")

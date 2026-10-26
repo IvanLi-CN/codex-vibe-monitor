@@ -199,6 +199,27 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("web-builder=${{ runner.temp }}/", contexts)
         self.assertIn("runtime-base=oci-layout://", contexts)
 
+    def test_producer_artifacts_exclude_expanded_contexts(self) -> None:
+        producer = self.workflow["jobs"]["observability-performance-producer"]
+        upload = next(step for step in producer["steps"] if step["name"] == "Upload verified producer artifact")
+        self.assertEqual(
+            upload["with"]["path"].splitlines(),
+            [
+                "${{ runner.temp }}/observability-build/${{ matrix.component }}/component.json",
+                "${{ runner.temp }}/observability-build/${{ matrix.component }}/component.tar.gz",
+            ],
+        )
+        self.assertNotIn("context", upload["with"]["path"])
+        self.assertNotIn("oci", upload["with"]["path"])
+        broken = copy.deepcopy(self.workflow)
+        broken_upload = next(
+            step for step in broken["jobs"]["observability-performance-producer"]["steps"]
+            if step["name"] == "Upload verified producer artifact"
+        )
+        broken_upload["with"]["path"] = "${{ runner.temp }}/observability-build/${{ matrix.component }}/"
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(broken)
+
     def test_cache_write_failure_is_non_blocking_but_transfer_is_required(self) -> None:
         broken = copy.deepcopy(self.workflow)
         auto = next(step for step in broken["jobs"]["observability-performance-image"]["steps"] if step["name"] == "Assemble production image from verified contexts")
