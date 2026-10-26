@@ -2098,3 +2098,106 @@ async fn account_selected_touch_batch_coalesces_by_account_id() {
     assert_eq!(row.0.as_deref(), Some("2026-07-01T10:00:05Z"));
     assert_eq!(row.1.as_deref(), Some("2026-07-01T10:00:05Z"));
 }
+
+#[tokio::test]
+async fn account_selected_touch_outbox_replays_after_postgres_fact_commit_boundary() {
+    let pool = test_pool().await;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, last_selected_at, created_at, updated_at
+        )
+        VALUES (78, 'api_key', 'codex', 'Outbox', 'active', 1, NULL, '2026-07-01T09:59:00Z', '2026-07-01T09:59:00Z')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed outbox account");
+
+    let mut pending = PendingBatch::default();
+    pending.push(SqliteBatchWrite::AccountSelectedTouch(
+        BatchedAccountSelectedTouch {
+            account_id: 78,
+            selected_at: "2026-07-01T10:00:05Z".to_string(),
+        },
+    ));
+    persist_account_selected_touch_outbox(&pool, &pending)
+        .await
+        .expect("persist account-selection outbox");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pool_upstream_account_selected_touch_outbox",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count pending outbox rows"),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT last_selected_at FROM pool_upstream_accounts WHERE id = 78",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read account before replay"),
+        None
+    );
+
+    // The in-memory batch may be gone after the PG fact commits and the process crashes here.
+    drop(pending);
+    assert_eq!(
+        replay_account_selected_touch_outbox(&pool)
+            .await
+            .expect("replay account-selection outbox"),
+        1
+    );
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_selected_at, updated_at FROM pool_upstream_accounts WHERE id = 78",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read account after replay");
+    assert_eq!(row.0.as_deref(), Some("2026-07-01T10:00:05Z"));
+    assert_eq!(row.1.as_deref(), Some("2026-07-01T10:00:05Z"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pool_upstream_account_selected_touch_outbox",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count acknowledged outbox rows"),
+        0
+    );
+
+    // A retry after acknowledgement is still safe: the monotonic account update is idempotent.
+    persist_account_selected_touch_outbox(
+        &pool,
+        &PendingBatch {
+            account_selected_touches: std::collections::HashMap::from([(
+                78,
+                BatchedAccountSelectedTouch {
+                    account_id: 78,
+                    selected_at: "2026-07-01T10:00:05Z".to_string(),
+                },
+            )]),
+            ..PendingBatch::default()
+        },
+    )
+    .await
+    .expect("persist idempotent retry outbox");
+    assert_eq!(
+        replay_account_selected_touch_outbox(&pool)
+            .await
+            .expect("replay idempotent retry outbox"),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT last_selected_at FROM pool_upstream_accounts WHERE id = 78",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read account after idempotent retry"),
+        Some("2026-07-01T10:00:05Z".to_string())
+    );
+}

@@ -1081,6 +1081,15 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
+        match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(&pool).await {
+            Ok(replayed) if replayed > 0 => {
+                info!(replayed, "replayed account-selection observations at startup");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "account-selection observation outbox replay deferred");
+            }
+        }
         initialize_invocation_identity_cleanup_state(&pool).await?;
         let _maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {

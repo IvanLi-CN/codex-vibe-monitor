@@ -1094,12 +1094,14 @@ async fn flush_sqlite_owned_p2_side_effects(
     batch: &PendingBatch,
     write_legacy_task_runs: bool,
 ) -> Result<()> {
+    // PostgreSQL facts commit before these SQLite-owned observations. Drain the durable outbox
+    // first so a process crash between those commits leaves a replayable obligation.
+    replay_account_selected_touch_outbox(pool).await?;
     let has_derived_account_activity = batch
         .invocation_derived
         .values()
         .any(|derived| derived.upstream_account_id.is_some());
-    if batch.account_selected_touches.is_empty()
-        && !has_derived_account_activity
+    if !has_derived_account_activity
         && (!write_legacy_task_runs || batch.system_task_finishes.is_empty())
     {
         return Ok(());
@@ -1111,26 +1113,6 @@ async fn flush_sqlite_owned_p2_side_effects(
             &derived.occurred_at,
             derived.upstream_account_id,
         )
-        .await?;
-    }
-    for touch in batch.account_selected_touches.values() {
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_selected_at = CASE
-                    WHEN last_selected_at IS NULL OR last_selected_at < ?2 THEN ?2
-                    ELSE last_selected_at
-                END,
-                updated_at = CASE
-                    WHEN updated_at IS NULL OR updated_at < ?2 THEN ?2
-                    ELSE updated_at
-                END
-            WHERE id = ?1
-            "#,
-        )
-        .bind(touch.account_id)
-        .bind(&touch.selected_at)
-        .execute(&mut *transaction)
         .await?;
     }
     if write_legacy_task_runs {
@@ -1158,6 +1140,85 @@ async fn flush_sqlite_owned_p2_side_effects(
     }
     transaction.commit().await?;
     Ok(())
+}
+
+/// Persist account-selection observations before the PostgreSQL fact transaction commits.
+///
+/// SQLite and PostgreSQL cannot share a transaction here. The outbox is therefore committed
+/// first, and its replay is monotonic and idempotent: a crash before or after the fact commit
+/// can only leave a pending row that the next startup or flush will apply and acknowledge.
+pub(crate) async fn persist_account_selected_touch_outbox(
+    pool: &Pool<Sqlite>,
+    batch: &PendingBatch,
+) -> Result<()> {
+    if batch.account_selected_touches.is_empty() {
+        return Ok(());
+    }
+
+    let mut transaction = pool.begin().await?;
+    for touch in batch.account_selected_touches.values() {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_selected_touch_outbox (account_id, selected_at)
+            VALUES (?1, ?2)
+            ON CONFLICT (account_id, selected_at) DO NOTHING
+            "#,
+        )
+        .bind(touch.account_id)
+        .bind(&touch.selected_at)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
+/// Replay and acknowledge all durable account-selection observations.
+///
+/// The account update and outbox deletion share one SQLite transaction. If the process dies
+/// after the update but before commit, the row remains; if it dies after commit, both are done.
+/// Replaying a duplicate row is safe because `last_selected_at` only moves forward.
+pub(crate) async fn replay_account_selected_touch_outbox(pool: &Pool<Sqlite>) -> Result<usize> {
+    let rows = sqlx::query_as::<_, (i64, i64, String)>(
+        r#"
+        SELECT id, account_id, selected_at
+        FROM pool_upstream_account_selected_touch_outbox
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut transaction = pool.begin().await?;
+    for (outbox_id, account_id, selected_at) in &rows {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_selected_at = CASE
+                    WHEN last_selected_at IS NULL OR last_selected_at < ?2 THEN ?2
+                    ELSE last_selected_at
+                END,
+                updated_at = CASE
+                    WHEN updated_at IS NULL OR updated_at < ?2 THEN ?2
+                    ELSE updated_at
+                END
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(selected_at)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("DELETE FROM pool_upstream_account_selected_touch_outbox WHERE id = ?1")
+            .bind(outbox_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    Ok(rows.len())
 }
 
 #[expect(
@@ -1672,6 +1733,13 @@ async fn flush_pending_batch_inner_with_authority(
             &[],
             pool_acquisition_duration,
         );
+    }
+    if traffic_backend == crate::storage::core::BackendKind::Postgres
+        && !batch.account_selected_touches.is_empty()
+    {
+        // Commit the SQLite outbox before the PG fact. A crash after the PG commit can then
+        // replay the observation instead of losing last_selected_at.
+        persist_account_selected_touch_outbox(pool, batch).await?;
     }
     let execute_started = Instant::now();
     let mut terminal_overlay_keys = Vec::new();
