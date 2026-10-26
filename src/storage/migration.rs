@@ -34,6 +34,7 @@ pub(crate) const DEFAULT_COPY_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const DEFAULT_SOURCE_READ_BUDGET: Duration = Duration::from_millis(50);
 pub(crate) const DEFAULT_BATCH_YIELD: Duration = Duration::from_millis(25);
 pub(crate) const DEFAULT_MAX_QUEUED_OPERATIONS: usize = 128;
+pub(crate) const DEFAULT_MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const DEFAULT_MIN_SOURCE_FREE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_CAPTURE_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const DEFAULT_RETRY_INITIAL: Duration = Duration::from_secs(1);
@@ -1087,16 +1088,28 @@ fn select_changes(
     }
     let mut selected = Vec::new();
     let mut versions = BTreeSet::new();
+    let mut payload_bytes = 0_usize;
     for change in changes.iter().filter(|change| {
         change.source_version > after
             && through.is_none_or(|watermark| change.source_version <= watermark)
     }) {
-        if versions.insert(change.source_version) && versions.len() > limit {
+        let inserted_version = versions.insert(change.source_version);
+        if inserted_version && versions.len() > limit {
             break;
         }
-        if versions.len() <= limit {
-            selected.push(change.clone());
+        if selected.len() >= limit {
+            if inserted_version {
+                break;
+            }
+            bail!("in-memory migration transaction exceeds the bounded change row budget");
         }
+        payload_bytes = payload_bytes
+            .checked_add(change.payload.as_ref().map_or(0, Vec::len))
+            .ok_or_else(|| anyhow!("in-memory migration change byte count overflowed"))?;
+        if payload_bytes > DEFAULT_MAX_QUEUED_BYTES {
+            bail!("in-memory migration transaction exceeds the bounded change byte budget");
+        }
+        selected.push(change.clone());
     }
     Ok(selected)
 }

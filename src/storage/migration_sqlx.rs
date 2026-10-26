@@ -16,9 +16,9 @@ use super::{
     core::StorageModule,
     migration::{
         CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange, CopyLimits,
-        CoverageCheckpoint, EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage,
-        SourceRangePage, SourceRangeSnapshot, TableCopyPlan, TableCoverageProof, VersionedRow,
-        validate_checkpoint_progress,
+        CoverageCheckpoint, DEFAULT_MAX_QUEUED_BYTES, EngineCheckpoint, MigrationSource,
+        MigrationTarget, SourcePage, SourceRangePage, SourceRangeSnapshot, TableCopyPlan,
+        TableCoverageProof, VersionedRow, validate_checkpoint_progress,
     },
 };
 
@@ -329,55 +329,119 @@ impl SqliteMigrationSource {
         }
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
+        let limit_i64 = i64::try_from(limit).context("SQLite migration change limit overflowed")?;
         let query = format!(
             "SELECT migration_id, source_identity, source_version, table_name, stable_key,
                     previous_key, kind, payload, payload_digest
                FROM {capture_table}
               WHERE migration_id = ?
+                AND source_identity = ?
                 AND source_version > ? AND source_version <= ?
               ORDER BY source_version ASC, capture_id ASC LIMIT ?"
         );
+        let mut transaction = self.pool.begin().await?;
         let rows = sqlx::query(&query)
             .bind(&self.migration_id)
+            .bind(&self.source_identity)
             .bind(after)
             .bind(through)
-            .bind(i64::try_from(limit).context("SQLite migration change limit overflowed")?)
-            .fetch_all(&self.pool)
+            .bind(limit_i64)
+            .fetch_all(&mut *transaction)
             .await
             .context("read SQLite migration change capture")?;
         let initial_changes = rows
             .into_iter()
             .map(|row| decode_sqlite_change(row, &self.migration_id, &self.source_identity))
             .collect::<Result<Vec<_>>>()?;
+        validate_sqlite_change_batch_limits(&initial_changes, limit)?;
         let Some(boundary_version) = initial_changes.last().map(|change| change.source_version)
         else {
+            transaction
+                .commit()
+                .await
+                .context("commit empty SQLite migration change read")?;
             return Ok(Vec::new());
         };
         if initial_changes.len() < limit {
+            transaction
+                .commit()
+                .await
+                .context("commit SQLite migration change read")?;
             return Ok(initial_changes);
         }
 
         // A source transaction may contain several changes with one version. Re-read through
         // the complete boundary version so the caller never acknowledges a partial transaction.
+        // Count it in the same read transaction first so the boundary re-fetch cannot bypass the
+        // queue budget when one source transaction contains more rows than the initial LIMIT.
+        let count_query = format!(
+            "SELECT COUNT(*) AS row_count,
+                    COALESCE(SUM(COALESCE(length(payload), 0)), 0) AS byte_count
+               FROM {capture_table}
+              WHERE migration_id = ?
+                AND source_identity = ?
+                AND source_version > ? AND source_version <= ?"
+        );
+        let count_row = sqlx::query(&count_query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .bind(after)
+            .bind(boundary_version)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("count SQLite migration change boundary")?;
+        let boundary_rows = usize::try_from(count_row.try_get::<i64, _>("row_count")?)
+            .context("SQLite migration change row count overflowed")?;
+        let boundary_bytes = usize::try_from(count_row.try_get::<i64, _>("byte_count")?)
+            .context("SQLite migration change byte count overflowed")?;
+        if boundary_rows > limit {
+            bail!("SQLite migration transaction exceeds the bounded change row budget");
+        }
+        if boundary_bytes > DEFAULT_MAX_QUEUED_BYTES {
+            bail!("SQLite migration transaction exceeds the bounded change byte budget");
+        }
         let complete_query = format!(
             "SELECT migration_id, source_identity, source_version, table_name, stable_key,
                     previous_key, kind, payload, payload_digest
                FROM {capture_table}
               WHERE migration_id = ?
+                AND source_identity = ?
                 AND source_version > ? AND source_version <= ?
               ORDER BY source_version ASC, capture_id ASC"
         );
-        sqlx::query(&complete_query)
+        let complete_changes = sqlx::query(&complete_query)
             .bind(&self.migration_id)
+            .bind(&self.source_identity)
             .bind(after)
             .bind(boundary_version)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *transaction)
             .await
             .context("read complete SQLite migration change boundary")?
             .into_iter()
             .map(|row| decode_sqlite_change(row, &self.migration_id, &self.source_identity))
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        validate_sqlite_change_batch_limits(&complete_changes, limit)?;
+        transaction
+            .commit()
+            .await
+            .context("commit complete SQLite migration change read")?;
+        Ok(complete_changes)
     }
+}
+
+fn validate_sqlite_change_batch_limits(changes: &[CapturedChange], limit: usize) -> Result<()> {
+    if changes.len() > limit {
+        bail!("SQLite migration transaction exceeds the bounded change row budget");
+    }
+    let payload_bytes = changes.iter().try_fold(0_usize, |total, change| {
+        total
+            .checked_add(change.payload.as_ref().map_or(0, Vec::len))
+            .ok_or_else(|| anyhow!("SQLite migration change byte count overflowed"))
+    })?;
+    if payload_bytes > DEFAULT_MAX_QUEUED_BYTES {
+        bail!("SQLite migration transaction exceeds the bounded change byte budget");
+    }
+    Ok(())
 }
 
 fn decode_sqlite_change(
@@ -449,8 +513,11 @@ impl MigrationSource for SqliteMigrationSource {
         let spec = self.spec(table_name)?;
         let table = quote_identifier(&spec.source_table_name, "source migration table")?;
         let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
-        let query =
-            format!("SELECT MIN({key}) AS lower_bound, MAX({key}) AS upper_bound FROM {table}");
+        let query = format!(
+            "SELECT MIN({key} COLLATE BINARY) AS lower_bound,
+                        MAX({key} COLLATE BINARY) AS upper_bound
+                   FROM {table}"
+        );
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(&query)
             .fetch_one(&mut *transaction)
@@ -509,8 +576,9 @@ impl MigrationSource for SqliteMigrationSource {
                 "SELECT {key} AS stable_key, {version} AS source_version,
                         COALESCE(length({payload}), 0) AS payload_bytes
                    FROM {table}
-                  WHERE {key} {comparison} ? AND {key} <= ?
-                  ORDER BY {key} ASC LIMIT ?"
+                  WHERE {key} COLLATE BINARY {comparison} ?
+                    AND {key} COLLATE BINARY <= ?
+                  ORDER BY {key} COLLATE BINARY ASC LIMIT ?"
             );
             let raw_rows = sqlx::query(&query)
                 .bind(start)
@@ -546,8 +614,10 @@ impl MigrationSource for SqliteMigrationSource {
                     complete = false;
                     break;
                 }
-                let payload_query =
-                    format!("SELECT {payload} AS payload FROM {table} WHERE {key} = ?");
+                let payload_query = format!(
+                    "SELECT {payload} AS payload FROM {table}
+                          WHERE {key} COLLATE BINARY = ?"
+                );
                 let payload_row = sqlx::query(&payload_query)
                     .bind(&stable_key)
                     .fetch_one(&mut *transaction)
@@ -1182,8 +1252,9 @@ impl MigrationTarget for PostgresMigrationTarget {
                 "SELECT {key} AS stable_key, {version} AS source_version,
                         COALESCE(octet_length({payload}), 0)::BIGINT AS payload_bytes
                    FROM {table}
-                  WHERE {key} {comparison} $1 AND {key} <= $2
-                  ORDER BY {key} ASC LIMIT $3"
+                  WHERE {key} COLLATE \"C\" {comparison} $1
+                    AND {key} COLLATE \"C\" <= $2
+                  ORDER BY {key} COLLATE \"C\" ASC LIMIT $3"
             );
             let raw_rows = sqlx::query(&query)
                 .bind(start)
@@ -1219,8 +1290,10 @@ impl MigrationTarget for PostgresMigrationTarget {
                     complete = false;
                     break;
                 }
-                let payload_query =
-                    format!("SELECT {payload} AS payload FROM {table} WHERE {key} = $1");
+                let payload_query = format!(
+                    "SELECT {payload} AS payload FROM {table}
+                      WHERE {key} COLLATE \"C\" = $1"
+                );
                 let payload_row = sqlx::query(&payload_query)
                     .bind(&stable_key)
                     .fetch_one(&mut *transaction)
@@ -1285,8 +1358,11 @@ impl MigrationTarget for PostgresMigrationTarget {
         let spec = self.spec(table_name)?;
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
-        let query =
-            format!("SELECT MIN({key}) AS lower_bound, MAX({key}) AS upper_bound FROM {table}");
+        let query = format!(
+            "SELECT MIN({key} COLLATE \"C\") AS lower_bound,
+                        MAX({key} COLLATE \"C\") AS upper_bound
+                   FROM {table}"
+        );
         let row = sqlx::query(&query)
             .fetch_one(&self.pool)
             .await

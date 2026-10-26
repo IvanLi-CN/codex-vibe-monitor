@@ -14,10 +14,10 @@ use crate::storage::{
         ModuleGenerationGate, StorageModule,
     },
     migration::{
-        CapturedChange, ChangeInput, ChangeKind, ChunkRange, CopyLimits, EngineCheckpoint,
-        FileMigrationStore, InMemoryMigrationSource, InMemoryMigrationTarget, MigrationEngine,
-        MigrationLimits, MigrationSource, MigrationTarget, SourcePage, SourceWriteFence,
-        TableCopyPlan, TableCoverageProof, VersionedRow,
+        CapturedChange, ChangeInput, ChangeKind, ChunkRange, CopyLimits, DEFAULT_MAX_QUEUED_BYTES,
+        EngineCheckpoint, FileMigrationStore, InMemoryMigrationSource, InMemoryMigrationTarget,
+        MigrationEngine, MigrationLimits, MigrationSource, MigrationTarget, SourcePage,
+        SourceWriteFence, TableCopyPlan, TableCoverageProof, VersionedRow,
     },
     migration_sqlx::{MigrationTableSpec, PostgresMigrationTarget, SqliteMigrationSource},
 };
@@ -949,7 +949,7 @@ async fn migration_engine_replays_concurrent_change_kinds_and_same_version_bound
         "postgres-test",
         1,
         MigrationLimits {
-            max_queued_operations: 2,
+            max_queued_operations: 4,
             copy: CopyLimits {
                 max_rows: 2,
                 max_bytes: 1024,
@@ -1063,6 +1063,76 @@ async fn migration_engine_replays_concurrent_change_kinds_and_same_version_bound
     }
 
     fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn in_memory_capture_returns_complete_same_version_boundary_within_budget() -> Result<()> {
+    let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "a", ChangeKind::Insert, b"a"),
+                change("events", "b", ChangeKind::Insert, b"b"),
+                change("events", "c", ChangeKind::Insert, b"c"),
+            ],
+        )
+        .await?;
+
+    let changes =
+        <InMemoryMigrationSource as MigrationSource>::changes_through(&source, 0, 1, 3).await?;
+    assert_eq!(changes.len(), 3);
+    assert!(changes.iter().all(|change| change.source_version == 1));
+    assert_eq!(
+        changes
+            .iter()
+            .map(|change| change.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b", "c"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn in_memory_capture_rejects_transaction_exceeding_row_budget() -> Result<()> {
+    let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "a", ChangeKind::Insert, b"a"),
+                change("events", "b", ChangeKind::Insert, b"b"),
+                change("events", "c", ChangeKind::Insert, b"c"),
+            ],
+        )
+        .await?;
+
+    let error = <InMemoryMigrationSource as MigrationSource>::changes_through(&source, 0, 1, 2)
+        .await
+        .expect_err("same-version capture must respect the row budget");
+    assert!(error.to_string().contains("bounded change row budget"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn in_memory_capture_rejects_transaction_exceeding_byte_budget() -> Result<()> {
+    let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
+    let fence = SourceWriteFence::new(1);
+    let payload = vec![0_u8; DEFAULT_MAX_QUEUED_BYTES + 1];
+    source
+        .write(
+            &fence,
+            vec![change("events", "large", ChangeKind::Insert, &payload)],
+        )
+        .await?;
+
+    let error = <InMemoryMigrationSource as MigrationSource>::changes_through(&source, 0, 1, 2)
+        .await
+        .expect_err("oversized capture must respect the byte budget");
+    assert!(error.to_string().contains("bounded change byte budget"));
     Ok(())
 }
 
@@ -1405,6 +1475,68 @@ async fn sqlite_migration_source_uses_real_pool_capture_and_keyset_pages() -> Re
 }
 
 #[tokio::test]
+async fn sqlite_migration_source_uses_binary_key_collation_for_bounds_and_pages() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            stable_key TEXT COLLATE NOCASE PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+    for (key, payload) in [("a", b"a".as_slice()), ("B", b"B".as_slice())] {
+        sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+            .bind(key)
+            .bind(1_i64)
+            .bind(payload)
+            .execute(&pool)
+            .await?;
+    }
+
+    let (lower_bound, upper_bound) = source.table_bounds("events").await?;
+    assert_eq!(lower_bound.as_deref(), Some("B"));
+    assert_eq!(upper_bound.as_deref(), Some("a"));
+    let page = source
+        .scan_page(
+            "events",
+            None,
+            Some("a"),
+            CopyLimits {
+                max_rows: 2,
+                max_bytes: 2,
+                source_read_budget: Duration::from_secs(1),
+                batch_yield: Duration::ZERO,
+            },
+        )
+        .await?;
+    assert_eq!(
+        page.rows
+            .iter()
+            .map(|row| row.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["B", "a"]
+    );
+    assert!(page.complete);
+    Ok(())
+}
+
+#[tokio::test]
 async fn sqlite_capture_replay_keeps_same_version_boundary_after_failed_apply() -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -1453,7 +1585,7 @@ async fn sqlite_capture_replay_keeps_same_version_boundary_after_failed_apply() 
         "postgres-test",
         1,
         MigrationLimits {
-            max_queued_operations: 2,
+            max_queued_operations: 4,
             ..MigrationLimits::default()
         },
         fence,
@@ -1481,7 +1613,7 @@ async fn sqlite_capture_replay_keeps_same_version_boundary_after_failed_apply() 
     }
     transaction.commit().await?;
 
-    assert_eq!(source.changes_through(0, 1, 2).await?.len(), 3);
+    assert_eq!(source.changes_through(0, 1, 4).await?.len(), 3);
     target.fail_next_operation().await;
     assert!(migration.catch_up("events").await.is_err());
     assert_eq!(
@@ -1501,7 +1633,7 @@ async fn sqlite_capture_replay_keeps_same_version_boundary_after_failed_apply() 
 }
 
 #[tokio::test]
-async fn sqlite_capture_rejects_corrupt_digest_and_source_identity() -> Result<()> {
+async fn sqlite_capture_rejects_corrupt_digest_and_isolates_source_identity() -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -1520,24 +1652,96 @@ async fn sqlite_capture_rejects_corrupt_digest_and_source_identity() -> Result<(
     let first = source
         .append_change(1, change("events", "a", ChangeKind::Insert, b"one"))
         .await?;
-    sqlx::query("UPDATE migration_change_log SET payload_digest = ? WHERE source_version = 1")
-        .bind("corrupt-digest")
-        .execute(&pool)
-        .await?;
+    let other = CapturedChange::from_input(
+        "migration-engine-test",
+        "another-source",
+        1,
+        change("events", "other", ChangeKind::Insert, b"other"),
+    )?;
+    sqlx::query(
+        "INSERT INTO migration_change_log
+            (migration_id, source_identity, source_version, table_name, stable_key,
+             previous_key, kind, payload, payload_digest)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&other.migration_id)
+    .bind(&other.source_identity)
+    .bind(other.source_version)
+    .bind(&other.table_name)
+    .bind(&other.stable_key)
+    .bind(&other.previous_key)
+    .bind("insert")
+    .bind(&other.payload)
+    .bind(&other.payload_digest)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "UPDATE migration_change_log
+            SET payload_digest = ?
+          WHERE source_identity = ? AND source_version = ?",
+    )
+    .bind("corrupt-digest")
+    .bind("sqlite-test")
+    .bind(1_i64)
+    .execute(&pool)
+    .await?;
     assert!(source.changes_after(0, 1).await.is_err());
 
-    sqlx::query("UPDATE migration_change_log SET payload_digest = ? WHERE source_version = 1")
-        .bind(&first.payload_digest)
-        .execute(&pool)
-        .await?;
+    sqlx::query(
+        "UPDATE migration_change_log
+            SET payload_digest = ?
+          WHERE source_identity = ? AND source_version = ?",
+    )
+    .bind(&first.payload_digest)
+    .bind("sqlite-test")
+    .bind(1_i64)
+    .execute(&pool)
+    .await?;
+    assert_eq!(source.changes_after(0, 1).await?.len(), 1);
     source
         .append_change(2, change("events", "b", ChangeKind::Insert, b"two"))
         .await?;
-    sqlx::query("UPDATE migration_change_log SET source_identity = ? WHERE source_version = 2")
-        .bind("another-source")
-        .execute(&pool)
+    sqlx::query(
+        "UPDATE migration_change_log
+            SET source_identity = ?
+          WHERE source_identity = ? AND source_version = ?",
+    )
+    .bind("another-source")
+    .bind("sqlite-test")
+    .bind(2_i64)
+    .execute(&pool)
+    .await?;
+    assert_eq!(source.changes_after(0, 2).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_rejects_oversized_same_version_transaction() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
         .await?;
-    assert!(source.changes_after(0, 2).await.is_err());
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+    for key in ["a", "b", "c"] {
+        source
+            .append_change(1, change("events", key, ChangeKind::Insert, key.as_bytes()))
+            .await?;
+    }
+    let error = source
+        .changes_through(0, 1, 2)
+        .await
+        .expect_err("same-version capture must respect the row budget");
+    assert!(error.to_string().contains("bounded change row budget"));
     Ok(())
 }
 
@@ -1670,7 +1874,7 @@ async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture(
             "postgres-test",
             1,
             MigrationLimits {
-                max_queued_operations: 2,
+                max_queued_operations: 4,
                 copy: CopyLimits {
                     max_rows: 2,
                     max_bytes: 1024,
