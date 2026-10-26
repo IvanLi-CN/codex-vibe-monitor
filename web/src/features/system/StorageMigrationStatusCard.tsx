@@ -68,6 +68,13 @@ function formatCoverage(value: number | null, unknownLabel: string): string {
   return value == null || !Number.isFinite(value) ? unknownLabel : `${value.toFixed(1)}%`;
 }
 
+function hasFixedScanUpperBound(status: StorageMigrationResponse): boolean {
+  return (
+    (status.state === "preparing" || status.state === "copying") &&
+    (status.progress.phase === "preparing" || status.progress.phase === "copying")
+  );
+}
+
 function stateTone(state: StorageMigrationState): ChipTone {
   switch (state) {
     case "postgres":
@@ -225,7 +232,9 @@ export default function StorageMigrationStatusCard({
   const { t } = useTranslation();
   const unknownLabel = t("system.storageMigration.unknown");
   const progress =
-    status.progress.committedRows != null && status.progress.sourceRows
+    hasFixedScanUpperBound(status) &&
+    status.progress.committedRows != null &&
+    status.progress.sourceRows
       ? Math.min(100, (status.progress.committedRows / status.progress.sourceRows) * 100)
       : null;
   const actionLabel = status.controls.lastAction

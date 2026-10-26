@@ -247,6 +247,11 @@ export const CatchingUpWithoutEta: Story = {
       pressure: { ...baseStatus.pressure, nonConvergent: true },
     },
   },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("暂未获得已提交进度。")).toBeVisible();
+    await expect(canvas.queryByText("已提交进度 82.0%")).not.toBeInTheDocument();
+  },
 };
 
 export const RecoveryRequired: Story = {
