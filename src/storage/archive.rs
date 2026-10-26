@@ -19,6 +19,16 @@ const DEFAULT_LEGACY_TABLE: &str = "codex_invocations";
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
 const ARCHIVE_CLEANUP_STATE_DELETE_PENDING: &str = "delete_pending";
 const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
+// Keep release and prune on the same owner-tuple set. UNION intentionally deduplicates a
+// tuple that is present in both the live and archive ledgers during a migration window.
+const ACTIVE_RAW_REFERENCE_UNION: &str = "SELECT raw_path, owner_kind, owner_id, raw_role
+                                           FROM proxy_raw_payload_blob_links
+                                          WHERE raw_path = $1
+                                         UNION
+                                         SELECT raw_path, owner_kind, owner_id, raw_role
+                                           FROM archive_raw_reference_changes
+                                          WHERE raw_path = $1
+                                            AND action = 'link' AND state = 'active'";
 
 /// PostgreSQL tables owned by the archive adapter. The list is intentionally narrow so the
 /// migration engine and account-routing module cannot accidentally become dependencies of it.
@@ -560,6 +570,28 @@ impl RawReferenceAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RawOwnershipCounts {
+    pub(crate) live_links: i64,
+    pub(crate) archive_links: i64,
+    pub(crate) distinct_links: i64,
+}
+
+impl RawOwnershipCounts {
+    pub(crate) fn can_remove_blob(self) -> Result<bool> {
+        if self.live_links < 0 || self.archive_links < 0 || self.distinct_links < 0 {
+            bail!("Raw ownership counts cannot be negative");
+        }
+        Ok(self.live_links == 0 && self.archive_links == 0 && self.distinct_links == 0)
+    }
+}
+
+pub(crate) fn raw_paths_in_lock_order<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<&'a str> {
+    paths.into_iter().collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawReferenceChange {
     pub(crate) archive_batch_id: i64,
@@ -724,6 +756,7 @@ pub(crate) fn deduplicate_activity_manifest(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawReferenceCheck {
     pub(crate) raw_path: String,
+    /// Distinct active owner tuples from the live and archive ledgers at preparation time.
     pub(crate) active_reference_count: i64,
     pub(crate) file_identity_sha256: String,
     pub(crate) checked_at_epoch_ms: i64,
@@ -1514,12 +1547,7 @@ impl ArchiveStorageAdapter {
                     (archive_file_path, archived_row_id, occurred_at,
                      proxy_binding_key_snapshot, is_success, latency_ms)
                  VALUES ($1, $2, $3, $4, $5, $6)
-                 ON CONFLICT (archive_file_path, archived_row_id) DO UPDATE SET
-                     occurred_at = EXCLUDED.occurred_at,
-                     proxy_binding_key_snapshot = EXCLUDED.proxy_binding_key_snapshot,
-                     is_success = EXCLUDED.is_success,
-                     latency_ms = EXCLUDED.latency_ms,
-                     updated_at = CURRENT_TIMESTAMP",
+                 ON CONFLICT (archive_file_path, archived_row_id) DO NOTHING",
             )
             .bind(&operation.manifest.file_path)
             .bind(row.archived_row_id)
@@ -1530,6 +1558,24 @@ impl ArchiveStorageAdapter {
             .execute(&mut *transaction)
             .await
             .context("upsert node-health archive row")?;
+            let stored_row = sqlx::query(
+                "SELECT occurred_at, proxy_binding_key_snapshot, is_success, latency_ms
+                   FROM pool_upstream_node_health_archive
+                  WHERE archive_file_path = $1 AND archived_row_id = $2",
+            )
+            .bind(&operation.manifest.file_path)
+            .bind(row.archived_row_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read node-health archive row after upsert")?;
+            if stored_row.try_get::<String, _>("occurred_at")? != row.occurred_at
+                || stored_row.try_get::<String, _>("proxy_binding_key_snapshot")?
+                    != row.proxy_binding_key_snapshot
+                || stored_row.try_get::<i64, _>("is_success")? != row.is_success
+                || stored_row.try_get::<Option<f64>, _>("latency_ms")? != row.latency_ms
+            {
+                bail!("node-health archive row conflicts with existing metadata");
+            }
         }
 
         let archive_identity = format!("batch:{}", operation.manifest.archive_batch_id);
@@ -1541,12 +1587,7 @@ impl ArchiveStorageAdapter {
                      failure_count)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT (archive_identity, proxy_binding_key_snapshot, bucket_start_epoch)
-                 DO UPDATE SET
-                     archive_batch_id = EXCLUDED.archive_batch_id,
-                     archive_file_path = EXCLUDED.archive_file_path,
-                     success_count = EXCLUDED.success_count,
-                     failure_count = EXCLUDED.failure_count,
-                     updated_at = CURRENT_TIMESTAMP",
+                 DO NOTHING",
             )
             .bind(&archive_identity)
             .bind(operation.manifest.archive_batch_id)
@@ -1558,6 +1599,28 @@ impl ArchiveStorageAdapter {
             .execute(&mut *transaction)
             .await
             .context("upsert node-health hourly archive row")?;
+            let stored_row = sqlx::query(
+                "SELECT archive_batch_id, archive_file_path, success_count, failure_count
+                   FROM pool_upstream_node_health_hourly_archive
+                  WHERE archive_identity = $1
+                    AND proxy_binding_key_snapshot = $2
+                    AND bucket_start_epoch = $3",
+            )
+            .bind(&archive_identity)
+            .bind(&row.proxy_binding_key_snapshot)
+            .bind(row.bucket_start_epoch)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read node-health hourly archive row after upsert")?;
+            if stored_row.try_get::<i64, _>("archive_batch_id")?
+                != operation.manifest.archive_batch_id
+                || stored_row.try_get::<String, _>("archive_file_path")?
+                    != operation.manifest.file_path
+                || stored_row.try_get::<i64, _>("success_count")? != row.success_count
+                || stored_row.try_get::<i64, _>("failure_count")? != row.failure_count
+            {
+                bail!("node-health hourly archive row conflicts with existing metadata");
+            }
         }
 
         for marker in &operation.rollups {
@@ -1622,11 +1685,12 @@ impl ArchiveStorageAdapter {
             }
         }
 
-        let raw_paths = operation
-            .raw_reference_changes
-            .iter()
-            .map(|change| change.raw_path.as_str())
-            .collect::<BTreeSet<_>>();
+        let raw_paths = raw_paths_in_lock_order(
+            operation
+                .raw_reference_changes
+                .iter()
+                .map(|change| change.raw_path.as_str()),
+        );
         for raw_path in raw_paths {
             // Serialize link/release decisions even when the canonical blob row does not exist.
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -1677,21 +1741,24 @@ impl ArchiveStorageAdapter {
                 if stored_blob_identity.as_deref() != Some(raw_identity) {
                     bail!("canonical Raw blob identity conflicts with existing metadata");
                 }
-                sqlx::query(
-                    "INSERT INTO proxy_raw_payload_blob_links
-                        (raw_path, owner_kind, owner_id, raw_role)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (raw_path, owner_kind, owner_id, raw_role) DO NOTHING",
-                )
-                .bind(&change.raw_path)
-                .bind(&change.owner_kind)
-                .bind(change.owner_id)
-                .bind(&change.raw_role)
-                .execute(&mut *transaction)
-                .await
-                .context("insert canonical Raw blob link")?;
+                // Live links are maintained by the source-table triggers/helpers. Archive
+                // ownership stays in archive_raw_reference_changes so an archive release can
+                // never remove a still-live owner link for the same path and owner identity.
             }
             if change.action == RawReferenceAction::Release {
+                // Lock the parent row before counting. Live-link inserts take a foreign-key
+                // key-share lock, so an in-flight source write must finish before the count;
+                // otherwise the delete below could cascade away a newly committed live link.
+                sqlx::query(
+                    "SELECT raw_path
+                       FROM proxy_raw_payload_blobs
+                      WHERE raw_path = $1
+                      FOR UPDATE",
+                )
+                .bind(&change.raw_path)
+                .fetch_optional(&mut *transaction)
+                .await
+                .context("lock canonical Raw blob before release")?;
                 let canonical_blob = sqlx::query(
                     "SELECT b.file_identity_sha256,
                             COUNT(l.id)::BIGINT AS link_count
@@ -1709,9 +1776,11 @@ impl ArchiveStorageAdapter {
                     let canonical_identity: Option<String> =
                         canonical_blob.try_get("file_identity_sha256")?;
                     let canonical_link_count: i64 = canonical_blob.try_get("link_count")?;
-                    if canonical_link_count != 0
-                        && canonical_identity.as_deref() != Some(raw_identity)
-                    {
+                    let identity_conflicts = match canonical_identity.as_deref() {
+                        Some(identity) => identity != raw_identity,
+                        None => canonical_link_count != 0,
+                    };
+                    if identity_conflicts {
                         bail!("canonical Raw release identity conflicts with active metadata");
                     }
                 }
@@ -1760,28 +1829,37 @@ impl ArchiveStorageAdapter {
                     .await
                     .context("release active archive Raw reference for batch")?;
                 }
-                let archive_reference_count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*)::BIGINT
-                       FROM archive_raw_reference_changes
-                      WHERE raw_path = $1 AND action = 'link' AND state = 'active'",
-                )
+                let ownership = sqlx::query(&format!(
+                    "SELECT
+                                (SELECT COUNT(*)::BIGINT
+                                   FROM proxy_raw_payload_blob_links
+                                  WHERE raw_path = $1) AS live_links,
+                                (SELECT COUNT(*)::BIGINT
+                                   FROM archive_raw_reference_changes
+                                  WHERE raw_path = $1 AND action = 'link' AND state = 'active')
+                                    AS archive_links,
+                                (SELECT COUNT(*)::BIGINT
+                                   FROM ({ACTIVE_RAW_REFERENCE_UNION}) AS active_raw_references)
+                                    AS distinct_links"
+                ))
                 .bind(&change.raw_path)
                 .fetch_one(&mut *transaction)
                 .await
-                .context("count archive Raw references before canonical release")?;
-                if archive_reference_count == 0 {
+                .context("count live and archive Raw references after release")?;
+                let ownership = RawOwnershipCounts {
+                    live_links: ownership.try_get("live_links")?,
+                    archive_links: ownership.try_get("archive_links")?,
+                    distinct_links: ownership.try_get("distinct_links")?,
+                };
+                if ownership.can_remove_blob()? {
                     sqlx::query(
-                        "DELETE FROM proxy_raw_payload_blob_links
-                          WHERE raw_path = $1 AND owner_kind = $2
-                            AND owner_id = $3 AND raw_role = $4",
+                        "DELETE FROM proxy_raw_payload_blobs
+                          WHERE raw_path = $1",
                     )
                     .bind(&change.raw_path)
-                    .bind(&change.owner_kind)
-                    .bind(change.owner_id)
-                    .bind(&change.raw_role)
                     .execute(&mut *transaction)
                     .await
-                    .context("release canonical Raw blob link")?;
+                    .context("release unowned canonical Raw blob metadata")?;
                 }
             }
             sqlx::query(
@@ -2202,11 +2280,11 @@ impl ArchiveStorageAdapter {
             return Ok(false);
         }
 
-        let raw_paths = plan
-            .raw_reference_checks
-            .iter()
-            .map(|check| check.raw_path.as_str())
-            .collect::<BTreeSet<_>>();
+        let raw_paths = raw_paths_in_lock_order(
+            plan.raw_reference_checks
+                .iter()
+                .map(|check| check.raw_path.as_str()),
+        );
         for raw_path in raw_paths {
             // Match publish's lock order so prune cannot race a new Raw ownership link.
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -2273,20 +2351,10 @@ impl ArchiveStorageAdapter {
         }
 
         for check in &plan.raw_reference_checks {
-            let active_refs: i64 = sqlx::query_scalar(
+            let active_refs: i64 = sqlx::query_scalar(&format!(
                 "SELECT COUNT(*)::BIGINT
-                   FROM (
-                        SELECT raw_path, owner_kind, owner_id, raw_role
-                          FROM proxy_raw_payload_blob_links
-                         WHERE raw_path = $1
-                        UNION
-                        SELECT raw_path, owner_kind, owner_id, raw_role
-                          FROM archive_raw_reference_changes
-                         WHERE raw_path = $1
-                           AND action = 'link'
-                           AND state = 'active'
-                   ) AS active_raw_references",
-            )
+                   FROM ({ACTIVE_RAW_REFERENCE_UNION}) AS active_raw_references"
+            ))
             .bind(&check.raw_path)
             .fetch_one(&mut *transaction)
             .await
@@ -2300,8 +2368,12 @@ impl ArchiveStorageAdapter {
                         COUNT(raw_identity_sha256)::BIGINT AS known_identity_rows,
                         COUNT(DISTINCT raw_identity_sha256)::BIGINT AS identity_count,
                         MIN(raw_identity_sha256) AS raw_identity_sha256
-                   FROM archive_raw_reference_changes
-                  WHERE raw_path = $1",
+                   FROM (
+                        SELECT DISTINCT raw_path, owner_kind, owner_id, raw_role,
+                               raw_identity_sha256
+                          FROM archive_raw_reference_changes
+                         WHERE raw_path = $1
+                   ) AS distinct_archive_references",
             )
             .bind(&check.raw_path)
             .fetch_one(&mut *transaction)

@@ -159,6 +159,26 @@ fn archive_publication_validation_covers_node_health_and_replay_identity() {
         )
         .unwrap();
 
+    let release = RawReferenceChange {
+        archive_batch_id: operation.manifest.archive_batch_id,
+        raw_path: "2026/10/request.bin".to_owned(),
+        owner_kind: "invocation".to_owned(),
+        owner_id: 1,
+        raw_role: "request".to_owned(),
+        action: RawReferenceAction::Release,
+        raw_identity_sha256: Some(digest("raw")),
+    };
+    let mut duplicate_release = operation.clone();
+    duplicate_release.raw_reference_changes = vec![release.clone(), release];
+    assert!(
+        duplicate_release
+            .validate(
+                Path::new("/var/lib/codex/archive"),
+                Path::new("/var/lib/codex/raw"),
+            )
+            .is_err()
+    );
+
     let mut invalid = operation;
     invalid.replay_markers[0].archive_sha256 = digest("other");
     assert!(
@@ -168,6 +188,61 @@ fn archive_publication_validation_covers_node_health_and_replay_identity() {
                 Path::new("/var/lib/codex/raw"),
             )
             .is_err()
+    );
+}
+
+#[test]
+fn raw_release_keeps_shared_live_ownership_and_uses_one_lock_order() {
+    assert!(
+        !RawOwnershipCounts {
+            live_links: 1,
+            archive_links: 0,
+            distinct_links: 1,
+        }
+        .can_remove_blob()
+        .unwrap()
+    );
+    assert!(
+        !RawOwnershipCounts {
+            live_links: 1,
+            archive_links: 1,
+            distinct_links: 1,
+        }
+        .can_remove_blob()
+        .unwrap()
+    );
+    assert!(
+        !RawOwnershipCounts {
+            live_links: 0,
+            archive_links: 1,
+            distinct_links: 1,
+        }
+        .can_remove_blob()
+        .unwrap()
+    );
+    assert!(
+        RawOwnershipCounts {
+            live_links: 0,
+            archive_links: 0,
+            distinct_links: 0,
+        }
+        .can_remove_blob()
+        .unwrap()
+    );
+    assert!(
+        RawOwnershipCounts {
+            live_links: -1,
+            archive_links: 0,
+            distinct_links: 0,
+        }
+        .can_remove_blob()
+        .is_err()
+    );
+
+    let lock_paths = raw_paths_in_lock_order(["z/raw.bin", "a/raw.bin", "z/raw.bin"]);
+    assert_eq!(
+        lock_paths.into_iter().collect::<Vec<_>>(),
+        vec!["a/raw.bin", "z/raw.bin"]
     );
 }
 
