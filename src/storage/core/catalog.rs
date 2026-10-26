@@ -670,6 +670,7 @@ fn account_table(name: &str) -> bool {
             | "pool_upstream_account_limit_samples"
             | "pool_upstream_account_model_catalogs"
             | "pool_upstream_account_model_routes"
+            | "pool_upstream_account_selected_touch_outbox"
             | "pool_upstream_account_tags"
             | "pool_upstream_accounts"
             | "prompt_cache_conversation_bindings"
