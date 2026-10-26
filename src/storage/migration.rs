@@ -1300,7 +1300,18 @@ where
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
     ) -> Result<()> {
-        let engine = self.clone();
+        let engine = Self {
+            source: Arc::clone(&self.source),
+            target: Arc::clone(&self.target),
+            metadata: Arc::clone(&self.metadata),
+            limits: self.limits,
+            control: self.control.clone(),
+            fence: self.fence.clone(),
+            module: self.module,
+            target_identity: self.target_identity.clone(),
+            installation_id: self.installation_id.clone(),
+            authority_generation: self.authority_generation,
+        };
         let gate = gate.clone();
         tokio::spawn(async move {
             engine
