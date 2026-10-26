@@ -42,7 +42,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
 CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
 CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
@@ -63,6 +63,37 @@ TRIAL_EXECUTION_ORDER = [
 
 class AcceptanceError(ValueError):
     """The evidence is incomplete, inconsistent, or failed an acceptance gate."""
+
+
+BASELINE_NEGATIVE_CONTROL_FAILURE = "source_artifact_conservation"
+
+
+def baseline_negative_control_oracle(error: BaseException) -> dict[str, Any] | None:
+    """Classify the known baseline duplicate-publication defect without weakening candidate gates."""
+    message = str(error)
+    match = re.fullmatch(
+        r"(?P<dataset>[a-z_]+) source/artifact conservation failed: "
+        r"lost=(?P<lost>[0-9]+), duplicates=(?P<duplicates>[0-9]+)",
+        message,
+    )
+    if match is None:
+        return None
+    dataset = match.group("dataset")
+    allowed_datasets = {
+        definition["manifest_dataset"] for definition in DATASETS.values()
+    }
+    lost_rows = int(match.group("lost"))
+    duplicate_rows = int(match.group("duplicates"))
+    if dataset not in allowed_datasets or lost_rows != 0 or duplicate_rows <= 0:
+        return None
+    return {
+        "verified": False,
+        "failure_class": BASELINE_NEGATIVE_CONTROL_FAILURE,
+        "dataset": dataset,
+        "lost_rows": lost_rows,
+        "duplicate_rows": duplicate_rows,
+        "error": message,
+    }
 
 
 def canonical_json(value: Any) -> bytes:
@@ -629,7 +660,40 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     _require(dataset_status.get("summary_proof_missing") == [], f"candidate summary proof for {name} has missing obligations")
 
             oracle = trial.get("oracle")
-            _require(isinstance(oracle, dict) and oracle.get("verified") is True, "source/artifact oracle evidence is missing")
+            _require(isinstance(oracle, dict), "source/artifact oracle evidence is missing")
+            if version == "baseline" and oracle.get("verified") is False:
+                _require(
+                    oracle.get("failure_class") == BASELINE_NEGATIVE_CONTROL_FAILURE,
+                    "baseline negative-control failure class is invalid",
+                )
+                dataset = oracle.get("dataset")
+                _require(
+                    dataset in {definition["manifest_dataset"] for definition in DATASETS.values()},
+                    "baseline negative-control dataset is invalid",
+                )
+                lost_rows = oracle.get("lost_rows")
+                duplicate_rows = oracle.get("duplicate_rows")
+                _require(
+                    lost_rows == 0
+                    and isinstance(duplicate_rows, int)
+                    and not isinstance(duplicate_rows, bool)
+                    and duplicate_rows > 0,
+                    "baseline negative-control counts are invalid",
+                )
+                _require(
+                    oracle.get("error")
+                    == f"{dataset} source/artifact conservation failed: "
+                    f"lost=0, duplicates={duplicate_rows}",
+                    "baseline negative-control error is not bound to its counts",
+                )
+                trial_read_metrics.append(
+                    latency_summary([float(item["elapsed_ms"]) for item in raw_samples["read"]])
+                )
+                trial_write_metrics.append(
+                    latency_summary([float(item["elapsed_ms"]) for item in raw_samples["write"]])
+                )
+                continue
+            _require(oracle.get("verified") is True, "source/artifact oracle evidence is missing")
             datasets = oracle.get("datasets")
             _require(isinstance(datasets, dict) and set(datasets) == set(DATASETS), "oracle dataset evidence is incomplete")
             for name in DATASETS:

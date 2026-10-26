@@ -40,6 +40,7 @@ from contract import (
     TRIAL_EXECUTION_ORDER,
     TRIALS_PER_VERSION,
     AcceptanceError,
+    baseline_negative_control_oracle,
     parse_time,
     sha256_bytes,
     task_run_is_accepted_competitor_chunk,
@@ -1455,17 +1456,27 @@ def run_trial(
             log_path=evidence_dir / "logs" / f"{version}-{index}.log",
         )
         container_stopped = True
-        oracle = verify_trial(
-            main_db,
-            trial_dir / "archives",
-            added,
-            attempt_states,
-            template / "codex_vibe_monitor.db",
-            cutoff,
-            root / f"oracle-{version}-{index}",
-            require_summary_proof=version == "candidate",
-            budget_check=lambda: remaining_budget(phase_started),
-        )
+        try:
+            oracle = verify_trial(
+                main_db,
+                trial_dir / "archives",
+                added,
+                attempt_states,
+                template / "codex_vibe_monitor.db",
+                cutoff,
+                root / f"oracle-{version}-{index}",
+                require_summary_proof=version == "candidate",
+                budget_check=lambda: remaining_budget(phase_started),
+            )
+        except AcceptanceError as error:
+            negative_control = (
+                baseline_negative_control_oracle(error)
+                if version == "baseline"
+                else None
+            )
+            if negative_control is None:
+                raise
+            oracle = negative_control
     except BaseException as error:
         trial_error = error
     finally:

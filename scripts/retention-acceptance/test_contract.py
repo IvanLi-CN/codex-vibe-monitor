@@ -571,6 +571,31 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "found lost"):
             validate_evidence(evidence)
 
+    def test_baseline_duplicate_publication_is_recorded_as_negative_control(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = {
+            "verified": False,
+            "failure_class": "source_artifact_conservation",
+            "dataset": "codex_invocations",
+            "lost_rows": 0,
+            "duplicate_rows": 132,
+            "error": "codex_invocations source/artifact conservation failed: lost=0, duplicates=132",
+        }
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_baseline_negative_control_cannot_hide_lost_rows(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = {
+            "verified": False,
+            "failure_class": "source_artifact_conservation",
+            "dataset": "codex_invocations",
+            "lost_rows": 1,
+            "duplicate_rows": 132,
+            "error": "codex_invocations source/artifact conservation failed: lost=1, duplicates=132",
+        }
+        with self.assertRaisesRegex(AcceptanceError, "baseline negative-control counts"):
+            validate_evidence(evidence)
+
     def test_write_hold_is_recomputed_from_raw_histogram_scrapes(self) -> None:
         evidence = valid_evidence()
         trial = evidence["versions"]["candidate"]["trials"][0]
