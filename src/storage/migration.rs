@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     future::Future,
     io::Write,
     path::{Path, PathBuf},
@@ -10,6 +10,9 @@ use std::{
     },
     time::Duration,
 };
+
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -1295,6 +1298,23 @@ where
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
     ) -> Result<()> {
+        let engine = self.clone();
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            engine
+                .switch_authority_inner(&gate, expected, switch_budget)
+                .await
+        })
+        .await
+        .context("migration authority switch task panicked")?
+    }
+
+    async fn switch_authority_inner(
+        &self,
+        gate: &ModuleGenerationGate,
+        expected: AuthorityRecoveryContext,
+        switch_budget: Duration,
+    ) -> Result<()> {
         self.ensure_ready().await?;
         self.advance_to_switching().await?;
         let deadline = tokio::time::Instant::now() + switch_budget;
@@ -2205,9 +2225,70 @@ fn file_store_lock(path: &Path) -> Arc<Mutex<()>> {
     lock
 }
 
+#[derive(Debug)]
+struct FileMigrationLock(File);
+
+#[cfg(unix)]
+fn acquire_file_lock(path: &Path) -> Result<FileMigrationLock> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("migration authority lock path has no parent"))?;
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "create migration authority lock directory {}",
+            parent.display()
+        )
+    })?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open migration authority lock {}", path.display()))?;
+    loop {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result == 0 {
+            return Ok(FileMigrationLock(file));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINTR) {
+            return Err(error)
+                .with_context(|| format!("lock migration authority {}", path.display()));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn acquire_file_lock(path: &Path) -> Result<FileMigrationLock> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("migration authority lock path has no parent"))?;
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "create migration authority lock directory {}",
+            parent.display()
+        )
+    })?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open migration authority lock {}", path.display()))?;
+    Ok(FileMigrationLock(file))
+}
+
+#[cfg(unix)]
+impl Drop for FileMigrationLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FileMigrationStore {
     path: Arc<PathBuf>,
+    file_lock_path: Arc<PathBuf>,
     initial_context: AuthorityRecoveryContext,
     lock: Arc<Mutex<()>>,
 }
@@ -2215,9 +2296,12 @@ pub(crate) struct FileMigrationStore {
 impl FileMigrationStore {
     pub(crate) fn new(path: impl Into<PathBuf>, initial_context: AuthorityRecoveryContext) -> Self {
         let path = path.into();
+        let mut file_lock_path = path.as_os_str().to_owned();
+        file_lock_path.push(".lock");
         Self {
             lock: file_store_lock(&path),
             path: Arc::new(path),
+            file_lock_path: Arc::new(file_lock_path.into()),
             initial_context,
         }
     }
@@ -2228,7 +2312,15 @@ impl FileMigrationStore {
 
     async fn read_state(&self) -> Result<FileMigrationState> {
         let _lock = self.lock.lock().await;
+        let _file_lock = self.acquire_file_lock().await?;
         self.read_state_unlocked().await
+    }
+
+    async fn acquire_file_lock(&self) -> Result<FileMigrationLock> {
+        let path = Arc::clone(&self.file_lock_path);
+        tokio::task::spawn_blocking(move || acquire_file_lock(&path))
+            .await
+            .context("migration authority lock task panicked")?
     }
 
     async fn read_state_unlocked(&self) -> Result<FileMigrationState> {
@@ -2248,13 +2340,18 @@ impl FileMigrationStore {
         F: FnOnce(&mut FileMigrationState) -> Result<Value>,
     {
         let lock = Arc::clone(&self.lock).lock_owned().await;
+        let file_lock = self.acquire_file_lock().await?;
         let mut state = self.read_state_unlocked().await?;
         let value = update(&mut state)?;
         let bytes = serde_json::to_vec_pretty(&state).context("serialize migration state")?;
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || atomic_write(&path, &bytes))
-            .await
-            .context("file migration state task panicked")??;
+        tokio::task::spawn_blocking(move || {
+            let _lock = lock;
+            let _file_lock = file_lock;
+            atomic_write(&path, &bytes)
+        })
+        .await
+        .context("file migration state task panicked")??;
         Ok(value)
     }
 
