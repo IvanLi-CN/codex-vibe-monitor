@@ -128,7 +128,12 @@ def verify_archive(card: dict[str, Any], root: pathlib.Path) -> None:
     if not isinstance(artifact, str) or not artifact:
         raise ValueError(f"card archive name missing for {card.get('component', 'unknown')}")
     relative_card = pathlib.Path(card["_path"])
-    archive = root / relative_card.parent / artifact
+    root_resolved = root.resolve()
+    archive = (root_resolved / relative_card.parent / artifact).resolve()
+    try:
+        archive.relative_to(root_resolved)
+    except ValueError as error:
+        raise ValueError(f"card archive escapes input root for {card.get('component', 'unknown')}") from error
     if not archive.is_file():
         raise ValueError(f"card archive missing for {card.get('component', 'unknown')}: {archive}")
     expected = card.get("archiveSha256")

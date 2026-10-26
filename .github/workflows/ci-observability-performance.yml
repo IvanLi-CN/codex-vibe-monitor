@@ -304,6 +304,7 @@ jobs:
           name: observability-cached-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-image/
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   observability-performance-producer:
@@ -705,6 +706,7 @@ jobs:
           name: observability-build-${{ github.run_id }}-${{ matrix.component }}
           path: ${{ runner.temp }}/observability-build/${{ matrix.component }}/
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   observability-performance-image:
@@ -1297,4 +1299,5 @@ jobs:
           name: observability-build-report-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-build/build-report.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 14

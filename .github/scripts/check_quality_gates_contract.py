@@ -499,8 +499,10 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require("$RUST_IMAGE" in str(step_config(producer, "Build Rust production artifact", workflow_path).get("run", "")), f"{workflow_path} Rust producer must use the resolved immutable base image")
     require("$WEB_IMAGE" in str(step_config(producer, "Build Web production artifact", workflow_path).get("run", "")), f"{workflow_path} Web producer must use the resolved immutable base image")
     require("$RUNTIME_IMAGE" in runtime_run, f"{workflow_path} runtime-base producer must use the resolved immutable base image")
+    cached_upload = uses_step_config(resolve, "Upload cached candidate image for assembly", "actions/upload-artifact@v7", workflow_path)
+    require(cached_upload.get("with", {}).get("name") == "observability-cached-image-${{ github.run_id }}" and cached_upload.get("with", {}).get("overwrite") is True, f"{workflow_path} cached image artifacts must replace the prior attempt")
     producer_upload = uses_step_config(producer, "Upload verified producer artifact", "actions/upload-artifact@v7", workflow_path)
-    require(producer_upload.get("with", {}).get("name") == "observability-build-${{ github.run_id }}-${{ matrix.component }}", f"{workflow_path} producer artifacts must be run/component scoped")
+    require(producer_upload.get("with", {}).get("name") == "observability-build-${{ github.run_id }}-${{ matrix.component }}" and producer_upload.get("with", {}).get("overwrite") is True, f"{workflow_path} producer artifacts must be run/component scoped and replace the prior attempt")
 
     require(image.get("needs") == ["observability-performance-resolve", "observability-performance-producer"] and "always()" in str(image.get("if", "")) and "effective_build_path == 'canonical'" in str(image.get("if", "")) and "complete_image_cache_hit == 'true'" in str(image.get("if", "")) and image.get("runs-on") == RUNNER_X64 and image.get("timeout-minutes") == 15, f"{workflow_path} image join must distinguish canonical skip, complete-image hit and producer failure")
     image_checkout = checkout_step(image, "Checkout candidate assembly sources", f"{workflow_path}.jobs.observability-performance-image")
@@ -671,7 +673,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         f"{workflow_path} build report must bind identity, measured Actions timings and distinguish expected producer skips from failures",
     )
     report_upload = uses_step_config(report, "Upload build report", "actions/upload-artifact@v7", workflow_path)
-    require(report_upload.get("with", {}).get("name") == "observability-build-report-${{ github.run_id }}" and report_upload.get("with", {}).get("retention-days") == 14, f"{workflow_path} build report retention drifted")
+    require(report_upload.get("with", {}).get("name") == "observability-build-report-${{ github.run_id }}" and report_upload.get("with", {}).get("overwrite") is True and report_upload.get("with", {}).get("retention-days") == 14, f"{workflow_path} build report retention or rerun policy drifted")
 
 
 def require_pr_smoke_artifact_contract(smoke_job: dict[str, Any], build_job: dict[str, Any]) -> None:

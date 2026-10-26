@@ -460,6 +460,40 @@ class PerformanceBuildContractTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError):
             contract.require_observability_performance_contract(workflow)
 
+    def test_run_scoped_build_artifacts_replace_prior_attempts(self) -> None:
+        for job_id, step_name in (
+            ("observability-performance-resolve", "Upload cached candidate image for assembly"),
+            ("observability-performance-producer", "Upload verified producer artifact"),
+            ("observability-performance-build-report", "Upload build report"),
+        ):
+            step = next(step for step in self.workflow["jobs"][job_id]["steps"] if step["name"] == step_name)
+            self.assertIs(True, step["with"].get("overwrite"))
+        workflow = copy.deepcopy(self.workflow)
+        producer_upload = next(
+            step for step in workflow["jobs"]["observability-performance-producer"]["steps"]
+            if step["name"] == "Upload verified producer artifact"
+        )
+        producer_upload["with"].pop("overwrite")
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
+
+    def test_build_report_rejects_archive_outside_input_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root.parent / "outside-build-archive.tar.gz"
+            outside.write_bytes(b"outside")
+            card = {
+                "component": "rust",
+                "_path": "rust/component.json",
+                "artifact": str(outside),
+                "archiveSha256": hashlib.sha256(b"outside").hexdigest(),
+            }
+            try:
+                with self.assertRaisesRegex(ValueError, "escapes input root"):
+                    report.verify_archive(card, root)
+            finally:
+                outside.unlink()
+
     def test_build_report_rejects_corrupt_component_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
