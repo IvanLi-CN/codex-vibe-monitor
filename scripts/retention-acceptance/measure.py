@@ -46,7 +46,7 @@ from contract import (
     task_run_is_accepted_terminal,
     validate_evidence,
 )
-from fixture import populate_template, prepare_competitor, shanghai_cutoff
+from fixture import CONTROLLED_TASK_KEYS, populate_template, prepare_competitor, shanghai_cutoff
 from oracle import verify_trial
 
 
@@ -1042,6 +1042,43 @@ def competitor_file_oracle(raw_dir: Path) -> dict[str, Any]:
     }
 
 
+def quiesce_controlled_tasks(maintenance_db: Path, started: float) -> None:
+    """Stop new fixture-owned dispatch while allowing an active owner to finish."""
+    timeout = min(30.0, remaining_budget(started))
+    connection = sqlite3.connect(maintenance_db, timeout=timeout)
+    connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+    placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+    now = utc_now()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            f"UPDATE managed_tasks "
+            f"SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
+            f"WHERE task_key IN ({placeholders})",
+            (now, *CONTROLLED_TASK_KEYS),
+        )
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def controlled_task_runs_idle(maintenance_db: Path) -> bool:
+    connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
+    try:
+        placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+        pending = connection.execute(
+            f"SELECT COUNT(*) FROM managed_task_runs "
+            f"WHERE task_key IN ({placeholders}) AND status IN ('running','requested','queued')",
+            CONTROLLED_TASK_KEYS,
+        ).fetchone()[0]
+        return pending == 0
+    finally:
+        connection.close()
+
+
 def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, int]) -> dict[str, Any]:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
@@ -1210,6 +1247,7 @@ def wait_for_task_evidence(
     )
     latest: list[dict[str, Any]] = []
     last_error: AcceptanceError | None = None
+    quiesced = False
     while time.monotonic() < deadline:
         latest = task_runs(maintenance_db)
         try:
@@ -1221,7 +1259,15 @@ def wait_for_task_evidence(
             # for every background owner to become idle would turn one 10x cohort check into
             # a full backlog drain and make the six-trial comparison exceed its 900s budget.
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
-                return latest
+                if not quiesced:
+                    quiesce_controlled_tasks(maintenance_db, started)
+                    quiesced = True
+                elif controlled_task_runs_idle(maintenance_db):
+                    return latest
+                else:
+                    last_error = AcceptanceError("selected retention work is still draining after dispatch was frozen")
+                    time.sleep(0.5)
+                    continue
             last_error = AcceptanceError(
                 "archive proofs, 10x source conversion, or fixed competitor files are still draining"
             )

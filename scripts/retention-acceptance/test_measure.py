@@ -253,9 +253,11 @@ class MeasurementBudgetTests(unittest.TestCase):
         ]
         with (
             patch("measure.remaining_budget", return_value=120),
-            patch("measure.time.monotonic", side_effect=[0, 0, 31]),
+            patch("measure.time.monotonic", side_effect=[0, 0, 31, 31]),
             patch("measure.time.sleep"),
-            patch("measure.task_runs", side_effect=[[], valid_runs]),
+            patch("measure.task_runs", side_effect=[[], valid_runs, valid_runs]),
+            patch("measure.quiesce_controlled_tasks") as quiesce_controlled,
+            patch("measure.controlled_task_runs_idle", return_value=True) as task_runs_idle,
             patch(
                 "measure.archive_proof_status",
                 return_value={
@@ -289,6 +291,8 @@ class MeasurementBudgetTests(unittest.TestCase):
             )
 
         self.assertEqual(result, valid_runs)
+        quiesce_controlled.assert_called_once_with(Path("maintenance.sqlite"), 0)
+        task_runs_idle.assert_called_once_with(Path("maintenance.sqlite"))
 
     def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
