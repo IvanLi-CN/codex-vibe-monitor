@@ -351,6 +351,7 @@ struct ProgressFlushCoordinator {
 #[derive(Debug)]
 pub(crate) struct StorageMigrationRuntime {
     state: Arc<Mutex<StorageMigrationRuntimeState>>,
+    persistence: Arc<Mutex<()>>,
     events: watch::Sender<StorageMigrationEvent>,
     event_receiver: watch::Receiver<StorageMigrationEvent>,
     pool: Option<Pool<Sqlite>>,
@@ -536,6 +537,7 @@ impl StorageMigrationRuntime {
                 progress_flush_deadline: None,
                 progress_dirty: false,
             })),
+            persistence: Arc::new(Mutex::new(())),
             events,
             event_receiver,
             pool,
@@ -576,6 +578,7 @@ impl StorageMigrationRuntime {
         let weak_state: Weak<Mutex<StorageMigrationRuntimeState>> = Arc::downgrade(&self.state);
         let events = self.events.clone();
         let pool = self.pool.clone();
+        let persistence = self.persistence.clone();
         #[cfg(test)]
         let progress_publish_count = self.progress_publish_count.clone();
         #[cfg(test)]
@@ -611,13 +614,16 @@ impl StorageMigrationRuntime {
                     state.clone()
                 };
 
-                #[cfg(test)]
-                progress_persisting.store(true, Ordering::Release);
-                let persisted = persist_state_to_pool(pool.as_ref(), &snapshot)
-                    .await
-                    .is_ok();
-                #[cfg(test)]
-                progress_persisting.store(false, Ordering::Release);
+                let persisted = persist_state_if_current(
+                    &state,
+                    persistence.as_ref(),
+                    pool.as_ref(),
+                    &snapshot,
+                    #[cfg(test)]
+                    progress_persisting.as_ref(),
+                )
+                .await
+                .unwrap_or(false);
 
                 let Some(state) = weak_state.upgrade() else {
                     break;
@@ -688,78 +694,103 @@ impl StorageMigrationRuntime {
         &self,
         request: StorageMigrationControlRequest,
     ) -> Result<StorageMigrationResponse> {
-        let mut state = self.state.lock().await;
-        let previous = state.clone();
-        let now = Utc::now();
-        let action = if request.paused {
-            if !can_pause_state(state.status.state) {
-                bail!("pause control is unavailable in {:?}", state.status.state);
-            }
-            StorageMigrationControlAction::Pause
-        } else if matches!(state.status.state, MigrationState::Pending) {
-            if !state.target_configured {
-                bail!("PostgreSQL storage is not configured");
-            }
-            StorageMigrationControlAction::Start
-        } else if can_resume_state(state.status.state) {
-            StorageMigrationControlAction::Resume
-        } else {
-            bail!("resume control is unavailable in {:?}", state.status.state);
-        };
-        match action {
-            StorageMigrationControlAction::Start => {
-                state
-                    .status
-                    .transition_to(MigrationState::Preparing, now.timestamp_millis())?;
-            }
-            StorageMigrationControlAction::Pause => {
-                state.status.hold_reason = Some("operator_pause".to_string());
-                state
-                    .status
-                    .transition_to(MigrationState::Paused, now.timestamp_millis())?;
-            }
-            StorageMigrationControlAction::Resume => {
-                if !matches!(
-                    state.status.state,
-                    MigrationState::Paused | MigrationState::Blocked
-                ) {
-                    bail!("migration is not paused or blocked");
+        let (previous, snapshot) = {
+            let mut state = self.state.lock().await;
+            let previous = state.clone();
+            let now = Utc::now();
+            let action = if request.paused {
+                if !can_pause_state(state.status.state) {
+                    bail!("pause control is unavailable in {:?}", state.status.state);
                 }
-                state.status.hold_reason = None;
-                state
-                    .status
-                    .transition_to(MigrationState::Preparing, now.timestamp_millis())?;
+                StorageMigrationControlAction::Pause
+            } else if matches!(state.status.state, MigrationState::Pending) {
+                if !state.target_configured {
+                    bail!("PostgreSQL storage is not configured");
+                }
+                StorageMigrationControlAction::Start
+            } else if can_resume_state(state.status.state) {
+                StorageMigrationControlAction::Resume
+            } else {
+                bail!("resume control is unavailable in {:?}", state.status.state);
+            };
+            match action {
+                StorageMigrationControlAction::Start => {
+                    state
+                        .status
+                        .transition_to(MigrationState::Preparing, now.timestamp_millis())?;
+                }
+                StorageMigrationControlAction::Pause => {
+                    state.status.hold_reason = Some("operator_pause".to_string());
+                    state
+                        .status
+                        .transition_to(MigrationState::Paused, now.timestamp_millis())?;
+                }
+                StorageMigrationControlAction::Resume => {
+                    if !matches!(
+                        state.status.state,
+                        MigrationState::Paused | MigrationState::Blocked
+                    ) {
+                        bail!("migration is not paused or blocked");
+                    }
+                    state.status.hold_reason = None;
+                    state
+                        .status
+                        .transition_to(MigrationState::Preparing, now.timestamp_millis())?;
+                }
+            }
+
+            let action = match action {
+                StorageMigrationControlAction::Start => "start",
+                StorageMigrationControlAction::Pause => "pause",
+                StorageMigrationControlAction::Resume => "resume",
+            };
+            state.last_action = Some(action.to_string());
+            state.last_action_at = Some(now.to_rfc3339());
+            advance_revision(&mut state.response)?;
+            refresh_response(&mut state);
+            let had_pending_progress = state.progress_dirty;
+            state.progress_dirty = false;
+            state.progress_flush_deadline = None;
+            if had_pending_progress {
+                state.last_progress_published_at = Some(Instant::now());
+            }
+            (previous, state.clone())
+        };
+
+        match persist_state_if_current(
+            &self.state,
+            self.persistence.as_ref(),
+            self.pool.as_ref(),
+            &snapshot,
+            #[cfg(test)]
+            self.progress_persisting.as_ref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                let state = self.state.lock().await;
+                if state.response.revision != snapshot.response.revision {
+                    return Ok(state.response.clone());
+                }
+                let response = state.response.clone();
+                self.progress_flush.notify.notify_one();
+                self.events.send_replace(StorageMigrationEvent {
+                    kind: "status",
+                    revision: response.revision,
+                    status: response.clone(),
+                });
+                Ok(response)
+            }
+            Ok(false) => Ok(self.snapshot().await),
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision == snapshot.response.revision {
+                    *state = previous;
+                    self.progress_flush.notify.notify_one();
+                }
+                Err(error)
             }
         }
-
-        let action = match action {
-            StorageMigrationControlAction::Start => "start",
-            StorageMigrationControlAction::Pause => "pause",
-            StorageMigrationControlAction::Resume => "resume",
-        };
-        state.last_action = Some(action.to_string());
-        state.last_action_at = Some(now.to_rfc3339());
-        advance_revision(&mut state.response)?;
-        refresh_response(&mut state);
-        let had_pending_progress = state.progress_dirty;
-        state.progress_dirty = false;
-        state.progress_flush_deadline = None;
-        if had_pending_progress {
-            state.last_progress_published_at = Some(Instant::now());
-        }
-        if let Err(error) = self.persist_state(&state).await {
-            *state = previous;
-            self.progress_flush.notify.notify_one();
-            return Err(error);
-        }
-        let response = state.response.clone();
-        self.progress_flush.notify.notify_one();
-        self.events.send_replace(StorageMigrationEvent {
-            kind: "status",
-            revision: response.revision,
-            status: response.clone(),
-        });
-        Ok(response)
     }
 
     /// Publish worker-observed progress without deriving an ETA from a non-converging backlog.
@@ -767,80 +798,131 @@ impl StorageMigrationRuntime {
         &self,
         mut progress: StorageMigrationProgress,
     ) -> Result<StorageMigrationResponse> {
-        let mut state = self.state.lock().await;
-        let previous = state.clone();
-        if matches!(
-            state.status.state,
-            MigrationState::Paused | MigrationState::Blocked
-        ) {
-            bail!("migration progress is held while the migration is paused or blocked");
-        }
-        if let (Some(replay), Some(incoming)) = (
-            progress.replay_throughput_per_sec,
-            progress.incoming_rate_per_sec,
-        ) && replay <= incoming
-        {
-            progress.converged = Some(false);
-            progress.eta_ms = None;
-        }
-        let now = Utc::now();
-        let next_state = MigrationState::from(progress.phase);
-        if state.status.state != next_state
-            && let Err(error) = state
-                .status
-                .transition_to(next_state, now.timestamp_millis())
-        {
-            *state = previous;
-            return Err(error);
-        }
-        state.response.progress = progress;
-        state.response.backlog.pending_keys = state.response.progress.pending_keys;
-        state.response.backlog.oldest_change_age_ms = state.response.progress.oldest_change_age_ms;
-        state.response.pressure.copy_throughput_per_sec =
-            state.response.progress.replay_throughput_per_sec;
-        state.response.pressure.incoming_change_rate_per_sec =
-            state.response.progress.incoming_rate_per_sec;
-        state.response.pressure.non_convergent = state.response.progress.converged == Some(false);
-        state.status.updated_at_epoch_ms =
-            now.timestamp_millis().max(state.status.updated_at_epoch_ms);
-        refresh_response(&mut state);
-        if let Err(error) = advance_revision(&mut state.response) {
-            *state = previous;
-            return Err(error);
-        }
+        let (previous, snapshot, monotonic_now) = {
+            let mut state = self.state.lock().await;
+            let previous = state.clone();
+            if matches!(
+                state.status.state,
+                MigrationState::Paused | MigrationState::Blocked
+            ) {
+                bail!("migration progress is held while the migration is paused or blocked");
+            }
+            if let (Some(replay), Some(incoming)) = (
+                progress.replay_throughput_per_sec,
+                progress.incoming_rate_per_sec,
+            ) && replay <= incoming
+            {
+                progress.converged = Some(false);
+                progress.eta_ms = None;
+            }
+            let now = Utc::now();
+            let next_state = MigrationState::from(progress.phase);
+            if state.status.state != next_state
+                && let Err(error) = state
+                    .status
+                    .transition_to(next_state, now.timestamp_millis())
+            {
+                *state = previous;
+                return Err(error);
+            }
+            state.response.progress = progress;
+            state.response.backlog.pending_keys = state.response.progress.pending_keys;
+            state.response.backlog.oldest_change_age_ms =
+                state.response.progress.oldest_change_age_ms;
+            state.response.pressure.copy_throughput_per_sec =
+                state.response.progress.replay_throughput_per_sec;
+            state.response.pressure.incoming_change_rate_per_sec =
+                state.response.progress.incoming_rate_per_sec;
+            state.response.pressure.non_convergent =
+                state.response.progress.converged == Some(false);
+            state.status.updated_at_epoch_ms =
+                now.timestamp_millis().max(state.status.updated_at_epoch_ms);
+            refresh_response(&mut state);
+            if let Err(error) = advance_revision(&mut state.response) {
+                *state = previous;
+                return Err(error);
+            }
 
-        let monotonic_now = Instant::now();
-        let publish_now = state.last_progress_published_at.is_none_or(|last| {
-            monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
-        });
-        if !publish_now {
-            state.progress_dirty = true;
-            state.progress_flush_deadline = state
-                .last_progress_published_at
-                .map(|last| last + STORAGE_MIGRATION_PROGRESS_INTERVAL);
-            let response = state.response.clone();
-            drop(state);
-            self.schedule_progress_flush();
-            return Ok(response);
-        }
+            let monotonic_now = Instant::now();
+            let publish_now = state.last_progress_published_at.is_none_or(|last| {
+                monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
+            });
+            if !publish_now {
+                state.progress_dirty = true;
+                state.progress_flush_deadline = state
+                    .last_progress_published_at
+                    .map(|last| last + STORAGE_MIGRATION_PROGRESS_INTERVAL);
+                let response = state.response.clone();
+                drop(state);
+                self.schedule_progress_flush();
+                return Ok(response);
+            }
 
-        if let Err(error) = self.persist_state(&state).await {
-            *state = previous;
-            return Err(error);
+            (previous, state.clone(), monotonic_now)
+        };
+
+        match persist_state_if_current(
+            &self.state,
+            self.persistence.as_ref(),
+            self.pool.as_ref(),
+            &snapshot,
+            #[cfg(test)]
+            self.progress_persisting.as_ref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision != snapshot.response.revision {
+                    return Ok(state.response.clone());
+                }
+                state.last_progress_published_at = Some(monotonic_now);
+                state.progress_dirty = false;
+                state.progress_flush_deadline = None;
+                let response = state.response.clone();
+                #[cfg(test)]
+                self.progress_publish_count.fetch_add(1, Ordering::Relaxed);
+                self.events.send_replace(StorageMigrationEvent {
+                    kind: "progress",
+                    revision: response.revision,
+                    status: response.clone(),
+                });
+                Ok(response)
+            }
+            Ok(false) => Ok(self.snapshot().await),
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision == snapshot.response.revision {
+                    *state = previous;
+                }
+                Err(error)
+            }
         }
-        state.last_progress_published_at = Some(monotonic_now);
-        state.progress_dirty = false;
-        state.progress_flush_deadline = None;
-        let response = state.response.clone();
-        #[cfg(test)]
-        self.progress_publish_count.fetch_add(1, Ordering::Relaxed);
-        self.events.send_replace(StorageMigrationEvent {
-            kind: "progress",
-            revision: response.revision,
-            status: response.clone(),
-        });
-        Ok(response)
     }
+}
+
+async fn persist_state_if_current(
+    state: &Arc<Mutex<StorageMigrationRuntimeState>>,
+    persistence: &Mutex<()>,
+    pool: Option<&Pool<Sqlite>>,
+    snapshot: &StorageMigrationRuntimeState,
+    #[cfg(test)] progress_persisting: &AtomicBool,
+) -> Result<bool> {
+    let _persistence_guard = persistence.lock().await;
+    let is_current = {
+        let state = state.lock().await;
+        state.response.revision == snapshot.response.revision
+    };
+    if !is_current {
+        return Ok(false);
+    }
+    #[cfg(test)]
+    progress_persisting.store(true, Ordering::Release);
+    let result = persist_state_to_pool(pool, snapshot).await;
+    #[cfg(test)]
+    progress_persisting.store(false, Ordering::Release);
+    result?;
+    Ok(true)
 }
 
 async fn persist_state_to_pool(

@@ -6,7 +6,7 @@ use crate::storage::migration_status::{
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use sqlx::sqlite::SqlitePoolOptions;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 async fn default_status_exposes_safe_target_and_unknown_progress() {
@@ -376,6 +376,182 @@ async fn progress_flush_releases_runtime_lock_during_persistence() {
     })
     .await
     .expect("the blocked progress flush should complete after SQLite is released");
+}
+
+#[tokio::test]
+async fn control_and_immediate_progress_persistence_do_not_block_snapshot() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration runtime should load"),
+    );
+    let held_connection = pool
+        .acquire()
+        .await
+        .expect("the single SQLite connection should be available");
+    let control = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .apply_control(StorageMigrationControlRequest { paused: false })
+                .await
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.progress_persistence_in_flight_for_test() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("control persistence should reach SQLite while the connection is held");
+    let snapshot = tokio::time::timeout(Duration::from_millis(250), runtime.snapshot())
+        .await
+        .expect("snapshot should not wait for control persistence");
+    assert_eq!(snapshot.state, StorageMigrationState::Preparing);
+
+    drop(held_connection);
+    control
+        .await
+        .expect("control task should join")
+        .expect("migration should start");
+
+    let held_connection = pool
+        .acquire()
+        .await
+        .expect("the single SQLite connection should be available again");
+    let progress = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .publish_progress(StorageMigrationProgress {
+                    phase: StorageMigrationState::Copying,
+                    pending_keys: Some(7),
+                    ..StorageMigrationProgress::default()
+                })
+                .await
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.progress_persistence_in_flight_for_test() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("immediate progress persistence should reach SQLite while the connection is held");
+    let snapshot = tokio::time::timeout(Duration::from_millis(250), runtime.snapshot())
+        .await
+        .expect("snapshot should not wait for immediate progress persistence");
+    assert_eq!(snapshot.state, StorageMigrationState::Copying);
+    assert_eq!(snapshot.progress.pending_keys, Some(7));
+
+    drop(held_connection);
+    progress
+        .await
+        .expect("progress task should join")
+        .expect("copying progress should persist");
+}
+
+#[tokio::test]
+async fn newer_control_snapshot_wins_over_a_blocked_progress_flush() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration runtime should load"),
+    );
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("migration should start");
+    runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Copying,
+            pending_keys: Some(10),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("copying progress should persist");
+
+    let held_connection = pool
+        .acquire()
+        .await
+        .expect("the single SQLite connection should be available");
+    runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::CatchingUp,
+            pending_keys: Some(2),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("catch-up progress should be coalesced");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.progress_persistence_in_flight_for_test() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the coalesced progress flush should reach SQLite while the connection is held");
+
+    let pause = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .apply_control(StorageMigrationControlRequest { paused: true })
+                .await
+        })
+    };
+    let snapshot = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            let snapshot = runtime.snapshot().await;
+            if snapshot.state == StorageMigrationState::Paused {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("snapshot should not wait for the blocked flush or pause persistence");
+    assert_eq!(snapshot.state, StorageMigrationState::Paused);
+
+    drop(held_connection);
+    let paused = pause
+        .await
+        .expect("pause task should join")
+        .expect("pause should persist");
+    let recovered = StorageMigrationRuntime::load(&config, pool)
+        .await
+        .expect("migration runtime should reload the newest snapshot");
+    let status = recovered.snapshot().await;
+    assert_eq!(status.state, StorageMigrationState::Paused);
+    assert_eq!(status.revision, paused.revision);
+    assert_eq!(status.progress.pending_keys, Some(2));
 }
 
 #[tokio::test]
