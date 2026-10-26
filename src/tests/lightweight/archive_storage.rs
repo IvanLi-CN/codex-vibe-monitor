@@ -105,6 +105,73 @@ fn rollup_and_raw_reference_checks_bind_to_file_identity() {
 }
 
 #[test]
+fn archive_publication_validation_covers_node_health_and_replay_identity() {
+    let mut manifest = manifest();
+    manifest.dataset = "pool_upstream_request_attempts".to_owned();
+    let operation = ArchivePublishOperation {
+        proof: proof(&manifest),
+        rollups: vec![ArchiveRollupMarker {
+            archive_batch_id: manifest.archive_batch_id,
+            target: "hourly".to_owned(),
+            bucket_start_epoch_ms: 100,
+            source_identity_sha256: manifest.source_identity_sha256.clone(),
+            materialized_rows: manifest.row_count,
+            complete: true,
+        }],
+        replay_markers: vec![
+            ArchiveReplayMarker {
+                target: "pool_upstream_node_health_archive".to_owned(),
+                dataset: manifest.dataset.clone(),
+                file_path: manifest.file_path.clone(),
+                archive_sha256: manifest.sha256.clone(),
+            },
+            ArchiveReplayMarker {
+                target: "pool_upstream_node_health_hourly_archive".to_owned(),
+                dataset: manifest.dataset.clone(),
+                file_path: manifest.file_path.clone(),
+                archive_sha256: manifest.sha256.clone(),
+            },
+        ],
+        node_health_rows: vec![PoolUpstreamNodeHealthArchiveRow {
+            archived_row_id: 11,
+            occurred_at: "2026-10-26T01:00:00Z".to_owned(),
+            proxy_binding_key_snapshot: "pool-a".to_owned(),
+            is_success: 1,
+            latency_ms: Some(12.5),
+        }],
+        node_health_hourly_rows: vec![PoolUpstreamNodeHealthHourlyArchiveRow {
+            proxy_binding_key_snapshot: "pool-a".to_owned(),
+            bucket_start_epoch: 1_792_972_800,
+            success_count: 1,
+            failure_count: 0,
+        }],
+        raw_reference_changes: Vec::new(),
+        historical_activity: Vec::new(),
+        retention_prepared_archive: None,
+        retention_recovery_cursor: None,
+        retention_raw_reconciliation: Vec::new(),
+        manifest,
+    };
+    operation
+        .validate(
+            Path::new("/var/lib/codex/archive"),
+            Path::new("/var/lib/codex/raw"),
+        )
+        .unwrap();
+
+    let mut invalid = operation;
+    invalid.replay_markers[0].archive_sha256 = digest("other");
+    assert!(
+        invalid
+            .validate(
+                Path::new("/var/lib/codex/archive"),
+                Path::new("/var/lib/codex/raw"),
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn raw_conversion_preserves_legacy_aliases_without_filesystem_access() {
     let conversion = RawReferenceConversion::from_legacy_path(
         "raw/2026/10/request.bin",
@@ -148,6 +215,40 @@ fn activity_outbox_is_idempotent_and_rejects_newer_control_generation() {
     assert!(can_apply_historical_activity(&item, 4, None).unwrap());
     assert!(!can_apply_historical_activity(&item, 5, None).unwrap());
     assert!(!can_apply_historical_activity(&item, 4, Some("2026-10-26T02:00:00Z")).unwrap());
+}
+
+#[test]
+fn activity_manifest_replacement_keeps_latest_observation_per_account() {
+    let values = vec![
+        HistoricalAccountActivityOutboxItem {
+            archive_batch_id: 7,
+            account_id: 11,
+            last_activity_at: "2026-10-26T01:00:00Z".to_owned(),
+            source_revision: 3,
+            control_generation: 4,
+        },
+        HistoricalAccountActivityOutboxItem {
+            archive_batch_id: 7,
+            account_id: 11,
+            last_activity_at: "2026-10-26T02:00:00Z".to_owned(),
+            source_revision: 3,
+            control_generation: 4,
+        },
+        HistoricalAccountActivityOutboxItem {
+            archive_batch_id: 7,
+            account_id: 12,
+            last_activity_at: "2026-10-26T01:30:00Z".to_owned(),
+            source_revision: 2,
+            control_generation: 4,
+        },
+    ];
+    let deduplicated = deduplicate_activity_manifest(7, &values).unwrap();
+    assert_eq!(deduplicated.len(), 2);
+    assert_eq!(
+        deduplicated.get(&11).unwrap().last_activity_at,
+        "2026-10-26T02:00:00Z"
+    );
+    assert!(deduplicate_activity_manifest(8, &values).is_err());
 }
 
 #[test]

@@ -18,6 +18,7 @@ const SHA256_HEX_LENGTH: usize = 64;
 const DEFAULT_LEGACY_TABLE: &str = "codex_invocations";
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
 const ARCHIVE_CLEANUP_STATE_DELETE_PENDING: &str = "delete_pending";
+const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
 
 /// PostgreSQL tables owned by the archive adapter. The list is intentionally narrow so the
 /// migration engine and account-routing module cannot accidentally become dependencies of it.
@@ -27,6 +28,8 @@ pub(crate) const ARCHIVE_STORAGE_TABLES: &[&str] = &[
     "archive_rollup_markers",
     "hourly_rollup_archive_replay",
     "hourly_rollup_materialized_buckets",
+    "pool_upstream_node_health_archive",
+    "pool_upstream_node_health_hourly_archive",
     "archive_proofs",
     "proxy_raw_payload_blobs",
     "proxy_raw_payload_blob_links",
@@ -93,12 +96,35 @@ const ARCHIVE_STORAGE_SCHEMA: &[&str] = &[
         semantic_sha256 TEXT NOT NULL,
         verified_at_epoch_ms BIGINT NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS pool_upstream_node_health_archive (
+        archive_file_path TEXT NOT NULL,
+        archived_row_id BIGINT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        proxy_binding_key_snapshot TEXT NOT NULL,
+        is_success BIGINT NOT NULL CHECK (is_success IN (0, 1)),
+        latency_ms DOUBLE PRECISION,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (archive_file_path, archived_row_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS pool_upstream_node_health_hourly_archive (
+        archive_identity TEXT NOT NULL,
+        archive_batch_id BIGINT REFERENCES archive_batches(archive_batch_id),
+        archive_file_path TEXT NOT NULL,
+        proxy_binding_key_snapshot TEXT NOT NULL,
+        bucket_start_epoch BIGINT NOT NULL,
+        success_count BIGINT NOT NULL,
+        failure_count BIGINT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (archive_identity, proxy_binding_key_snapshot, bucket_start_epoch)
+    )",
     "CREATE TABLE IF NOT EXISTS proxy_raw_payload_blobs (
         raw_path TEXT PRIMARY KEY,
         storage_codec TEXT NOT NULL DEFAULT 'identity',
         logical_size_bytes BIGINT NOT NULL DEFAULT 0,
+        file_identity_sha256 TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (file_identity_sha256 IS NULL OR file_identity_sha256 ~ '^[0-9A-Fa-f]{64}$')
     )",
     "CREATE TABLE IF NOT EXISTS proxy_raw_payload_blob_links (
         id BIGSERIAL PRIMARY KEY,
@@ -222,6 +248,14 @@ const ARCHIVE_STORAGE_SCHEMA: &[&str] = &[
         ON archive_raw_reference_changes (raw_path, state, action)",
     "CREATE INDEX IF NOT EXISTS idx_proxy_raw_payload_blob_links_path
         ON proxy_raw_payload_blob_links (raw_path)",
+    "CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_file
+        ON pool_upstream_node_health_archive (archive_file_path)",
+    "CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_occurred_at_binding
+        ON pool_upstream_node_health_archive (occurred_at, proxy_binding_key_snapshot)",
+    "CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_file
+        ON pool_upstream_node_health_hourly_archive (archive_file_path)",
+    "CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_batch
+        ON pool_upstream_node_health_hourly_archive (archive_batch_id)",
     "CREATE INDEX IF NOT EXISTS idx_archive_account_activity_outbox_batch_state
         ON archive_account_activity_outbox (archive_batch_id, state)",
     "CREATE INDEX IF NOT EXISTS idx_hourly_rollup_archive_replay_file
@@ -238,6 +272,7 @@ const ARCHIVE_STORAGE_SCHEMA_UPGRADES: &[&str] = &[
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS summary_source_kind TEXT NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS upstream_activity_manifest_refreshed_at TEXT",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS historical_rollups_materialized_at TEXT",
+    "ALTER TABLE proxy_raw_payload_blobs ADD COLUMN IF NOT EXISTS file_identity_sha256 TEXT",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,6 +467,84 @@ impl ArchiveRollupMarker {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PoolUpstreamNodeHealthArchiveRow {
+    pub(crate) archived_row_id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) proxy_binding_key_snapshot: String,
+    pub(crate) is_success: i64,
+    pub(crate) latency_ms: Option<f64>,
+}
+
+impl PoolUpstreamNodeHealthArchiveRow {
+    fn validate(&self) -> Result<()> {
+        if self.archived_row_id <= 0
+            || self.occurred_at.trim().is_empty()
+            || self.proxy_binding_key_snapshot.trim().is_empty()
+        {
+            bail!("node-health archive row requires stable identity and dimensions");
+        }
+        if !matches!(self.is_success, 0 | 1) {
+            bail!("node-health archive success flag must be zero or one");
+        }
+        if self
+            .latency_ms
+            .is_some_and(|latency| !latency.is_finite() || latency < 0.0)
+        {
+            bail!("node-health archive latency must be finite and non-negative");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PoolUpstreamNodeHealthHourlyArchiveRow {
+    pub(crate) proxy_binding_key_snapshot: String,
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+}
+
+impl PoolUpstreamNodeHealthHourlyArchiveRow {
+    fn validate(&self) -> Result<()> {
+        if self.proxy_binding_key_snapshot.trim().is_empty()
+            || self.bucket_start_epoch < 0
+            || self.success_count < 0
+            || self.failure_count < 0
+        {
+            bail!("node-health hourly archive row has invalid dimensions or counters");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArchiveReplayMarker {
+    pub(crate) target: String,
+    pub(crate) dataset: String,
+    pub(crate) file_path: String,
+    pub(crate) archive_sha256: String,
+}
+
+impl ArchiveReplayMarker {
+    fn validate(&self, manifest: &ArchiveManifest) -> Result<()> {
+        if self.target.trim().is_empty()
+            || self.dataset.trim().is_empty()
+            || self.file_path.trim().is_empty()
+        {
+            bail!("archive replay marker requires target, dataset, and file path");
+        }
+        if self.dataset != manifest.dataset || self.file_path != manifest.file_path {
+            bail!("archive replay marker does not match the archive manifest");
+        }
+        validate_sha256("archive replay marker", &self.archive_sha256)?;
+        if self.archive_sha256 != manifest.sha256 {
+            bail!("archive replay marker digest does not match the archive");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RawReferenceAction {
     Link,
@@ -571,6 +684,41 @@ pub(crate) fn can_apply_historical_activity(
     Ok(current_last_activity_at
         .map(|current| item.last_activity_at.as_str() > current)
         .unwrap_or(true))
+}
+
+pub(crate) fn deduplicate_activity_manifest(
+    archive_batch_id: i64,
+    values: &[HistoricalAccountActivityOutboxItem],
+) -> Result<BTreeMap<i64, HistoricalAccountActivityOutboxItem>> {
+    if archive_batch_id <= 0 {
+        bail!("archive batch id must be positive");
+    }
+    let mut deduplicated = BTreeMap::<i64, HistoricalAccountActivityOutboxItem>::new();
+    for item in values {
+        item.validate()?;
+        if item.archive_batch_id != archive_batch_id {
+            bail!("archived account activity does not belong to the batch");
+        }
+        deduplicated
+            .entry(item.account_id)
+            .and_modify(|current| {
+                let current_key = (
+                    current.last_activity_at.as_str(),
+                    current.source_revision,
+                    current.control_generation,
+                );
+                let item_key = (
+                    item.last_activity_at.as_str(),
+                    item.source_revision,
+                    item.control_generation,
+                );
+                if current_key < item_key {
+                    *current = item.clone();
+                }
+            })
+            .or_insert_with(|| item.clone());
+    }
+    Ok(deduplicated)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -724,11 +872,14 @@ impl ArchivePrunePlan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArchivePublishOperation {
     pub(crate) manifest: ArchiveManifest,
     pub(crate) proof: ArchiveProof,
     pub(crate) rollups: Vec<ArchiveRollupMarker>,
+    pub(crate) replay_markers: Vec<ArchiveReplayMarker>,
+    pub(crate) node_health_rows: Vec<PoolUpstreamNodeHealthArchiveRow>,
+    pub(crate) node_health_hourly_rows: Vec<PoolUpstreamNodeHealthHourlyArchiveRow>,
     pub(crate) raw_reference_changes: Vec<RawReferenceChange>,
     pub(crate) historical_activity: Vec<HistoricalAccountActivityOutboxItem>,
     pub(crate) retention_prepared_archive: Option<RetentionPreparedArchive>,
@@ -754,6 +905,56 @@ impl ArchivePublishOperation {
             )) {
                 bail!("archive publication repeats a rollup marker");
             }
+        }
+        if self.replay_markers.is_empty() {
+            bail!("archive publication requires a replay marker");
+        }
+        let mut replay_keys = BTreeSet::new();
+        for marker in &self.replay_markers {
+            marker.validate(&self.manifest)?;
+            if !replay_keys.insert(format!(
+                "{}:{}:{}",
+                marker.target, marker.dataset, marker.file_path
+            )) {
+                bail!("archive publication repeats a replay marker");
+            }
+        }
+        if (!self.node_health_rows.is_empty() || !self.node_health_hourly_rows.is_empty())
+            && self.manifest.dataset != "pool_upstream_request_attempts"
+        {
+            bail!("node-health archive rows require upstream attempt archives");
+        }
+        let mut node_health_keys = BTreeSet::new();
+        for row in &self.node_health_rows {
+            row.validate()?;
+            if !node_health_keys.insert(row.archived_row_id) {
+                bail!("archive publication repeats a node-health archive row");
+            }
+        }
+        let mut node_health_hourly_keys = BTreeSet::new();
+        for row in &self.node_health_hourly_rows {
+            row.validate()?;
+            if !node_health_hourly_keys.insert(format!(
+                "{}:{}",
+                row.proxy_binding_key_snapshot, row.bucket_start_epoch
+            )) {
+                bail!("archive publication repeats a node-health hourly row");
+            }
+        }
+        let replay_targets = self
+            .replay_markers
+            .iter()
+            .map(|marker| marker.target.as_str())
+            .collect::<BTreeSet<_>>();
+        if !self.node_health_rows.is_empty()
+            && !replay_targets.contains("pool_upstream_node_health_archive")
+        {
+            bail!("node-health archive rows require a replay marker");
+        }
+        if !self.node_health_hourly_rows.is_empty()
+            && !replay_targets.contains("pool_upstream_node_health_hourly_archive")
+        {
+            bail!("node-health hourly rows require a replay marker");
         }
         let mut raw_change_keys = BTreeSet::new();
         for change in &self.raw_reference_changes {
@@ -834,6 +1035,135 @@ impl ArchiveStorageAdapter {
                 .with_context(|| "upgrade archive storage table")?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn read_retention_prepared_archive(
+        &self,
+        prepared_key: &str,
+    ) -> Result<Option<RetentionPreparedArchive>> {
+        let row = sqlx::query(
+            "SELECT prepared_key, dataset, month_key, day_key, part_key, file_path,
+                    source_ids_json, source_identity_sha256, publication_kind, state,
+                    artifact_sha256, artifact_bytes, attempt_count, next_retry_at,
+                    last_failure_stage, last_failure_fingerprint, staged_file_path,
+                    created_at_epoch_ms, updated_at_epoch_ms, quarantined_at
+               FROM retention_prepared_archives
+              WHERE prepared_key = $1",
+        )
+        .bind(prepared_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("read retention prepared archive")?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let value = RetentionPreparedArchive {
+            prepared_key: row.try_get("prepared_key")?,
+            dataset: row.try_get("dataset")?,
+            month_key: row.try_get("month_key")?,
+            day_key: row.try_get("day_key")?,
+            part_key: row.try_get("part_key")?,
+            file_path: row.try_get("file_path")?,
+            source_ids_json: row.try_get("source_ids_json")?,
+            source_identity_sha256: row.try_get("source_identity_sha256")?,
+            publication_kind: row.try_get("publication_kind")?,
+            state: row.try_get("state")?,
+            artifact_sha256: row.try_get("artifact_sha256")?,
+            artifact_bytes: row.try_get("artifact_bytes")?,
+            attempt_count: row.try_get("attempt_count")?,
+            next_retry_at: row.try_get("next_retry_at")?,
+            last_failure_stage: row.try_get("last_failure_stage")?,
+            last_failure_fingerprint: row.try_get("last_failure_fingerprint")?,
+            staged_file_path: row.try_get("staged_file_path")?,
+            created_at_epoch_ms: row.try_get("created_at_epoch_ms")?,
+            updated_at_epoch_ms: row.try_get("updated_at_epoch_ms")?,
+            quarantined_at: row.try_get("quarantined_at")?,
+        };
+        value.validate(&self.archive_root)?;
+        Ok(Some(value))
+    }
+
+    pub(crate) async fn read_retention_recovery_cursor(
+        &self,
+        scope: &str,
+    ) -> Result<Option<RetentionRecoveryCursor>> {
+        let row = sqlx::query(
+            "SELECT scope, cursor, next_retry_at, consecutive_failure_count,
+                    last_failure_fingerprint, defer_reason, last_progress_at,
+                    last_admission_stage, last_admission_cause, last_settled_pass_at,
+                    last_settled_pass_complete, last_settled_pass_inspected_entries,
+                    last_settled_pass_referenced_skipped, last_settled_pass_quarantined,
+                    last_settled_pass_removed, last_settled_pass_removed_bytes,
+                    last_nonzero_removal_at, last_nonzero_removal,
+                    last_nonzero_removal_bytes, updated_at_epoch_ms
+               FROM retention_recovery_cursors
+              WHERE scope = $1",
+        )
+        .bind(scope)
+        .fetch_optional(&self.pool)
+        .await
+        .context("read retention recovery cursor")?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let value = RetentionRecoveryCursor {
+            scope: row.try_get("scope")?,
+            cursor: row.try_get("cursor")?,
+            next_retry_at: row.try_get("next_retry_at")?,
+            consecutive_failure_count: row.try_get("consecutive_failure_count")?,
+            last_failure_fingerprint: row.try_get("last_failure_fingerprint")?,
+            defer_reason: row.try_get("defer_reason")?,
+            last_progress_at: row.try_get("last_progress_at")?,
+            last_admission_stage: row.try_get("last_admission_stage")?,
+            last_admission_cause: row.try_get("last_admission_cause")?,
+            last_settled_pass_at: row.try_get("last_settled_pass_at")?,
+            last_settled_pass_complete: row.try_get("last_settled_pass_complete")?,
+            last_settled_pass_inspected_entries: row
+                .try_get("last_settled_pass_inspected_entries")?,
+            last_settled_pass_referenced_skipped: row
+                .try_get("last_settled_pass_referenced_skipped")?,
+            last_settled_pass_quarantined: row.try_get("last_settled_pass_quarantined")?,
+            last_settled_pass_removed: row.try_get("last_settled_pass_removed")?,
+            last_settled_pass_removed_bytes: row.try_get("last_settled_pass_removed_bytes")?,
+            last_nonzero_removal_at: row.try_get("last_nonzero_removal_at")?,
+            last_nonzero_removal: row.try_get("last_nonzero_removal")?,
+            last_nonzero_removal_bytes: row.try_get("last_nonzero_removal_bytes")?,
+            updated_at_epoch_ms: row.try_get("updated_at_epoch_ms")?,
+        };
+        value.validate()?;
+        Ok(Some(value))
+    }
+
+    pub(crate) async fn read_retention_raw_reconciliation(
+        &self,
+        raw_path: &str,
+    ) -> Result<Option<RetentionRawReconciliation>> {
+        let row = sqlx::query(
+            "SELECT raw_path, file_identity_sha256, byte_size, quarantined_at,
+                    release_pending, release_pending_at, removal_evidence_persisted,
+                    updated_at_epoch_ms
+               FROM retention_raw_reconciliation
+              WHERE raw_path = $1",
+        )
+        .bind(raw_path)
+        .fetch_optional(&self.pool)
+        .await
+        .context("read retention Raw reconciliation")?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let value = RetentionRawReconciliation {
+            raw_path: row.try_get("raw_path")?,
+            file_identity_sha256: row.try_get("file_identity_sha256")?,
+            byte_size: row.try_get("byte_size")?,
+            quarantined_at: row.try_get("quarantined_at")?,
+            release_pending: row.try_get("release_pending")?,
+            release_pending_at: row.try_get("release_pending_at")?,
+            removal_evidence_persisted: row.try_get("removal_evidence_persisted")?,
+            updated_at_epoch_ms: row.try_get("updated_at_epoch_ms")?,
+        };
+        value.validate(&self.raw_root)?;
+        Ok(Some(value))
     }
 
     /// Publish all archive metadata in one transaction. The SQL writes metadata and outbox
@@ -1144,6 +1474,92 @@ impl ArchiveStorageAdapter {
             bail!("archive proof conflicts with existing metadata");
         }
 
+        for marker in &operation.replay_markers {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay
+                    (target, dataset, file_path, archive_sha256)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (target, dataset, file_path) DO UPDATE SET
+                     replayed_at = CURRENT_TIMESTAMP
+                 WHERE hourly_rollup_archive_replay.archive_sha256
+                       = EXCLUDED.archive_sha256",
+            )
+            .bind(&marker.target)
+            .bind(&marker.dataset)
+            .bind(&marker.file_path)
+            .bind(&marker.archive_sha256)
+            .execute(&mut *transaction)
+            .await
+            .context("upsert hourly rollup archive replay marker")?;
+            let stored_marker = sqlx::query(
+                "SELECT archive_sha256
+                   FROM hourly_rollup_archive_replay
+                  WHERE target = $1 AND dataset = $2 AND file_path = $3",
+            )
+            .bind(&marker.target)
+            .bind(&marker.dataset)
+            .bind(&marker.file_path)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read hourly rollup archive replay marker after upsert")?;
+            let stored_sha: Option<String> = stored_marker.try_get("archive_sha256")?;
+            if stored_sha.as_deref() != Some(marker.archive_sha256.as_str()) {
+                bail!("archive replay marker conflicts with existing metadata");
+            }
+        }
+
+        for row in &operation.node_health_rows {
+            sqlx::query(
+                "INSERT INTO pool_upstream_node_health_archive
+                    (archive_file_path, archived_row_id, occurred_at,
+                     proxy_binding_key_snapshot, is_success, latency_ms)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (archive_file_path, archived_row_id) DO UPDATE SET
+                     occurred_at = EXCLUDED.occurred_at,
+                     proxy_binding_key_snapshot = EXCLUDED.proxy_binding_key_snapshot,
+                     is_success = EXCLUDED.is_success,
+                     latency_ms = EXCLUDED.latency_ms,
+                     updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(&operation.manifest.file_path)
+            .bind(row.archived_row_id)
+            .bind(&row.occurred_at)
+            .bind(&row.proxy_binding_key_snapshot)
+            .bind(row.is_success)
+            .bind(row.latency_ms)
+            .execute(&mut *transaction)
+            .await
+            .context("upsert node-health archive row")?;
+        }
+
+        let archive_identity = format!("batch:{}", operation.manifest.archive_batch_id);
+        for row in &operation.node_health_hourly_rows {
+            sqlx::query(
+                "INSERT INTO pool_upstream_node_health_hourly_archive
+                    (archive_identity, archive_batch_id, archive_file_path,
+                     proxy_binding_key_snapshot, bucket_start_epoch, success_count,
+                     failure_count)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (archive_identity, proxy_binding_key_snapshot, bucket_start_epoch)
+                 DO UPDATE SET
+                     archive_batch_id = EXCLUDED.archive_batch_id,
+                     archive_file_path = EXCLUDED.archive_file_path,
+                     success_count = EXCLUDED.success_count,
+                     failure_count = EXCLUDED.failure_count,
+                     updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(&archive_identity)
+            .bind(operation.manifest.archive_batch_id)
+            .bind(&operation.manifest.file_path)
+            .bind(&row.proxy_binding_key_snapshot)
+            .bind(row.bucket_start_epoch)
+            .bind(row.success_count)
+            .bind(row.failure_count)
+            .execute(&mut *transaction)
+            .await
+            .context("upsert node-health hourly archive row")?;
+        }
+
         for marker in &operation.rollups {
             sqlx::query(
                 "INSERT INTO archive_rollup_markers
@@ -1190,8 +1606,35 @@ impl ArchiveStorageAdapter {
             {
                 bail!("archive rollup marker conflicts with existing metadata");
             }
+            if marker.complete {
+                sqlx::query(
+                    "INSERT INTO hourly_rollup_materialized_buckets
+                        (target, bucket_start_epoch_ms, source)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (target, bucket_start_epoch_ms, source) DO NOTHING",
+                )
+                .bind(&marker.target)
+                .bind(marker.bucket_start_epoch_ms)
+                .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+                .execute(&mut *transaction)
+                .await
+                .context("record materialized hourly rollup coverage")?;
+            }
         }
 
+        let raw_paths = operation
+            .raw_reference_changes
+            .iter()
+            .map(|change| change.raw_path.as_str())
+            .collect::<BTreeSet<_>>();
+        for raw_path in raw_paths {
+            // Serialize link/release decisions even when the canonical blob row does not exist.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(raw_path)
+                .execute(&mut *transaction)
+                .await
+                .context("lock canonical Raw ownership path")?;
+        }
         for change in &operation.raw_reference_changes {
             let state = match change.action {
                 RawReferenceAction::Link => "active",
@@ -1201,9 +1644,80 @@ impl ArchiveStorageAdapter {
                 .raw_identity_sha256
                 .as_deref()
                 .context("validated Raw reference is missing its file identity")?;
+            if change.action == RawReferenceAction::Link {
+                sqlx::query(
+                    "INSERT INTO proxy_raw_payload_blobs
+                        (raw_path, storage_codec, logical_size_bytes, file_identity_sha256)
+                     VALUES ($1, 'identity', 0, $2)
+                     ON CONFLICT (raw_path) DO UPDATE SET
+                         file_identity_sha256 = COALESCE(
+                             proxy_raw_payload_blobs.file_identity_sha256,
+                             EXCLUDED.file_identity_sha256
+                         ),
+                         updated_at = CURRENT_TIMESTAMP
+                     WHERE proxy_raw_payload_blobs.file_identity_sha256 IS NULL
+                        OR proxy_raw_payload_blobs.file_identity_sha256
+                           = EXCLUDED.file_identity_sha256",
+                )
+                .bind(&change.raw_path)
+                .bind(raw_identity)
+                .execute(&mut *transaction)
+                .await
+                .context("upsert canonical Raw blob identity")?;
+                let stored_blob = sqlx::query(
+                    "SELECT file_identity_sha256
+                       FROM proxy_raw_payload_blobs WHERE raw_path = $1",
+                )
+                .bind(&change.raw_path)
+                .fetch_one(&mut *transaction)
+                .await
+                .context("read canonical Raw blob identity after upsert")?;
+                let stored_blob_identity: Option<String> =
+                    stored_blob.try_get("file_identity_sha256")?;
+                if stored_blob_identity.as_deref() != Some(raw_identity) {
+                    bail!("canonical Raw blob identity conflicts with existing metadata");
+                }
+                sqlx::query(
+                    "INSERT INTO proxy_raw_payload_blob_links
+                        (raw_path, owner_kind, owner_id, raw_role)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (raw_path, owner_kind, owner_id, raw_role) DO NOTHING",
+                )
+                .bind(&change.raw_path)
+                .bind(&change.owner_kind)
+                .bind(change.owner_id)
+                .bind(&change.raw_role)
+                .execute(&mut *transaction)
+                .await
+                .context("insert canonical Raw blob link")?;
+            }
             if change.action == RawReferenceAction::Release {
+                let canonical_blob = sqlx::query(
+                    "SELECT b.file_identity_sha256,
+                            COUNT(l.id)::BIGINT AS link_count
+                       FROM proxy_raw_payload_blobs b
+                       LEFT JOIN proxy_raw_payload_blob_links l
+                         ON l.raw_path = b.raw_path
+                      WHERE b.raw_path = $1
+                      GROUP BY b.file_identity_sha256",
+                )
+                .bind(&change.raw_path)
+                .fetch_optional(&mut *transaction)
+                .await
+                .context("check canonical Raw blob before release")?;
+                if let Some(canonical_blob) = canonical_blob {
+                    let canonical_identity: Option<String> =
+                        canonical_blob.try_get("file_identity_sha256")?;
+                    let canonical_link_count: i64 = canonical_blob.try_get("link_count")?;
+                    if canonical_link_count != 0
+                        && canonical_identity.as_deref() != Some(raw_identity)
+                    {
+                        bail!("canonical Raw release identity conflicts with active metadata");
+                    }
+                }
                 let active_identity = sqlx::query(
                     "SELECT COUNT(*)::BIGINT AS active_count,
+                            COUNT(raw_identity_sha256)::BIGINT AS known_identity_count,
                             COUNT(DISTINCT raw_identity_sha256)::BIGINT AS identity_count,
                             MIN(raw_identity_sha256) AS raw_identity_sha256
                        FROM archive_raw_reference_changes
@@ -1218,11 +1732,14 @@ impl ArchiveStorageAdapter {
                 .await
                 .context("check active archive Raw reference before release")?;
                 let active_count: i64 = active_identity.try_get("active_count")?;
+                let known_identity_count: i64 = active_identity.try_get("known_identity_count")?;
                 let identity_count: i64 = active_identity.try_get("identity_count")?;
                 let stored_identity: Option<String> =
                     active_identity.try_get("raw_identity_sha256")?;
                 if active_count != 0
-                    && (identity_count != 1 || stored_identity.as_deref() != Some(raw_identity))
+                    && (known_identity_count != active_count
+                        || identity_count != 1
+                        || stored_identity.as_deref() != Some(raw_identity))
                 {
                     bail!("archive Raw release identity conflicts with active metadata");
                 }
@@ -1230,8 +1747,33 @@ impl ArchiveStorageAdapter {
                     sqlx::query(
                         "UPDATE archive_raw_reference_changes
                             SET action = 'release', state = 'released'
-                          WHERE raw_path = $1 AND owner_kind = $2 AND owner_id = $3
-                            AND raw_role = $4 AND action = 'link' AND state = 'active'",
+                          WHERE archive_batch_id = $1 AND raw_path = $2
+                            AND owner_kind = $3 AND owner_id = $4
+                            AND raw_role = $5 AND action = 'link' AND state = 'active'",
+                    )
+                    .bind(change.archive_batch_id)
+                    .bind(&change.raw_path)
+                    .bind(&change.owner_kind)
+                    .bind(change.owner_id)
+                    .bind(&change.raw_role)
+                    .execute(&mut *transaction)
+                    .await
+                    .context("release active archive Raw reference for batch")?;
+                }
+                let archive_reference_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*)::BIGINT
+                       FROM archive_raw_reference_changes
+                      WHERE raw_path = $1 AND action = 'link' AND state = 'active'",
+                )
+                .bind(&change.raw_path)
+                .fetch_one(&mut *transaction)
+                .await
+                .context("count archive Raw references before canonical release")?;
+                if archive_reference_count == 0 {
+                    sqlx::query(
+                        "DELETE FROM proxy_raw_payload_blob_links
+                          WHERE raw_path = $1 AND owner_kind = $2
+                            AND owner_id = $3 AND raw_role = $4",
                     )
                     .bind(&change.raw_path)
                     .bind(&change.owner_kind)
@@ -1239,7 +1781,7 @@ impl ArchiveStorageAdapter {
                     .bind(&change.raw_role)
                     .execute(&mut *transaction)
                     .await
-                    .context("release active archive Raw references")?;
+                    .context("release canonical Raw blob link")?;
                 }
             }
             sqlx::query(
@@ -1354,34 +1896,7 @@ impl ArchiveStorageAdapter {
         archive_batch_id: i64,
         values: &[HistoricalAccountActivityOutboxItem],
     ) -> Result<usize> {
-        if archive_batch_id <= 0 {
-            bail!("archive batch id must be positive");
-        }
-        let mut deduplicated = BTreeMap::<i64, HistoricalAccountActivityOutboxItem>::new();
-        for item in values {
-            item.validate()?;
-            if item.archive_batch_id != archive_batch_id {
-                bail!("archived account activity does not belong to the batch");
-            }
-            deduplicated
-                .entry(item.account_id)
-                .and_modify(|current| {
-                    let current_key = (
-                        current.last_activity_at.as_str(),
-                        current.source_revision,
-                        current.control_generation,
-                    );
-                    let item_key = (
-                        item.last_activity_at.as_str(),
-                        item.source_revision,
-                        item.control_generation,
-                    );
-                    if current_key < item_key {
-                        *current = item.clone();
-                    }
-                })
-                .or_insert_with(|| item.clone());
-        }
+        let deduplicated = deduplicate_activity_manifest(archive_batch_id, values)?;
 
         let mut transaction = self.pool.begin().await?;
         let batch_exists: Option<i64> = sqlx::query_scalar(
@@ -1409,7 +1924,7 @@ impl ArchiveStorageAdapter {
             )
             .bind(archive_batch_id)
             .bind(*account_id)
-            .bind(last_activity_at)
+            .bind(&last_activity_at.last_activity_at)
             .execute(&mut *transaction)
             .await
             .context("insert archive account activity manifest")?;
@@ -1480,6 +1995,78 @@ impl ArchiveStorageAdapter {
                 };
                 item.validate()?;
                 Ok(item)
+            })
+            .collect()
+    }
+
+    pub(crate) async fn upsert_account_activity_v2_bucket_repair_watermarks(
+        &self,
+        values: &[(i64, i64)],
+    ) -> Result<usize> {
+        let mut deduplicated = BTreeMap::<i64, i64>::new();
+        for (bucket_start_epoch_ms, cursor_id) in values {
+            if *bucket_start_epoch_ms < 0 || *cursor_id < 0 {
+                bail!("account activity repair watermark cannot be negative");
+            }
+            deduplicated
+                .entry(*bucket_start_epoch_ms)
+                .and_modify(|current| *current = (*current).max(*cursor_id))
+                .or_insert(*cursor_id);
+        }
+        let mut transaction = self.pool.begin().await?;
+        for (bucket_start_epoch_ms, cursor_id) in &deduplicated {
+            sqlx::query(
+                "INSERT INTO account_activity_v2_bucket_repair_watermarks
+                    (bucket_start_epoch_ms, cursor_id)
+                 VALUES ($1, $2)
+                 ON CONFLICT (bucket_start_epoch_ms) DO UPDATE SET
+                     cursor_id = GREATEST(
+                         account_activity_v2_bucket_repair_watermarks.cursor_id,
+                         EXCLUDED.cursor_id
+                     ),
+                     updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(*bucket_start_epoch_ms)
+            .bind(*cursor_id)
+            .execute(&mut *transaction)
+            .await
+            .context("upsert account activity repair watermark")?;
+        }
+        transaction
+            .commit()
+            .await
+            .context("commit account activity repair watermarks")?;
+        Ok(deduplicated.len())
+    }
+
+    pub(crate) async fn read_account_activity_v2_bucket_repair_watermarks(
+        &self,
+        bucket_start_epoch_ms: &[i64],
+    ) -> Result<BTreeMap<i64, i64>> {
+        if bucket_start_epoch_ms
+            .iter()
+            .any(|bucket_start_epoch_ms| *bucket_start_epoch_ms < 0)
+        {
+            bail!("account activity repair watermark bucket cannot be negative");
+        }
+        if bucket_start_epoch_ms.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let rows = sqlx::query(
+            "SELECT bucket_start_epoch_ms, cursor_id
+               FROM account_activity_v2_bucket_repair_watermarks
+              WHERE bucket_start_epoch_ms = ANY($1)",
+        )
+        .bind(bucket_start_epoch_ms.to_vec())
+        .fetch_all(&self.pool)
+        .await
+        .context("read account activity repair watermarks")?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("bucket_start_epoch_ms")?,
+                    row.try_get("cursor_id")?,
+                ))
             })
             .collect()
     }
@@ -1615,6 +2202,20 @@ impl ArchiveStorageAdapter {
             return Ok(false);
         }
 
+        let raw_paths = plan
+            .raw_reference_checks
+            .iter()
+            .map(|check| check.raw_path.as_str())
+            .collect::<BTreeSet<_>>();
+        for raw_path in raw_paths {
+            // Match publish's lock order so prune cannot race a new Raw ownership link.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(raw_path)
+                .execute(&mut *transaction)
+                .await
+                .context("lock Raw ownership path before pruning")?;
+        }
+
         let stored_rollup_rows = sqlx::query(
             "SELECT target, bucket_start_epoch_ms, source_identity_sha256,
                     materialized_rows, complete
@@ -1695,18 +2296,23 @@ impl ArchiveStorageAdapter {
             }
 
             let identity_row = sqlx::query(
-                "SELECT COUNT(DISTINCT raw_identity_sha256)::BIGINT AS identity_count,
+                "SELECT COUNT(*)::BIGINT AS identity_rows,
+                        COUNT(raw_identity_sha256)::BIGINT AS known_identity_rows,
+                        COUNT(DISTINCT raw_identity_sha256)::BIGINT AS identity_count,
                         MIN(raw_identity_sha256) AS raw_identity_sha256
                    FROM archive_raw_reference_changes
-                  WHERE raw_path = $1 AND raw_identity_sha256 IS NOT NULL",
+                  WHERE raw_path = $1",
             )
             .bind(&check.raw_path)
             .fetch_one(&mut *transaction)
             .await
             .context("recheck Raw file identity before archive pruning")?;
+            let identity_rows: i64 = identity_row.try_get("identity_rows")?;
+            let known_identity_rows: i64 = identity_row.try_get("known_identity_rows")?;
             let identity_count: i64 = identity_row.try_get("identity_count")?;
             let stored_identity: Option<String> = identity_row.try_get("raw_identity_sha256")?;
-            if identity_count != 1
+            if identity_rows != known_identity_rows
+                || identity_count != 1
                 || stored_identity.as_deref() != Some(check.file_identity_sha256.as_str())
             {
                 return Ok(false);
@@ -1777,6 +2383,24 @@ impl ArchiveStorageAdapter {
         .execute(&mut *transaction)
         .await
         .context("delete archive replay metadata")?;
+        sqlx::query(
+            "DELETE FROM pool_upstream_node_health_hourly_archive
+              WHERE archive_batch_id = $1
+                 OR (archive_batch_id IS NULL AND archive_file_path = $2)",
+        )
+        .bind(plan.manifest.archive_batch_id)
+        .bind(&plan.manifest.file_path)
+        .execute(&mut *transaction)
+        .await
+        .context("delete node-health hourly archive metadata")?;
+        sqlx::query(
+            "DELETE FROM pool_upstream_node_health_archive
+              WHERE archive_file_path = $1",
+        )
+        .bind(&plan.manifest.file_path)
+        .execute(&mut *transaction)
+        .await
+        .context("delete node-health archive metadata")?;
         sqlx::query("DELETE FROM archive_rollup_markers WHERE archive_batch_id = $1")
             .bind(plan.manifest.archive_batch_id)
             .execute(&mut *transaction)
