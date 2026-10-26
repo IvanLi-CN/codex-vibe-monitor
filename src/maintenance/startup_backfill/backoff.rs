@@ -153,7 +153,7 @@ pub(crate) fn startup_backfill_budget_reached(
 ) -> bool {
     let hit_scan_limit = scan_limit.is_some_and(|limit| scanned >= limit);
     let hit_elapsed_limit = max_elapsed.is_some_and(|limit| started_at.elapsed() >= limit);
-    hit_scan_limit || hit_elapsed_limit
+    crate::maintenance::migration_hold_signal_reached() || hit_scan_limit || hit_elapsed_limit
 }
 
 pub(crate) fn startup_backfill_samples_text(samples: &[String]) -> String {

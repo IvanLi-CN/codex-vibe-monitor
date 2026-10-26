@@ -91,7 +91,8 @@ pub(crate) fn historical_rollup_elapsed_budget_reached(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> bool {
-    max_elapsed.is_some_and(|limit| started_at.elapsed() >= limit)
+    crate::maintenance::migration_hold_signal_reached()
+        || max_elapsed.is_some_and(|limit| started_at.elapsed() >= limit)
 }
 
 pub(crate) fn historical_rollup_materialization_budget_reached(

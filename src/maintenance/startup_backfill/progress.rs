@@ -403,9 +403,21 @@ pub(crate) async fn save_startup_backfill_progress_to_pool(
                     last_finished_at = excluded.last_finished_at,
                     last_scanned = excluded.last_scanned,
                     last_updated = excluded.last_updated,
-                    last_status = excluded.last_status,
-                    suspension_reason = excluded.suspension_reason,
-                    next_probe_at = excluded.next_probe_at
+                    last_status = CASE
+                        WHEN startup_backfill_progress.suspension_reason = ?13
+                            THEN startup_backfill_progress.last_status
+                        ELSE excluded.last_status
+                    END,
+                    suspension_reason = CASE
+                        WHEN startup_backfill_progress.suspension_reason = ?13
+                            THEN startup_backfill_progress.suspension_reason
+                        ELSE excluded.suspension_reason
+                    END,
+                    next_probe_at = CASE
+                        WHEN startup_backfill_progress.suspension_reason = ?13
+                            THEN startup_backfill_progress.next_probe_at
+                        ELSE excluded.next_probe_at
+                    END
                 "#,
             )
             .bind(task_name)
@@ -422,6 +434,7 @@ pub(crate) async fn save_startup_backfill_progress_to_pool(
             } else {
                 None
             })
+            .bind(crate::maintenance_store::MIGRATION_HOLD_REASON)
             .execute(pool)
             .await?;
             Ok(())

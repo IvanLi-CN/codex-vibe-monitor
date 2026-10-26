@@ -748,6 +748,9 @@ async fn repair_invocation_summary_rollups_with_mode(
     pool: &Pool<Sqlite>,
     force_rebuild: bool,
 ) -> Result<bool> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(false);
+    }
     if force_rebuild {
         return repair_invocation_summary_rollups_force_page(pool).await;
     }
@@ -769,6 +772,9 @@ async fn repair_invocation_summary_rollups_with_mode(
         shared_live_cursor,
         repair_live_cursor,
     ) = {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(false);
+        }
         let mut tx = pool.begin().await?;
         let (archive_cursor_exists, _) =
             invocation_summary_repair_archive_cursor_state_tx(tx.as_mut()).await?;
@@ -828,6 +834,9 @@ async fn repair_invocation_summary_rollups_with_mode(
     };
     let (_, _, missing_unmaterialized_archive_exists, _) =
         preflight_invocation_summary_repair_archives(pool).await?;
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(false);
+    }
     if missing_unmaterialized_archive_exists {
         bail!("{}", MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX);
     }
@@ -841,6 +850,9 @@ async fn repair_invocation_summary_rollups_with_mode(
 
     let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(false);
+        }
         let mut tx = pool.begin().await?;
         if preserve_materialized_archives {
             if !missing_materialized_archive_has_unknown_scope {
@@ -1071,6 +1083,9 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
 }
 
 async fn repair_invocation_summary_rollups_force_page_inner(pool: &Pool<Sqlite>) -> Result<bool> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(false);
+    }
     let (
         missing_materialized_bucket_epochs,
         missing_materialized_archive_has_unknown_scope,
@@ -1112,6 +1127,9 @@ async fn repair_invocation_summary_rollups_force_page_inner(pool: &Pool<Sqlite>)
     }
     let first_page = !started || restart;
     if first_page && invocation_summary_repair_backup_exists(pool).await? {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(false);
+        }
         restore_invocation_summary_repair_backup(pool).await?;
         return Box::pin(repair_invocation_summary_rollups_force_page_inner(pool)).await;
     }
@@ -1137,6 +1155,9 @@ async fn repair_invocation_summary_rollups_force_page_inner(pool: &Pool<Sqlite>)
         tx.rollback().await?;
     }
     if first_page {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(false);
+        }
         let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2)")
             .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
@@ -1228,6 +1249,9 @@ async fn repair_invocation_summary_rollups_force_page_inner(pool: &Pool<Sqlite>)
 
     let mut repair_incomplete = if first_page { false } else { incomplete_exists };
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(false);
+        }
         let page_rows = load_completed_invocation_summary_repair_page(
             pool,
             archive_cursor,
@@ -1369,6 +1393,9 @@ async fn repair_invocation_summary_rollups_force_page_inner(pool: &Pool<Sqlite>)
                     INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE,
                 )
                 .await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok(false);
+            }
             let mut tx = pool.begin().await?;
             if !summary_rollup_repair_manifest_matches(
                 tx.as_mut(),
@@ -1450,6 +1477,9 @@ async fn repair_invocation_summary_rollups_force_page_inner(pool: &Pool<Sqlite>)
         live_rows.truncate(INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE as usize);
     }
     let live_cursor_id = live_rows.last().map(|row| row.id).unwrap_or(live_start_id);
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(false);
+    }
     let mut tx = pool.begin().await?;
     retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut live_rows).await?;
     persist_invocation_summary_repair_seen_ids(tx.as_mut(), &live_rows).await?;
@@ -1541,6 +1571,9 @@ async fn summary_rollup_backfill_requires_full_repair(
 pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     let (archive_cursor_exists, _) = invocation_summary_repair_archive_cursor_state(pool).await?;
     let incomplete_exists =
         hourly_rollup_progress_exists(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
@@ -1581,6 +1614,9 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
     };
     let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     for archive_row in &archive_rows {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(());
+        }
         let needs_overall = archive_row.needs_overall.unwrap_or_default() != 0;
         let needs_failures = archive_row.needs_failures.unwrap_or_default() != 0;
         let mut targets = Vec::new();
@@ -1622,6 +1658,9 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
 }
 
 pub(crate) async fn ensure_invocation_summary_rollups_ready(pool: &Pool<Sqlite>) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     if load_completed_invocation_archive_paths(pool)
         .await?
         .is_empty()
@@ -1630,6 +1669,9 @@ pub(crate) async fn ensure_invocation_summary_rollups_ready(pool: &Pool<Sqlite>)
     }
 
     repair_invocation_summary_rollups(pool).await?;
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     backfill_missing_invocation_summary_archive_rollups(pool).await?;
     Ok(())
 }

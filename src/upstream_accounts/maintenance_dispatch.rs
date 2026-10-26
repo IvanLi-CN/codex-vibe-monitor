@@ -73,11 +73,18 @@ async fn run_upstream_account_maintenance_once_inner(state: Arc<AppState>) -> Re
     let mut high_frequency_due = 0usize;
     let mut priority_due = 0usize;
     let mut secondary_due = 0usize;
+    let mut secondary_deferred = 0usize;
+    let secondary_hold =
+        crate::maintenance_store::migration_task_is_held("upstream_account_maintenance.secondary")
+            .await;
     for plan in dispatch_plans {
         match plan.tier {
             MaintenanceTier::HighFrequency => high_frequency_due += 1,
             MaintenanceTier::Priority => priority_due += 1,
             MaintenanceTier::Secondary => secondary_due += 1,
+        }
+        if plan.tier == MaintenanceTier::Secondary && secondary_hold {
+            secondary_deferred += 1;
         }
         match state
             .upstream_accounts
@@ -108,6 +115,7 @@ async fn run_upstream_account_maintenance_once_inner(state: Arc<AppState>) -> Re
         high_frequency_due,
         priority_due,
         secondary_due,
+        secondary_deferred,
         queued,
         deduped,
         failed,
@@ -912,7 +920,18 @@ pub(crate) async fn execute_queued_maintenance_sync(
         return Ok(None);
     }
 
-    sync_upstream_account_by_id(state, id, SyncCause::Maintenance).await
+    let secondary_optional_work_deferred = plan.tier == MaintenanceTier::Secondary
+        && crate::maintenance_store::migration_task_is_held(
+            "upstream_account_maintenance.secondary",
+        )
+        .await;
+    sync_upstream_account_by_id_with_options(
+        state,
+        id,
+        SyncCause::Maintenance,
+        secondary_optional_work_deferred,
+    )
+    .await
 }
 
 pub(crate) fn resolve_due_maintenance_dispatch_plans(
