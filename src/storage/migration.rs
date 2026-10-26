@@ -560,8 +560,7 @@ pub(crate) struct MigrationProgress {
 pub(crate) trait MigrationSource: Send + Sync {
     async fn capture_watermark(&self) -> Result<i64>;
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>>;
-    async fn table_lower_bound(&self, table_name: &str) -> Result<Option<String>>;
-    async fn table_upper_bound(&self, table_name: &str) -> Result<Option<String>>;
+    async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)>;
     async fn scan_page(
         &self,
         table_name: &str,
@@ -1029,24 +1028,15 @@ impl MigrationSource for InMemoryMigrationSource {
             .unwrap_or_default())
     }
 
-    async fn table_lower_bound(&self, table_name: &str) -> Result<Option<String>> {
-        Ok(self
-            .state
-            .lock()
-            .await
-            .rows
-            .get(table_name)
-            .and_then(|rows| rows.keys().next().cloned()))
-    }
-
-    async fn table_upper_bound(&self, table_name: &str) -> Result<Option<String>> {
-        Ok(self
-            .state
-            .lock()
-            .await
-            .rows
-            .get(table_name)
-            .and_then(|rows| rows.keys().next_back().cloned()))
+    async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
+        let state = self.state.lock().await;
+        let Some(rows) = state.rows.get(table_name) else {
+            return Ok((None, None));
+        };
+        Ok((
+            rows.keys().next().cloned(),
+            rows.keys().next_back().cloned(),
+        ))
     }
 
     async fn scan_page(
@@ -2128,6 +2118,7 @@ pub(crate) struct MigrationEngine<S, T, M> {
     authority_generation: u64,
     limits: MigrationLimits,
     fence: SourceWriteFence,
+    switching: Arc<Mutex<()>>,
     run_control: MigrationRunControl,
 }
 
@@ -2170,6 +2161,7 @@ where
             authority_generation,
             limits,
             fence,
+            switching: Arc::new(Mutex::new(())),
             run_control: MigrationRunControl::default(),
         })
     }
@@ -2234,14 +2226,21 @@ where
             let plan = if let Some(plan) = existing {
                 plan.clone()
             } else {
+                let (scan_lower_bound, scan_upper_bound) =
+                    self.source.table_bounds(table_name).await?;
                 TableCopyPlan {
                     migration_id: self.source.migration_id().to_owned(),
                     table_name: table_name.clone(),
-                    scan_lower_bound: self.source.table_lower_bound(table_name).await?,
-                    scan_upper_bound: self.source.table_upper_bound(table_name).await?,
+                    scan_lower_bound,
+                    scan_upper_bound,
                     capture_start,
                 }
             };
+            validate_table_bounds(
+                "source migration table",
+                &plan.scan_lower_bound,
+                &plan.scan_upper_bound,
+            )?;
             if existing.is_none() {
                 self.target.save_plan(&plan).await?;
             }
@@ -2440,10 +2439,7 @@ where
         if source_watermark < 0 {
             bail!("migration coverage watermark must not be negative");
         }
-        let source_bounds = (
-            self.source.table_lower_bound(table_name).await?,
-            self.source.table_upper_bound(table_name).await?,
-        );
+        let source_bounds = self.source.table_bounds(table_name).await?;
         let target_bounds = self.target.table_bounds(table_name).await?;
         let (first, last) = union_table_bounds(
             &source_bounds.0,
@@ -2504,6 +2500,7 @@ where
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
     ) -> Result<()> {
+        let _switch = self.switching.lock().await;
         self.ensure_running().await?;
         if expected.migration_id != self.source.migration_id()
             || expected.source_identity != self.source.source_identity()
@@ -2596,7 +2593,12 @@ where
         }
         .await;
         if result.is_err() && !gate.requires_recovery() {
-            self.fence.reopen().await;
+            let authority = gate.current_authority().await;
+            if authority.backend == BackendKind::Sqlite
+                && authority.generation == self.authority_generation
+            {
+                self.fence.reopen().await;
+            }
         }
         result
     }

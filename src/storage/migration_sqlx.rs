@@ -444,26 +444,26 @@ impl MigrationSource for SqliteMigrationSource {
         Ok(tables)
     }
 
-    async fn table_lower_bound(&self, table_name: &str) -> Result<Option<String>> {
+    async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
         let spec = self.spec(table_name)?;
         let table = quote_identifier(&spec.source_table_name, "source migration table")?;
         let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
-        let query = format!("SELECT MIN({key}) FROM {table}");
-        Ok(sqlx::query_scalar(&query)
-            .fetch_one(&self.pool)
+        let query =
+            format!("SELECT MIN({key}) AS lower_bound, MAX({key}) AS upper_bound FROM {table}");
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(&query)
+            .fetch_one(&mut *transaction)
             .await
-            .context("read SQLite source lower bound")?)
-    }
-
-    async fn table_upper_bound(&self, table_name: &str) -> Result<Option<String>> {
-        let spec = self.spec(table_name)?;
-        let table = quote_identifier(&spec.source_table_name, "source migration table")?;
-        let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
-        let query = format!("SELECT MAX({key}) FROM {table}");
-        Ok(sqlx::query_scalar(&query)
-            .fetch_one(&self.pool)
+            .context("read SQLite source bounds")?;
+        let bounds = (
+            row.try_get::<Option<String>, _>("lower_bound")?,
+            row.try_get::<Option<String>, _>("upper_bound")?,
+        );
+        transaction
+            .commit()
             .await
-            .context("read SQLite source upper bound")?)
+            .context("commit SQLite migration source bounds read")?;
+        Ok(bounds)
     }
 
     async fn scan_page(

@@ -296,6 +296,98 @@ async fn migration_switch_keeps_source_fenced_after_indeterminate_publication() 
 }
 
 #[tokio::test]
+async fn migration_switch_serializes_concurrent_authority_attempts() -> Result<()> {
+    let (directory, path) = state_path("authority-concurrent");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let expected = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let first = tokio::spawn({
+        let migration = migration.clone();
+        let gate = gate.clone();
+        let expected = expected.clone();
+        async move {
+            migration
+                .switch_authority(&gate, expected, Duration::from_secs(1))
+                .await
+        }
+    });
+    let second = tokio::spawn({
+        let migration = migration.clone();
+        let gate = gate.clone();
+        async move {
+            migration
+                .switch_authority(&gate, expected, Duration::from_secs(1))
+                .await
+        }
+    });
+    let first = first.await?;
+    let second = second.await?;
+
+    assert!(first.is_ok() ^ second.is_ok());
+    assert_eq!(
+        gate.current_authority().await.backend,
+        BackendKind::Postgres
+    );
+    assert!(fence.is_fenced().await);
+    assert!(
+        source
+            .write(
+                &fence,
+                vec![change("events", "b", ChangeKind::Insert, b"blocked")],
+            )
+            .await
+            .is_err()
+    );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn migration_rejects_incomplete_module_table_sets() -> Result<()> {
     let (directory, path) = state_path("table-set");
     let source = Arc::new(InMemoryMigrationSource::new(
@@ -501,11 +593,12 @@ async fn migration_prepare_reuses_durable_plans_after_partial_restart() -> Resul
         fence.clone(),
     );
     let capture_start = source.capture_watermark().await?;
+    let (scan_lower_bound, scan_upper_bound) = source.table_bounds("events").await?;
     let events_plan = TableCopyPlan {
         migration_id: source.migration_id().to_owned(),
         table_name: "events".into(),
-        scan_lower_bound: source.table_lower_bound("events").await?,
-        scan_upper_bound: source.table_upper_bound("events").await?,
+        scan_lower_bound,
+        scan_upper_bound,
         capture_start,
     };
     target.save_plan(&events_plan).await?;
