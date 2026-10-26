@@ -43,7 +43,7 @@ impl Default for TestAuthorityStore {
 impl AuthorityManifestStore for TestAuthorityStore {
     async fn load_authority_manifest(
         &self,
-        _module: StorageModule,
+        module: StorageModule,
     ) -> Result<AuthorityRecoveryRecord> {
         if let Some(recovery) = self.recovery.lock().await.clone() {
             return Ok(recovery);
@@ -52,6 +52,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
             AuthorityRecoveryRecord::NeverMigrated {
                 migration_id: "migration-01".into(),
                 installation_id: "test-installation".into(),
+                module,
                 source_identity: "test-source".into(),
             },
             AuthorityRecoveryRecord::Manifest,
@@ -61,6 +62,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
     async fn publish_authority_manifest(
         &self,
         manifest: &ModuleAuthorityManifest,
+        expected: &AuthorityRecoveryContext,
     ) -> Result<AuthorityPublication> {
         self.publication_count.fetch_add(1, Ordering::AcqRel);
         if self.hold_publication.load(Ordering::Acquire) {
@@ -71,7 +73,34 @@ impl AuthorityManifestStore for TestAuthorityStore {
         if publication != AuthorityPublication::Committed {
             return Ok(publication);
         }
+        let mut recovery_slot = self.recovery.lock().await;
+        let recovery = recovery_slot
+            .clone()
+            .unwrap_or(AuthorityRecoveryRecord::NeverMigrated {
+                migration_id: "migration-01".into(),
+                installation_id: "test-installation".into(),
+                module: manifest.module,
+                source_identity: "test-source".into(),
+            });
+        if !matches!(
+            recovery,
+            AuthorityRecoveryRecord::NeverMigrated {
+                migration_id,
+                installation_id,
+                module,
+                source_identity,
+            } if migration_id == expected.migration_id
+                && installation_id == expected.installation_id
+                && module == expected.module
+                && source_identity == expected.source_identity
+        ) {
+            return Ok(AuthorityPublication::NotCommitted);
+        }
+        if self.manifest.lock().await.is_some() {
+            return Ok(AuthorityPublication::NotCommitted);
+        }
         *self.manifest.lock().await = Some(manifest.clone());
+        *recovery_slot = None;
         Ok(publication)
     }
 }
@@ -107,6 +136,7 @@ fn recovery_context_for_migration(migration_id: &str) -> AuthorityRecoveryContex
     AuthorityRecoveryContext {
         migration_id: migration_id.into(),
         installation_id: "test-installation".into(),
+        module: StorageModule::TrafficArchive,
         source_identity: "test-source".into(),
         target_identity: "test-target".into(),
         source_watermark: 42,
@@ -385,7 +415,7 @@ async fn recovery_rejects_authority_manifest_from_another_migration_attempt() {
             generation: 1,
         },
     );
-    let store = TestAuthorityStore::default();
+    let store = Arc::new(TestAuthorityStore::default());
     *store.manifest.lock().await = Some(authority_manifest_for_migration(
         2,
         BackendKind::Postgres,
@@ -393,9 +423,12 @@ async fn recovery_rejects_authority_manifest_from_another_migration_attempt() {
     ));
 
     assert!(
-        gate.recover_authority(&store, &recovery_context_for_migration("migration-current"))
-            .await
-            .is_err()
+        gate.recover_authority(
+            store.as_ref(),
+            &recovery_context_for_migration("migration-current")
+        )
+        .await
+        .is_err()
     );
     assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
 }
@@ -413,6 +446,7 @@ async fn recovery_rejects_no_cutover_marker_from_another_migration_attempt() {
     *store.recovery.lock().await = Some(AuthorityRecoveryRecord::NeverMigrated {
         migration_id: "migration-stale".into(),
         installation_id: "test-installation".into(),
+        module: StorageModule::TrafficArchive,
         source_identity: "test-source".into(),
     });
 
@@ -422,6 +456,64 @@ async fn recovery_rejects_no_cutover_marker_from_another_migration_attempt() {
             .is_err()
     );
     assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn recovery_rejects_no_cutover_marker_for_another_module() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = TestAuthorityStore::default();
+    *store.recovery.lock().await = Some(AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: "migration-01".into(),
+        installation_id: "test-installation".into(),
+        module: StorageModule::Analytics,
+        source_identity: "test-source".into(),
+    });
+
+    assert!(
+        gate.recover_authority(&store, &recovery_context())
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn publication_rejects_a_stale_durable_recovery_context() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = Arc::new(TestAuthorityStore::default());
+    *store.recovery.lock().await = Some(AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: "migration-stale".into(),
+        installation_id: "test-installation".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "test-source".into(),
+    });
+
+    assert!(
+        gate.switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest(2, BackendKind::Postgres),
+            recovery_context(),
+            std::time::Duration::from_secs(1),
+            store.clone(),
+        )
+        .await
+        .is_err()
+    );
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.backend, BackendKind::Sqlite);
+    assert_eq!(current.lease.authority.generation, 1);
 }
 
 #[tokio::test]

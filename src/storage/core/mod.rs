@@ -46,6 +46,7 @@ pub(crate) struct ModuleAuthorityManifest {
 pub(crate) struct AuthorityRecoveryContext {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
+    pub(crate) module: StorageModule,
     pub(crate) source_identity: String,
     pub(crate) target_identity: String,
     pub(crate) source_watermark: i64,
@@ -57,6 +58,7 @@ pub(crate) enum AuthorityRecoveryRecord {
     NeverMigrated {
         migration_id: String,
         installation_id: String,
+        module: StorageModule,
         source_identity: String,
     },
     Manifest(ModuleAuthorityManifest),
@@ -410,10 +412,11 @@ impl ModuleGenerationGate {
         }
 
         let publication_manifest = manifest.clone();
+        let publication_expected = expected.clone();
         // Bound the wait without cancelling a store operation that may still commit.
         let publication_task = spawn_tracked_publication(Arc::clone(&self.0), async move {
             metadata
-                .publish_authority_manifest(&publication_manifest)
+                .publish_authority_manifest(&publication_manifest, &publication_expected)
                 .await
         });
         let publication = match tokio::time::timeout_at(deadline, publication_task).await {
@@ -488,10 +491,12 @@ impl ModuleGenerationGate {
             AuthorityRecoveryRecord::NeverMigrated {
                 migration_id,
                 installation_id,
+                module,
                 source_identity,
             } => {
                 if migration_id != expected.migration_id
                     || installation_id != expected.installation_id
+                    || module != expected.module
                     || source_identity != expected.source_identity
                 {
                     bail!("no-cutover recovery marker belongs to another migration identity");
@@ -585,7 +590,8 @@ fn validate_switch_manifest(
     manifest: &ModuleAuthorityManifest,
     expected: &AuthorityRecoveryContext,
 ) -> Result<()> {
-    if manifest.module != module
+    if expected.module != module
+        || manifest.module != module
         || manifest.migration_id != expected.migration_id
         || manifest.installation_id != expected.installation_id
         || manifest.source_identity != expected.source_identity
@@ -671,7 +677,9 @@ pub(crate) trait MigrationTaskAdmission: Send + Sync {
     fn decision(&self, task_key: &str) -> AdmissionDecision;
 }
 
-/// Authority persistence must store the migration ID with every manifest and no-cutover marker.
+/// Authority persistence must compare the full active recovery context before publishing and
+/// atomically replace its matching no-cutover marker with the manifest. This fences stale writers
+/// and prevents two migration attempts from publishing over one another.
 #[async_trait::async_trait]
 pub(crate) trait AuthorityManifestStore: Send + Sync {
     async fn load_authority_manifest(
@@ -681,6 +689,7 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
     async fn publish_authority_manifest(
         &self,
         manifest: &ModuleAuthorityManifest,
+        expected: &AuthorityRecoveryContext,
     ) -> Result<AuthorityPublication>;
 }
 
