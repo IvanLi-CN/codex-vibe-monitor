@@ -1,49 +1,4 @@
 use super::*;
-
-async fn acquire_sqlite_flush_connection(
-    pool: &Pool<Sqlite>,
-    recovery_replay: bool,
-) -> Result<sqlx::pool::PoolConnection<Sqlite>> {
-    if recovery_replay {
-        let connection = timeout(
-            crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
-            pool.acquire(),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "startup recovery SQLite write admission exceeded {}ms",
-                crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis()
-            )
-        })??;
-        Ok(connection)
-    } else {
-        Ok(pool.acquire().await?)
-    }
-}
-
-async fn configure_startup_recovery_connection(
-    connection: &mut sqlx::pool::PoolConnection<Sqlite>,
-) -> Result<()> {
-    sqlx::query(&format!(
-        "PRAGMA busy_timeout = {}",
-        crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
-    ))
-    .execute(&mut **connection)
-    .await
-    .context("configure startup recovery SQLite busy timeout")?;
-    Ok(())
-}
-
-async fn restore_sqlite_connection_busy_timeout(
-    connection: &mut sqlx::pool::PoolConnection<Sqlite>,
-) -> Result<()> {
-    sqlx::query("PRAGMA busy_timeout = 30000")
-        .execute(&mut **connection)
-        .await
-        .context("restore SQLite busy timeout after startup recovery")?;
-    Ok(())
-}
 #[expect(
     clippy::too_many_arguments,
     reason = "The accounting wrapper mirrors the single-writer ownership boundaries."
@@ -51,6 +6,46 @@ async fn restore_sqlite_connection_busy_timeout(
 pub(super) async fn flush_pending_batch_accounted(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
+    pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
+    batch: PendingBatch,
+    reason: FlushReason,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: &Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
+    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
+    dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
+) -> Option<RetainedBatch> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    flush_pending_batch_accounted_with_authority(
+        accounting,
+        pool,
+        &traffic_authority,
+        pricing_catalog,
+        batch,
+        reason,
+        prompt_cache_conversation_cache,
+        terminal_runtime_store,
+        dashboard_activity_snapshot_cache,
+        summary_delta_hub,
+        terminal_projection_hub,
+        dashboard_reconcile_gate,
+        terminal_journal,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The accounting wrapper mirrors the single-writer ownership boundaries."
+)]
+pub(super) async fn flush_pending_batch_accounted_with_authority(
+    accounting: &PendingQueueAccounting,
+    pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
     pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
     batch: PendingBatch,
     reason: FlushReason,
@@ -88,9 +83,10 @@ pub(super) async fn flush_pending_batch_accounted(
         );
     }
     let flush_started = Instant::now();
-    let flush = flush_pending_batch(
+    let flush = flush_pending_batch_with_authority(
         accounting,
         pool,
+        traffic_authority,
         pricing_catalog,
         batch,
         reason,
@@ -375,6 +371,46 @@ pub(crate) async fn flush_pending_batch(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<TrackedTerminalJournal>,
 ) -> Option<RetainedBatch> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    flush_pending_batch_with_authority(
+        accounting,
+        pool,
+        &traffic_authority,
+        pricing_catalog,
+        batch,
+        reason,
+        prompt_cache_conversation_cache,
+        terminal_runtime_store,
+        dashboard_activity_snapshot_cache,
+        summary_delta_hub,
+        terminal_projection_hub,
+        dashboard_reconcile_gate,
+        terminal_journal,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Flush dependencies mirror the single-writer ownership boundaries."
+)]
+pub(crate) async fn flush_pending_batch_with_authority(
+    accounting: &PendingQueueAccounting,
+    pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+    pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
+    mut batch: PendingBatch,
+    reason: FlushReason,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: &Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
+    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
+    dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
+) -> Option<RetainedBatch> {
     if batch.is_empty() {
         return None;
     }
@@ -431,8 +467,9 @@ pub(crate) async fn flush_pending_batch(
         reference_batch(&p1_batch, admission_context);
         let lock_wait_ms = permit.lock_wait().as_millis() as u64;
         let execute_started = Instant::now();
-        let initial_result = flush_pending_batch_inner(
+        let initial_result = flush_pending_batch_inner_with_authority(
             pool,
+            traffic_authority,
             &p1_batch,
             pricing_catalog,
             prompt_cache_conversation_cache,
@@ -453,8 +490,10 @@ pub(crate) async fn flush_pending_batch(
                 for terminal in p1_batch.terminal_invocations.values() {
                     let mut singleton = PendingBatch::default();
                     singleton.push(SqliteBatchWrite::TerminalInvocation(terminal.clone()));
-                    match flush_pending_batch_inner(
+                    singleton.recovery_replay = recovery_replay;
+                    match flush_pending_batch_inner_with_authority(
                         pool,
+                        traffic_authority,
                         &singleton,
                         pricing_catalog,
                         prompt_cache_conversation_cache,
@@ -678,8 +717,9 @@ pub(crate) async fn flush_pending_batch(
     let mut system_task_failure = None;
     let mut system_task_lock_failure = false;
     if let Some(system_task_batch) = system_task_batch.as_ref() {
-        match flush_pending_batch_inner(
+        match flush_pending_batch_inner_with_authority(
             pool,
+            traffic_authority,
             system_task_batch,
             pricing_catalog,
             prompt_cache_conversation_cache,
@@ -716,8 +756,9 @@ pub(crate) async fn flush_pending_batch(
         .as_ref()
         .is_some_and(crate::db_pressure::is_db_pressure_error);
 
-    match flush_pending_batch_inner(
+    match flush_pending_batch_inner_with_authority(
         pool,
+        traffic_authority,
         &batch,
         pricing_catalog,
         prompt_cache_conversation_cache,
@@ -967,6 +1008,42 @@ pub(crate) async fn flush_pending_batch_inner(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     observability: Option<&ObservabilityRuntime>,
 ) -> Result<PendingBatch> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    flush_pending_batch_inner_with_authority(
+        pool,
+        &traffic_authority,
+        batch,
+        pricing_catalog,
+        prompt_cache_conversation_cache,
+        terminal_runtime_store,
+        dashboard_activity_snapshot_cache,
+        summary_delta_hub,
+        terminal_projection_hub,
+        dashboard_reconcile_gate,
+        observability,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Flush dependencies mirror the single-writer ownership boundaries."
+)]
+async fn flush_pending_batch_inner_with_authority(
+    pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+    batch: &PendingBatch,
+    pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: &Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
+    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
+    dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    observability: Option<&ObservabilityRuntime>,
+) -> Result<PendingBatch> {
     crate::observability::observed_future(
         observability.is_some_and(|m| m.enabled),
         "sqlite_batch_flush",
@@ -993,27 +1070,55 @@ pub(crate) async fn flush_pending_batch_inner(
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
         let mut diagnostic_batch = diagnostics::begin_batch(batch);
-        let pool_started = Instant::now();
-        let mut connection = acquire_sqlite_flush_connection(pool, recovery_replay).await?;
+        let mut execute_started = Instant::now();
+        let execute_result: Result<()> = async {
+        let (mut terminal_tx, pool_acquisition_duration) = if recovery_replay {
+            timeout(
+                crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
+                traffic_authority.begin_with_pool_acquisition_duration(),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "startup recovery SQLite write admission exceeded {}ms",
+                    crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis()
+                )
+            })??
+        } else {
+            traffic_authority
+                .begin_with_pool_acquisition_duration()
+                .await?
+        };
+        diagnostic_batch.pool_acquired();
         if let Some(m) = observability {
             m.duration(
                 "cvm_sqlite_pool_acquire_duration_seconds",
                 &[],
-                pool_started.elapsed(),
+                pool_acquisition_duration,
             );
         }
-        if recovery_replay {
-            configure_startup_recovery_connection(&mut connection).await?;
-        }
-        diagnostic_batch.pool_acquired();
-        let execute_started = Instant::now();
-        let execute_result: Result<()> = async {
-        let mut terminal_tx = connection.begin().await?;
+        execute_started = Instant::now();
+        let recovery_setup_result: Result<()> = if recovery_replay {
+            sqlx::query(&format!(
+                "PRAGMA busy_timeout = {}",
+                crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
+            ))
+            .execute(terminal_tx.sqlite_connection()?)
+            .await
+            .context("configure startup recovery SQLite busy timeout")
+            .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let fact_result: Result<()> = if let Err(error) = recovery_setup_result {
+            Err(error)
+        } else {
+            async {
         for terminal in batch.terminal_invocations.values() {
             let persisted = if terminal.raw_capture {
                 let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
                 persist_proxy_capture_record_tx(
-                    terminal_tx.as_mut(),
+                    terminal_tx.sqlite_connection()?,
                     capture_started,
                     terminal.record.clone(),
                     false,
@@ -1022,7 +1127,7 @@ pub(crate) async fn flush_pending_batch_inner(
                 .with_context(|| "flush terminal raw proxy invocation")?
             } else {
                 persist_proxy_capture_runtime_record_tx(
-                    terminal_tx.as_mut(),
+                    terminal_tx.sqlite_connection()?,
                     terminal.record.clone(),
                     false,
                 )
@@ -1033,7 +1138,7 @@ pub(crate) async fn flush_pending_batch_inner(
                 Some((persisted.id, persisted.occurred_at.clone()))
             } else {
                 let identity = load_persisted_invocation_identity_tx(
-                    terminal_tx.as_mut(),
+                    terminal_tx.sqlite_connection()?,
                     &terminal.record.invoke_id,
                     &terminal.record.occurred_at,
                 )
@@ -1047,8 +1152,17 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal.record.occurred_at
             )
         })?;
+            let fact_identity = crate::storage::traffic::TrafficFactIdentity::new(
+                invocation_id,
+                terminal.record.invoke_id.clone(),
+                occurred_at.clone(),
+            )?;
             for attempt in &terminal.attempts {
-                persist_runtime_attempt_snapshot_tx(terminal_tx.as_mut(), attempt)
+                persist_runtime_attempt_snapshot_for_invocation_tx(
+                    terminal_tx.sqlite_connection()?,
+                    &fact_identity,
+                    attempt,
+                )
                     .await
                     .with_context(|| {
                         format!(
@@ -1109,25 +1223,38 @@ pub(crate) async fn flush_pending_batch_inner(
                 })
                 .collect();
             let descriptor = SummarySourceChangeDescriptor::terminal_batch(source_revision, entries)?;
-            append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
+            append_summary_source_change_descriptor_tx(
+                terminal_tx.sqlite_connection()?,
+                &descriptor,
+            )
+            .await?;
+        }
+        Ok(())
+        }
+        .await;
+        };
+        if recovery_replay {
+            let restore_result: Result<()> = sqlx::query("PRAGMA busy_timeout = 30000")
+                .execute(terminal_tx.sqlite_connection()?)
+                .await
+                .context("restore SQLite busy timeout after startup recovery")
+                .map(|_| ());
+            match (fact_result, restore_result) {
+                (Ok(()), Ok(())) => {}
+                (Err(error), Ok(())) => return Err(error),
+                (Ok(()), Err(error)) => return Err(error),
+                (Err(error), Err(restore_error)) => {
+                    return Err(anyhow!(
+                        "startup recovery fact write failed: {error:#}; busy timeout restore failed: {restore_error:#}"
+                    ));
+                }
+            }
+        } else {
+            fact_result?;
         }
         terminal_tx.commit().await?;
         Ok(())
         }.await;
-        let execute_result = if recovery_replay {
-            match (
-                execute_result,
-                restore_sqlite_connection_busy_timeout(&mut connection).await,
-            ) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(error), Err(restore_error)) => Err(anyhow::anyhow!(
-                    "{error:#}; failed to restore SQLite busy timeout: {restore_error:#}"
-                )),
-            }
-        } else {
-            execute_result
-        };
         if let Some(m) = observability {
             let outcome = if execute_result.is_ok() {
                 "success"
@@ -1147,7 +1274,6 @@ pub(crate) async fn flush_pending_batch_inner(
         }
         execute_result?;
         finish_committed_batch(batch, diagnostic_batch);
-        drop(connection);
         if let Some(m) = observability {
             m.counter(
                 "cvm_sqlite_written_rows_total",
@@ -1310,25 +1436,51 @@ pub(crate) async fn flush_pending_batch_inner(
             false
         }
     };
-    let pool_started = Instant::now();
-    let mut connection = acquire_sqlite_flush_connection(pool, recovery_replay).await?;
+    let (mut traffic_tx, pool_acquisition_duration) = if recovery_replay {
+        timeout(
+            crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
+            traffic_authority.begin_with_pool_acquisition_duration(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "startup recovery SQLite write admission exceeded {}ms",
+                crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis()
+            )
+        })??
+    } else {
+        traffic_authority
+            .begin_with_pool_acquisition_duration()
+            .await?
+    };
     if let Some(m) = observability {
         m.duration(
             "cvm_sqlite_pool_acquire_duration_seconds",
             &[],
-            pool_started.elapsed(),
+            pool_acquisition_duration,
         );
-    }
-    if recovery_replay {
-        configure_startup_recovery_connection(&mut connection).await?;
     }
     let execute_started = Instant::now();
     let mut terminal_overlay_keys = Vec::new();
     let execute_result: Result<()> = async {
-    let mut tx = connection.begin().await?;
-
+    let recovery_setup_result: Result<()> = if recovery_replay {
+        sqlx::query(&format!(
+            "PRAGMA busy_timeout = {}",
+            crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
+        ))
+        .execute(traffic_tx.sqlite_connection()?)
+        .await
+        .context("configure startup recovery SQLite busy timeout")
+        .map(|_| ())
+    } else {
+        Ok(())
+    };
+    let fact_result: Result<()> = if let Err(error) = recovery_setup_result {
+        Err(error)
+    } else {
+        async {
     for progress in batch.attempt_progress.values() {
-        attempt_progress::persist(&mut tx, progress).await?;
+        attempt_progress::persist(traffic_tx.sqlite_transaction()?, progress).await?;
     }
 
     if !batch.invocation_derived.is_empty() {
@@ -1338,13 +1490,22 @@ pub(crate) async fn flush_pending_batch_inner(
             .next_back()
             .copied()
             .unwrap_or_default();
-        let live_rollup_cursor_before =
-            load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
-                .await?;
-        replay_live_invocation_hourly_rollups_until_tx(tx.as_mut(), target_invocation_id).await?;
+        let live_rollup_cursor_before = load_hourly_rollup_live_progress_tx(
+            traffic_tx.sqlite_transaction()?.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        )
+        .await?;
+        replay_live_invocation_hourly_rollups_until_tx(
+            traffic_tx.sqlite_transaction()?.as_mut(),
+            target_invocation_id,
+        )
+        .await?;
         let live_rollup_cursor_after =
-            load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
-                .await?;
+            load_hourly_rollup_live_progress_tx(
+                traffic_tx.sqlite_transaction()?.as_mut(),
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            )
+            .await?;
         let skipped_terminal_ids = batch
             .invocation_derived
             .keys()
@@ -1352,8 +1513,11 @@ pub(crate) async fn flush_pending_batch_inner(
             .copied()
             .collect::<Vec<_>>();
         if !skipped_terminal_ids.is_empty() {
-            recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &skipped_terminal_ids)
-                .await?;
+            recompute_invocation_hourly_rollups_for_ids_tx(
+                traffic_tx.sqlite_transaction()?.as_mut(),
+                &skipped_terminal_ids,
+            )
+            .await?;
         }
         for derived in batch.invocation_derived.values() {
             if derived.invocation_id > live_rollup_cursor_after {
@@ -1364,7 +1528,7 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal_overlay_keys.push(key);
             }
             crate::touch_upstream_account_last_activity_tx(
-                tx.as_mut(),
+                traffic_tx.sqlite_transaction()?.as_mut(),
                 &derived.occurred_at,
                 derived.upstream_account_id,
             )
@@ -1389,7 +1553,7 @@ pub(crate) async fn flush_pending_batch_inner(
         )
         .bind(touch.account_id)
         .bind(&touch.selected_at)
-        .execute(tx.as_mut())
+        .execute(traffic_tx.sqlite_connection()?)
         .await?;
     }
 
@@ -1412,28 +1576,37 @@ pub(crate) async fn flush_pending_batch_inner(
             .bind(&finish.finished_at)
             .bind(finish.duration_ms)
             .bind(finish.run_id)
-            .execute(tx.as_mut())
+            .execute(traffic_tx.sqlite_connection()?)
             .await?;
         }
     }
 
-    tx.commit().await?;
-    Ok(())
-    }.await;
-    let execute_result = if recovery_replay {
-        match (
-            execute_result,
-            restore_sqlite_connection_busy_timeout(&mut connection).await,
-        ) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(error), Err(restore_error)) => Err(anyhow::anyhow!(
-                "{error:#}; failed to restore SQLite busy timeout: {restore_error:#}"
-            )),
+        }
+        .await;
+    };
+    if recovery_replay {
+        let restore_result: Result<()> = sqlx::query("PRAGMA busy_timeout = 30000")
+            .execute(traffic_tx.sqlite_connection()?)
+            .await
+            .context("restore SQLite busy timeout after startup recovery")
+            .map(|_| ());
+        match (fact_result, restore_result) {
+            (Ok(()), Ok(())) => {}
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(()), Err(error)) => return Err(error),
+            (Err(error), Err(restore_error)) => {
+                return Err(anyhow!(
+                    "startup recovery derived write failed: {error:#}; busy timeout restore failed: {restore_error:#}"
+                ));
+            }
         }
     } else {
-        execute_result
-    };
+        fact_result?;
+    }
+    traffic_tx.commit().await?;
+    Ok(())
+    }
+    .await;
     if let Some(m) = observability {
         let outcome = if execute_result.is_ok() {
             "success"
@@ -1452,7 +1625,6 @@ pub(crate) async fn flush_pending_batch_inner(
         );
     }
     execute_result?;
-    drop(connection);
     if let Some(m) = observability {
         m.counter(
             "cvm_sqlite_written_rows_total",

@@ -43,6 +43,8 @@ use attempt_progress::{
 };
 use diagnostics::{append_terminal_journal, finish_committed_batch, reference_batch};
 pub(crate) use invocation_identity::TrackedTerminalJournal;
+use terminal_attempts::persist_runtime_attempt_snapshot_for_invocation_tx;
+#[cfg(test)]
 use terminal_attempts::persist_runtime_attempt_snapshot_tx;
 
 pub(crate) use batch::*;

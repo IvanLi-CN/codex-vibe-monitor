@@ -11,6 +11,27 @@ impl SqliteBatchWriter {
         pricing_catalog: Arc<RwLock<PricingCatalog>>,
         database_path: &Path,
     ) -> Result<Arc<Self>> {
+        let traffic_authority = Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
+            pool.clone(),
+        ));
+        Self::spawn_with_traffic_authority(
+            pool,
+            traffic_authority,
+            shutdown,
+            prompt_cache_conversation_cache,
+            pricing_catalog,
+            database_path,
+        )
+    }
+
+    pub(crate) fn spawn_with_traffic_authority(
+        pool: Pool<Sqlite>,
+        traffic_authority: Arc<crate::storage::traffic::TrafficFactStore>,
+        shutdown: CancellationToken,
+        prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+        pricing_catalog: Arc<RwLock<PricingCatalog>>,
+        database_path: &Path,
+    ) -> Result<Arc<Self>> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let queued_p1_count = Arc::new(AtomicUsize::new(0));
         let p1_priority_gate = Arc::new(std::sync::Mutex::new(()));
@@ -43,6 +64,7 @@ impl SqliteBatchWriter {
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
+            traffic_authority,
             database_path.to_path_buf(),
             write_receiver,
             control_receiver,

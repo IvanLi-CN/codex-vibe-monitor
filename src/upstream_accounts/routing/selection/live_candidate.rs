@@ -23,6 +23,13 @@ pub(crate) fn pool_route_binding_failure_is_penalized(
 pub(crate) async fn load_recent_route_binding_failure_penalties(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, i64>> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    load_recent_route_binding_failure_penalties_with_authority(&traffic_authority).await
+}
+
+pub(crate) async fn load_recent_route_binding_failure_penalties_with_authority(
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+) -> Result<HashMap<String, i64>> {
     #[derive(Debug, FromRow)]
     struct RouteBindingAttemptRow {
         upstream_route_key: String,
@@ -31,26 +38,35 @@ pub(crate) async fn load_recent_route_binding_failure_penalties(
         failure_kind: Option<String>,
     }
 
-    let rows = sqlx::query_as::<_, RouteBindingAttemptRow>(
-        r#"
-        SELECT
-            upstream_route_key,
-            proxy_binding_key_snapshot,
-            status,
-            failure_kind
-        FROM pool_upstream_request_attempts
-        WHERE upstream_route_key IS NOT NULL
-          AND proxy_binding_key_snapshot IS NOT NULL
-          AND occurred_at >= datetime('now', ?1)
-        ORDER BY occurred_at ASC, id ASC
-        "#,
-    )
-    .bind(format!(
-        "-{} seconds",
-        POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS
-    ))
-    .fetch_all(pool)
-    .await?;
+    let mut transaction = traffic_authority.begin().await?;
+    let rows_result = match transaction.sqlite_connection() {
+        Ok(connection) => {
+            sqlx::query_as::<_, RouteBindingAttemptRow>(
+                r#"
+                SELECT
+                    upstream_route_key,
+                    proxy_binding_key_snapshot,
+                    status,
+                    failure_kind
+                FROM pool_upstream_request_attempts
+                WHERE upstream_route_key IS NOT NULL
+                  AND proxy_binding_key_snapshot IS NOT NULL
+                  AND occurred_at >= datetime('now', ?1)
+                ORDER BY occurred_at ASC, id ASC
+                "#,
+            )
+            .bind(format!(
+                "-{} seconds",
+                POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS
+            ))
+            .fetch_all(connection)
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    let rollback_result = transaction.rollback().await;
+    let rows = rows_result?;
+    rollback_result?;
 
     let mut penalties = HashMap::new();
     for row in rows {

@@ -1221,8 +1221,12 @@ pub(crate) async fn run() -> Result<()> {
         let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
         let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
         let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
-        let sqlite_batch_writer = SqliteBatchWriter::spawn(
+        let traffic_authority = Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
             pool.clone(),
+        ));
+        let sqlite_batch_writer = SqliteBatchWriter::spawn_with_traffic_authority(
+            pool.clone(),
+            traffic_authority.clone(),
             shutdown.clone(),
             prompt_cache_conversation_cache.clone(),
             pricing_catalog.clone(),
@@ -1243,6 +1247,7 @@ pub(crate) async fn run() -> Result<()> {
             system_storage: Arc::new(SystemStorageRuntime::new(&config)),
             config: config.clone(),
             pool: pool.clone(),
+            traffic_authority: traffic_authority.clone(),
             process_started_at_utc,
             observability,
             sqlite_batch_writer,

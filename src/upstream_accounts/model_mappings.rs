@@ -203,11 +203,38 @@ fn mapped_target_model_is_allowed(target_model: &str, rule: &EffectiveRoutingRul
 pub(crate) async fn build_pool_model_routing_runtime_cache(
     pool: &Pool<Sqlite>,
 ) -> Result<PoolModelRoutingRuntimeCache> {
-    build_pool_model_routing_runtime_cache_with_mapping_override(pool, None).await
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    build_pool_model_routing_runtime_cache_with_authority(pool, &traffic_authority).await
+}
+
+pub(crate) async fn build_pool_model_routing_runtime_cache_with_authority(
+    pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+) -> Result<PoolModelRoutingRuntimeCache> {
+    build_pool_model_routing_runtime_cache_with_mapping_override_and_authority(
+        pool,
+        traffic_authority,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override(
     pool: &Pool<Sqlite>,
+    mapping_override: Option<(i64, &[ModelMapping])>,
+) -> Result<PoolModelRoutingRuntimeCache> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    build_pool_model_routing_runtime_cache_with_mapping_override_and_authority(
+        pool,
+        &traffic_authority,
+        mapping_override,
+    )
+    .await
+}
+
+pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override_and_authority(
+    pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
     mapping_override: Option<(i64, &[ModelMapping])>,
 ) -> Result<PoolModelRoutingRuntimeCache> {
     let query = format!(
@@ -305,9 +332,14 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
             load_group_metadata(pool, Some(&group_name)).await?,
         );
     }
-    let route_binding_failure_penalties = load_recent_route_binding_failure_penalties(pool).await?;
+    let route_binding_failure_penalties =
+        load_recent_route_binding_failure_penalties_with_authority(traffic_authority).await?;
     let transport_decode_sticky_escape_states =
-        load_transport_decode_sticky_escape_states(pool, &routing_candidate_ids).await?;
+        load_transport_decode_sticky_escape_states_with_authority(
+            traffic_authority,
+            &routing_candidate_ids,
+        )
+        .await?;
     let model_route_runtime = load_model_route_runtime_snapshots(pool).await?;
     let routing_account_rows_by_id = rows
         .into_iter()
@@ -399,7 +431,11 @@ pub(crate) async fn refresh_pool_model_routing_runtime_cache(
     }
 
     let _cache_write_guard = state.pool_model_routing_cache_write_lock.lock().await;
-    let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool).await?;
+    let mut model_routing = build_pool_model_routing_runtime_cache_with_authority(
+        &state.pool,
+        state.traffic_authority.as_ref(),
+    )
+    .await?;
     let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
     if let Some(runtime_cache) = runtime_cache.as_mut() {
         model_routing.generation = runtime_cache.model_routing.generation.saturating_add(1);

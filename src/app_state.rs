@@ -815,6 +815,7 @@ pub(crate) struct AppState {
     pub(crate) system_storage: Arc<SystemStorageRuntime>,
     pub(crate) config: AppConfig,
     pub(crate) pool: Pool<Sqlite>,
+    pub(crate) traffic_authority: Arc<crate::storage::traffic::TrafficFactStore>,
     pub(crate) process_started_at_utc: DateTime<Utc>,
     pub(crate) observability: Arc<ObservabilityRuntime>,
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,

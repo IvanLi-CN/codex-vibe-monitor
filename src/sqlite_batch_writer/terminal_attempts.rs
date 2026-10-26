@@ -61,9 +61,41 @@ impl SqliteBatchWriter {
     }
 }
 
+pub(super) async fn persist_runtime_attempt_snapshot_for_invocation_tx(
+    connection: &mut SqliteConnection,
+    identity: &crate::storage::traffic::TrafficFactIdentity,
+    snapshot: &RuntimeAttemptSnapshot,
+) -> Result<()> {
+    identity.validate()?;
+    if snapshot.invoke_id != identity.invoke_id || snapshot.occurred_at != identity.occurred_at {
+        anyhow::bail!(
+            "traffic attempt identity does not match invocation {}: attempt={}/{} invocation={}/{}",
+            identity.invocation_id,
+            snapshot.invoke_id,
+            snapshot.occurred_at,
+            identity.invoke_id,
+            identity.occurred_at
+        );
+    }
+    persist_runtime_attempt_snapshot_tx_with_invocation_id(
+        connection,
+        snapshot,
+        Some(identity.invocation_id),
+    )
+    .await
+}
+
 pub(super) async fn persist_runtime_attempt_snapshot_tx(
     connection: &mut SqliteConnection,
     snapshot: &RuntimeAttemptSnapshot,
+) -> Result<()> {
+    persist_runtime_attempt_snapshot_tx_with_invocation_id(connection, snapshot, None).await
+}
+
+async fn persist_runtime_attempt_snapshot_tx_with_invocation_id(
+    connection: &mut SqliteConnection,
+    snapshot: &RuntimeAttemptSnapshot,
+    invocation_id: Option<i64>,
 ) -> Result<()> {
     sqlx::query(
         r#"
@@ -116,13 +148,14 @@ pub(super) async fn persist_runtime_attempt_snapshot_tx(
             response_raw_size,
             response_raw_truncated,
             response_raw_truncated_reason,
-            response_content_encoding
+            response_content_encoding,
+            invocation_id
         )
         VALUES (
             ?1, ?2, ?3, ?4, 'pool', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
             ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
             ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-            ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
+            ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49
         )
         ON CONFLICT DO UPDATE SET
             invoke_id = excluded.invoke_id,
@@ -172,7 +205,8 @@ pub(super) async fn persist_runtime_attempt_snapshot_tx(
             response_raw_size = COALESCE(excluded.response_raw_size, pool_upstream_request_attempts.response_raw_size),
             response_raw_truncated = excluded.response_raw_truncated,
             response_raw_truncated_reason = COALESCE(excluded.response_raw_truncated_reason, pool_upstream_request_attempts.response_raw_truncated_reason),
-            response_content_encoding = COALESCE(excluded.response_content_encoding, pool_upstream_request_attempts.response_content_encoding)
+            response_content_encoding = COALESCE(excluded.response_content_encoding, pool_upstream_request_attempts.response_content_encoding),
+            invocation_id = COALESCE(excluded.invocation_id, pool_upstream_request_attempts.invocation_id)
         "#,
     )
     .bind(&snapshot.attempt_public_id)
@@ -223,6 +257,7 @@ pub(super) async fn persist_runtime_attempt_snapshot_tx(
     .bind(i64::from(snapshot.response_raw_truncated))
     .bind(snapshot.response_raw_truncated_reason.as_deref())
     .bind(snapshot.response_content_encoding.as_deref())
+    .bind(invocation_id)
     .execute(&mut *connection)
     .await?;
     Ok(())

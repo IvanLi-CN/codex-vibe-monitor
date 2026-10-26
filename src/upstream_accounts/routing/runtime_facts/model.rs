@@ -687,6 +687,7 @@ pub(crate) async fn observe_runtime_model_cache(
         capabilities: Vec::new(),
         sticky: None,
         invoke_id: None,
+        attempt_id: None,
         reason_code: None,
         action: None,
         update_latest_action: false,
