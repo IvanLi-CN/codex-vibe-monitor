@@ -864,6 +864,31 @@ async fn publication_compare_rejects_manifest_with_another_context() {
 }
 
 #[tokio::test]
+async fn publication_replaces_matching_no_cutover_marker_with_manifest() {
+    let expected = recovery_context();
+    let manifest = authority_manifest(2, BackendKind::Postgres);
+    let store = TestAuthorityStore::default();
+    *store.recovery.lock().await = Some(AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: expected.migration_id.clone(),
+        installation_id: expected.installation_id.clone(),
+        module: expected.module,
+        source_identity: expected.source_identity.clone(),
+        target_identity: expected.target_identity.clone(),
+        source_watermark: expected.source_watermark,
+    });
+
+    assert_eq!(
+        store
+            .publish_authority_manifest(&manifest, &expected)
+            .await
+            .unwrap(),
+        AuthorityPublication::Committed
+    );
+    assert_eq!(store.manifest.lock().await.as_ref(), Some(&manifest));
+    assert!(store.recovery.lock().await.is_none());
+}
+
+#[tokio::test]
 async fn publication_rejects_a_stale_durable_recovery_context() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
