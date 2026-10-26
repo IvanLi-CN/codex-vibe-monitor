@@ -24,6 +24,10 @@ REPLAY_TARGETS = {
     "upstream_account_usage_breakdown_hourly",
 }
 CONTAINER_ARCHIVE_ROOT = Path("/srv/app/data/archives")
+ARCHIVE_OMITTED_SOURCE_COLUMNS = {
+    "codex_invocations": {"timeline_json"},
+    "pool_upstream_request_attempts": {"occurred_epoch_ms"},
+}
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -32,6 +36,14 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in connection.execute(f"PRAGMA table_xinfo('{table}')") if row[6] != 1]
+
+
+def _archive_projection_columns(dataset: str, source_columns: list[str]) -> list[str]:
+    omitted = ARCHIVE_OMITTED_SOURCE_COLUMNS.get(dataset, set())
+    projection = [column for column in source_columns if column not in omitted]
+    if not projection:
+        raise AcceptanceError(f"{dataset} archive projection is empty")
+    return projection
 
 
 def _row_digest(row: tuple[Any, ...]) -> str:
@@ -276,8 +288,11 @@ def verify_dataset(
         template_columns = _table_columns(template, table)
         if not source_columns or source_columns != template_columns:
             raise AcceptanceError(f"{dataset} pristine template schema differs from the trial source schema")
+        archive_projection_columns = _archive_projection_columns(dataset, source_columns)
         template_column_list = ",".join(template_columns)
         identity_index = template_columns.index(identity_column)
+        archive_projection_indexes = [template_columns.index(column) for column in archive_projection_columns]
+        source_projection_indexes = [source_columns.index(column) for column in archive_projection_columns]
         seed_fingerprints: dict[str, str] = {}
         for index, row in enumerate(template.execute(f"SELECT {template_column_list} FROM {table}")):
             if budget_check is not None and index % 256 == 0:
@@ -287,7 +302,7 @@ def verify_dataset(
                 continue
             if identity in seed_fingerprints:
                 raise AcceptanceError(f"{dataset} pristine template contains a duplicate seed identity")
-            seed_fingerprints[identity] = _row_digest(tuple(row))
+            seed_fingerprints[identity] = _row_digest(tuple(row[index] for index in archive_projection_indexes))
         if set(seed_fingerprints) != seed_ids:
             raise AcceptanceError(f"{dataset} pristine template does not contain every seed source row")
 
@@ -330,11 +345,12 @@ def verify_dataset(
             archive = sqlite3.connect(f"file:{decompressed}?mode=ro", uri=True)
             try:
                 archived_columns = _table_columns(archive, dataset)
-                if archived_columns != source_columns:
-                    raise AcceptanceError(f"{dataset} archive columns differ from the complete source row")
-                archived_identity_index = archived_columns.index(identity_column)
-                occurred_at_index = archived_columns.index("occurred_at")
-                selected_columns = ",".join(source_columns)
+                if set(archived_columns) != set(archive_projection_columns):
+                    raise AcceptanceError(f"{dataset} archive columns differ from the production archive projection")
+                archived_column_indexes = {column: archived_columns.index(column) for column in archive_projection_columns}
+                archived_identity_index = archived_column_indexes[identity_column]
+                occurred_at_index = archived_column_indexes["occurred_at"]
+                selected_columns = ",".join(archived_columns)
                 rows = archive.execute(f"SELECT {selected_columns} FROM {dataset}")
                 actual_count = 0
                 for index, row in enumerate(rows):
@@ -350,7 +366,7 @@ def verify_dataset(
                         raise AcceptanceError(f"{dataset} archive contains rows outside the seeded and measured input")
                     if identity not in seed_ids:
                         raise AcceptanceError(f"{dataset} archive converted a measured input row past the fixed retention cutoff")
-                    row_fingerprint = _row_digest(tuple(row))
+                    row_fingerprint = _row_digest(tuple(row[archived_column_indexes[column]] for column in archive_projection_columns))
                     if row_fingerprint != seed_fingerprints[identity]:
                         raise AcceptanceError(f"{dataset} archive changed full source row content for {identity}")
                     archive_counts[identity] += 1
@@ -374,7 +390,7 @@ def verify_dataset(
             identity = row[source_identity_index]
             if not isinstance(identity, str) or identity not in expected_ids:
                 raise AcceptanceError(f"{dataset} live source contains an unrecognized row identity")
-            row_fingerprint = _row_digest(tuple(row))
+            row_fingerprint = _row_digest(tuple(row[index] for index in source_projection_indexes))
             if identity in seed_ids and row_fingerprint != seed_fingerprints[identity]:
                 raise AcceptanceError(f"{dataset} live source changed full seed row content for {identity}")
             if identity in added_ids:
@@ -419,7 +435,7 @@ def verify_dataset(
         "lost_rows": lost_rows,
         "duplicate_rows": duplicate_rows,
         "archive_manifest_count": len(manifests),
-        "row_content_columns": len(source_columns),
+        "row_content_columns": len(archive_projection_columns),
         "row_content_rows_checked": len(content_records),
         "row_content_sha256": content_digest.hexdigest(),
         "summary_proof_required": require_summary_proof,

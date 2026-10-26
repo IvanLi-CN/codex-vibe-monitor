@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from contract import AcceptanceError, sha256_json
-from oracle import _archive_path, _verify_summary_proof, verify_dataset
+from oracle import _archive_path, _archive_projection_columns, _verify_summary_proof, verify_dataset
 
 
 DATASET = "pool_upstream_request_attempts"
@@ -173,6 +173,22 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(result["converted_rows"], 1)
         self.assertEqual(result["live_rows"], 1)
         self.assertEqual(result["lost_rows"], 0)
+
+    def test_archive_projection_excludes_known_generated_or_unarchived_columns(self) -> None:
+        self.assertEqual(
+            _archive_projection_columns(
+                "codex_invocations",
+                ["id", "invoke_id", "timeline_json", "occurred_at"],
+            ),
+            ["id", "invoke_id", "occurred_at"],
+        )
+        self.assertEqual(
+            _archive_projection_columns(
+                "pool_upstream_request_attempts",
+                ["id", "occurred_epoch_ms", "attempt_public_id"],
+            ),
+            ["id", "attempt_public_id"],
+        )
 
     def test_container_archive_mount_path_maps_into_the_trial_volume(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
