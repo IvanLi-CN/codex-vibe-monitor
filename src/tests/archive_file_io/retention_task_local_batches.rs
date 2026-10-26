@@ -1055,7 +1055,7 @@ async fn retention_task_local_transaction_cancel_rolls_back_before_releasing_adm
             .expect("source remains after transaction cancellation"),
         1
     );
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
         .await
         .expect("independent writer after cancellation");
@@ -1685,6 +1685,35 @@ fn assert_no_task_work_files(directory: &Path) {
                 "unfinished file: {name}"
             );
         }
+    }
+}
+
+fn has_task_work_files(directory: &Path) -> bool {
+    fs::read_dir(directory)
+        .expect("list archive directory")
+        .any(|entry| {
+            let entry = entry.expect("archive entry");
+            if entry.file_type().expect("archive entry type").is_dir() {
+                has_task_work_files(&entry.path())
+            } else {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".task-") || name.ends_with(".restore")
+            }
+        })
+}
+
+async fn wait_for_no_task_work_files(directory: &Path) {
+    let result = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !has_task_work_files(directory) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if result.is_err() {
+        assert_no_task_work_files(directory);
     }
 }
 
