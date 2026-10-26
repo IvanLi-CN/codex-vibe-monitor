@@ -945,6 +945,7 @@ where
     limits: MigrationLimits,
     control: MigrationRunControl,
     ownership: Arc<Mutex<Option<MigrationOwnershipLease>>>,
+    authority_transition: Arc<Mutex<()>>,
     fence: SourceWriteFence,
     module: StorageModule,
     target_identity: String,
@@ -988,6 +989,7 @@ where
             limits,
             control: MigrationRunControl::default(),
             ownership: Arc::new(Mutex::new(None)),
+            authority_transition: Arc::new(Mutex::new(())),
             fence,
             module,
             target_identity,
@@ -1323,6 +1325,7 @@ where
             limits: self.limits,
             control: self.control.clone(),
             ownership: Arc::clone(&self.ownership),
+            authority_transition: Arc::clone(&self.authority_transition),
             fence: self.fence.clone(),
             module: self.module,
             target_identity: self.target_identity.clone(),
@@ -1346,6 +1349,7 @@ where
         switch_budget: Duration,
     ) -> Result<()> {
         self.ensure_ownership().await?;
+        let _authority_transition = self.authority_transition.lock().await;
         self.ensure_ready().await?;
         self.advance_to_switching().await?;
         let deadline = tokio::time::Instant::now() + switch_budget;
@@ -1434,7 +1438,7 @@ where
                     fence.reopen().await;
                     return Err(error);
                 }
-                match self.recover_authority(gate, &expected).await {
+                match self.recover_authority_inner(gate, &expected).await {
                     Ok(()) => match self.metadata.load_authority_manifest(self.module).await? {
                         AuthorityRecoveryRecord::Manifest(_) => {
                             fence.finalize();
@@ -1462,6 +1466,15 @@ where
         expected: &AuthorityRecoveryContext,
     ) -> Result<()> {
         self.ensure_ownership().await?;
+        let _authority_transition = self.authority_transition.lock().await;
+        self.recover_authority_inner(gate, expected).await
+    }
+
+    async fn recover_authority_inner(
+        &self,
+        gate: &ModuleGenerationGate,
+        expected: &AuthorityRecoveryContext,
+    ) -> Result<()> {
         let record = self.metadata.load_authority_manifest(self.module).await?;
         let recovery_expected = match &record {
             AuthorityRecoveryRecord::NeverMigrated {
@@ -2462,8 +2475,8 @@ impl FileMigrationStore {
     }
 
     async fn read_state(&self) -> Result<FileMigrationState> {
-        let _lock = self.lock.lock().await;
         let _file_lock = self.acquire_file_lock().await?;
+        let _lock = self.lock.lock().await;
         self.read_state_unlocked().await
     }
 
@@ -2500,8 +2513,8 @@ impl FileMigrationStore {
     where
         F: FnOnce(&mut FileMigrationState) -> Result<Value>,
     {
-        let lock = Arc::clone(&self.lock).lock_owned().await;
         let file_lock = self.acquire_file_lock().await?;
+        let lock = Arc::clone(&self.lock).lock_owned().await;
         let mut state = self.read_state_unlocked().await?;
         let value = update(&mut state)?;
         let bytes = serde_json::to_vec_pretty(&state).context("serialize migration state")?;
@@ -2944,7 +2957,6 @@ impl MigrationFenceStore for FileMigrationStore {
         if migration_id != self.initial_context.migration_id {
             bail!("migration ownership belongs to another migration context");
         }
-        let _lock = self.lock.lock().await;
         if self
             .ownership
             .lock()
