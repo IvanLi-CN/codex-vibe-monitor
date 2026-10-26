@@ -56,9 +56,47 @@ where
     F: Future<Output = Result<T>> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::spawn(with_file_phase_permit(permit, future))
-        .await
-        .context("file phase worker task failed")?
+    tokio::spawn(async move {
+        let mut drain_guard = FilePhasePermitDrainGuard::new(permit);
+        let result = with_file_phase_permit(drain_guard.permit(), future).await;
+        drain_guard.release();
+        result
+    })
+    .await
+    .context("file phase worker task failed")?
+}
+
+struct FilePhasePermitDrainGuard {
+    permit: Option<FilePhasePermit>,
+}
+
+impl FilePhasePermitDrainGuard {
+    fn new(permit: FilePhasePermit) -> Self {
+        Self {
+            permit: Some(permit),
+        }
+    }
+
+    fn permit(&self) -> FilePhasePermit {
+        self.permit
+            .as_ref()
+            .expect("file phase drain guard permit is present")
+            .clone()
+    }
+
+    fn release(&mut self) {
+        drop(self.permit.take());
+    }
+}
+
+impl Drop for FilePhasePermitDrainGuard {
+    fn drop(&mut self) {
+        if let Some(permit) = self.permit.take() {
+            // A cancelled worker has not acknowledged native I/O completion. Retain the
+            // semaphore ownership through process exit instead of releasing it early.
+            std::mem::forget(permit);
+        }
+    }
 }
 
 pub(crate) fn try_current_file_phase_permit() -> Option<FilePhasePermit> {
