@@ -708,6 +708,10 @@ impl ModuleGenerationGate {
         authorities
     }
 
+    pub(crate) async fn current_authority(&self) -> ModuleAuthority {
+        self.0.state.lock().await.authority
+    }
+
     #[cfg(test)]
     pub(crate) fn require_recovery_for_test(&self) {
         self.0.recovery_required.store(true, Ordering::Release);
@@ -1171,6 +1175,9 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
 /// values. Concrete persistence, worker execution, and startup recovery are later
 /// migration-engine/runtime work; this trait is not a claim that those paths exist.
 pub(crate) trait MigrationMetadataStore: AuthorityManifestStore {
+    async fn set_recovery_context(&self, _context: &AuthorityRecoveryContext) -> Result<()> {
+        Ok(())
+    }
     async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>>;
     async fn save_status(&self, status: &MigrationStatus) -> Result<()>;
     async fn load_checkpoint(

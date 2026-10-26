@@ -2,3 +2,5 @@
 pub(crate) mod catalog;
 pub(crate) mod config;
 pub(crate) mod core;
+pub(crate) mod migration;
+pub(crate) mod migration_sqlx;
