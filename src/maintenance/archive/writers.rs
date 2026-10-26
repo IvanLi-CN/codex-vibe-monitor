@@ -1813,6 +1813,12 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     ));
     let cleanup_work_path = work_path.clone();
     let cleanup_temp_gzip_path = temp_gzip_path.clone();
+    let archive_table = match outcome.dataset {
+        "codex_invocations" | "forward_proxy_attempts" | "pool_upstream_request_attempts" => {
+            outcome.dataset
+        }
+        dataset => bail!("partial archive repair does not support dataset {dataset}"),
+    };
 
     let result = async {
         inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
@@ -1823,15 +1829,16 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
                 super::super::acquire_file_phase_permit("archive_partial_repair").await?;
             let mut connection = open_archive_sqlite_connection(&work_path).await?;
             let result: Result<i64> = async {
-                sqlx::query(
-                    "DELETE FROM codex_invocations
-                     WHERE id IN (SELECT value FROM json_each(?1))",
-                )
-                .bind(&ids_json)
-                .execute(&mut connection)
-                .await
-                .context("remove uncommitted rows from partial archive repair")?;
-                sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+                let delete_sql = format!(
+                    "DELETE FROM {archive_table} WHERE id IN (SELECT value FROM json_each(?1))"
+                );
+                sqlx::query(&delete_sql)
+                    .bind(&ids_json)
+                    .execute(&mut connection)
+                    .await
+                    .context("remove uncommitted rows from partial archive repair")?;
+                let count_sql = format!("SELECT COUNT(*) FROM {archive_table}");
+                sqlx::query_scalar(&count_sql)
                     .fetch_one(&mut connection)
                     .await
                     .context("count rows after partial archive repair")

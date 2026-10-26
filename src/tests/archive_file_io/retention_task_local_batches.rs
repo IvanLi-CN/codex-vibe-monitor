@@ -2881,6 +2881,149 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
 }
 
 #[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_reselects_without_duplicates() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-archive").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-attempt-'||i, 'partial-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("timestamped archive candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let pressure = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            pressure.clone(),
+            crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+                probe.clone(),
+                crate::maintenance::retention_test_with_work_budget(
+                    Duration::from_secs(60),
+                    archive_timestamped_dataset(
+                        &pool,
+                        &config,
+                        archive_table_spec("pool_upstream_request_attempts"),
+                        select_sql,
+                        "9999-01-01 00:00:00".to_string(),
+                        false,
+                        None,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let competitor = async {
+        probe.committed.notified().await;
+        let owner = pressure
+            .try_begin_background("partial-timestamped-competitor")
+            .expect("claim pressure slot after first committed chunk");
+        probe.resume.notify_one();
+        owner
+    };
+    let (first, owner) = tokio::join!(work, competitor);
+    let first = first.expect("timestamped archive should defer after a committed prefix");
+    assert_eq!(first.0, 64);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("remaining live timestamped rows"),
+        936
+    );
+
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("timestamped archive path");
+    let manifest_row_count: i64 = sqlx::query_scalar(
+        "SELECT row_count FROM archive_batches
+         WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("partial timestamped archive manifest");
+    assert_eq!(manifest_row_count, 64);
+    let inflated_path = temp_dir.join("partial-timestamped-archive.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate repaired timestamped archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open repaired timestamped archive");
+    let archive_row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count repaired timestamped archive rows");
+    archive_connection
+        .close()
+        .await
+        .expect("close repaired timestamped archive");
+    assert_eq!(archive_row_count, 64);
+
+    drop(owner);
+    let second = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("reselect remaining timestamped rows");
+    assert_eq!(second.0, 936);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("all timestamped source rows converted"),
+        0
+    );
+    let final_manifest_row_count: i64 = sqlx::query_scalar(
+        "SELECT row_count FROM archive_batches
+         WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("final timestamped archive manifest");
+    assert_eq!(final_manifest_row_count, 1_000);
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_month_writer_reads_the_shared_memory_source() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("task-local-memory-source").await;

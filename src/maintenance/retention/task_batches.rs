@@ -416,6 +416,42 @@ async fn repair_partial_invocation_archive(
     Ok(())
 }
 
+async fn repair_partial_timestamped_archive(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    selected_group: &[TimestampedArchiveCandidate],
+    committed_rows: usize,
+) -> Result<()> {
+    if committed_rows == 0 || committed_rows >= selected_group.len() {
+        return Ok(());
+    }
+
+    let remove_ids = selected_group
+        .iter()
+        .skip(committed_rows)
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    let old_sha256 = outcome.sha256.clone();
+    let (temporary_file_path, row_count, sha256) =
+        crate::maintenance::trim_archive_batch_file_by_ids(outcome, &remove_ids).await?;
+    let mut repaired_outcome = outcome.clone();
+    repaired_outcome.row_count = row_count;
+    repaired_outcome.sha256 = sha256;
+
+    if let Err(error) = crate::maintenance::replace_archive_batch_file_with_cleanup_serialization(
+        pool,
+        &repaired_outcome,
+        &temporary_file_path,
+        &old_sha256,
+    )
+    .await
+    {
+        remove_temp_sqlite_artifacts(&temporary_file_path);
+        return Err(error.context("publish partial timestamped archive repair"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) async fn invocation_archive_candidate_selection_for_test(
     pool: &Pool<Sqlite>,
@@ -2662,7 +2698,8 @@ pub(crate) async fn archive_timestamped_dataset(
             batch_admission::pause_after_archive_artifact_verified().await;
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
-            let mut pending_group = group;
+            let selected_group = group;
+            let mut pending_group = selected_group.clone();
             while !pending_group.is_empty() {
                 let group = take_retention_batch(
                     &mut pending_group,
@@ -2722,7 +2759,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 }) else {
                     drop(admission_wait_phase);
                     recovery_diagnostic.mark_stop();
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    break;
                 };
                 let admission_mode = admission.admission_mode();
                 let lock_wait = admission.lock_wait();
@@ -2966,7 +3003,7 @@ pub(crate) async fn archive_timestamped_dataset(
                         ));
                     }
                     recovery_diagnostic.mark_stop();
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    break;
                 };
                 let raw_deletion_plan = commit.raw_deletion_plan;
                 workload::record_owner_processed_count(
@@ -3021,6 +3058,14 @@ pub(crate) async fn archive_timestamped_dataset(
                 batch_admission::pause_after_first_chunk(committed_rows).await;
             }
             archive_identity_proof.close().await?;
+            repair_partial_timestamped_archive(
+                pool,
+                &archive_outcome,
+                &selected_group,
+                committed_rows,
+            )
+            .await
+            .context("repair partially committed timestamped archive")?;
             if committed_rows > 0 {
                 archive_batches += 1;
             }
