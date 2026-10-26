@@ -639,6 +639,34 @@ async fn unpolled_transaction_completion_cancel_fences_authority_before_releasin
 }
 
 #[tokio::test]
+async fn recovery_fence_wins_race_with_lease_admission() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    gate.pause_acquire_after_check_for_test();
+    let acquiring_gate = gate.clone();
+    let acquire =
+        tokio::spawn(async move { acquiring_gate.acquire(StorageModule::TrafficArchive).await });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        gate.wait_for_acquire_check_for_test(),
+    )
+    .await
+    .unwrap();
+    gate.require_recovery_for_test();
+    gate.release_acquire_check_for_test();
+
+    assert!(acquire.await.unwrap().is_err());
+    assert_eq!(gate.active_leases_for_test(), 0);
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
 async fn publication_deadline_keeps_admission_closed_until_durable_recovery() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,

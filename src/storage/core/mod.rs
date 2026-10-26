@@ -231,6 +231,12 @@ struct ModuleGate {
     switch_attempts: AtomicUsize,
     #[cfg(test)]
     switch_attempts_changed: Notify,
+    #[cfg(test)]
+    pause_acquire_after_check: AtomicBool,
+    #[cfg(test)]
+    acquire_check_reached: Notify,
+    #[cfg(test)]
+    acquire_check_release: Notify,
 }
 
 struct PublicationInFlightGuard(Arc<ModuleGate>);
@@ -320,6 +326,12 @@ impl ModuleGenerationGate {
             switch_attempts: AtomicUsize::new(0),
             #[cfg(test)]
             switch_attempts_changed: Notify::new(),
+            #[cfg(test)]
+            pause_acquire_after_check: AtomicBool::new(false),
+            #[cfg(test)]
+            acquire_check_reached: Notify::new(),
+            #[cfg(test)]
+            acquire_check_release: Notify::new(),
         }))
     }
 
@@ -331,7 +343,17 @@ impl ModuleGenerationGate {
         if !state.accepting || self.0.recovery_required.load(Ordering::Acquire) {
             bail!("module storage admission is closed during authority switching");
         }
+        #[cfg(test)]
+        if self.0.pause_acquire_after_check.load(Ordering::Acquire) {
+            self.0.acquire_check_reached.notify_one();
+            self.0.acquire_check_release.notified().await;
+        }
         self.0.active.fetch_add(1, Ordering::AcqRel);
+        if self.0.recovery_required.load(Ordering::Acquire) {
+            self.0.active.fetch_sub(1, Ordering::AcqRel);
+            self.0.changed.notify_one();
+            bail!("module storage admission is closed during authority recovery");
+        }
         Ok(ModuleGenerationLease {
             lease: ModuleLease {
                 module,
@@ -561,6 +583,28 @@ impl ModuleGenerationGate {
     #[cfg(test)]
     pub(crate) fn require_recovery_for_test(&self) {
         self.0.recovery_required.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_acquire_after_check_for_test(&self) {
+        self.0
+            .pause_acquire_after_check
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_acquire_check_for_test(&self) {
+        self.0.acquire_check_reached.notified().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_acquire_check_for_test(&self) {
+        self.0.acquire_check_release.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_leases_for_test(&self) -> usize {
+        self.0.active.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
