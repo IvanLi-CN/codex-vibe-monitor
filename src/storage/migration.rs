@@ -505,6 +505,7 @@ pub(crate) struct MigrationProgress {
 #[async_trait]
 pub(crate) trait MigrationSource: Send + Sync {
     async fn capture_watermark(&self) -> Result<i64>;
+    async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>>;
     async fn table_lower_bound(&self, table_name: &str) -> Result<Option<String>>;
     async fn table_upper_bound(&self, table_name: &str) -> Result<Option<String>>;
     async fn scan_page(
@@ -925,6 +926,10 @@ pub(crate) trait MigrationFenceStore: Send + Sync {
     async fn load_source_fence(&self, migration_id: &str) -> Result<Option<SourceFenceRecord>>;
     async fn save_source_fence(&self, fence: &SourceFenceRecord) -> Result<()>;
     async fn prepare_authority_context(&self, expected: &AuthorityRecoveryContext) -> Result<()>;
+    async fn acquire_migration_ownership(
+        &self,
+        migration_id: &str,
+    ) -> Result<MigrationOwnershipLease>;
 }
 
 #[derive(Debug, Clone)]
@@ -939,6 +944,7 @@ where
     metadata: Arc<M>,
     limits: MigrationLimits,
     control: MigrationRunControl,
+    ownership: Arc<Mutex<Option<MigrationOwnershipLease>>>,
     fence: SourceWriteFence,
     module: StorageModule,
     target_identity: String,
@@ -981,6 +987,7 @@ where
             metadata,
             limits,
             control: MigrationRunControl::default(),
+            ownership: Arc::new(Mutex::new(None)),
             fence,
             module,
             target_identity,
@@ -1070,6 +1077,11 @@ where
         if tables.iter().any(|table| table.trim().is_empty()) {
             bail!("migration table names must not be empty");
         }
+        let expected_tables = self.module_table_set().await?;
+        let requested_tables = tables.iter().cloned().collect::<BTreeSet<_>>();
+        if requested_tables.len() != tables.len() || requested_tables != expected_tables {
+            bail!("migration table list does not cover the complete module catalog");
+        }
         let status = self.metadata.load_status(self.module).await?;
         if status
             .as_ref()
@@ -1077,6 +1089,7 @@ where
         {
             bail!("migration module already uses PostgreSQL authority");
         }
+        self.ensure_ownership().await?;
         if status.as_ref().is_none_or(|status| {
             matches!(
                 status.state,
@@ -1139,6 +1152,7 @@ where
 
     pub(crate) async fn copy_next(&self, table_name: &str) -> Result<MigrationProgress> {
         self.control.check().await?;
+        self.ensure_ownership().await?;
         let plan = self
             .target
             .load_plan(self.source.migration_id(), table_name)
@@ -1196,6 +1210,7 @@ where
     }
 
     pub(crate) async fn catch_up(&self, table_name: &str) -> Result<MigrationProgress> {
+        self.ensure_ownership().await?;
         let through = self.source.capture_watermark().await?;
         self.catch_up_through(table_name, through).await
     }
@@ -1260,6 +1275,7 @@ where
         table_name: &str,
         range: ChunkRange,
     ) -> Result<ChunkVerification> {
+        self.ensure_ownership().await?;
         self.control.check().await?;
         let plan = self
             .target
@@ -1306,6 +1322,7 @@ where
             metadata: Arc::clone(&self.metadata),
             limits: self.limits,
             control: self.control.clone(),
+            ownership: Arc::clone(&self.ownership),
             fence: self.fence.clone(),
             module: self.module,
             target_identity: self.target_identity.clone(),
@@ -1328,6 +1345,7 @@ where
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
     ) -> Result<()> {
+        self.ensure_ownership().await?;
         self.ensure_ready().await?;
         self.advance_to_switching().await?;
         let deadline = tokio::time::Instant::now() + switch_budget;
@@ -1405,7 +1423,11 @@ where
         match attempt {
             Ok(()) => {
                 fence.finalize();
-                self.save_status(MigrationState::Postgres, None).await
+                let result = self.save_status(MigrationState::Postgres, None).await;
+                if result.is_ok() {
+                    self.release_ownership().await;
+                }
+                result
             }
             Err(error) => {
                 if fence.prepared_generation.is_none() {
@@ -1416,6 +1438,7 @@ where
                     Ok(()) => match self.metadata.load_authority_manifest(self.module).await? {
                         AuthorityRecoveryRecord::Manifest(_) => {
                             fence.finalize();
+                            self.release_ownership().await;
                             return Ok(());
                         }
                         AuthorityRecoveryRecord::NeverMigrated { .. } => fence.reopen().await,
@@ -1438,6 +1461,7 @@ where
         gate: &ModuleGenerationGate,
         expected: &AuthorityRecoveryContext,
     ) -> Result<()> {
+        self.ensure_ownership().await?;
         let record = self.metadata.load_authority_manifest(self.module).await?;
         let recovery_expected = match &record {
             AuthorityRecoveryRecord::NeverMigrated {
@@ -1484,7 +1508,11 @@ where
                         fenced: true,
                     })
                     .await?;
-                self.save_status(MigrationState::Postgres, None).await
+                let result = self.save_status(MigrationState::Postgres, None).await;
+                if result.is_ok() {
+                    self.release_ownership().await;
+                }
+                result
             }
             AuthorityRecoveryRecord::Indeterminate => {
                 bail!("authority recovery is indeterminate; source writes remain fenced")
@@ -1566,14 +1594,45 @@ where
     }
 
     async fn prepared_tables(&self) -> Result<Vec<String>> {
+        let expected_tables = self.module_table_set().await?;
         let mut tables = BTreeSet::new();
         for table in self.metadata_tables().await? {
             tables.insert(table);
         }
-        if tables.is_empty() {
-            bail!("migration has no prepared tables");
+        if tables != expected_tables {
+            bail!("migration plans do not cover the complete module catalog");
         }
         Ok(tables.into_iter().collect())
+    }
+
+    async fn module_table_set(&self) -> Result<BTreeSet<String>> {
+        let tables = self.source.module_tables(self.module).await?;
+        let mut table_set = BTreeSet::new();
+        for table in tables {
+            if table.trim().is_empty() || !table_set.insert(table) {
+                bail!("migration module catalog contains an invalid or duplicate table");
+            }
+        }
+        if table_set.is_empty() {
+            bail!("migration module catalog is empty");
+        }
+        Ok(table_set)
+    }
+
+    async fn ensure_ownership(&self) -> Result<()> {
+        let mut ownership = self.ownership.lock().await;
+        if ownership.is_none() {
+            *ownership = Some(
+                self.metadata
+                    .acquire_migration_ownership(self.source.migration_id())
+                    .await?,
+            );
+        }
+        Ok(())
+    }
+
+    async fn release_ownership(&self) {
+        self.ownership.lock().await.take();
     }
 
     async fn metadata_tables(&self) -> Result<Vec<String>> {
@@ -1800,6 +1859,13 @@ impl InMemoryMigrationSource {
 impl MigrationSource for InMemoryMigrationSource {
     async fn capture_watermark(&self) -> Result<i64> {
         self.capture.watermark().await
+    }
+
+    async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>> {
+        if module != StorageModule::TrafficArchive {
+            return Ok(Vec::new());
+        }
+        Ok(self.rows.lock().await.keys().cloned().collect())
     }
 
     async fn table_lower_bound(&self, table_name: &str) -> Result<Option<String>> {
@@ -2324,12 +2390,28 @@ impl Drop for FileMigrationLock {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct MigrationOwnershipLease {
+    state: Arc<StdMutex<Option<Arc<FileMigrationLock>>>>,
+}
+
+impl Drop for MigrationOwnershipLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.take();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FileMigrationStore {
     path: Arc<PathBuf>,
     file_lock_path: Arc<PathBuf>,
     initial_context: AuthorityRecoveryContext,
     lock: Arc<Mutex<()>>,
+    ownership: Arc<StdMutex<Option<Arc<FileMigrationLock>>>>,
     #[cfg(test)]
     fail_next_authority_publication: Arc<AtomicBool>,
 }
@@ -2344,6 +2426,7 @@ impl FileMigrationStore {
             path: Arc::new(path),
             file_lock_path: Arc::new(file_lock_path.into()),
             initial_context,
+            ownership: Arc::new(StdMutex::new(None)),
             #[cfg(test)]
             fail_next_authority_publication: Arc::new(AtomicBool::new(false)),
         }
@@ -2365,11 +2448,21 @@ impl FileMigrationStore {
         self.read_state_unlocked().await
     }
 
-    async fn acquire_file_lock(&self) -> Result<FileMigrationLock> {
+    async fn acquire_file_lock(&self) -> Result<Arc<FileMigrationLock>> {
+        if let Some(lock) = self
+            .ownership
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(Arc::clone)
+        {
+            return Ok(lock);
+        }
         let path = Arc::clone(&self.file_lock_path);
-        tokio::task::spawn_blocking(move || acquire_file_lock(&path))
+        let lock = tokio::task::spawn_blocking(move || acquire_file_lock(&path))
             .await
-            .context("migration authority lock task panicked")?
+            .context("migration authority lock task panicked")??;
+        Ok(Arc::new(lock))
     }
 
     async fn read_state_unlocked(&self) -> Result<FileMigrationState> {
@@ -2823,5 +2916,35 @@ impl MigrationFenceStore for FileMigrationStore {
             Ok(())
         })
         .await
+    }
+
+    async fn acquire_migration_ownership(
+        &self,
+        migration_id: &str,
+    ) -> Result<MigrationOwnershipLease> {
+        if migration_id != self.initial_context.migration_id {
+            bail!("migration ownership belongs to another migration context");
+        }
+        let _lock = self.lock.lock().await;
+        if self
+            .ownership
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            bail!("migration ownership is already held in this process");
+        }
+        let file_lock = self.acquire_file_lock().await?;
+        let mut ownership = self
+            .ownership
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ownership.is_some() {
+            bail!("migration ownership is already held in this process");
+        }
+        *ownership = Some(file_lock);
+        Ok(MigrationOwnershipLease {
+            state: Arc::clone(&self.ownership),
+        })
     }
 }

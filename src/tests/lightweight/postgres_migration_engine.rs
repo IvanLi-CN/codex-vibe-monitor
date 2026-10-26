@@ -314,6 +314,7 @@ async fn checkpoint_restart_resumes_from_target_cursor() -> Result<()> {
     );
     first.prepare(&["events".into()]).await?;
     assert!(!first.copy_next("events").await?.complete);
+    drop(first);
 
     let restarted = new_engine(
         Arc::clone(&source),
