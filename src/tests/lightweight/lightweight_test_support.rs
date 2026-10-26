@@ -260,6 +260,7 @@ pub(crate) async fn retention_memory_test_pool_and_config(
 }
 
 pub(crate) fn cleanup_temp_test_dir(path: &Path) {
+    let _timing = test_timing_span("cleanup");
     let _ = fs::remove_dir_all(path);
 }
 
