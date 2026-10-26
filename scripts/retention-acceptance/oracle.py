@@ -15,7 +15,7 @@ import stat
 import tempfile
 from typing import Any, Callable, Iterator
 
-from contract import AcceptanceError, DATASETS, canonical_json, parse_time, sha256_json
+from contract import AcceptanceError, DATASETS, canonical_json, sha256_json
 
 
 REPLAY_TARGETS = {
@@ -28,6 +28,20 @@ ARCHIVE_OMITTED_SOURCE_COLUMNS = {
     "codex_invocations": {"timeline_json"},
     "pool_upstream_request_attempts": {"occurred_epoch_ms"},
 }
+PRODUCTION_LOCAL_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _parse_production_local_time(value: str) -> datetime:
+    """Parse SQLite production timestamps, which are usually Shanghai-local naive values."""
+    if not isinstance(value, str) or not value:
+        raise AcceptanceError("missing production timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AcceptanceError("invalid production timestamp") from error
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=PRODUCTION_LOCAL_TIMEZONE)
+    return parsed.astimezone(PRODUCTION_LOCAL_TIMEZONE)
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -404,7 +418,7 @@ def verify_dataset(
         source_identity_index = source_columns.index(identity_column)
         source_occurred_at_index = source_columns.index("occurred_at")
         attempt_invoke_index = source_columns.index("invoke_id") if dataset == "pool_upstream_request_attempts" else None
-        cutoff_at = datetime.fromisoformat(cutoff).replace(tzinfo=timezone(timedelta(hours=8)))
+        cutoff_at = datetime.fromisoformat(cutoff).replace(tzinfo=PRODUCTION_LOCAL_TIMEZONE)
         selected_columns = ",".join(source_columns)
         for index, row in enumerate(connection.execute(f"SELECT {selected_columns} FROM {table}")):
             if budget_check is not None and index % 256 == 0:
@@ -419,7 +433,7 @@ def verify_dataset(
                 occurred_at = row[source_occurred_at_index]
                 if not isinstance(occurred_at, str):
                     raise AcceptanceError(f"{dataset} measured source row has no valid occurrence time")
-                if parse_time(occurred_at) < cutoff_at:
+                if _parse_production_local_time(occurred_at) < cutoff_at:
                     raise AcceptanceError(f"{dataset} measured source row predates the fixed retention cutoff")
                 if attempt_invoke_index is not None and row[attempt_invoke_index] != added_attempt_invocations[identity]:
                     raise AcceptanceError(f"{dataset} live source changed the measured attempt-to-invocation association")

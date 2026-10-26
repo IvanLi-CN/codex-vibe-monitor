@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -12,6 +13,7 @@ from contract import AcceptanceError, sha256_json
 from oracle import (
     _archive_path,
     _archive_projection_columns,
+    _parse_production_local_time,
     _validated_archive_columns,
     _verify_summary_proof,
     verify_dataset,
@@ -195,6 +197,12 @@ class OracleTests(unittest.TestCase):
             ),
             ["id", "attempt_public_id"],
         )
+
+    def test_production_local_timestamps_accept_naive_sqlite_values(self) -> None:
+        local_time = _parse_production_local_time("2026-08-12 12:00:00")
+        utc_time = _parse_production_local_time("2026-08-12T04:00:00Z")
+        self.assertEqual(local_time.utcoffset(), timedelta(hours=8))
+        self.assertEqual(local_time, utc_time)
 
     def test_archive_columns_accept_current_and_legacy_known_shapes_only(self) -> None:
         source_columns = [
