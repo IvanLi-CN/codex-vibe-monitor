@@ -10,12 +10,13 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Sqlite, SqlitePool, Transaction};
 use tokio::sync::{Mutex, Notify};
 
 use super::config::StorageConfig;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub(crate) enum StorageModule {
     TrafficArchive,
     Analytics,
@@ -24,19 +25,19 @@ pub(crate) enum StorageModule {
     Performance,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum BackendKind {
     Sqlite,
     Postgres,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ModuleAuthority {
     pub(crate) backend: BackendKind,
     pub(crate) generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ModuleAuthorityManifest {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
@@ -47,7 +48,7 @@ pub(crate) struct ModuleAuthorityManifest {
     pub(crate) target_identity: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AuthorityRecoveryContext {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
@@ -788,7 +789,7 @@ fn validate_switch_manifest(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum MigrationState {
     Pending,
     Preparing,
@@ -871,7 +872,7 @@ impl MigrationState {
 ///
 /// pg01 validates identity, state, timestamp, and capacity invariants only. A later
 /// metadata-store and worker implementation must persist and recover this value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationStatus {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
@@ -948,7 +949,7 @@ impl MigrationStatus {
 ///
 /// pg01 validates watermark ordering only; checkpoint persistence and restart recovery
 /// belong to the later migration engine and runtime adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationCheckpoint {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
@@ -987,7 +988,7 @@ impl MigrationCheckpoint {
 ///
 /// pg01 defines the identity and acknowledgement invariants without implementing an
 /// outbox worker or its durable storage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationOutboxItem {
     pub(crate) outbox_id: String,
     pub(crate) migration_id: String,
@@ -1021,7 +1022,7 @@ impl MigrationOutboxItem {
 ///
 /// pg01 validates reservation identity and bounds without implementing a persistent
 /// reservation store or capacity worker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationReservation {
     pub(crate) reservation_id: String,
     pub(crate) migration_id: String,
@@ -1170,6 +1171,7 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
 /// pg01 specifies the load/save, outbox, and capacity obligations and their typed
 /// values. Concrete persistence, worker execution, and startup recovery are later
 /// migration-engine/runtime work; this trait is not a claim that those paths exist.
+#[async_trait::async_trait]
 pub(crate) trait MigrationMetadataStore: AuthorityManifestStore {
     async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>>;
     async fn save_status(&self, status: &MigrationStatus) -> Result<()>;
