@@ -19,6 +19,13 @@ const DEFAULT_LEGACY_TABLE: &str = "codex_invocations";
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
 const ARCHIVE_CLEANUP_STATE_DELETE_PENDING: &str = "delete_pending";
 const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
+const SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE: &str = "authoritative";
+const SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR: &str = "live_mirror";
+pub(crate) const INVOCATION_SUMMARY_REPLAY_TARGETS: [&str; 3] = [
+    "invocation_rollup_hourly",
+    "upstream_account_stats_hourly",
+    "upstream_account_usage_breakdown_hourly",
+];
 // Keep release and prune on the same owner-tuple set. UNION intentionally deduplicates a
 // tuple that is present in both the live and archive ledgers during a migration window.
 const ACTIVE_RAW_REFERENCE_UNION: &str = "SELECT raw_path, owner_kind, owner_id, raw_role
@@ -258,6 +265,34 @@ const ARCHIVE_STORAGE_SCHEMA: &[&str] = &[
         ON archive_raw_reference_changes (raw_path, state, action)",
     "CREATE INDEX IF NOT EXISTS idx_proxy_raw_payload_blob_links_path
         ON proxy_raw_payload_blob_links (raw_path)",
+    "CREATE OR REPLACE FUNCTION lock_proxy_raw_payload_blob_link_path()
+     RETURNS trigger
+     LANGUAGE plpgsql
+     AS $$
+     BEGIN
+         IF TG_OP = 'DELETE' THEN
+             PERFORM pg_advisory_xact_lock(hashtextextended(OLD.raw_path, 0));
+             RETURN OLD;
+         END IF;
+         IF TG_OP = 'UPDATE' AND OLD.raw_path <> NEW.raw_path THEN
+             IF OLD.raw_path < NEW.raw_path THEN
+                 PERFORM pg_advisory_xact_lock(hashtextextended(OLD.raw_path, 0));
+                 PERFORM pg_advisory_xact_lock(hashtextextended(NEW.raw_path, 0));
+             ELSE
+                 PERFORM pg_advisory_xact_lock(hashtextextended(NEW.raw_path, 0));
+                 PERFORM pg_advisory_xact_lock(hashtextextended(OLD.raw_path, 0));
+             END IF;
+         ELSE
+             PERFORM pg_advisory_xact_lock(hashtextextended(NEW.raw_path, 0));
+         END IF;
+         RETURN NEW;
+     END
+     $$",
+    "DROP TRIGGER IF EXISTS trg_lock_proxy_raw_payload_blob_link_path
+       ON proxy_raw_payload_blob_links",
+    "CREATE TRIGGER trg_lock_proxy_raw_payload_blob_link_path
+     BEFORE INSERT OR UPDATE OR DELETE ON proxy_raw_payload_blob_links
+     FOR EACH ROW EXECUTE FUNCTION lock_proxy_raw_payload_blob_link_path()",
     "CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_file
         ON pool_upstream_node_health_archive (archive_file_path)",
     "CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_occurred_at_binding
@@ -299,8 +334,10 @@ pub(crate) struct ArchiveManifest {
     pub(crate) layout: String,
     pub(crate) codec: String,
     pub(crate) cleanup_state: String,
+    pub(crate) summary_source_kind: String,
     pub(crate) coverage_start_at: Option<String>,
     pub(crate) coverage_end_at: Option<String>,
+    pub(crate) historical_rollups_materialized_at: Option<String>,
 }
 
 impl ArchiveManifest {
@@ -335,10 +372,29 @@ impl ArchiveManifest {
         ) {
             bail!("unsupported archive cleanup state: {}", self.cleanup_state);
         }
+        if !matches!(
+            self.summary_source_kind.as_str(),
+            SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE | SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+        ) {
+            bail!(
+                "new archive manifests require an explicit summary source kind: {}",
+                self.summary_source_kind
+            );
+        }
         if let (Some(start), Some(end)) = (&self.coverage_start_at, &self.coverage_end_at)
             && start > end
         {
             bail!("archive coverage start is after its end");
+        }
+        if self.dataset == "codex_invocations"
+            && self.summary_source_kind == SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+            && (self.coverage_start_at.is_none()
+                || self.coverage_end_at.is_none()
+                || self.historical_rollups_materialized_at.is_none())
+        {
+            bail!(
+                "authoritative invocation archives require bounded coverage and materialized rollups"
+            );
         }
         Ok(())
     }
@@ -628,6 +684,13 @@ impl RawReferenceChange {
         validate_sha256("Raw reference identity", identity)?;
         Ok(())
     }
+
+    fn canonicalized(&self, manifest: &ArchiveManifest, raw_root: &Path) -> Result<Self> {
+        self.validate(manifest, raw_root)?;
+        let mut canonical = self.clone();
+        canonical.raw_path = normalize_raw_path(&self.raw_path, raw_root)?;
+        Ok(canonical)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -770,6 +833,13 @@ impl RawReferenceCheck {
         }
         validate_sha256("Raw reference file identity", &self.file_identity_sha256)
     }
+
+    fn canonicalized(&self, raw_root: &Path) -> Result<Self> {
+        self.validate(raw_root)?;
+        let mut canonical = self.clone();
+        canonical.raw_path = normalize_raw_path(&self.raw_path, raw_root)?;
+        Ok(canonical)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -847,12 +917,19 @@ impl RetentionRawReconciliation {
         }
         Ok(())
     }
+
+    fn canonicalized(&self, raw_root: &Path) -> Result<Self> {
+        self.validate(raw_root)?;
+        let mut canonical = self.clone();
+        canonical.raw_path = normalize_raw_path(&self.raw_path, raw_root)?;
+        Ok(canonical)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArchivePrunePlan {
     pub(crate) manifest: ArchiveManifest,
-    pub(crate) proof: ArchiveProof,
+    pub(crate) proof: Option<ArchiveProof>,
     pub(crate) rollups: Vec<ArchiveRollupMarker>,
     pub(crate) raw_reference_checks: Vec<RawReferenceCheck>,
     pub(crate) pending_activity_outbox: i64,
@@ -862,7 +939,14 @@ pub(crate) struct ArchivePrunePlan {
 impl ArchivePrunePlan {
     pub(crate) fn validate(&self, archive_root: &Path, raw_root: &Path) -> Result<()> {
         self.manifest.validate(archive_root)?;
-        self.proof.validate_for(&self.manifest)?;
+        if self.manifest.summary_source_kind == SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE {
+            self.proof
+                .as_ref()
+                .context("authoritative archive pruning requires a publication proof")?
+                .validate_for(&self.manifest)?;
+        } else if self.proof.is_some() {
+            bail!("live-mirror archives cannot carry a Summary publication proof");
+        }
         if self.manifest.cleanup_state != "delete_pending" {
             bail!("archive must be delete_pending before metadata pruning");
         }
@@ -883,12 +967,20 @@ impl ArchivePrunePlan {
                 bail!("archive prune repeats a Raw reference check");
             }
         }
-        if self.rollups.is_empty() {
-            bail!("archive pruning requires at least one rollup marker");
+        let requires_rollups =
+            self.manifest.summary_source_kind == SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
+        if requires_rollups && self.rollups.is_empty() {
+            bail!("authoritative archive pruning requires rollup markers");
+        }
+        if !requires_rollups && !self.rollups.is_empty() {
+            bail!("live-mirror archives cannot carry Summary rollup markers");
         }
         for marker in &self.rollups {
             marker.validate(&self.manifest)?;
-            if !marker.complete {
+            if self.manifest.dataset == "codex_invocations" && !marker.complete {
+                bail!("authoritative invocation archives require complete rollup markers");
+            }
+            if requires_rollups && !marker.complete {
                 bail!("archive has an incomplete rollup marker");
             }
         }
@@ -903,12 +995,24 @@ impl ArchivePrunePlan {
         }
         Ok(())
     }
+
+    pub(crate) fn canonicalized(&self, archive_root: &Path, raw_root: &Path) -> Result<Self> {
+        self.validate(archive_root, raw_root)?;
+        let mut canonical = self.clone();
+        canonical.raw_reference_checks = self
+            .raw_reference_checks
+            .iter()
+            .map(|check| check.canonicalized(raw_root))
+            .collect::<Result<Vec<_>>>()?;
+        canonical.validate(archive_root, raw_root)?;
+        Ok(canonical)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArchivePublishOperation {
     pub(crate) manifest: ArchiveManifest,
-    pub(crate) proof: ArchiveProof,
+    pub(crate) proof: Option<ArchiveProof>,
     pub(crate) rollups: Vec<ArchiveRollupMarker>,
     pub(crate) replay_markers: Vec<ArchiveReplayMarker>,
     pub(crate) node_health_rows: Vec<PoolUpstreamNodeHealthArchiveRow>,
@@ -923,12 +1027,27 @@ pub(crate) struct ArchivePublishOperation {
 impl ArchivePublishOperation {
     pub(crate) fn validate(&self, archive_root: &Path, raw_root: &Path) -> Result<()> {
         self.manifest.validate(archive_root)?;
-        self.proof.validate_for(&self.manifest)?;
-        if self.rollups.is_empty() {
-            bail!("archive publication requires a rollup marker");
+        let authoritative =
+            self.manifest.summary_source_kind == SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
+        if authoritative {
+            self.proof
+                .as_ref()
+                .context("authoritative archives require a publication proof")?
+                .validate_for(&self.manifest)?;
+        } else if self.proof.is_some() {
+            bail!("live-mirror archives cannot carry a Summary publication proof");
+        }
+        if authoritative && self.rollups.is_empty() {
+            bail!("authoritative archive publication requires a rollup marker");
+        }
+        if !authoritative && !self.rollups.is_empty() {
+            bail!("live-mirror archives cannot carry Summary rollup markers");
         }
         for marker in &self.rollups {
             marker.validate(&self.manifest)?;
+            if self.manifest.dataset == "codex_invocations" && !marker.complete {
+                bail!("authoritative invocation archives require complete rollup markers");
+            }
         }
         let mut rollup_keys = BTreeSet::new();
         for marker in &self.rollups {
@@ -939,8 +1058,11 @@ impl ArchivePublishOperation {
                 bail!("archive publication repeats a rollup marker");
             }
         }
-        if self.replay_markers.is_empty() {
-            bail!("archive publication requires a replay marker");
+        if authoritative && self.replay_markers.is_empty() {
+            bail!("authoritative archive publication requires a replay marker");
+        }
+        if !authoritative && !self.replay_markers.is_empty() {
+            bail!("live-mirror archives cannot carry Summary replay markers");
         }
         let mut replay_keys = BTreeSet::new();
         for marker in &self.replay_markers {
@@ -951,6 +1073,19 @@ impl ArchivePublishOperation {
             )) {
                 bail!("archive publication repeats a replay marker");
             }
+        }
+        let replay_targets = self
+            .replay_markers
+            .iter()
+            .map(|marker| marker.target.as_str())
+            .collect::<BTreeSet<_>>();
+        if self.manifest.dataset == "codex_invocations"
+            && authoritative
+            && INVOCATION_SUMMARY_REPLAY_TARGETS
+                .iter()
+                .any(|target| !replay_targets.contains(target))
+        {
+            bail!("authoritative invocation archives require all Summary replay markers");
         }
         if (!self.node_health_rows.is_empty() || !self.node_health_hourly_rows.is_empty())
             && self.manifest.dataset != "pool_upstream_request_attempts"
@@ -974,11 +1109,6 @@ impl ArchivePublishOperation {
                 bail!("archive publication repeats a node-health hourly row");
             }
         }
-        let replay_targets = self
-            .replay_markers
-            .iter()
-            .map(|marker| marker.target.as_str())
-            .collect::<BTreeSet<_>>();
         if !self.node_health_rows.is_empty()
             && !replay_targets.contains("pool_upstream_node_health_archive")
         {
@@ -1029,6 +1159,23 @@ impl ArchivePublishOperation {
         }
         Ok(())
     }
+
+    pub(crate) fn canonicalized(&self, archive_root: &Path, raw_root: &Path) -> Result<Self> {
+        self.validate(archive_root, raw_root)?;
+        let mut canonical = self.clone();
+        canonical.raw_reference_changes = self
+            .raw_reference_changes
+            .iter()
+            .map(|change| change.canonicalized(&self.manifest, raw_root))
+            .collect::<Result<Vec<_>>>()?;
+        canonical.retention_raw_reconciliation = self
+            .retention_raw_reconciliation
+            .iter()
+            .map(|reconciliation| reconciliation.canonicalized(raw_root))
+            .collect::<Result<Vec<_>>>()?;
+        canonical.validate(archive_root, raw_root)?;
+        Ok(canonical)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1055,18 +1202,31 @@ impl ArchiveStorageAdapter {
     }
 
     pub(crate) async fn ensure_schema(&self) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                        hashtextextended('codex-vibe-monitor:archive-storage-schema', 0)
+                    )",
+        )
+        .execute(&mut *transaction)
+        .await
+        .context("lock archive storage schema initialization")?;
         for statement in ARCHIVE_STORAGE_SCHEMA {
             sqlx::query(statement)
-                .execute(&self.pool)
+                .execute(&mut *transaction)
                 .await
                 .with_context(|| "create archive storage table")?;
         }
         for statement in ARCHIVE_STORAGE_SCHEMA_UPGRADES {
             sqlx::query(statement)
-                .execute(&self.pool)
+                .execute(&mut *transaction)
                 .await
                 .with_context(|| "upgrade archive storage table")?;
         }
+        transaction
+            .commit()
+            .await
+            .context("commit archive storage schema initialization")?;
         Ok(())
     }
 
@@ -1205,16 +1365,25 @@ impl ArchiveStorageAdapter {
         &self,
         operation: &ArchivePublishOperation,
     ) -> Result<ArchivePublishReceipt> {
-        operation.validate(&self.archive_root, &self.raw_root)?;
+        let operation = operation.canonicalized(&self.archive_root, &self.raw_root)?;
         let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                        hashtextextended('codex-vibe-monitor:archive-storage-schema', 0)
+                    )",
+        )
+        .execute(&mut *transaction)
+        .await
+        .context("lock archive storage schema during publication")?;
 
         sqlx::query(
             "INSERT INTO archive_batches
                 (archive_batch_id, dataset, month_key, day_key, part, file_path, sha256,
                  source_identity_sha256, row_count, layout, codec, cleanup_state,
-                 coverage_start_at, coverage_end_at, status, writer_version, summary_source_kind)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                     'completed', $15, 'unknown')
+                 coverage_start_at, coverage_end_at, historical_rollups_materialized_at,
+                 status, writer_version, summary_source_kind)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                     'completed', $16, $17)
              ON CONFLICT (archive_batch_id) DO NOTHING",
         )
         .bind(operation.manifest.archive_batch_id)
@@ -1231,7 +1400,9 @@ impl ArchiveStorageAdapter {
         .bind(&operation.manifest.cleanup_state)
         .bind(&operation.manifest.coverage_start_at)
         .bind(&operation.manifest.coverage_end_at)
+        .bind(&operation.manifest.historical_rollups_materialized_at)
         .bind(writer_version_for_layout(&operation.manifest.layout))
+        .bind(&operation.manifest.summary_source_kind)
         .execute(&mut *transaction)
         .await
         .context("insert archive manifest")?;
@@ -1239,7 +1410,8 @@ impl ArchiveStorageAdapter {
         let existing = sqlx::query(
             "SELECT dataset, month_key, day_key, part, file_path, sha256,
                      source_identity_sha256, row_count, status, layout, codec,
-                     writer_version, cleanup_state, coverage_start_at, coverage_end_at
+                     writer_version, cleanup_state, coverage_start_at, coverage_end_at,
+                     summary_source_kind, historical_rollups_materialized_at
                FROM archive_batches WHERE archive_batch_id = $1",
         )
         .bind(operation.manifest.archive_batch_id)
@@ -1263,6 +1435,9 @@ impl ArchiveStorageAdapter {
         let existing_cleanup_state: String = existing.try_get("cleanup_state")?;
         let existing_coverage_start: Option<String> = existing.try_get("coverage_start_at")?;
         let existing_coverage_end: Option<String> = existing.try_get("coverage_end_at")?;
+        let existing_summary_source_kind: String = existing.try_get("summary_source_kind")?;
+        let existing_historical_rollups_materialized_at: Option<String> =
+            existing.try_get("historical_rollups_materialized_at")?;
         if existing_dataset != operation.manifest.dataset
             || existing_month != operation.manifest.month_key
             || existing_day != operation.manifest.day_key
@@ -1278,11 +1453,17 @@ impl ArchiveStorageAdapter {
             || existing_cleanup_state != operation.manifest.cleanup_state
             || existing_coverage_start != operation.manifest.coverage_start_at
             || existing_coverage_end != operation.manifest.coverage_end_at
+            || existing_summary_source_kind != operation.manifest.summary_source_kind
+            || existing_historical_rollups_materialized_at
+                != operation.manifest.historical_rollups_materialized_at
         {
             bail!("archive batch metadata conflicts with existing metadata");
         }
 
         if let Some(prepared_archive) = &operation.retention_prepared_archive {
+            if prepared_archive.state == "quarantined" {
+                bail!("quarantined prepared archives cannot be published");
+            }
             sqlx::query(
                 "INSERT INTO retention_prepared_archives
                     (prepared_key, dataset, month_key, day_key, part_key, file_path,
@@ -1343,7 +1524,7 @@ impl ArchiveStorageAdapter {
             .await
             .context("upsert retention prepared archive")?;
             let stored = sqlx::query(
-                "SELECT file_path, source_identity_sha256
+                "SELECT file_path, source_identity_sha256, state
                    FROM retention_prepared_archives WHERE prepared_key = $1",
             )
             .bind(&prepared_archive.prepared_key)
@@ -1352,10 +1533,14 @@ impl ArchiveStorageAdapter {
             .context("read retention prepared archive after upsert")?;
             let stored_path: String = stored.try_get("file_path")?;
             let stored_source_identity: String = stored.try_get("source_identity_sha256")?;
+            let stored_state: String = stored.try_get("state")?;
             if stored_path != prepared_archive.file_path
                 || stored_source_identity != prepared_archive.source_identity_sha256
             {
                 bail!("retention prepared archive identity conflicts with existing metadata");
+            }
+            if stored_state == "quarantined" {
+                bail!("quarantined prepared archives cannot be published");
             }
         }
 
@@ -1465,46 +1650,48 @@ impl ArchiveStorageAdapter {
             }
         }
 
-        sqlx::query(
-            "INSERT INTO archive_proofs
-                (archive_batch_id, manifest_sha256, page_count, row_count, coverage_start_at,
-                 coverage_end_at, semantic_sha256, verified_at_epoch_ms)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (archive_batch_id) DO NOTHING",
-        )
-        .bind(operation.proof.archive_batch_id)
-        .bind(&operation.proof.manifest_sha256)
-        .bind(operation.proof.page_count)
-        .bind(operation.proof.row_count)
-        .bind(&operation.proof.coverage_start_at)
-        .bind(&operation.proof.coverage_end_at)
-        .bind(&operation.proof.semantic_sha256)
-        .bind(operation.proof.verified_at_epoch_ms)
-        .execute(&mut *transaction)
-        .await
-        .context("insert archive proof")?;
+        if let Some(proof) = operation.proof.as_ref() {
+            sqlx::query(
+                "INSERT INTO archive_proofs
+                    (archive_batch_id, manifest_sha256, page_count, row_count, coverage_start_at,
+                     coverage_end_at, semantic_sha256, verified_at_epoch_ms)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT (archive_batch_id) DO NOTHING",
+            )
+            .bind(proof.archive_batch_id)
+            .bind(&proof.manifest_sha256)
+            .bind(proof.page_count)
+            .bind(proof.row_count)
+            .bind(&proof.coverage_start_at)
+            .bind(&proof.coverage_end_at)
+            .bind(&proof.semantic_sha256)
+            .bind(proof.verified_at_epoch_ms)
+            .execute(&mut *transaction)
+            .await
+            .context("insert archive proof")?;
 
-        let stored_proof = sqlx::query(
-            "SELECT manifest_sha256, page_count, row_count, coverage_start_at,
-                    coverage_end_at, semantic_sha256, verified_at_epoch_ms
-               FROM archive_proofs WHERE archive_batch_id = $1",
-        )
-        .bind(operation.proof.archive_batch_id)
-        .fetch_one(&mut *transaction)
-        .await
-        .context("read archive proof after insert")?;
-        let stored_proof_value = ArchiveProof {
-            archive_batch_id: operation.proof.archive_batch_id,
-            manifest_sha256: stored_proof.try_get("manifest_sha256")?,
-            page_count: stored_proof.try_get("page_count")?,
-            row_count: stored_proof.try_get("row_count")?,
-            coverage_start_at: stored_proof.try_get("coverage_start_at")?,
-            coverage_end_at: stored_proof.try_get("coverage_end_at")?,
-            semantic_sha256: stored_proof.try_get("semantic_sha256")?,
-            verified_at_epoch_ms: stored_proof.try_get("verified_at_epoch_ms")?,
-        };
-        if stored_proof_value != operation.proof {
-            bail!("archive proof conflicts with existing metadata");
+            let stored_proof = sqlx::query(
+                "SELECT manifest_sha256, page_count, row_count, coverage_start_at,
+                        coverage_end_at, semantic_sha256, verified_at_epoch_ms
+                   FROM archive_proofs WHERE archive_batch_id = $1",
+            )
+            .bind(proof.archive_batch_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read archive proof after insert")?;
+            let stored_proof_value = ArchiveProof {
+                archive_batch_id: proof.archive_batch_id,
+                manifest_sha256: stored_proof.try_get("manifest_sha256")?,
+                page_count: stored_proof.try_get("page_count")?,
+                row_count: stored_proof.try_get("row_count")?,
+                coverage_start_at: stored_proof.try_get("coverage_start_at")?,
+                coverage_end_at: stored_proof.try_get("coverage_end_at")?,
+                semantic_sha256: stored_proof.try_get("semantic_sha256")?,
+                verified_at_epoch_ms: stored_proof.try_get("verified_at_epoch_ms")?,
+            };
+            if &stored_proof_value != proof {
+                bail!("archive proof conflicts with existing metadata");
+            }
         }
 
         for marker in &operation.replay_markers {
@@ -1708,6 +1895,33 @@ impl ArchiveStorageAdapter {
                 .raw_identity_sha256
                 .as_deref()
                 .context("validated Raw reference is missing its file identity")?;
+            let existing_change = sqlx::query(
+                "SELECT action, raw_identity_sha256, state
+                   FROM archive_raw_reference_changes
+                  WHERE archive_batch_id = $1 AND raw_path = $2
+                    AND owner_kind = $3 AND owner_id = $4 AND raw_role = $5",
+            )
+            .bind(change.archive_batch_id)
+            .bind(&change.raw_path)
+            .bind(&change.owner_kind)
+            .bind(change.owner_id)
+            .bind(&change.raw_role)
+            .fetch_optional(&mut *transaction)
+            .await
+            .context("read existing archive Raw reference change")?;
+            if let Some(existing_change) = existing_change {
+                let existing_identity: Option<String> =
+                    existing_change.try_get("raw_identity_sha256")?;
+                let existing_state: String = existing_change.try_get("state")?;
+                if existing_identity.as_deref() != Some(raw_identity) {
+                    bail!("archive Raw reference change conflicts with existing metadata");
+                }
+                if existing_state == "released" {
+                    // A retry must not reactivate a terminal release decision. A new owner
+                    // event uses a new archive batch identity rather than this retry key.
+                    continue;
+                }
+            }
             if change.action == RawReferenceAction::Link {
                 sqlx::query(
                     "INSERT INTO proxy_raw_payload_blobs
@@ -1749,7 +1963,7 @@ impl ArchiveStorageAdapter {
                 // Lock the parent row before counting. Live-link inserts take a foreign-key
                 // key-share lock, so an in-flight source write must finish before the count;
                 // otherwise the delete below could cascade away a newly committed live link.
-                sqlx::query(
+                let parent = sqlx::query(
                     "SELECT raw_path
                        FROM proxy_raw_payload_blobs
                       WHERE raw_path = $1
@@ -1759,6 +1973,9 @@ impl ArchiveStorageAdapter {
                 .fetch_optional(&mut *transaction)
                 .await
                 .context("lock canonical Raw blob before release")?;
+                if parent.is_none() {
+                    bail!("cannot release a Raw reference without its blob parent");
+                }
                 let canonical_blob = sqlx::query(
                     "SELECT b.file_identity_sha256,
                             COUNT(l.id)::BIGINT AS link_count
@@ -1769,20 +1986,18 @@ impl ArchiveStorageAdapter {
                       GROUP BY b.file_identity_sha256",
                 )
                 .bind(&change.raw_path)
-                .fetch_optional(&mut *transaction)
+                .fetch_one(&mut *transaction)
                 .await
                 .context("check canonical Raw blob before release")?;
-                if let Some(canonical_blob) = canonical_blob {
-                    let canonical_identity: Option<String> =
-                        canonical_blob.try_get("file_identity_sha256")?;
-                    let canonical_link_count: i64 = canonical_blob.try_get("link_count")?;
-                    let identity_conflicts = match canonical_identity.as_deref() {
-                        Some(identity) => identity != raw_identity,
-                        None => canonical_link_count != 0,
-                    };
-                    if identity_conflicts {
-                        bail!("canonical Raw release identity conflicts with active metadata");
-                    }
+                let canonical_identity: Option<String> =
+                    canonical_blob.try_get("file_identity_sha256")?;
+                let canonical_link_count: i64 = canonical_blob.try_get("link_count")?;
+                let identity_conflicts = match canonical_identity.as_deref() {
+                    Some(identity) => identity != raw_identity,
+                    None => canonical_link_count != 0,
+                };
+                if identity_conflicts {
+                    bail!("canonical Raw release identity conflicts with active metadata");
                 }
                 let active_identity = sqlx::query(
                     "SELECT COUNT(*)::BIGINT AS active_count,
@@ -1816,18 +2031,17 @@ impl ArchiveStorageAdapter {
                     sqlx::query(
                         "UPDATE archive_raw_reference_changes
                             SET action = 'release', state = 'released'
-                          WHERE archive_batch_id = $1 AND raw_path = $2
-                            AND owner_kind = $3 AND owner_id = $4
-                            AND raw_role = $5 AND action = 'link' AND state = 'active'",
+                          WHERE raw_path = $1
+                            AND owner_kind = $2 AND owner_id = $3
+                            AND raw_role = $4 AND action = 'link' AND state = 'active'",
                     )
-                    .bind(change.archive_batch_id)
                     .bind(&change.raw_path)
                     .bind(&change.owner_kind)
                     .bind(change.owner_id)
                     .bind(&change.raw_role)
                     .execute(&mut *transaction)
                     .await
-                    .context("release active archive Raw reference for batch")?;
+                    .context("release active archive Raw references")?;
                 }
                 let ownership = sqlx::query(&format!(
                     "SELECT
@@ -1873,7 +2087,9 @@ impl ArchiveStorageAdapter {
                      raw_identity_sha256 = EXCLUDED.raw_identity_sha256,
                      state = EXCLUDED.state
                  WHERE archive_raw_reference_changes.raw_identity_sha256
-                       = EXCLUDED.raw_identity_sha256",
+                       = EXCLUDED.raw_identity_sha256
+                   AND NOT (archive_raw_reference_changes.state = 'released'
+                            AND EXCLUDED.action = 'link')",
             )
             .bind(change.archive_batch_id)
             .bind(&change.raw_path)
@@ -2202,13 +2418,22 @@ impl ArchiveStorageAdapter {
     /// deletes an archive or Raw file. Every caller-supplied proof is re-read while the batch is
     /// locked so a stale cleanup decision cannot remove newer migration state.
     pub(crate) async fn prune_metadata(&self, plan: &ArchivePrunePlan) -> Result<bool> {
-        plan.validate(&self.archive_root, &self.raw_root)?;
+        let plan = plan.canonicalized(&self.archive_root, &self.raw_root)?;
         let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(
+                        hashtextextended('codex-vibe-monitor:archive-storage-schema', 0)
+                    )",
+        )
+        .execute(&mut *transaction)
+        .await
+        .context("lock archive storage schema during pruning")?;
 
         let manifest_row = sqlx::query(
             "SELECT dataset, month_key, day_key, part, file_path, sha256,
                     source_identity_sha256, row_count, layout, codec, cleanup_state,
-                    coverage_start_at, coverage_end_at, status
+                    coverage_start_at, coverage_end_at, summary_source_kind,
+                    historical_rollups_materialized_at, status
                FROM archive_batches
               WHERE archive_batch_id = $1 FOR UPDATE",
         )
@@ -2234,8 +2459,11 @@ impl ArchiveStorageAdapter {
             layout: manifest_row.try_get("layout")?,
             codec: manifest_row.try_get("codec")?,
             cleanup_state: manifest_row.try_get("cleanup_state")?,
+            summary_source_kind: manifest_row.try_get("summary_source_kind")?,
             coverage_start_at: manifest_row.try_get("coverage_start_at")?,
             coverage_end_at: manifest_row.try_get("coverage_end_at")?,
+            historical_rollups_materialized_at: manifest_row
+                .try_get("historical_rollups_materialized_at")?,
         };
         let stored_status: String = manifest_row.try_get("status")?;
         if stored_status != ARCHIVE_STATUS_COMPLETED || stored_manifest != plan.manifest {
@@ -2254,30 +2482,32 @@ impl ArchiveStorageAdapter {
             return Ok(false);
         }
 
-        let proof_row = sqlx::query(
-            "SELECT manifest_sha256, page_count, row_count, coverage_start_at,
-                    coverage_end_at, semantic_sha256, verified_at_epoch_ms
-               FROM archive_proofs WHERE archive_batch_id = $1",
-        )
-        .bind(plan.manifest.archive_batch_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .context("recheck archive proof before pruning")?;
-        let Some(proof_row) = proof_row else {
-            return Ok(false);
-        };
-        let stored_proof = ArchiveProof {
-            archive_batch_id: plan.proof.archive_batch_id,
-            manifest_sha256: proof_row.try_get("manifest_sha256")?,
-            page_count: proof_row.try_get("page_count")?,
-            row_count: proof_row.try_get("row_count")?,
-            coverage_start_at: proof_row.try_get("coverage_start_at")?,
-            coverage_end_at: proof_row.try_get("coverage_end_at")?,
-            semantic_sha256: proof_row.try_get("semantic_sha256")?,
-            verified_at_epoch_ms: proof_row.try_get("verified_at_epoch_ms")?,
-        };
-        if stored_proof != plan.proof {
-            return Ok(false);
+        if let Some(proof) = plan.proof.as_ref() {
+            let proof_row = sqlx::query(
+                "SELECT manifest_sha256, page_count, row_count, coverage_start_at,
+                        coverage_end_at, semantic_sha256, verified_at_epoch_ms
+                   FROM archive_proofs WHERE archive_batch_id = $1",
+            )
+            .bind(plan.manifest.archive_batch_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .context("recheck archive proof before pruning")?;
+            let Some(proof_row) = proof_row else {
+                return Ok(false);
+            };
+            let stored_proof = ArchiveProof {
+                archive_batch_id: proof.archive_batch_id,
+                manifest_sha256: proof_row.try_get("manifest_sha256")?,
+                page_count: proof_row.try_get("page_count")?,
+                row_count: proof_row.try_get("row_count")?,
+                coverage_start_at: proof_row.try_get("coverage_start_at")?,
+                coverage_end_at: proof_row.try_get("coverage_end_at")?,
+                semantic_sha256: proof_row.try_get("semantic_sha256")?,
+                verified_at_epoch_ms: proof_row.try_get("verified_at_epoch_ms")?,
+            };
+            if &stored_proof != proof {
+                return Ok(false);
+            }
         }
 
         let raw_paths = raw_paths_in_lock_order(
@@ -2285,13 +2515,28 @@ impl ArchiveStorageAdapter {
                 .iter()
                 .map(|check| check.raw_path.as_str()),
         );
-        for raw_path in raw_paths {
+        for raw_path in &raw_paths {
             // Match publish's lock order so prune cannot race a new Raw ownership link.
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(raw_path)
                 .execute(&mut *transaction)
                 .await
                 .context("lock Raw ownership path before pruning")?;
+        }
+        for raw_path in &raw_paths {
+            let parent = sqlx::query_scalar::<_, String>(
+                "SELECT raw_path
+                   FROM proxy_raw_payload_blobs
+                  WHERE raw_path = $1
+                  FOR UPDATE",
+            )
+            .bind(raw_path)
+            .fetch_optional(&mut *transaction)
+            .await
+            .context("lock Raw blob parent before pruning")?;
+            if parent.is_none() {
+                return Ok(false);
+            }
         }
 
         let stored_rollup_rows = sqlx::query(

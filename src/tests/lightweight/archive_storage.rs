@@ -26,8 +26,10 @@ fn manifest() -> ArchiveManifest {
         layout: "segment_v1".to_owned(),
         codec: "gzip".to_owned(),
         cleanup_state: "delete_pending".to_owned(),
+        summary_source_kind: "authoritative".to_owned(),
         coverage_start_at: Some("2026-10-26T00:00:00Z".to_owned()),
         coverage_end_at: Some("2026-10-26T01:00:00Z".to_owned()),
+        historical_rollups_materialized_at: Some("2026-10-26T01:01:00Z".to_owned()),
     }
 }
 
@@ -109,7 +111,7 @@ fn archive_publication_validation_covers_node_health_and_replay_identity() {
     let mut manifest = manifest();
     manifest.dataset = "pool_upstream_request_attempts".to_owned();
     let operation = ArchivePublishOperation {
-        proof: proof(&manifest),
+        proof: Some(proof(&manifest)),
         rollups: vec![ArchiveRollupMarker {
             archive_batch_id: manifest.archive_batch_id,
             target: "hourly".to_owned(),
@@ -189,6 +191,88 @@ fn archive_publication_validation_covers_node_health_and_replay_identity() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn archive_roles_require_summary_evidence_and_canonical_raw_paths() {
+    let archive_root = Path::new("/var/lib/codex/archive");
+    let raw_root = Path::new("/var/lib/codex/raw");
+    let manifest = manifest();
+    let mut incomplete_manifest = manifest.clone();
+    incomplete_manifest.coverage_end_at = None;
+    assert!(incomplete_manifest.validate(archive_root).is_err());
+
+    let mut operation = ArchivePublishOperation {
+        manifest: manifest.clone(),
+        proof: Some(proof(&manifest)),
+        rollups: vec![ArchiveRollupMarker {
+            archive_batch_id: manifest.archive_batch_id,
+            target: "invocation_hourly".to_owned(),
+            bucket_start_epoch_ms: 100,
+            source_identity_sha256: manifest.source_identity_sha256.clone(),
+            materialized_rows: manifest.row_count,
+            complete: true,
+        }],
+        replay_markers: INVOCATION_SUMMARY_REPLAY_TARGETS
+            .iter()
+            .map(|target| ArchiveReplayMarker {
+                target: (*target).to_owned(),
+                dataset: manifest.dataset.clone(),
+                file_path: manifest.file_path.clone(),
+                archive_sha256: manifest.sha256.clone(),
+            })
+            .collect(),
+        node_health_rows: Vec::new(),
+        node_health_hourly_rows: Vec::new(),
+        raw_reference_changes: vec![RawReferenceChange {
+            archive_batch_id: manifest.archive_batch_id,
+            raw_path: "raw/2026/10/request.bin".to_owned(),
+            owner_kind: "invocation".to_owned(),
+            owner_id: 1,
+            raw_role: "request".to_owned(),
+            action: RawReferenceAction::Link,
+            raw_identity_sha256: Some(digest("raw")),
+        }],
+        historical_activity: Vec::new(),
+        retention_prepared_archive: None,
+        retention_recovery_cursor: None,
+        retention_raw_reconciliation: Vec::new(),
+    };
+    operation.validate(archive_root, raw_root).unwrap();
+    let canonical = operation.canonicalized(archive_root, raw_root).unwrap();
+    assert_eq!(
+        canonical.raw_reference_changes[0].raw_path,
+        "2026/10/request.bin"
+    );
+
+    let mut duplicate_alias = operation.clone();
+    duplicate_alias
+        .raw_reference_changes
+        .push(RawReferenceChange {
+            raw_path: "2026/10/request.bin".to_owned(),
+            ..duplicate_alias.raw_reference_changes[0].clone()
+        });
+    assert!(
+        duplicate_alias
+            .canonicalized(archive_root, raw_root)
+            .is_err()
+    );
+
+    operation.rollups[0].complete = false;
+    assert!(operation.validate(archive_root, raw_root).is_err());
+
+    let mut missing_replay = operation.clone();
+    missing_replay.rollups[0].complete = true;
+    missing_replay.replay_markers.pop();
+    assert!(missing_replay.validate(archive_root, raw_root).is_err());
+
+    let mut live_mirror = operation;
+    live_mirror.manifest.summary_source_kind = "live_mirror".to_owned();
+    live_mirror.proof = None;
+    live_mirror.rollups.clear();
+    live_mirror.replay_markers.clear();
+    live_mirror.raw_reference_changes.clear();
+    live_mirror.validate(archive_root, raw_root).unwrap();
 }
 
 #[test]
@@ -330,7 +414,7 @@ fn activity_manifest_replacement_keeps_latest_observation_per_account() {
 fn prune_plan_requires_proof_rollup_and_zero_raw_references() {
     let manifest = manifest();
     let plan = ArchivePrunePlan {
-        proof: proof(&manifest),
+        proof: Some(proof(&manifest)),
         rollups: vec![ArchiveRollupMarker {
             archive_batch_id: manifest.archive_batch_id,
             target: "hourly".to_owned(),
