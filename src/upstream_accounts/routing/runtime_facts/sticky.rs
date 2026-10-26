@@ -11,15 +11,15 @@ pub(super) async fn load_projection(
     // are harmless to apply twice; removing them after an older SQL read isn't.
     let events = runtime.map_or_else(Vec::new, |runtime| runtime.sticky_events(key, unconfirmed));
     let model_key = normalize_sticky_model_key(model);
-    let mut tx = state.pool.begin().await?;
-    let mut epoch = load_sticky_affinity_generation_executor(&mut *tx, key).await?;
+    let mut tx = state.traffic_authority.begin().await?;
+    let mut epoch = load_sticky_affinity_generation_executor(tx.sqlite_connection()?, key).await?;
     let mut model_generation = if let Some(model) = model_key.as_deref() {
-        load_sticky_model_generation_executor(&mut *tx, key, model).await?
+        load_sticky_model_generation_executor(tx.sqlite_connection()?, key, model).await?
     } else {
         0
     };
     let exact = if let Some(model) = model_key.as_deref() {
-        load_sticky_model_route_executor(&mut *tx, key, model).await?
+        load_sticky_model_route_executor(tx.sqlite_connection()?, key, model).await?
     } else {
         None
     };
@@ -28,12 +28,14 @@ pub(super) async fn load_projection(
         exact
     } else {
         sqlx::query_as::<_, PoolStickyRouteRow>("SELECT sticky_key,account_id,created_at,updated_at,last_seen_at FROM pool_sticky_routes WHERE sticky_key=?1")
-            .bind(key).fetch_optional(&mut *tx).await?
+            .bind(key)
+            .fetch_optional(tx.sqlite_connection()?)
+            .await?
     };
     let mut fences = HashMap::new();
     for event in &events {
         if let std::collections::hash_map::Entry::Vacant(entry) = fences.entry(event.account_id) {
-            let fence = load_upstream_account_row_conn(&mut tx, event.account_id)
+            let fence = load_upstream_account_row_conn(tx.sqlite_connection()?, event.account_id)
                 .await?
                 .map(|row| route_account_control_fingerprint(&row));
             entry.insert(fence);

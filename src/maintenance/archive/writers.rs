@@ -174,6 +174,7 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     attempt_public_id: Option<String>,
     invoke_id: String,
     occurred_at: String,
+    invocation_id: Option<i64>,
     endpoint: String,
     route_mode: String,
     sticky_key: Option<String>,
@@ -282,6 +283,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         .collect::<HashSet<_>>();
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("invocation_id", "INTEGER"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -720,6 +722,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(&row.attempt_public_id)
                 .push_bind(&row.invoke_id)
                 .push_bind(&row.occurred_at)
+                .push_bind(row.invocation_id)
                 .push_bind(&row.endpoint)
                 .push_bind(&row.route_mode)
                 .push_bind(&row.sticky_key)

@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 63,
-    "suppression_entries": 134
+    "suppression_entries": 137
   },
   "loc_targets": {
     "production": 2500,
@@ -195,7 +195,7 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_timeout_and_stream_lifecycle.rs",
       "role": "test_helper",
-      "line_budget": 941,
+      "line_budget": 944,
       "next_module_workstream": "Maintain the completed OAuth timeout, handshake, first-chunk, header, and stream-lifecycle fixtures below the test-helper target."
     },
     {
@@ -357,19 +357,19 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 4411,
+      "line_budget": 4413,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4488,
+      "line_budget": 4491,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7227,
+      "line_budget": 7230,
       "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
     },
     {
@@ -720,6 +720,24 @@
       "path": "src/sqlite_batch_writer/flush.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"The accounting wrapper mirrors the single-writer ownership boundaries.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer/flush.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"The accounting wrapper mirrors the single-writer ownership boundaries.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer/flush.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Flush dependencies mirror the single-writer ownership boundaries.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer/flush.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Flush dependencies mirror the single-writer ownership boundaries.\" )]",
       "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer/flush.rs; remove it when the listed boundary split is complete."
     },
     {

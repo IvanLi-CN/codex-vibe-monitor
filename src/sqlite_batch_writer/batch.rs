@@ -31,6 +31,9 @@ pub(crate) struct BatchedInvocationDerivedWrites {
     pub(crate) occurred_at: String,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) terminal_overlay_key: Option<(String, String)>,
+    // PostgreSQL terminal facts keep their source-journal record pending until the separate
+    // SQLite-owned account observation has committed, so a crash can replay that observation.
+    pub(crate) terminal_journal_ack: Option<BatchedTerminalInvocationWrite>,
 }
 
 #[derive(Debug, Clone)]
@@ -810,6 +813,12 @@ fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedW
                 .map_or(0, |(invoke_id, occurred_at)| {
                     invoke_id.capacity().saturating_add(occurred_at.capacity())
                 }),
+        )
+        .saturating_add(
+            derived
+                .terminal_journal_ack
+                .as_ref()
+                .map_or(0, BatchedTerminalInvocationWrite::estimated_memory_bytes),
         )
 }
 

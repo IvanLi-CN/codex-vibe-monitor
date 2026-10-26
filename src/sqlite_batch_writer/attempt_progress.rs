@@ -646,6 +646,167 @@ pub(crate) async fn persist(
     Ok(())
 }
 
+pub(crate) async fn persist_postgres(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    progress: &BatchedAttemptProgress,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            phase = CASE
+                WHEN status = $3
+                    AND finished_at IS NULL
+                    AND (
+                        $2 IS NULL
+                        OR phase IS NULL
+                        OR CASE LOWER(TRIM($2))
+                            WHEN 'connecting' THEN 0
+                            WHEN 'sending_request' THEN 1
+                            WHEN 'waiting_first_byte' THEN 2
+                            WHEN 'streaming_response' THEN 3
+                            WHEN 'completed' THEN 4
+                            WHEN 'failed' THEN 4
+                            ELSE 1
+                        END >= CASE LOWER(TRIM(phase))
+                            WHEN 'connecting' THEN 0
+                            WHEN 'sending_request' THEN 1
+                            WHEN 'waiting_first_byte' THEN 2
+                            WHEN 'streaming_response' THEN 3
+                            WHEN 'completed' THEN 4
+                            WHEN 'failed' THEN 4
+                            ELSE 1
+                        END
+                    ) THEN COALESCE($2, phase)
+                ELSE phase
+            END,
+            connect_latency_ms = CASE
+                WHEN status = $3 AND finished_at IS NULL AND $4 IS NOT NULL
+                    AND (connect_latency_ms IS NULL OR connect_latency_ms < $4) THEN $4
+                ELSE connect_latency_ms
+            END,
+            first_byte_latency_ms = CASE
+                WHEN status = $3 AND finished_at IS NULL AND $5 IS NOT NULL
+                    AND (first_byte_latency_ms IS NULL OR first_byte_latency_ms < $5) THEN $5
+                ELSE first_byte_latency_ms
+            END,
+            compact_support_status = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($6, compact_support_status)
+                ELSE compact_support_status
+            END,
+            compact_support_reason = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($7, compact_support_reason)
+                ELSE compact_support_reason
+            END,
+            request_model = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($8, request_model)
+                ELSE request_model
+            END,
+            upstream_request_model = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($9, upstream_request_model)
+                ELSE upstream_request_model
+            END,
+            model_mapping_pattern = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($10, model_mapping_pattern)
+                ELSE model_mapping_pattern
+            END,
+            request_summary_json = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($11, request_summary_json)
+                ELSE request_summary_json
+            END,
+            upstream_request_compression_algorithm = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($12, upstream_request_compression_algorithm)
+                ELSE upstream_request_compression_algorithm
+            END,
+            upstream_request_compression_mode = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($13, upstream_request_compression_mode)
+                ELSE upstream_request_compression_mode
+            END,
+            upstream_request_logical_body_bytes = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($14, upstream_request_logical_body_bytes)
+                ELSE upstream_request_logical_body_bytes
+            END,
+            upstream_request_transmitted_body_bytes = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($15, upstream_request_transmitted_body_bytes)
+                ELSE upstream_request_transmitted_body_bytes
+            END,
+            upstream_request_header_bytes_approx = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($16, upstream_request_header_bytes_approx)
+                ELSE upstream_request_header_bytes_approx
+            END,
+            upstream_response_body_bytes = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($17, upstream_response_body_bytes)
+                ELSE upstream_response_body_bytes
+            END,
+            upstream_response_header_bytes_approx = CASE
+                WHEN status = $3 AND finished_at IS NULL THEN COALESCE($18, upstream_response_header_bytes_approx)
+                ELSE upstream_response_header_bytes_approx
+            END,
+            response_raw_path = COALESCE($19, response_raw_path),
+            response_raw_codec = COALESCE($20, response_raw_codec),
+            response_raw_size = COALESCE($21, response_raw_size),
+            response_raw_truncated = COALESCE($22, response_raw_truncated),
+            response_raw_truncated_reason = COALESCE($23, response_raw_truncated_reason),
+            response_content_encoding = COALESCE($24, response_content_encoding)
+        WHERE id = $1
+          AND (
+                (status = $3 AND finished_at IS NULL)
+                OR $19 IS NOT NULL
+                OR $20 IS NOT NULL
+                OR $21 IS NOT NULL
+                OR $22 IS NOT NULL
+                OR $23 IS NOT NULL
+                OR $24 IS NOT NULL
+              )
+        "#,
+    )
+    .bind(progress.attempt_id)
+    .bind(progress.phase.as_deref())
+    .bind(progress.pending_status)
+    .bind(progress.connect_latency_ms)
+    .bind(progress.first_byte_latency_ms)
+    .bind(progress.compact_support_status.as_deref())
+    .bind(progress.compact_support_reason.as_deref())
+    .bind(progress.request_model.as_deref())
+    .bind(progress.upstream_request_model.as_deref())
+    .bind(progress.model_mapping_pattern.as_deref())
+    .bind(progress.request_summary_json.as_deref())
+    .bind(progress.upstream_request_compression_algorithm.as_deref())
+    .bind(progress.upstream_request_compression_mode.as_deref())
+    .bind(progress.upstream_request_logical_body_bytes)
+    .bind(progress.upstream_request_transmitted_body_bytes)
+    .bind(progress.upstream_request_header_bytes_approx)
+    .bind(progress.upstream_response_body_bytes)
+    .bind(progress.upstream_response_header_bytes_approx)
+    .bind(progress.response_raw_path.as_deref())
+    .bind(progress.response_raw_codec.as_deref())
+    .bind(progress.response_raw_size)
+    .bind(progress.response_raw_truncated)
+    .bind(progress.response_raw_truncated_reason.as_deref())
+    .bind(progress.response_content_encoding.as_deref())
+    .execute(tx.as_mut())
+    .await?;
+    let persisted_raw = sqlx::query_as::<_, (Option<String>, Option<String>, Option<i64>)>(
+        "SELECT response_raw_path, response_raw_codec, response_raw_size
+         FROM pool_upstream_request_attempts
+         WHERE id = $1",
+    )
+    .bind(progress.attempt_id)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    if let Some((response_raw_path, response_raw_codec, response_raw_size)) = persisted_raw {
+        super::postgres::replace_postgres_attempt_raw_links(
+            tx.as_mut(),
+            progress.attempt_id,
+            response_raw_path.as_deref(),
+            response_raw_codec.as_deref(),
+            response_raw_size,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -127,6 +127,7 @@ pub(crate) async fn record_runtime_pool_route_success(
         capabilities,
         sticky,
         invoke_id: invoke_id.map(ToOwned::to_owned),
+        attempt_id: _attempt_id,
         reason_code: None,
         action: can_recover.then(|| UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED.to_string()),
         update_latest_action: can_recover,
@@ -434,6 +435,7 @@ pub(crate) async fn record_runtime_pool_route_http_failure(
         capabilities,
         sticky,
         invoke_id: invoke_id.map(ToOwned::to_owned),
+        attempt_id: _attempt_id,
         reason_code: Some(classification.reason_code.to_string()),
         action: Some(
             if changes_account {
@@ -650,6 +652,7 @@ async fn record_runtime_temporary_failure(
         capabilities: Vec::new(),
         sticky: None,
         invoke_id: invoke_id.map(ToOwned::to_owned),
+        attempt_id,
         reason_code: Some(reason.to_string()),
         action: Some(
             if health_after
