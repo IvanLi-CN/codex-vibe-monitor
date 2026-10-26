@@ -12,6 +12,21 @@ pub(crate) struct TaskWorkOwner {
     work_path: PathBuf,
 }
 
+struct PendingTaskWorkCleanup {
+    file: Option<File>,
+}
+
+impl Drop for PendingTaskWorkCleanup {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take() {
+            // A cancelled cleanup task has not acknowledged file-phase and native-operation
+            // completion. Keep the kernel owner lock through process exit instead of releasing
+            // it while its work files may still be live.
+            std::mem::forget(file);
+        }
+    }
+}
+
 pub(crate) enum TaskWorkArtifactFence {
     Unowned,
     Active,
@@ -32,6 +47,7 @@ impl Drop for TaskWorkOwner {
             std::mem::forget(file);
             return;
         };
+        let mut cleanup = PendingTaskWorkCleanup { file: Some(file) };
         let current_file_phase = crate::maintenance::try_current_file_phase_permit();
         drop(handle.spawn(async move {
             let file_phase = match current_file_phase {
@@ -42,6 +58,9 @@ impl Drop for TaskWorkOwner {
                 while crate::is_archive_file_operation_active(&work_path) {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
+                let Some(file) = cleanup.file.take() else {
+                    return;
+                };
                 drop(file);
                 crate::maintenance::remove_temp_archive_file_operation_artifacts_unchecked(
                     &work_path,
