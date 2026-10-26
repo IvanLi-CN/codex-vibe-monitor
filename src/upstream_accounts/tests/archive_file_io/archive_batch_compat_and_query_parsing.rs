@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::Mutex, time::timeout};
-
 async fn wait_for_imported_oauth_validation_job_terminal(
     job: &Arc<ImportedOauthValidationJob>,
 ) -> ImportedOauthValidationTerminalEvent {
