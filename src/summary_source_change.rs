@@ -651,19 +651,31 @@ pub(crate) async fn validate_verified_summary_archive_snapshot_tx(
     if pages != proof.pages || storage != proof.storage {
         bail!("Summary Snapshot pages changed after task-local validation");
     }
-    let matches_manifest: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM archive_batches WHERE id=?1 AND sha256=?2
-         AND row_count=?3 AND coverage_start_at=?4 AND coverage_end_at=?5
-         AND status IN ('materializing','completed')
-         AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror')",
-    )
-    .bind(archive_batch_id)
-    .bind(manifest_sha256)
-    .bind(pages.iter().map(|page| page.2).sum::<i64>())
-    .bind(pages.first().map(|page| page.3.as_str()))
-    .bind(pages.last().map(|page| page.4.as_str()))
-    .fetch_one(&mut *connection)
-    .await?;
+    let Some((manifest_row_count, manifest_start, manifest_end, status, source_kind)) =
+        sqlx::query_as::<_, (i64, Option<String>, Option<String>, String, String)>(
+            "SELECT row_count, coverage_start_at, coverage_end_at, status,
+                    COALESCE(summary_source_kind, 'unknown')
+             FROM archive_batches WHERE id = ?1 AND sha256 = ?2",
+        )
+        .bind(archive_batch_id)
+        .bind(manifest_sha256)
+        .fetch_optional(&mut *connection)
+        .await?
+    else {
+        bail!("Summary Snapshot manifest disappeared during publication");
+    };
+    let page_row_count = pages.iter().map(|page| page.2).sum::<i64>();
+    let start_matches = manifest_start
+        .as_deref()
+        .is_none_or(|start| pages.first().is_some_and(|page| page.3 == start));
+    let end_matches = manifest_end
+        .as_deref()
+        .is_none_or(|end| pages.last().is_some_and(|page| page.4 == end));
+    let matches_manifest = manifest_row_count == page_row_count
+        && matches!(status.as_str(), "materializing" | "completed")
+        && source_kind != "live_mirror"
+        && start_matches
+        && end_matches;
     if !matches_manifest {
         bail!("Summary Snapshot manifest changed after task-local validation");
     }

@@ -140,7 +140,13 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
 def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
     """Accept bounded chunks while keeping fixed-file completion as the oracle."""
     if row.get("status") == "success":
-        return True
+        details = row.get("details")
+        if details is None:
+            return True
+        if not isinstance(details, dict):
+            return False
+        failures = details.get("failures", 0)
+        return isinstance(failures, int) and not isinstance(failures, bool) and failures == 0
     if row.get("status") != "skipped" or row.get("completion") != "partial":
         return False
     if row.get("error_detail") is not None:

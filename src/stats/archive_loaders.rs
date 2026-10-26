@@ -1096,54 +1096,96 @@ pub(crate) async fn open_pool_upstream_request_attempt_archive_batch_pool(
     open_archive_batch_pool(archive_row, "pool_upstream_request_attempts", read_surface).await
 }
 
+struct ArchiveBatchPoolOpenDrain {
+    pool: Option<Pool<Sqlite>>,
+    cleanup: Option<TempSqliteCleanup>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+impl ArchiveBatchPoolOpenDrain {
+    fn new(
+        pool: &Pool<Sqlite>,
+        cleanup: TempSqliteCleanup,
+        file_phase: crate::maintenance::FilePhasePermit,
+    ) -> Self {
+        Self {
+            pool: Some(pool.clone()),
+            cleanup: Some(cleanup),
+            file_phase: Some(file_phase),
+        }
+    }
+
+    fn complete(&mut self) {
+        self.pool.take();
+        self.cleanup.take();
+        self.file_phase.take();
+    }
+
+    fn disarm(mut self) -> TempSqliteCleanup {
+        self.pool.take();
+        self.file_phase.take();
+        self.cleanup
+            .take()
+            .expect("archive pool opener drain cleanup")
+    }
+}
+
+impl Drop for ArchiveBatchPoolOpenDrain {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup), Some(file_phase)) = (
+            self.pool.take(),
+            self.cleanup.take(),
+            self.file_phase.take(),
+        ) else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                crate::maintenance::with_file_phase_permit(file_phase, async move {
+                    pool.close().await;
+                    drop(cleanup);
+                })
+                .await;
+            }));
+        } else {
+            // Runtime teardown cannot provide a native SQLite drain acknowledgement.
+            std::mem::forget(pool);
+            std::mem::forget(cleanup);
+            std::mem::forget(file_phase);
+        }
+    }
+}
+
 async fn open_archive_batch_pool(
     archive_row: &ArchiveBatchPathRow,
     expected_table: &str,
     read_surface: &'static str,
 ) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
-    let archive_path = PathBuf::from(&archive_row.file_path);
-    let is_materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
-    if !archive_path.exists() {
-        warn!(
-            read_surface,
-            historical_rollups_materialized = is_materialized_archive,
-            "skipping missing archive while serving read-only historical fallback"
-        );
-        return Ok(None);
-    }
-
-    let temp_path = PathBuf::from(format!(
-        "{}.{}.sqlite",
-        archive_path.display(),
-        retention_temp_suffix()
-    ));
-    if temp_path.exists() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-    if let Err(err) =
-        inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await
-    {
-        drop(temp_cleanup);
-        if is_unreadable_invocation_summary_archive_error(&err) {
+    let file_phase = crate::maintenance::acquire_file_phase_permit(read_surface).await?;
+    crate::maintenance::with_file_phase_permit(file_phase.clone(), async move {
+        let archive_path = PathBuf::from(&archive_row.file_path);
+        let is_materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
+        if !archive_path.exists() {
             warn!(
                 read_surface,
-                error = %err,
                 historical_rollups_materialized = is_materialized_archive,
-                "skipping unreadable archive while serving read-only historical fallback"
+                "skipping missing archive while serving read-only historical fallback"
             );
             return Ok(None);
         }
-        return Err(err);
-    }
-    let archive_pool = match SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&sqlite_url_for_path(&temp_path))
-        .await
-        .context("failed to open archive batch")
-    {
-        Ok(pool) => pool,
-        Err(err) => {
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
+        if let Err(err) =
+            inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await
+        {
             drop(temp_cleanup);
             if is_unreadable_invocation_summary_archive_error(&err) {
                 warn!(
@@ -1156,24 +1198,49 @@ async fn open_archive_batch_pool(
             }
             return Err(err);
         }
-    };
-    let has_expected_table = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-    )
-    .bind(expected_table)
-    .fetch_one(&archive_pool)
-    .await?
-        != 0;
-    if !has_expected_table {
-        archive_pool.close().await;
-        drop(temp_cleanup);
-        return Ok(None);
-    }
-    if expected_table == "codex_invocations" {
-        ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
-    }
+        let archive_pool = match SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .context("failed to open archive batch")
+        {
+            Ok(pool) => pool,
+            Err(err) => {
+                drop(temp_cleanup);
+                if is_unreadable_invocation_summary_archive_error(&err) {
+                    warn!(
+                        read_surface,
+                        error = %err,
+                        historical_rollups_materialized = is_materialized_archive,
+                        "skipping unreadable archive while serving read-only historical fallback"
+                    );
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        };
+        let mut pool_drain =
+            ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
+        let has_expected_table = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(expected_table)
+        .fetch_one(&archive_pool)
+        .await?
+            != 0;
+        if !has_expected_table {
+            archive_pool.close().await;
+            pool_drain.complete();
+            return Ok(None);
+        }
+        if expected_table == "codex_invocations" {
+            ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
+        }
 
-    Ok(Some((archive_pool, temp_cleanup)))
+        let temp_cleanup = pool_drain.disarm();
+        Ok(Some((archive_pool, temp_cleanup)))
+    })
+    .await
 }
 
 #[derive(Debug, FromRow)]

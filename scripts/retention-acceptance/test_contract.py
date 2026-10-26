@@ -331,6 +331,10 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
         row["details"]["filesReleased"] = 0
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        row["status"] = "success"
+        row["details"]["filesReleased"] = 32
+        row["details"]["failures"] = 1
+        self.assertFalse(task_run_is_accepted_competitor_chunk(row))
 
     def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
         evidence = valid_evidence()
