@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 63,
-    "suppression_entries": 127
+    "suppression_entries": 134
   },
   "loc_targets": {
     "production": 2500,
@@ -777,6 +777,12 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
+      "path": "src/tests/archive_file_io/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
       "path": "src/tests/archive_file_io/pool_invocation_orphan_recovery.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
@@ -807,10 +813,22 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
+      "path": "src/tests/lightweight/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
       "path": "src/tests/mod.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Test compatibility adapter mirrors the production resolver signature.\" )]",
       "reason": "Retain this targeted expect for the current argument bundle at src/tests/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
       "path": "src/tests/stateful_sqlite/mod.rs",
@@ -1071,6 +1089,18 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
+      "path": "src/upstream_accounts/tests.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for the upstream account test facade import; remove it when the test module narrows its crate-root compatibility imports."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
       "path": "src/upstream_accounts/tests/archive_file_io/mod.rs",
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
@@ -1087,6 +1117,12 @@
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
       "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
@@ -1147,6 +1183,12 @@
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
       "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/support/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/support/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
       "path": "src/upstream_accounts/tests/support/mod.rs",

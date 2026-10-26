@@ -62,7 +62,7 @@ impl UpstreamSocketByteMeter {
         };
         let _ = self
             .upload_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(bytes))
             });
     }
@@ -74,7 +74,7 @@ impl UpstreamSocketByteMeter {
         };
         let _ = self
             .download_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(bytes))
             });
     }

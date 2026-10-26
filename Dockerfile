@@ -13,7 +13,7 @@ RUN bun run build
 # Stage 2: build the Rust binary
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
 # otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
-FROM rust:1.96.0-bookworm AS rust-builder
+FROM rust:1.99.1-bookworm AS rust-builder
 WORKDIR /app
 
 RUN apt-get update \
@@ -155,7 +155,7 @@ CMD ["codex-vibe-monitor"]
 # Stage 7: project-owned backend test environment. This target is intentionally
 # separate from the production image so test tooling and writable build paths
 # cannot alter the release runtime contract.
-FROM rust:1.96.0-bookworm AS backend-test
+FROM rust:1.99.1-bookworm AS backend-test
 ARG CARGO_NEXTEST_VERSION=0.9.138
 ARG CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216
 

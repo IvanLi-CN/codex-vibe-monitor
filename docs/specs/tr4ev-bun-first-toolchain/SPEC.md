@@ -1,5 +1,26 @@
 # Bun-first 工具链收敛（#tr4ev）
 
+## Related ADRs
+
+None
+
+## Context and Scope
+
+- 本规范同时冻结仓库的 Rust 本地、CI 与 Docker 构建入口；这些入口必须共享同一个可复现的版本基线。
+- Rust 版本升级属于交付工具链合同变更，不改变后端业务接口、数据库 schema 或运行时协议。
+
+## Requirements
+
+- REQ-TOOLCHAIN-001: 本地 `rust-toolchain.toml`、GitHub Actions Rust setup、生产 Rust builder 和 backend-test image MUST 固定到同一个 Rust 版本。
+- REQ-TOOLCHAIN-002: 当前 Rust 工具链基线 MUST 使用已验证的稳定版本 `1.99.1`，并提供仓库声明的 `rustfmt` 与 `clippy` 组件。
+- REQ-TOOLCHAIN-003: 工具链升级 MUST 保持现有 Cargo lockfile、backend test profile、Docker runtime ABI 和 quality-gate job 名称不变。
+
+## Verification
+
+- VER-TOOLCHAIN-001: Given the repository toolchain and every current CI/Docker entry point, When the version pins are inspected, Then all active Rust inputs equal `1.99.1`. covers: REQ-TOOLCHAIN-001, REQ-TOOLCHAIN-002
+- VER-TOOLCHAIN-002: Given macOS arm64 with Rust `1.99.1`, When the locked all-target/all-feature checks and the focused backend test run, Then `sqlx-macros` loads without the misaligned Mach-O error. covers: REQ-TOOLCHAIN-002, REQ-TOOLCHAIN-003
+- VER-TOOLCHAIN-003: Given the existing workflow, Docker, and backend contract scripts, When their focused contract checks run, Then the current job names, image stages, lockfile inputs, and backend test contract remain valid. covers: REQ-TOOLCHAIN-003
+
 ## 背景 / 问题陈述
 
 - 仓库当前把 `npm` / `npx` / Node 20 作为前端与交付链路默认入口：`README.md`、`AGENTS.md`、`lefthook.yml`、`Dockerfile`、`.github/workflows/ci.yml`、`web/package.json` 都直接依赖这些命令。
@@ -63,7 +84,7 @@
   - Docker web builder：官方 `oven/bun` 镜像 + `bun install --frozen-lockfile` + `bun run build`
 - 当前 workflow / build toolchain 基线固定为：
   - Bun `1.3.14`（`.bun-version`、`oven/bun:1.3.14-alpine`、`oven-sh/setup-bun@v2`）
-  - Rust `1.96.0`（`rust-toolchain.toml`、`dtolnay/rust-toolchain@v1`、`rust:1.96.0-bookworm`）
+  - Rust `1.99.1`（`rust-toolchain.toml`、`dtolnay/rust-toolchain@v1`、`rust:1.99.1-bookworm`）
   - GitHub-hosted x64 runner：`ubuntu-24.04`
   - Release arm64 runner：`ubuntu-24.04-arm`
 - 受控 GitHub Actions major refs 固定为 `actions/checkout@v7`、`actions/cache@v5`、`actions/github-script@v9`、`actions/upload-artifact@v7`、`actions/download-artifact@v8`、`actions/configure-pages@v6`、`actions/upload-pages-artifact@v5`、`actions/deploy-pages@v5`、`docker/setup-buildx-action@v4`、`docker/login-action@v4`、`docker/build-push-action@v7`；继续保留 `dtolnay/rust-toolchain@v1`、`oven-sh/setup-bun@v2` 与外部 reusable workflow `@main` 引用策略。
