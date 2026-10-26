@@ -264,6 +264,20 @@ async fn current_sqlite_schema_has_closed_ownership_catalog() {
             .recovery_obligation,
         RecoveryObligation::AccountControl
     );
+    let account_selection_outbox = catalog
+        .owners()
+        .iter()
+        .find(|owner| owner.table == "pool_upstream_account_selected_touch_outbox")
+        .unwrap();
+    assert_eq!(account_selection_outbox.module, ModuleId::AccountRouting);
+    assert_eq!(
+        account_selection_outbox.transaction_group,
+        "account_control"
+    );
+    assert_eq!(
+        account_selection_outbox.recovery_obligation,
+        RecoveryObligation::AccountControl
+    );
     assert!(catalog.schema_objects().iter().all(|object| {
         catalog
             .owners()

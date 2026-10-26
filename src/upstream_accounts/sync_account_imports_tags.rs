@@ -3069,7 +3069,11 @@ pub(crate) async fn enrich_transport_decode_sticky_escape_routing_block_reasons(
         return Ok(());
     }
     let account_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let states = load_transport_decode_sticky_escape_states(&state.pool, &account_ids).await?;
+    let states = load_transport_decode_sticky_escape_states_with_authority(
+        state.traffic_authority.as_ref(),
+        &account_ids,
+    )
+    .await?;
     for item in items {
         let Some(state) = states.get(&item.id) else {
             continue;

@@ -929,7 +929,11 @@ async fn refresh_pool_routing_runtime_cache_locked(
 ) -> Result<PoolRoutingRuntimeCache> {
     let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
     let mut cache = build_pool_routing_runtime_cache(state, &row)?;
-    let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool).await?;
+    let mut model_routing = build_pool_model_routing_runtime_cache_with_authority(
+        &state.pool,
+        state.traffic_authority.as_ref(),
+    )
+    .await?;
     #[cfg(test)]
     {
         cache.sqlite_data_version = pool_routing_sqlite_data_version(state).await?;

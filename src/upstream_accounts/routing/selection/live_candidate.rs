@@ -23,6 +23,15 @@ pub(crate) fn pool_route_binding_failure_is_penalized(
 pub(crate) async fn load_recent_route_binding_failure_penalties(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, i64>> {
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
+    load_recent_route_binding_failure_penalties_with_authority(&traffic_authority).await
+}
+
+pub(crate) async fn load_recent_route_binding_failure_penalties_with_authority(
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+) -> Result<HashMap<String, i64>> {
+    use crate::storage::core::BackendKind;
+
     #[derive(Debug, FromRow)]
     struct RouteBindingAttemptRow {
         upstream_route_key: String,
@@ -31,26 +40,59 @@ pub(crate) async fn load_recent_route_binding_failure_penalties(
         failure_kind: Option<String>,
     }
 
-    let rows = sqlx::query_as::<_, RouteBindingAttemptRow>(
-        r#"
-        SELECT
-            upstream_route_key,
-            proxy_binding_key_snapshot,
-            status,
-            failure_kind
-        FROM pool_upstream_request_attempts
-        WHERE upstream_route_key IS NOT NULL
-          AND proxy_binding_key_snapshot IS NOT NULL
-          AND occurred_at >= datetime('now', ?1)
-        ORDER BY occurred_at ASC, id ASC
-        "#,
-    )
-    .bind(format!(
-        "-{} seconds",
-        POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS
-    ))
-    .fetch_all(pool)
-    .await?;
+    let mut transaction = traffic_authority.begin().await?;
+    let rows_result = match transaction.backend_kind() {
+        BackendKind::Sqlite => {
+            sqlx::query_as::<_, RouteBindingAttemptRow>(
+                r#"
+            SELECT
+                upstream_route_key,
+                proxy_binding_key_snapshot,
+                status,
+                failure_kind
+            FROM pool_upstream_request_attempts
+            WHERE upstream_route_key IS NOT NULL
+              AND proxy_binding_key_snapshot IS NOT NULL
+              AND occurred_at >= datetime('now', ?1)
+            ORDER BY occurred_at ASC, id ASC
+            "#,
+            )
+            .bind(format!(
+                "-{} seconds",
+                POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS
+            ))
+            .fetch_all(transaction.sqlite_connection()?)
+            .await
+        }
+        BackendKind::Postgres => {
+            sqlx::query_as::<_, RouteBindingAttemptRow>(
+                r#"
+            SELECT
+                upstream_route_key,
+                proxy_binding_key_snapshot,
+                status,
+                failure_kind
+            FROM pool_upstream_request_attempts
+            WHERE upstream_route_key IS NOT NULL
+              AND proxy_binding_key_snapshot IS NOT NULL
+              -- Traffic timestamps are stored as naive Asia/Shanghai values. Convert that
+              -- representation explicitly before comparing it with PostgreSQL's UTC instant.
+              AND (NULLIF(BTRIM(occurred_at), '')::timestamp AT TIME ZONE 'Asia/Shanghai') >=
+                    CURRENT_TIMESTAMP - ($1::double precision * INTERVAL '1 second')
+            ORDER BY (NULLIF(BTRIM(occurred_at), '')::timestamp AT TIME ZONE 'Asia/Shanghai') ASC,
+                     id ASC
+            "#,
+            )
+            .bind(POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS as f64)
+            .fetch_all(transaction.postgres_connection()?)
+            .await
+        }
+    };
+    let rollback_result = transaction.rollback().await;
+    let rows = crate::storage::traffic::finish_authority_read(
+        rows_result.map_err(Into::into),
+        rollback_result,
+    )?;
 
     let mut penalties = HashMap::new();
     for row in rows {
@@ -429,4 +471,210 @@ pub(crate) async fn evaluate_live_pool_candidate(
         None,
         None,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use sqlx::{PgConnection, SqlitePool};
+
+    use crate::storage::traffic::TrafficFactStore;
+
+    async fn test_authority(database_url: String) -> Result<TrafficFactStore> {
+        let config = crate::storage::config::StorageConfig {
+            postgres_database_url: Some(database_url),
+            migration_admin_token: None,
+            postgres_max_connections: 1,
+            migration_switch_budget: std::time::Duration::from_secs(3),
+        };
+        let storage = crate::storage::core::StoragePools::from_sqlite_and_config(
+            SqlitePool::connect("sqlite::memory:").await?,
+            &config,
+        )
+        .await?;
+        Ok(TrafficFactStore::with_authority(
+            storage,
+            crate::storage::core::ModuleGenerationGate::new(
+                crate::storage::core::StorageModule::TrafficArchive,
+                crate::storage::core::ModuleAuthority {
+                    backend: crate::storage::core::BackendKind::Postgres,
+                    generation: 1,
+                },
+            ),
+        ))
+    }
+
+    async fn create_fixture(connection: &mut PgConnection) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE pool_upstream_request_attempts (
+                id BIGSERIAL PRIMARY KEY,
+                upstream_route_key TEXT,
+                proxy_binding_key_snapshot TEXT,
+                status TEXT,
+                failure_kind TEXT,
+                occurred_at TEXT
+            )
+            "#,
+        )
+        .execute(&mut *connection)
+        .await?;
+        Ok(())
+    }
+
+    async fn insert_attempt(
+        connection: &mut PgConnection,
+        route_key: &str,
+        binding_key: &str,
+        status: &str,
+        failure_kind: Option<&str>,
+        age: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts
+                (upstream_route_key, proxy_binding_key_snapshot, status, failure_kind, occurred_at)
+             VALUES (
+                 $1,
+                 $2,
+                 $3,
+                 $4,
+                 (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai' - $5::interval)::text
+             )",
+        )
+        .bind(route_key)
+        .bind(binding_key)
+        .bind(status)
+        .bind(failure_kind)
+        .bind(age)
+        .execute(&mut *connection)
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn optional_postgres_route_penalty_query_uses_authority_and_rollback() -> Result<()> {
+        let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+            return Ok(());
+        };
+        let authority = test_authority(database_url).await?;
+        let mut setup = authority.begin().await?;
+        assert_eq!(
+            setup.backend_kind(),
+            crate::storage::core::BackendKind::Postgres
+        );
+        create_fixture(setup.postgres_connection()?).await?;
+        let connection = setup.postgres_connection()?;
+        insert_attempt(
+            connection,
+            "route-cleared",
+            "proxy-cleared",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+            "5 minutes",
+        )
+        .await?;
+        insert_attempt(
+            connection,
+            "route-cleared",
+            "proxy-cleared",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            None,
+            "4 minutes",
+        )
+        .await?;
+        insert_attempt(
+            connection,
+            "route-counted",
+            "proxy-counted",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+            "3 minutes",
+        )
+        .await?;
+        insert_attempt(
+            connection,
+            "route-ignored-kind",
+            "proxy-ignored-kind",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some("unrelated_failure"),
+            "2 minutes",
+        )
+        .await?;
+        insert_attempt(
+            connection,
+            "route-expired",
+            "proxy-expired",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+            "10 minutes",
+        )
+        .await?;
+        setup.commit().await?;
+
+        let penalties =
+            load_recent_route_binding_failure_penalties_with_authority(&authority).await?;
+        assert_eq!(
+            penalties.get(&pool_route_binding_penalty_key(
+                "route-counted",
+                "proxy-counted",
+            )),
+            Some(&1)
+        );
+        assert!(!penalties.contains_key(&pool_route_binding_penalty_key(
+            "route-cleared",
+            "proxy-cleared",
+        )));
+        assert!(!penalties.contains_key(&pool_route_binding_penalty_key(
+            "route-ignored-kind",
+            "proxy-ignored-kind",
+        )));
+        assert!(!penalties.contains_key(&pool_route_binding_penalty_key(
+            "route-expired",
+            "proxy-expired",
+        )));
+
+        let mut corrupt = authority.begin().await?;
+        insert_attempt(
+            corrupt.postgres_connection()?,
+            "route-corrupt",
+            "proxy-corrupt",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+            "1 minute",
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE pool_upstream_request_attempts
+             SET occurred_at = 'not-a-timestamp'
+             WHERE upstream_route_key = 'route-corrupt'",
+        )
+        .execute(corrupt.postgres_connection()?)
+        .await?;
+        corrupt.commit().await?;
+
+        assert!(
+            load_recent_route_binding_failure_penalties_with_authority(&authority)
+                .await
+                .is_err()
+        );
+
+        let mut cleanup = authority.begin().await?;
+        sqlx::query(
+            "DELETE FROM pool_upstream_request_attempts
+             WHERE upstream_route_key = 'route-corrupt'",
+        )
+        .execute(cleanup.postgres_connection()?)
+        .await?;
+        cleanup.commit().await?;
+        assert!(
+            load_recent_route_binding_failure_penalties_with_authority(&authority)
+                .await?
+                .contains_key(&pool_route_binding_penalty_key(
+                    "route-counted",
+                    "proxy-counted",
+                ))
+        );
+        Ok(())
+    }
 }

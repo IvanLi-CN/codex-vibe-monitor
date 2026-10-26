@@ -25,6 +25,7 @@ mod batch;
 mod diagnostics;
 mod flush;
 mod invocation_identity;
+mod postgres;
 mod queue;
 mod queue_accounting;
 mod runtime;
@@ -43,7 +44,16 @@ use attempt_progress::{
 };
 use diagnostics::{append_terminal_journal, finish_committed_batch, reference_batch};
 pub(crate) use invocation_identity::TrackedTerminalJournal;
+use postgres::{
+    load_persisted_invocation_identity_postgres_tx, persist_proxy_capture_record_postgres_tx,
+    persist_proxy_capture_runtime_record_postgres_tx,
+};
+#[cfg(test)]
 use terminal_attempts::persist_runtime_attempt_snapshot_tx;
+use terminal_attempts::{
+    persist_runtime_attempt_snapshot_for_invocation_postgres_tx,
+    persist_runtime_attempt_snapshot_for_invocation_tx,
+};
 
 pub(crate) use batch::*;
 pub(crate) use flush::*;
