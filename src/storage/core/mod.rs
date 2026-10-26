@@ -210,7 +210,17 @@ struct ModuleGate {
     switching: Mutex<()>,
     active: AtomicUsize,
     recovery_required: AtomicBool,
+    publication_in_flight: AtomicBool,
     changed: Notify,
+}
+
+struct PublicationInFlightGuard(Arc<ModuleGate>);
+
+impl Drop for PublicationInFlightGuard {
+    fn drop(&mut self) {
+        self.0.publication_in_flight.store(false, Ordering::Release);
+        self.0.changed.notify_one();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +250,7 @@ impl ModuleGenerationGate {
             switching: Mutex::new(()),
             active: AtomicUsize::new(0),
             recovery_required: AtomicBool::new(false),
+            publication_in_flight: AtomicBool::new(false),
             changed: Notify::new(),
         }))
     }
@@ -317,13 +328,45 @@ impl ModuleGenerationGate {
             }
         }
 
-        self.0.recovery_required.store(true, Ordering::Release);
-        let publication = match metadata.publish_authority_manifest(&manifest).await {
-            Ok(publication) => publication,
-            Err(error) => {
+        {
+            let _state = self.0.state.lock().await;
+            if self.0.recovery_required.load(Ordering::Acquire) {
+                bail!("module authority requires recovery after lease drain");
+            }
+            self.0.recovery_required.store(true, Ordering::Release);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            self.0.recovery_required.store(false, Ordering::Release);
+            self.reopen_admission().await;
+            bail!("timed out before publishing {module:?} authority");
+        }
+
+        self.0.publication_in_flight.store(true, Ordering::Release);
+        let publication_gate = Arc::clone(&self.0);
+        let publication_manifest = manifest.clone();
+        // Bound the wait without cancelling a store operation that may still commit.
+        let publication_task = tokio::spawn(async move {
+            let _publication = PublicationInFlightGuard(publication_gate);
+            metadata
+                .publish_authority_manifest(&publication_manifest)
+                .await
+        });
+        let publication = match tokio::time::timeout_at(deadline, publication_task).await {
+            Err(_) => {
+                bail!(
+                    "module authority publication exceeded the switch deadline; outcome is indeterminate and admission remains closed for recovery"
+                )
+            }
+            Ok(Err(error)) => {
+                bail!(
+                    "module authority publication task failed; outcome is indeterminate and admission remains closed for recovery: {error}"
+                )
+            }
+            Ok(Ok(Err(error))) => {
                 self.0.recovery_required.store(true, Ordering::Release);
                 return Err(error);
             }
+            Ok(Ok(Ok(publication))) => publication,
         };
         match publication {
             AuthorityPublication::NotCommitted => {
@@ -368,6 +411,13 @@ impl ModuleGenerationGate {
         self.0.recovery_required.store(true, Ordering::Release);
         if self.0.active.load(Ordering::Acquire) != 0 {
             bail!("cannot recover module authority while generation leases are active");
+        }
+        loop {
+            let notified = self.0.changed.notified();
+            if !self.0.publication_in_flight.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
         }
         match metadata.load_authority_manifest(self.0.module).await? {
             AuthorityRecoveryRecord::NeverMigrated {
@@ -421,6 +471,11 @@ impl ModuleGenerationGate {
             authorities.insert(*module, gate.0.state.lock().await.authority);
         }
         authorities
+    }
+
+    #[cfg(test)]
+    pub(crate) fn require_recovery_for_test(&self) {
+        self.0.recovery_required.store(true, Ordering::Release);
     }
 }
 
