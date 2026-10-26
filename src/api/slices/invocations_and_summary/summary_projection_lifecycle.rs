@@ -470,7 +470,7 @@ impl SummaryCoverageRecoverySupervisor {
                 });
             }
         };
-        crate::maintenance::retention::with_retention_db_pressure_slot_held(async {
+        crate::maintenance::with_retention_db_pressure_slot_held(async {
             record_recovery(RecoveryDiagnostic::StatisticsHistoricalCoverage);
             if let Some(turn) = run_compacted_source_recovery_turn_with_runtime(state, runtime).await? {
                 return Ok(turn);
