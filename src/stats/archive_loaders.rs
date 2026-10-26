@@ -1247,30 +1247,42 @@ async fn open_archive_batch_pool(
             ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
         let expected_table_for_open = expected_table.to_owned();
         let archive_url = sqlite_url_for_path(&temp_path);
-        let open_task = tokio::spawn(crate::maintenance::with_file_phase_permit(
-            file_phase.clone(),
-            async move {
-                let mut connection = SqliteConnection::connect(&archive_url)
-                    .await
-                    .context("failed to connect archive batch")?;
-                let result = sqlx::query_scalar::<_, i64>(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                )
-                .bind(expected_table_for_open)
-                .fetch_one(&mut connection)
-                .await
-                .context("failed to open archive batch");
-                let close_result = connection
-                    .close()
-                    .await
-                    .context("failed to close archive batch opener");
-                match (result, close_result) {
-                    (Err(error), _) => Err(error),
-                    (Ok(_), Err(error)) => Err(error),
-                    (Ok(value), Ok(())) => Ok(value),
-                }
-            },
-        ));
+        let open_task =
+            tokio::spawn(crate::maintenance::with_file_phase_permit(
+                file_phase.clone(),
+                async move {
+                    let mut connection = SqliteConnection::connect(&archive_url)
+                        .await
+                        .context("failed to connect archive batch")?;
+                    let is_invocation_archive = expected_table_for_open == "codex_invocations";
+                    let result: Result<i64> = async {
+                        let has_expected_table = sqlx::query_scalar::<_, i64>(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                        )
+                        .bind(expected_table_for_open)
+                        .fetch_one(&mut connection)
+                        .await
+                        .context("failed to open archive batch")?;
+                        if is_invocation_archive && has_expected_table != 0 {
+                            ensure_invocation_archive_first_token_compatibility_on_connection(
+                                &mut connection,
+                            )
+                            .await?;
+                        }
+                        Ok(has_expected_table)
+                    }
+                    .await;
+                    let close_result = connection
+                        .close()
+                        .await
+                        .context("failed to close archive batch opener");
+                    match (result, close_result) {
+                        (Err(error), _) => Err(error),
+                        (Ok(_), Err(error)) => Err(error),
+                        (Ok(value), Ok(())) => Ok(value),
+                    }
+                },
+            ));
         pool_drain.set_open_task(open_task);
         let has_expected_table = match pool_drain.wait_for_open_task().await {
             Ok(value) => value != 0,
@@ -1435,6 +1447,34 @@ async fn ensure_invocation_archive_first_token_compatibility(pool: &Pool<Sqlite>
             .context("failed to add nullable TTFT compatibility column to archive copy")?;
     }
     Ok(())
+}
+
+async fn ensure_invocation_archive_first_token_compatibility_on_connection(
+    connection: &mut SqliteConnection,
+) -> Result<()> {
+    if !sqlite_connection_table_has_column(connection, "codex_invocations", "first_token_ms")
+        .await?
+    {
+        sqlx::query("ALTER TABLE codex_invocations ADD COLUMN first_token_ms REAL")
+            .execute(&mut *connection)
+            .await
+            .context("failed to add nullable TTFT compatibility column to archive copy")?;
+    }
+    Ok(())
+}
+
+async fn sqlite_connection_table_has_column(
+    connection: &mut SqliteConnection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool> {
+    let escaped_table_name = table_name.replace('\'', "''");
+    let pragma = format!("PRAGMA table_info('{escaped_table_name}')");
+    let rows = sqlx::query(&pragma).fetch_all(&mut *connection).await?;
+    Ok(rows.into_iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == column_name)
+    }))
 }
 
 #[cfg(test)]

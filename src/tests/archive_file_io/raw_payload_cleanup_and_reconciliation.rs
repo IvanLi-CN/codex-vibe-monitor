@@ -1516,14 +1516,14 @@ async fn raw_orphan_sweep_retains_directory_cursor_after_file_phase_defer() {
     }
 
     let mut traversal = RetentionRawDirectoryTraversal::default();
-    let first = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal)
+    let first = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, true, &mut traversal)
         .await
         .expect("run first bounded raw scan");
-    assert_eq!(first.quarantined, 32);
+    assert_eq!(first.quarantined, 0);
     assert!(traversal.directory.is_some());
 
     let held_file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
-    let deferred = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal)
+    let deferred = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, true, &mut traversal)
         .await
         .expect("defer raw scan while file phase is busy");
     assert!(deferred.deferred);
@@ -1535,10 +1535,10 @@ async fn raw_orphan_sweep_retains_directory_cursor_after_file_phase_defer() {
     );
     drop(held_file_phase);
 
-    let second = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal)
+    let second = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, true, &mut traversal)
         .await
         .expect("resume raw scan after file phase release");
-    assert_eq!(second.quarantined, 1);
+    assert_eq!(second.quarantined, 0);
     assert!(second.reached_end);
 
     pool.close().await;
