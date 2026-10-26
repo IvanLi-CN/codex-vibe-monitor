@@ -121,6 +121,16 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
         self.assertIn('result = "partial" if "success" in outcomes else "failed"', workflow)
+        for name, step_id, directory in (
+            ("Clean failed Rust dependency cache restore", "rust-deps-cache", "cvm-cargo"),
+            ("Clean failed Rust target cache restore", "rust-target-cache", "cvm-rust-target"),
+            ("Clean failed Rust system package cache restore", "rust-system-cache", "cvm-rust-system"),
+            ("Clean failed Bun dependency cache restore", "web-cache", "cvm-bun"),
+        ):
+            cleanup = next(step for step in self.workflow["jobs"]["observability-performance-producer"]["steps"] if step["name"] == name)
+            self.assertIn(f"steps.{step_id}.outcome != 'success'", cleanup["if"])
+            self.assertIn("rm -rf", cleanup["run"])
+            self.assertIn(directory, cleanup["run"])
         producer = self.workflow["jobs"]["observability-performance-producer"]
         save_conditions = {
             step["name"]: step["if"]

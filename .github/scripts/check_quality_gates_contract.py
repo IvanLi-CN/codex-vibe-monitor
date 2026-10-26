@@ -267,6 +267,20 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(producer_strategy.get("fail-fast") is False and producer_matrix.get("component") == ["rust", "web", "runtime-base"], f"{workflow_path} producer matrix drifted")
     for name in ("Restore Rust dependency cache", "Restore Rust target cache", "Restore Rust system package cache", "Restore Bun dependency cache", "Save Rust dependency cache", "Save Rust target cache", "Save Rust system package cache", "Save Bun dependency cache"):
         require(step_config(producer, name, workflow_path).get("continue-on-error") is True, f"{workflow_path} {name} must remain best effort")
+    cleanup_steps = {
+        "Clean failed Rust dependency cache restore": ("rust-deps-cache", "cvm-cargo"),
+        "Clean failed Rust target cache restore": ("rust-target-cache", "cvm-rust-target"),
+        "Clean failed Rust system package cache restore": ("rust-system-cache", "cvm-rust-system"),
+        "Clean failed Bun dependency cache restore": ("web-cache", "cvm-bun"),
+    }
+    for name, (step_id, directory) in cleanup_steps.items():
+        cleanup = step_config(producer, name, workflow_path)
+        require(
+            f"steps.{step_id}.outcome != 'success'" in str(cleanup.get("if", ""))
+            and "rm -rf" in str(cleanup.get("run", ""))
+            and directory in str(cleanup.get("run", "")),
+            f"{workflow_path} {name} must fall back to a clean cache directory after restore failure",
+        )
     web_restore = step_config(producer, "Restore Bun dependency cache", workflow_path)
     web_save = step_config(producer, "Save Bun dependency cache", workflow_path)
     require(web_restore.get("with", {}).get("path") == "${{ runner.temp }}/cvm-bun" and web_save.get("with", {}).get("path") == "${{ runner.temp }}/cvm-bun", f"{workflow_path} Bun cache must contain downloads only, never candidate node_modules")

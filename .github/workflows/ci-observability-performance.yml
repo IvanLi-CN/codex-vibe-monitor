@@ -425,6 +425,34 @@ jobs:
           path: ${{ runner.temp }}/cvm-bun
           key: ${{ needs.observability-performance-resolve.outputs.web_deps_cache_key }}
 
+      - name: Clean failed Rust dependency cache restore
+        if: matrix.component == 'rust' && steps.rust-deps-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-cargo"
+          mkdir -p "$RUNNER_TEMP/cvm-cargo"
+
+      - name: Clean failed Rust target cache restore
+        if: matrix.component == 'rust' && steps.rust-target-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-rust-target"
+          mkdir -p "$RUNNER_TEMP/cvm-rust-target"
+
+      - name: Clean failed Rust system package cache restore
+        if: matrix.component == 'rust' && steps.rust-system-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-rust-system"
+          mkdir -p "$RUNNER_TEMP/cvm-rust-system/archives/partial" "$RUNNER_TEMP/cvm-rust-system/lists/partial"
+
+      - name: Clean failed Bun dependency cache restore
+        if: matrix.component == 'web' && steps.web-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-bun"
+          mkdir -p "$RUNNER_TEMP/cvm-bun"
+
       - name: Record dependency cache restore timing
         if: matrix.component == 'rust' || matrix.component == 'web'
         env:
