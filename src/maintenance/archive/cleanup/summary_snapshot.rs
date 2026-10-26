@@ -6,6 +6,7 @@ use sha2_resumable::{
         common::hazmat::{SerializableState, SerializedState},
     },
 };
+use std::future::Future;
 
 pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE: &str = "summary-global";
 const SUMMARY_ARCHIVE_SNAPSHOT_DUE_SCOPE: &str = "summary-global:due";
@@ -609,39 +610,49 @@ async fn promote_verified_summary_snapshot_page_sets(
         if started_at.elapsed() >= max_elapsed {
             break;
         }
-        let Some(admission) = super::super::retention::acquire_retention_write_admission(
-            "summary_snapshot_proof_promotion",
+        let proof = match crate::prepare_verified_summary_archive_snapshot_if_valid(
+            pool,
+            archive_batch_id,
+            &manifest_sha256,
         )
         .await
-        else {
-            return Err(super::super::retention::retention_write_deferred(
-                "summary_snapshot_proof_promotion",
-            ));
-        };
-        if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
-            .await?
         {
-            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
-            sqlx::query(
-                "INSERT INTO summary_archive_snapshot_backfill_outcome \
+            Ok(proof) => proof,
+            Err(error) => return Err(error),
+        };
+        if let Some(proof) = proof {
+            let Some(admission) = super::super::retention::acquire_retention_write_admission(
+                "summary_snapshot_proof_promotion",
+            )
+            .await
+            else {
+                return Err(super::super::retention::retention_write_deferred(
+                    "summary_snapshot_proof_promotion",
+                ));
+            };
+            if crate::publish_verified_summary_archive_snapshot(pool, &proof).await? {
+                crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
+                sqlx::query(
+                    "INSERT INTO summary_archive_snapshot_backfill_outcome \
                  (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
                   next_page_index, next_row_id, cursor_version, retry_attempt) \
                  VALUES (?1, ?2, 'complete', '', datetime('now'), 0, 0, ?3, 0) \
                  ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
                    disposition = 'complete', failure_kind = '', next_probe_at = datetime('now'), \
                    updated_at = datetime('now')",
-            )
-            .bind(archive_batch_id)
-            .bind(&manifest_sha256)
-            .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION)
-            .execute(pool)
-            .await
-            .context("record promoted Summary Snapshot V2 outcome")?;
-            promoted += 1;
+                )
+                .bind(archive_batch_id)
+                .bind(&manifest_sha256)
+                .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION)
+                .execute(pool)
+                .await
+                .context("record promoted Summary Snapshot V2 outcome")?;
+                promoted += 1;
+            }
+            drop(admission);
         }
         processed_any = true;
         processed_cursor_id = archive_batch_id;
-        drop(admission);
     }
     if promoted > 0 {
         tracing::info!(
@@ -1077,6 +1088,28 @@ fn summary_archive_snapshot_backfill_budget_exhausted(
     started_at.elapsed() >= max_elapsed
 }
 
+async fn run_summary_archive_file_phase<F, T>(path: &Path, operation: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let file_phase = crate::acquire_file_phase_permit("summary_archive_snapshot_backfill").await?;
+    let archive_lock = super::super::retention::retention_archive_file_try_lock(path)?;
+    crate::with_file_phase_permit(file_phase, async move {
+        let result = operation.await;
+        drop(archive_lock);
+        result
+    })
+    .await
+}
+
+async fn run_summary_archive_temp_read_phase<F, T>(operation: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let file_phase = crate::acquire_file_phase_permit("summary_archive_snapshot_backfill").await?;
+    crate::with_file_phase_permit(file_phase, operation).await
+}
+
 pub(super) enum SummaryArchiveHashAdvance {
     Complete {
         sha256: String,
@@ -1231,18 +1264,10 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
-    let _archive_lock =
-        super::super::retention::retention_archive_file_lock_async(archive_path).await?;
-    let Some(_admission) = super::super::retention::acquire_retention_write_admission(
-        "summary_archive_snapshot_backfill",
-    )
-    .await
-    else {
-        return Err(super::super::retention::retention_write_deferred(
-            "summary_archive_snapshot_backfill",
-        ));
-    };
-    let source_fingerprint = summary_archive_source_fingerprint(archive_path)?;
+    let source_fingerprint = run_summary_archive_file_phase(archive_path, async {
+        summary_archive_source_fingerprint(archive_path)
+    })
+    .await?;
     let mut hash_progress =
         load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
     if hash_progress
@@ -1252,6 +1277,15 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     {
         // No incomplete V2 page may survive a source replacement. The manifest identity scopes
         // the outcome row, while this filesystem identity fences work that spans attempts.
+        let Some(admission) = super::super::retention::acquire_retention_write_admission(
+            "summary_archive_snapshot_backfill",
+        )
+        .await
+        else {
+            return Err(super::super::retention::retention_write_deferred(
+                "summary_archive_snapshot_backfill",
+            ));
+        };
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
             tx.as_mut(),
@@ -1261,6 +1295,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         .await?
         {
             tx.rollback().await?;
+            drop(admission);
             return Ok("complete");
         }
         sqlx::query(
@@ -1285,6 +1320,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         )
         .await?;
         tx.commit().await?;
+        drop(admission);
     }
     let actual_sha256 = if hash_progress.source_fingerprint.as_deref()
         == Some(source_fingerprint.as_str())
@@ -1292,14 +1328,27 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     {
         candidate.sha256.clone()
     } else {
-        match resumable_summary_archive_sha256(
-            archive_path,
-            hash_progress,
-            source_fingerprint.clone(),
-            started_at,
-            max_elapsed,
-        )? {
+        match run_summary_archive_file_phase(archive_path, async {
+            resumable_summary_archive_sha256(
+                archive_path,
+                hash_progress,
+                source_fingerprint.clone(),
+                started_at,
+                max_elapsed,
+            )
+        })
+        .await?
+        {
             SummaryArchiveHashAdvance::Complete { sha256, progress } => {
+                let Some(admission) = super::super::retention::acquire_retention_write_admission(
+                    "summary_archive_snapshot_backfill",
+                )
+                .await
+                else {
+                    return Err(super::super::retention::retention_write_deferred(
+                        "summary_archive_snapshot_backfill",
+                    ));
+                };
                 let mut tx = pool.begin().await?;
                 record_summary_archive_snapshot_backfill_outcome_tx(
                     tx.as_mut(),
@@ -1310,12 +1359,13 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 )
                 .await?;
                 tx.commit().await?;
+                drop(admission);
                 sha256
             }
             SummaryArchiveHashAdvance::Deferred(progress) => {
                 // Hash state itself is committed progress. The outer scheduler records the
                 // bounded defer separately, preserving this state and applying its backoff.
-                record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
+                record_summary_archive_snapshot_backfill_outcome_preserving_progress(
                     pool,
                     candidate,
                     "in_progress",
@@ -1335,9 +1385,14 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         candidate.coverage_start_at.clone(),
         candidate.coverage_end_at.clone(),
     );
-    let archive_source =
+    let archive_source = run_summary_archive_file_phase(archive_path, async {
+        if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
+            bail!("Summary archive source identity changed before opening archive");
+        }
         crate::stats::open_invocation_archive_batch_pool(&archive_row, "summary-snapshot-backfill")
-            .await;
+            .await
+    })
+    .await;
     let Some((archive_pool, temp_cleanup)) = (match archive_source {
         Ok(source) => source,
         Err(_) => return Ok("unavailable:source_open_failed"),
@@ -1346,8 +1401,10 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     };
 
     let result = async {
-        let archive_columns =
-            load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_columns = run_summary_archive_temp_read_phase(async {
+            load_archive_table_columns(&archive_pool, "codex_invocations").await
+        })
+        .await?;
         let query_sql = build_invocation_archive_rows_time_chunk_query(&archive_columns);
         let mut progress = load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
         if progress.cursor_version < SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION
@@ -1355,6 +1412,15 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         {
             // A pre-V2 checkpoint only proves ID order. It cannot be combined with the
             // chronological V2 proof, so discard its unproven pages and restart this manifest.
+            let Some(admission) = super::super::retention::acquire_retention_write_admission(
+                "summary_archive_snapshot_backfill",
+            )
+            .await
+            else {
+                return Err(super::super::retention::retention_write_deferred(
+                    "summary_archive_snapshot_backfill",
+                ));
+            };
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
                 tx.as_mut(),
@@ -1364,6 +1430,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             .await?
             {
                 tx.rollback().await?;
+                drop(admission);
                 return Ok("complete");
             }
             sqlx::query(
@@ -1390,6 +1457,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             )
             .await?;
             tx.commit().await?;
+            drop(admission);
             progress.page_index = 0;
             progress.next_occurred_at = None;
             progress.next_row_id = 0;
@@ -1410,12 +1478,15 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
                 return Ok("deferred:budget");
             }
-            let (rows, has_more) = load_invocation_archive_rows_time_chunk(
-                &archive_pool,
-                &query_sql,
-                progress.next_occurred_at.as_deref(),
-                progress.next_row_id,
-            )
+            let (rows, has_more) = run_summary_archive_temp_read_phase(async {
+                load_invocation_archive_rows_time_chunk(
+                    &archive_pool,
+                    &query_sql,
+                    progress.next_occurred_at.as_deref(),
+                    progress.next_row_id,
+                )
+                .await
+            })
             .await?;
             if rows.is_empty() {
                 break;
@@ -1453,12 +1524,15 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                     separated.push_bind(row.id);
                 }
                 separated.push_unseparated(")");
-                query
-                    .build_query_as::<(i64, String)>()
-                    .fetch_all(&archive_pool)
-                    .await?
-                    .into_iter()
-                    .collect::<HashMap<_, _>>()
+                run_summary_archive_temp_read_phase(async {
+                    Ok(query
+                        .build_query_as::<(i64, String)>()
+                        .fetch_all(&archive_pool)
+                        .await?
+                        .into_iter()
+                        .collect::<HashMap<_, _>>())
+                })
+                .await?
             } else {
                 HashMap::new()
             };
@@ -1480,13 +1554,26 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 })?,
                 payload,
             };
-            if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
-                bail!("Summary archive source identity changed before V2 page commit");
-            }
+            run_summary_archive_file_phase(archive_path, async {
+                if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
+                    bail!("Summary archive source identity changed before V2 page commit");
+                }
+                Ok(())
+            })
+            .await?;
             // Serialize the proof check and page write with the final-proof transaction. The
             // candidate query runs before this point and can become stale while a retention task
             // publishes its proof; a deferred transaction would then rewrite the page and fire
             // the trigger that revokes the newly published authority.
+            let Some(admission) = super::super::retention::acquire_retention_write_admission(
+                "summary_archive_snapshot_backfill",
+            )
+            .await
+            else {
+                return Err(super::super::retention::retention_write_deferred(
+                    "summary_archive_snapshot_backfill",
+                ));
+            };
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
                 tx.as_mut(),
@@ -1496,6 +1583,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             .await?
             {
                 tx.rollback().await?;
+                drop(admission);
                 return Ok("complete");
             }
             store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page).await?;
@@ -1519,6 +1607,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             )
             .await?;
             tx.commit().await?;
+            drop(admission);
             total_rows = total_rows.saturating_add(i64::try_from(rows.len())?);
             progress.next_row_id = rows.last().map(|row| row.id).ok_or_else(|| {
                 anyhow::Error::new(SummaryArchiveSnapshotVerificationError::new(
@@ -1543,16 +1632,43 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 ),
             ));
         }
-        if !ensure_summary_archive_snapshot_v2_final_proof(pool, candidate.id, &candidate.sha256)
-            .await?
+        let proof = match crate::prepare_verified_summary_archive_snapshot_if_valid(
+            pool,
+            candidate.id,
+            &candidate.sha256,
+        )
+        .await
         {
+            Ok(Some(proof)) => proof,
+            Ok(None) => {
+                return Err(anyhow::Error::new(
+                    SummaryArchiveSnapshotVerificationError::new(
+                        "verification_failed",
+                        "Summary Snapshot V2 proof validation failed after backfill",
+                    ),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(admission) = super::super::retention::acquire_retention_write_admission(
+            "summary_archive_snapshot_backfill",
+        )
+        .await
+        else {
+            return Err(super::super::retention::retention_write_deferred(
+                "summary_archive_snapshot_backfill",
+            ));
+        };
+        if !crate::publish_verified_summary_archive_snapshot(pool, &proof).await? {
+            drop(admission);
             return Err(anyhow::Error::new(
                 SummaryArchiveSnapshotVerificationError::new(
                     "verification_failed",
-                    "Summary Snapshot V2 proof validation failed after backfill",
+                    "Summary Snapshot V2 proof publication failed after backfill",
                 ),
             ));
         }
+        drop(admission);
         Ok("complete")
     }
     .await;

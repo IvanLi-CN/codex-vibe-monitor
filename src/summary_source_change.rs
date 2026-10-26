@@ -520,7 +520,7 @@ pub(crate) async fn summary_archive_snapshot_final_proof_marker_exists_tx(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
-    sqlx::query_scalar::<_, i64>(
+    Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(
             SELECT 1 FROM summary_archive_snapshot_v2_proof
             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2
@@ -530,7 +530,7 @@ pub(crate) async fn summary_archive_snapshot_final_proof_marker_exists_tx(
     .bind(manifest_sha256)
     .fetch_one(&mut *connection)
     .await
-    .map(|exists| exists != 0)
+    .map(|exists| exists != 0)?)
 }
 
 pub(crate) async fn store_summary_archive_snapshot_v2_final_proof_tx(
@@ -587,7 +587,7 @@ pub(crate) async fn prepare_verified_summary_archive_snapshot(
     Ok(proof)
 }
 
-async fn prepare_verified_summary_archive_snapshot_if_valid(
+pub(crate) async fn prepare_verified_summary_archive_snapshot_if_valid(
     pool: &Pool<Sqlite>,
     archive_batch_id: i64,
     manifest_sha256: &str,
@@ -683,6 +683,26 @@ pub(crate) async fn store_verified_summary_archive_snapshot_tx(
     .await
 }
 
+pub(crate) async fn publish_verified_summary_archive_snapshot(
+    pool: &Pool<Sqlite>,
+    proof: &VerifiedSummaryArchiveSnapshot,
+) -> Result<bool> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if summary_archive_snapshot_final_proof_marker_exists_tx(
+        tx.as_mut(),
+        proof.archive_batch_id,
+        &proof.manifest_sha256,
+    )
+    .await?
+    {
+        tx.commit().await?;
+        return Ok(true);
+    }
+    store_verified_summary_archive_snapshot_tx(tx.as_mut(), proof).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 async fn store_summary_archive_snapshot_final_metadata_tx(
     connection: &mut SqliteConnection,
     archive_batch_id: i64,
@@ -766,20 +786,7 @@ pub(crate) async fn ensure_summary_archive_snapshot_v2_final_proof(
     else {
         return Ok(false);
     };
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    if summary_archive_snapshot_final_proof_marker_exists_tx(
-        tx.as_mut(),
-        archive_batch_id,
-        manifest_sha256,
-    )
-    .await?
-    {
-        tx.commit().await?;
-        return Ok(true);
-    }
-    store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
-    tx.commit().await?;
-    Ok(true)
+    publish_verified_summary_archive_snapshot(pool, &proof).await
 }
 
 pub(crate) async fn summary_archive_snapshot_has_final_proof(
