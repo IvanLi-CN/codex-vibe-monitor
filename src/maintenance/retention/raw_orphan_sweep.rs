@@ -1232,7 +1232,7 @@ pub(crate) async fn persist_raw_orphan_sweep_schedule_with_evidence_and_removal(
         return result;
     }
 
-    // A pressure-cooldown rejection still needs a durable five-minute defer and fixed admission
+    // A pressure-cooldown rejection still needs a durable short retry and fixed admission
     // evidence. The fallback intentionally takes only the coordinator write permit, so persisting
     // the cursor does not require the background slot that was just denied.
     let Some((write_permit, _)) =
