@@ -7,12 +7,13 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId};
+use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId, RecoveryObligation};
 use crate::storage::config::StorageConfig;
 use crate::storage::core::{
     AccountRoutingTransaction, AdmissionDecision, AnalyticsTransaction, AuthorityManifestStore,
     AuthorityPublication, AuthorityRecoveryContext, AuthorityRecoveryRecord, BackendKind,
-    MigrationState, MigrationStatus, MigrationTaskAdmission, MigrationTaskPolicy, ModuleAuthority,
+    MigrationCheckpoint, MigrationOutboxItem, MigrationReservation, MigrationState,
+    MigrationStatus, MigrationTaskAdmission, MigrationTaskPolicy, ModuleAuthority,
     ModuleAuthorityManifest, ModuleGenerationGate, ModuleLease, PerformanceTransaction,
     StorageModule, StoragePools, TaskOperationsTransaction, TrafficArchiveTransaction,
     combine_admission_decisions, validate_transaction_leases,
@@ -194,6 +195,13 @@ async fn current_sqlite_schema_has_closed_ownership_catalog() {
         .await
         .unwrap();
     let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(catalog.owners().len(), table_count as usize);
     assert!(!catalog.owners().is_empty());
     assert!(catalog.modules().contains(&ModuleId::TrafficArchive));
     assert!(catalog.modules().contains(&ModuleId::Analytics));
@@ -214,6 +222,74 @@ async fn current_sqlite_schema_has_closed_ownership_catalog() {
         relation.source_table == "archive_batches"
             && relation.target_table == "long_term_projection_dirty_buckets"
     }));
+    assert!(
+        catalog
+            .owners()
+            .iter()
+            .all(|owner| !owner.transaction_group.is_empty())
+    );
+    assert_eq!(
+        catalog
+            .owners()
+            .iter()
+            .find(|owner| owner.table == "codex_invocations")
+            .unwrap()
+            .recovery_obligation,
+        RecoveryObligation::TrafficFact
+    );
+    assert_eq!(
+        catalog
+            .owners()
+            .iter()
+            .find(|owner| owner.table == "summary_source_change_journal")
+            .unwrap()
+            .recovery_obligation,
+        RecoveryObligation::TrafficRecovery
+    );
+    assert_eq!(
+        catalog
+            .owners()
+            .iter()
+            .find(|owner| owner.table == "invocation_rollup_hourly")
+            .unwrap()
+            .recovery_obligation,
+        RecoveryObligation::AnalyticsProjection
+    );
+    assert_eq!(
+        catalog
+            .owners()
+            .iter()
+            .find(|owner| owner.table == "pool_upstream_accounts")
+            .unwrap()
+            .recovery_obligation,
+        RecoveryObligation::AccountControl
+    );
+    assert!(catalog.schema_objects().iter().all(|object| {
+        catalog
+            .owners()
+            .iter()
+            .any(|owner| owner.table == object.table)
+    }));
+    assert!(catalog.foreign_keys().iter().all(|edge| {
+        catalog
+            .owners()
+            .iter()
+            .any(|owner| owner.table == edge.table)
+            && catalog
+                .owners()
+                .iter()
+                .any(|owner| owner.table == edge.referenced_table)
+    }));
+    assert!(catalog.trigger_writes().iter().all(|relation| {
+        catalog
+            .owners()
+            .iter()
+            .any(|owner| owner.table == relation.source_table)
+            && catalog
+                .owners()
+                .iter()
+                .any(|owner| owner.table == relation.target_table)
+    }));
     assert!(matches!(
         catalog.validate_transaction(["codex_invocations"]),
         Err(CatalogError::CrossModuleTransaction { .. })
@@ -223,6 +299,16 @@ async fn current_sqlite_schema_has_closed_ownership_catalog() {
     let maintenance_catalog = ModuleCatalog::inspect_sqlite(&maintenance_store.pool)
         .await
         .unwrap();
+    let maintenance_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_one(&maintenance_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        maintenance_catalog.owners().len(),
+        maintenance_table_count as usize
+    );
     assert!(
         maintenance_catalog
             .modules()
@@ -275,11 +361,7 @@ async fn sqlite_catalog_classifies_transaction_closure_and_retained_controls() {
             && edge.referenced_table == "proxy_raw_payload_blobs"
     }));
     catalog
-        .validate_transaction([
-            "codex_invocations",
-            "proxy_raw_payload_blob_links",
-            "proxy_raw_payload_blobs",
-        ])
+        .validate_transaction(["proxy_raw_payload_blob_links"])
         .unwrap();
     catalog
         .validate_transaction(["archive_batches", "summary_source_change_journal"])
@@ -1430,6 +1512,47 @@ fn migration_status_exposes_identity_generation_and_capacity_hold() {
     );
 }
 
+#[test]
+fn migration_progress_contract_covers_checkpoint_outbox_and_capacity_obligations() {
+    MigrationCheckpoint {
+        migration_id: "migration-01".into(),
+        table_name: "codex_invocations".into(),
+        stable_key: "42".into(),
+        cursor: Some("42".into()),
+        captured_through: Some(10),
+        applied_through: Some(10),
+        source_identity: "sqlite-main-installation-01".into(),
+        authority_generation: 1,
+    }
+    .validate()
+    .unwrap();
+
+    MigrationOutboxItem {
+        outbox_id: "outbox-01".into(),
+        migration_id: "migration-01".into(),
+        source_identity: "sqlite-main-installation-01".into(),
+        source_version: 10,
+        module: StorageModule::TrafficArchive,
+        authority_generation: 1,
+        payload_digest: "digest-01".into(),
+    }
+    .validate()
+    .unwrap();
+
+    MigrationReservation {
+        reservation_id: "reservation-01".into(),
+        migration_id: "migration-01".into(),
+        source_identity: "sqlite-main-installation-01".into(),
+        module: StorageModule::TrafficArchive,
+        authority_generation: 1,
+        first_stable_id: "1".into(),
+        last_stable_id: "42".into(),
+        reserved_bytes: 4096,
+    }
+    .validate()
+    .unwrap();
+}
+
 #[tokio::test]
 async fn typed_storage_transactions_route_all_modules_and_hold_leases_until_completion() {
     let storage = StoragePools::sqlite_only(SqlitePool::connect("sqlite::memory:").await.unwrap());
@@ -1520,11 +1643,33 @@ async fn typed_storage_transactions_route_all_modules_and_hold_leases_until_comp
 fn migration_task_policy_composes_with_operator_admission() {
     let mut policy = MigrationTaskPolicy::default();
     policy.hold_module(StorageModule::TrafficArchive);
+    policy.preserve_task_during_module("routing");
+    policy.preserve_task_during_module("oauth_renewal");
     assert_eq!(
         policy.decision_for_module(StorageModule::TrafficArchive, "archive"),
         AdmissionDecision::Hold {
             reason: "migration_hold",
         }
+    );
+    assert_eq!(
+        policy.decision_for_module(StorageModule::TrafficArchive, "routing"),
+        AdmissionDecision::Allow
+    );
+    assert_eq!(
+        policy.decision_for_module(StorageModule::TrafficArchive, "oauth_renewal"),
+        AdmissionDecision::Allow
+    );
+    policy.hold_task("routing");
+    assert_eq!(
+        policy.decision_for_module(StorageModule::TrafficArchive, "routing"),
+        AdmissionDecision::Hold {
+            reason: "migration_hold",
+        }
+    );
+    policy.release_task("routing");
+    assert_eq!(
+        policy.decision_for_module(StorageModule::TrafficArchive, "routing"),
+        AdmissionDecision::Allow
     );
     assert_eq!(
         policy.decision_for_module(StorageModule::AccountRouting, "routing"),
@@ -1558,6 +1703,15 @@ fn migration_task_policy_composes_with_operator_admission() {
     );
     policy.release_task("retention");
     assert_eq!(policy.decision("retention"), AdmissionDecision::Allow);
+    policy.release_preserved_task("routing");
+    policy.release_preserved_task("oauth_renewal");
+    policy.hold_module(StorageModule::TrafficArchive);
+    assert_eq!(
+        policy.decision_for_module(StorageModule::TrafficArchive, "routing"),
+        AdmissionDecision::Hold {
+            reason: "migration_hold",
+        }
+    );
 }
 
 #[test]

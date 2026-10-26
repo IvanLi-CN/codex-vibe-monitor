@@ -23,6 +23,48 @@ maintenance ownership cannot be hidden by a similarly named main-database table.
 The catalog deliberately fails closed. Adding a production table requires adding
 its owner and transaction group before a migration can inspect the schema.
 
+## pg01 acceptance boundary
+
+The executable pg01 boundary preserves the A1 gate: complete table, trigger,
+transaction, and recovery-obligation coverage with no unowned hot table.
+
+- `ModuleCatalog::inspect_sqlite` enumerates every non-internal table, its module
+  and transaction group, its required recovery-obligation class, every index and
+  trigger, every foreign-key relation, and every trigger write target.
+- Every accepted `TableOwner` has a non-empty transaction group and a typed
+  `RecoveryObligation`: `traffic_fact` maps to `TrafficFact`,
+  `archive_publication` to `ArchivePublication`,
+  `traffic_recovery_obligation` to `TrafficRecovery`, and the analytics,
+  account, task, and performance groups map to their corresponding typed
+  obligations. `classify_table` has no permissive fallback; an unowned table is
+  an `UnknownOwnership` error.
+- `validate_transaction` starts from the requested tables and expands the closure
+  through trigger write targets and both endpoints of foreign-key relations. The
+  catalog rejects cross-module foreign keys during inspection, and the closure
+  validator rejects mixed-module transactions before any authority switch.
+- The authority, status, checkpoint, outbox, and capacity types validate the
+  identity, generation, ordering, and bounded-progress invariants required by
+  recovery. `MigrationMetadataStore` names the durable operations those values
+  require, but has no production implementation in pg01.
+- The tests create the current SQLite schemas and assert that schema objects and
+  relation endpoints resolve to the closed catalog. They also exercise each
+  recovery value's validation contract.
+- Runtime writers, readers, background owners, and transaction partners are a
+  reviewed design inventory below, not an executable claim that every call site
+  has already been routed through `StoragePools`. pg08 must reconcile those call
+  sites before any production authority switch.
+
+The catalog tests (`current_sqlite_schema_has_closed_ownership_catalog`,
+`sqlite_catalog_classifies_transaction_closure_and_retained_controls`, and
+`sqlite_catalog_rejects_cross_module_foreign_keys`) assert that the discovered
+table count matches `sqlite_master`, every schema object and relation endpoint has
+an owner, every owner has a transaction group and recovery obligation, an FK alone
+pulls its related table into a same-module transaction closure, and a trigger or
+explicit table set crossing modules fails. The main and maintenance databases are
+inspected independently, so the A1 table set is complete for both SQLite
+namespaces. Actor call-site reconciliation remains an explicit pg08 follow-up,
+not a relaxation of the pg01 table/trigger/transaction/recovery gate.
+
 ## Module ownership
 
 ### Traffic and archive
@@ -162,11 +204,18 @@ retention batches (`src/maintenance/retention/task_batches.rs`), archive writers
 hourly-rollup repair/materialization, summary coverage repair, prompt-cache
 materialization, and account/routing control writers. Shutdown and journal
 recovery writers are included in the same generation boundary; they cannot bypass
-the module lease because a scheduler was paused.
+the module lease because a scheduler was paused. This paragraph is a reviewed
+source inventory of writer actors, not an executable completeness proof. Reader
+paths, background task owners, and cross-module transaction partners require the
+same call-site reconciliation in pg08 before runtime routing changes.
 
 The inventory is intentionally based on runtime schema inspection rather than
 only on source string search. Tests create the current schema and verify that
-tables, indexes, triggers, and foreign keys all resolve to a closed catalog.
+tables, indexes, triggers, and foreign keys all resolve to a closed catalog;
+transaction validation then expands both trigger and FK closure before checking
+module ownership. This is the executable table/trigger/transaction evidence for
+A1. The writer, reader, background-owner, and transaction-partner actor list is
+kept as a design review input for pg08 call-site reconciliation.
 
 ## Recovery and authority contract
 
@@ -183,13 +232,20 @@ module closed until `recover_authority` resolves the durable record.
 
 Migration status, table checkpoints, outbox items, and capacity reservations each
 have validation methods. Status transitions are monotonic and follow the
-background protocol; a paused or blocked status must carry a durable reason.
+background protocol; a paused or blocked status must carry a durable reason. The
+`migration_progress_contract_covers_checkpoint_outbox_and_capacity_obligations`
+test exercises each typed recovery value. These are interface values only in pg01:
+persistence, worker execution, and startup recovery are later migration engine and
+runtime adapter work.
+
 `MigrationTaskPolicy` is an overlay over operator admission and returns the
 stable `migration_hold` reason without changing the operator's persisted schedule
-or enablement state. Module-aware decisions hold tasks assigned to the active
-module, while explicit task keys cover independent obligations. This task-policy
-contract does not wire runtime load shedding or scheduler changes into the service;
-that behavior remains out of scope here.
+or enablement state. Module-aware decisions hold unnecessary tasks assigned to the
+active module. Necessary authentication, routing, and recovery tasks must be
+registered with the policy's preserved-task path so they remain admitted; an
+explicit task hold still wins over that preservation. This task-policy contract
+does not wire runtime load shedding or scheduler changes into the service; pg08
+must connect it to real task owners.
 
 ## Configuration and test foundation
 
@@ -200,15 +256,25 @@ that behavior remains out of scope here.
 - `MIGRATION_SWITCH_BUDGET_MS` defaults to `3000` and must be non-zero.
 
 The connection string is redacted from `Debug` and omitted from serialized
-configuration. `sqlx` enables both SQLite and PostgreSQL with rustls. The
-PostgreSQL contract tests do not require a live server: they exercise the
-PostgreSQL-capable pool/router type and run all authority, lease, recovery, and
-catalog checks against SQLite fixtures. A future adapter may add a live database
-profile with `POSTGRES_TEST_DATABASE_URL` without changing the contract tests.
+configuration. `sqlx` enables both SQLite and PostgreSQL with rustls. The default
+lightweight PostgreSQL contract tests do not require a live server: they exercise
+the PostgreSQL-capable pool/router type and run authority, lease, recovery, and
+catalog checks against SQLite fixtures.
+
+`optional_postgres_storage_transaction_smoke_test` is the opt-in C13 live-
+PostgreSQL smoke item. It runs in the same lightweight test bucket only when
+`POSTGRES_TEST_DATABASE_URL` is configured, and is skipped otherwise. A live run
+proves pool creation and one typed transaction's commit/rollback path; it is not
+a default CI gate and does not prove production routing, migration persistence,
+or worker recovery. The test is therefore supplementary C13 evidence, not a
+replacement for the offline pg01 contract tests.
 
 ## Explicit non-scope
 
-This inventory does not add a migration worker, change capture, table copy,
-PostgreSQL DDL, automatic startup migration, UI, runtime load shedding, deployment
-configuration, legacy-table deletion, or failback behavior. Those belong to the
-subsequent migration-engine and module-adapter work.
+This inventory does not install `StoragePools` into the application runtime or
+route production writers/readers to PostgreSQL. It also does not add a migration
+worker, change capture, table copy, PostgreSQL DDL, automatic startup migration,
+UI, runtime load shedding, deployment configuration, legacy-table deletion, or
+failback behavior. Durable progress persistence and worker/startup recovery belong
+to the subsequent migration-engine and module-adapter work; production routing
+belongs to pg08.

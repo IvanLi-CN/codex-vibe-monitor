@@ -11,11 +11,23 @@ pub(crate) enum ModuleId {
     Performance,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RecoveryObligation {
+    TrafficFact,
+    ArchivePublication,
+    TrafficRecovery,
+    AnalyticsProjection,
+    AccountControl,
+    TaskOperations,
+    PerformanceInventory,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TableOwner {
     pub(crate) table: String,
     pub(crate) module: ModuleId,
     pub(crate) transaction_group: &'static str,
+    pub(crate) recovery_obligation: RecoveryObligation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +220,7 @@ impl ModuleCatalog {
             .collect()
     }
 
+    /// Validate a transaction after expanding trigger writes and foreign-key endpoints.
     pub(crate) fn validate_transaction<'a>(
         &self,
         tables: impl IntoIterator<Item = &'a str>,
@@ -230,6 +243,20 @@ impl ModuleCatalog {
             {
                 if closure.insert(relation.target_table.clone()) {
                     pending.push(relation.target_table.clone());
+                }
+            }
+            for relation in &self.foreign_keys {
+                let related_table = if relation.table == source_table {
+                    Some(&relation.referenced_table)
+                } else if relation.referenced_table == source_table {
+                    Some(&relation.table)
+                } else {
+                    None
+                };
+                if let Some(related_table) = related_table
+                    && closure.insert(related_table.clone())
+                {
+                    pending.push(related_table.clone());
                 }
             }
         }
@@ -294,16 +321,43 @@ impl ModuleCatalog {
 }
 
 fn classify_table(table: String) -> Result<TableOwner, CatalogError> {
-    let (module, transaction_group) = if traffic_table(&table) {
-        (ModuleId::TrafficArchive, traffic_group(&table))
+    let (module, transaction_group, recovery_obligation) = if traffic_table(&table) {
+        let transaction_group = traffic_group(&table);
+        let recovery_obligation = match transaction_group {
+            "traffic_fact" => RecoveryObligation::TrafficFact,
+            "archive_publication" => RecoveryObligation::ArchivePublication,
+            "traffic_recovery_obligation" => RecoveryObligation::TrafficRecovery,
+            _ => unreachable!("traffic table has an unknown transaction group"),
+        };
+        (
+            ModuleId::TrafficArchive,
+            transaction_group,
+            recovery_obligation,
+        )
     } else if analytics_table(&table) {
-        (ModuleId::Analytics, "analytics_projection")
+        (
+            ModuleId::Analytics,
+            "analytics_projection",
+            RecoveryObligation::AnalyticsProjection,
+        )
     } else if account_table(&table) {
-        (ModuleId::AccountRouting, "account_control")
+        (
+            ModuleId::AccountRouting,
+            "account_control",
+            RecoveryObligation::AccountControl,
+        )
     } else if task_table(&table) {
-        (ModuleId::TaskOperations, "task_operations")
+        (
+            ModuleId::TaskOperations,
+            "task_operations",
+            RecoveryObligation::TaskOperations,
+        )
     } else if performance_table(&table) {
-        (ModuleId::Performance, "performance")
+        (
+            ModuleId::Performance,
+            "performance",
+            RecoveryObligation::PerformanceInventory,
+        )
     } else {
         return Err(CatalogError::UnknownOwnership(table));
     };
@@ -311,6 +365,7 @@ fn classify_table(table: String) -> Result<TableOwner, CatalogError> {
         table,
         module,
         transaction_group,
+        recovery_obligation,
     })
 }
 

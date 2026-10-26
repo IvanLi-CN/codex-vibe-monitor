@@ -88,6 +88,8 @@ pub(crate) struct ModuleLease {
     pub(crate) authority: ModuleAuthority,
 }
 
+/// Contract-only storage pools for module-scoped transaction tests and later adapters.
+/// pg01 does not install these pools into the runtime router or migrate production writers.
 #[derive(Clone)]
 pub(crate) struct StoragePools {
     sqlite: SqlitePool,
@@ -865,6 +867,10 @@ impl MigrationState {
     }
 }
 
+/// Contract value for durable migration status.
+///
+/// pg01 validates identity, state, timestamp, and capacity invariants only. A later
+/// metadata-store and worker implementation must persist and recover this value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MigrationStatus {
     pub(crate) migration_id: String,
@@ -938,6 +944,10 @@ impl MigrationStatus {
     }
 }
 
+/// Contract value for durable per-table migration progress.
+///
+/// pg01 validates watermark ordering only; checkpoint persistence and restart recovery
+/// belong to the later migration engine and runtime adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MigrationCheckpoint {
     pub(crate) migration_id: String,
@@ -973,6 +983,10 @@ impl MigrationCheckpoint {
     }
 }
 
+/// Contract value for a durable source-change delivery obligation.
+///
+/// pg01 defines the identity and acknowledgement invariants without implementing an
+/// outbox worker or its durable storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MigrationOutboxItem {
     pub(crate) outbox_id: String,
@@ -1003,6 +1017,10 @@ impl MigrationOutboxItem {
     }
 }
 
+/// Contract value for bounded migration capacity reservation.
+///
+/// pg01 validates reservation identity and bounds without implementing a persistent
+/// reservation store or capacity worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MigrationReservation {
     pub(crate) reservation_id: String,
@@ -1041,6 +1059,10 @@ pub(crate) enum AdmissionDecision {
     Hold { reason: &'static str },
 }
 
+/// Migration admission overlay contract.
+///
+/// Implementations must hold unnecessary work for the active module while allowing
+/// explicitly preserved authentication, routing, and recovery tasks to continue.
 pub(crate) trait MigrationTaskAdmission: Send + Sync {
     fn decision(&self, task_key: &str) -> AdmissionDecision;
 
@@ -1053,6 +1075,7 @@ pub(crate) trait MigrationTaskAdmission: Send + Sync {
 pub(crate) struct MigrationTaskPolicy {
     active_module: Option<StorageModule>,
     held_task_keys: BTreeMap<String, ()>,
+    preserved_task_keys: BTreeMap<String, ()>,
 }
 
 impl MigrationTaskPolicy {
@@ -1072,6 +1095,14 @@ impl MigrationTaskPolicy {
         self.held_task_keys.remove(task_key);
     }
 
+    pub(crate) fn preserve_task_during_module(&mut self, task_key: impl Into<String>) {
+        self.preserved_task_keys.insert(task_key.into(), ());
+    }
+
+    pub(crate) fn release_preserved_task(&mut self, task_key: &str) {
+        self.preserved_task_keys.remove(task_key);
+    }
+
     pub(crate) fn active_module(&self) -> Option<StorageModule> {
         self.active_module
     }
@@ -1089,12 +1120,16 @@ impl MigrationTaskAdmission for MigrationTaskPolicy {
     }
 
     fn decision_for_module(&self, module: StorageModule, task_key: &str) -> AdmissionDecision {
-        if self.active_module == Some(module) {
+        let decision = self.decision(task_key);
+        if !matches!(decision, AdmissionDecision::Allow) {
+            return decision;
+        }
+        if self.active_module == Some(module) && !self.preserved_task_keys.contains_key(task_key) {
             AdmissionDecision::Hold {
                 reason: "migration_hold",
             }
         } else {
-            self.decision(task_key)
+            AdmissionDecision::Allow
         }
     }
 }
@@ -1130,6 +1165,11 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
     ) -> Result<AuthorityPublication>;
 }
 
+/// Durable migration progress boundary.
+///
+/// pg01 specifies the load/save, outbox, and capacity obligations and their typed
+/// values. Concrete persistence, worker execution, and startup recovery are later
+/// migration-engine/runtime work; this trait is not a claim that those paths exist.
 pub(crate) trait MigrationMetadataStore: AuthorityManifestStore {
     async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>>;
     async fn save_status(&self, status: &MigrationStatus) -> Result<()>;
