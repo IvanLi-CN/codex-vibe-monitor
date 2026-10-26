@@ -1328,6 +1328,21 @@ def validate_task_snapshot(
         raise AcceptanceError("production raw-orphan competitor exceeded the fixed workload")
 
 
+def add_observed_input_identity_digests(
+    oracle: dict[str, Any],
+    added: dict[str, list[str]],
+) -> None:
+    """Bind measured input identities only to a fully verified source oracle."""
+    if oracle.get("verified") is True:
+        datasets = oracle["datasets"]
+        datasets["invocations"]["added_ids_sha256"] = sha256_bytes(
+            "\n".join(added["invocations"]).encode()
+        )
+        datasets["pool_upstream_attempts"]["added_ids_sha256"] = sha256_bytes(
+            "\n".join(added["pool_upstream_attempts"]).encode()
+        )
+
+
 def run_trial(
     version: str,
     index: int,
@@ -1563,8 +1578,7 @@ def run_trial(
     input_started = parse_time(input_start)
     input_finished = parse_time(input_end)
     full_finished = parse_time(cleanup_end)
-    oracle["datasets"]["invocations"]["added_ids_sha256"] = sha256_bytes("\n".join(added["invocations"]).encode())
-    oracle["datasets"]["pool_upstream_attempts"]["added_ids_sha256"] = sha256_bytes("\n".join(added["pool_upstream_attempts"]).encode())
+    add_observed_input_identity_digests(oracle, added)
     return {
         "trial_index": index,
         "source_sha": image["source_sha"],

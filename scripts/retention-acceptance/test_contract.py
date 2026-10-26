@@ -607,6 +607,19 @@ class ContractTests(unittest.TestCase):
         }
         self.assertEqual(validate_evidence(evidence)["status"], "passed")
 
+    def test_baseline_negative_control_oracle_has_no_dataset_digest_requirement(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = {
+            "verified": False,
+            "failure_class": "source_artifact_conservation",
+            "dataset": "codex_invocations",
+            "lost_rows": 0,
+            "duplicate_rows": 132,
+            "error": "codex_invocations source/artifact conservation failed: lost=0, duplicates=132",
+        }
+        self.assertNotIn("datasets", evidence["versions"]["baseline"]["trials"][0]["oracle"])
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
     def test_baseline_negative_control_cannot_hide_lost_rows(self) -> None:
         evidence = valid_evidence()
         evidence["versions"]["baseline"]["trials"][0]["oracle"] = {

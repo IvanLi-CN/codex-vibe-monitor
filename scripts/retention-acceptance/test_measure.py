@@ -37,6 +37,7 @@ from measure import (
     cleanup_budget,
     cleanup_named_container,
     cleanup_path_if_safe,
+    add_observed_input_identity_digests,
     observed_attempt_states,
     remaining_budget,
     run_command,
@@ -58,6 +59,17 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_negative_control_oracle_skips_verified_input_digest_binding(self) -> None:
+        oracle = {
+            "verified": False,
+            "failure_class": "source_artifact_conservation",
+        }
+        add_observed_input_identity_digests(
+            oracle,
+            {"invocations": ["invoke-1"], "pool_upstream_attempts": ["attempt-1"]},
+        )
+        self.assertNotIn("datasets", oracle)
+
     def test_legacy_partial_status_is_accepted_when_selected_batch_is_complete(self) -> None:
         archive_details = {
             "result": "partial",
