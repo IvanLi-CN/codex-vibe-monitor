@@ -333,6 +333,23 @@ async fn generation_gate_does_not_publish_after_recovery_becomes_required_during
 }
 
 #[tokio::test]
+async fn cancelled_transaction_completion_fences_authority_before_releasing_lease() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let lease = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+
+    let completion = gate.pending_completion_for_test(lease);
+    completion.abort();
+    assert!(completion.await.is_err());
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
 async fn publication_deadline_keeps_admission_closed_until_durable_recovery() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
@@ -349,7 +366,7 @@ async fn publication_deadline_keeps_admission_closed_until_durable_recovery() {
             StorageModule::TrafficArchive,
             authority_manifest(2, BackendKind::Postgres),
             recovery_context(),
-            std::time::Duration::from_millis(20),
+            std::time::Duration::from_millis(250),
             metadata,
         )
         .await;
@@ -370,7 +387,7 @@ async fn publication_deadline_keeps_admission_closed_until_durable_recovery() {
             .await
     });
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(20), &mut recovery)
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut recovery)
             .await
             .is_err()
     );

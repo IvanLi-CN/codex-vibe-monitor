@@ -117,6 +117,7 @@ async fn complete_transaction(
     completion: TransactionCompletion,
     lease: Option<ModuleGenerationLease>,
 ) -> Result<()> {
+    let mut completion_lease = TransactionCompletionLease::new(lease);
     let result = match (backend, completion) {
         (StorageTransactionBackend::Sqlite(transaction), TransactionCompletion::Commit) => {
             transaction.commit().await.map_err(Into::into)
@@ -131,12 +132,10 @@ async fn complete_transaction(
             transaction.rollback().await.map_err(Into::into)
         }
     };
-    if result.is_err()
-        && let Some(lease) = lease.as_ref()
-    {
-        lease.gate.recovery_required.store(true, Ordering::Release);
+    if result.is_ok() {
+        completion_lease.mark_completed();
     }
-    drop(lease);
+    drop(completion_lease);
     result
 }
 
@@ -230,6 +229,35 @@ pub(crate) struct ModuleGenerationGate(Arc<ModuleGate>);
 pub(crate) struct ModuleGenerationLease {
     pub(crate) lease: ModuleLease,
     gate: Arc<ModuleGate>,
+}
+
+struct TransactionCompletionLease {
+    lease: Option<ModuleGenerationLease>,
+    completed: bool,
+}
+
+impl TransactionCompletionLease {
+    fn new(lease: Option<ModuleGenerationLease>) -> Self {
+        Self {
+            lease,
+            completed: false,
+        }
+    }
+
+    fn mark_completed(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for TransactionCompletionLease {
+    fn drop(&mut self) {
+        if !self.completed
+            && let Some(lease) = self.lease.as_ref()
+        {
+            lease.gate.recovery_required.store(true, Ordering::Release);
+        }
+        drop(self.lease.take());
+    }
 }
 
 impl Drop for ModuleGenerationLease {
@@ -476,6 +504,17 @@ impl ModuleGenerationGate {
     #[cfg(test)]
     pub(crate) fn require_recovery_for_test(&self) {
         self.0.recovery_required.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_completion_for_test(
+        &self,
+        lease: ModuleGenerationLease,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let _completion_lease = TransactionCompletionLease::new(Some(lease));
+            std::future::pending::<()>().await;
+        })
     }
 }
 
