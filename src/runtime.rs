@@ -1241,6 +1241,7 @@ pub(crate) async fn run() -> Result<()> {
 
         let state = Arc::new(AppState {
             system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+            storage_migration: Arc::new(StorageMigrationRuntime::new(&config.storage)),
             config: config.clone(),
             pool: pool.clone(),
             process_started_at_utc,

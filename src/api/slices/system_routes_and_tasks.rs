@@ -1964,6 +1964,59 @@ pub(crate) async fn fetch_system_storage(
     Json(get_system_storage_snapshot(state.as_ref()).await)
 }
 
+pub(crate) async fn fetch_storage_migration_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<StorageMigrationResponse> {
+    Json(state.storage_migration.snapshot().await)
+}
+
+pub(crate) async fn update_storage_migration_control(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<StorageMigrationControlRequest>,
+) -> Result<Json<StorageMigrationResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin storage migration controls are forbidden".to_string(),
+        ));
+    }
+    state
+        .storage_migration
+        .apply_control(request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))
+}
+
+pub(crate) async fn stream_storage_migration_events(
+    State(state): State<Arc<AppState>>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
+{
+    let runtime = state.storage_migration.clone();
+    let initial_status = runtime.snapshot().await;
+    let initial =
+        stream::once(async move { Ok(storage_migration_sse_event("snapshot", initial_status)) });
+    let updates = BroadcastStream::new(runtime.subscribe()).filter_map(|event| async move {
+        match event {
+            Ok(event) => Some(Ok(storage_migration_sse_event(event.kind, event.status))),
+            Err(error) => {
+                warn!(?error, "storage migration sse stream lagged");
+                None
+            }
+        }
+    });
+    Ok(Sse::new(initial.chain(updates))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+fn storage_migration_sse_event(kind: &'static str, status: StorageMigrationResponse) -> Event {
+    Event::default()
+        .event(kind)
+        .json_data(status)
+        .expect("storage migration status must be serializable")
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheMaterializationControlRequest {

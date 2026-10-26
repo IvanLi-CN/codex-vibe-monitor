@@ -19,6 +19,7 @@ const SystemPerformancePage = lazy(() => import("./pages/system/SystemPerformanc
 const SystemSettingsPage = lazy(() => import("./pages/system/SystemSettingsPage"));
 const SystemModelsPage = lazy(() => import("./pages/system/SystemModelsPage"));
 const SystemStatusPage = lazy(() => import("./pages/system/SystemStatusPage"));
+const SystemStorageMigrationPage = lazy(() => import("./pages/system/SystemStorageMigrationPage"));
 const SystemTasksPage = lazy(() => import("./pages/system/SystemTasksPage"));
 const SystemTaskDetailPage = lazy(() => import("./pages/system/SystemTaskDetailPage"));
 const SystemPromptCachePage = lazy(() => import("./pages/system/SystemPromptCachePage"));
@@ -118,6 +119,7 @@ function App() {
             <Route path="system" element={<SystemLayout />}>
               <Route index element={<Navigate to="/system/status" replace />} />
               <Route path="status" element={<SystemStatusPage />} />
+              <Route path="storage-migration" element={<SystemStorageMigrationPage />} />
               <Route path="performance" element={<SystemPerformancePage />} />
               <Route path="tasks" element={<SystemTasksPage />} />
               <Route path="tasks/:taskKey" element={<SystemTaskDetailPage />} />

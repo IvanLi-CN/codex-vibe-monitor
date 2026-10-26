@@ -1886,6 +1886,7 @@ async fn file_backed_test_state_with_busy_timeout_and_template(
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
     let state = Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        storage_migration: Arc::new(StorageMigrationRuntime::default()),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test_with_prompt_cache(
             prompt_cache_conversation_cache.clone(),
@@ -2583,6 +2584,7 @@ async fn quota_latest_returns_degraded_when_empty() {
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        storage_migration: Arc::new(StorageMigrationRuntime::default()),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
