@@ -59,6 +59,7 @@ jobs:
       app_effective_version: ${{ steps.identity.outputs.app_effective_version }}
       controller_started: ${{ steps.refs.outputs.controller_started }}
       complete_image_cache_hit: ${{ steps.complete-image-cache-check.outputs.valid }}
+      complete_image_cache_restore_seconds: ${{ steps.complete-image-cache-timing.outputs.restore_seconds }}
     steps:
       - name: Resolve performance sources
         id: refs
@@ -269,6 +270,10 @@ jobs:
           print(f"app_effective_version={build_descriptor['versionInput']}")
           PY
 
+      - name: Start complete image cache restore timing
+        id: complete-image-cache-timing-start
+        run: echo "started=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
+
       - name: Restore complete candidate image cache
         id: complete-image-cache
         continue-on-error: true
@@ -276,6 +281,23 @@ jobs:
         with:
           path: ${{ runner.temp }}/observability-image
           key: observability-performance-v2-image-${{ steps.identity.outputs.build_identity }}
+
+      - name: Finalize complete image cache restore timing
+        id: complete-image-cache-timing
+        if: always()
+        env:
+          RESTORE_STARTED: ${{ steps.complete-image-cache-timing-start.outputs.started }}
+        run: |
+          set -euo pipefail
+          RESTORE_STARTED="$RESTORE_STARTED" python3 - <<'PY'
+          import os
+          import pathlib
+          import time
+
+          seconds = time.time() - float(os.environ["RESTORE_STARTED"])
+          with pathlib.Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"restore_seconds={seconds:.3f}\n")
+          PY
 
       - name: Verify complete candidate image cache identity
         id: complete-image-cache-check
@@ -674,12 +696,14 @@ jobs:
           path = pathlib.Path(sys.argv[1])
           value = json.loads(path.read_text())
           outcomes = sys.argv[2:]
-          if "failure" in outcomes:
-              result = "failed"
-          elif "success" in outcomes:
-              result = "saved"
-          elif outcomes and all(outcome == "skipped" for outcome in outcomes):
+          if outcomes and all(outcome == "skipped" for outcome in outcomes):
               result = "skipped"
+          elif outcomes and all(outcome == "success" for outcome in outcomes):
+              result = "saved"
+          elif any(outcome in {"failure", "cancelled", "timed_out"} for outcome in outcomes):
+              result = "partial" if "success" in outcomes else "failed"
+          elif "success" in outcomes:
+              result = "partial"
           else:
               result = "unknown"
           value["cache"]["save"] = result
@@ -755,6 +779,7 @@ jobs:
       APP_EFFECTIVE_VERSION: ${{ needs.observability-performance-resolve.outputs.app_effective_version }}
       BUILD_PATH: ${{ needs.observability-performance-resolve.outputs.effective_build_path }}
       COMPLETE_IMAGE_CACHE_HIT: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_hit }}
+      COMPLETE_IMAGE_CACHE_RESTORE_SECONDS: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_restore_seconds }}
     steps:
       - name: Checkout candidate assembly sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -904,11 +929,13 @@ jobs:
           IMAGE_STARTED_AT: ${{ steps.image_clock.outputs.started }}
           FALLBACK_REASON: ${{ needs.observability-performance-resolve.outputs.fallback_reason }}
           COMPLETE_IMAGE_CACHE_HIT: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_hit }}
+          COMPLETE_IMAGE_CACHE_RESTORE_SECONDS: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_restore_seconds }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/observability-image"
           docker save "cvm-observability:$CANDIDATE" | gzip -1 > "$RUNNER_TEMP/observability-image/candidate.tar.gz"
           export CANDIDATE BUILD_IDENTITY BUILD_PATH APP_EFFECTIVE_VERSION IMAGE_STARTED_AT FALLBACK_REASON COMPLETE_IMAGE_CACHE_HIT RUNNER_NAME
+          export COMPLETE_IMAGE_CACHE_RESTORE_SECONDS
           export CACHE_KEY="observability-performance-v2-image-$BUILD_IDENTITY"
           python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
@@ -921,7 +948,8 @@ jobs:
           digest=hashlib.sha256(archive.read_bytes()).hexdigest()
           finished=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z')
           elapsed=(datetime.fromisoformat(finished.replace('Z','+00:00'))-datetime.fromisoformat(os.environ['IMAGE_STARTED_AT'].replace('Z','+00:00'))).total_seconds()
-          card={'schema':'cvm-performance-build-image-v1','candidate':sha,'buildIdentity':os.environ['BUILD_IDENTITY'],'buildPath':os.environ['BUILD_PATH'],'version':os.environ['APP_EFFECTIVE_VERSION'],'imageId':image['Id'],'archiveSha256':digest,'revision':image['Config']['Labels']['org.opencontainers.image.revision'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['IMAGE_STARTED_AT'],'finishedAt':finished,'elapsedSeconds':elapsed,'cache':{'namespace':'observability-performance-v2','status':'hit' if os.environ['COMPLETE_IMAGE_CACHE_HIT']=='true' else 'assembled','restore':'hit' if os.environ['COMPLETE_IMAGE_CACHE_HIT']=='true' else 'miss','save':'pending','saveSeconds':None,'key':os.environ['CACHE_KEY']},'transfer':{'archiveBytes':archive.stat().st_size},'fallbackReason':os.environ['FALLBACK_REASON']}
+          restore_seconds=os.environ.get('COMPLETE_IMAGE_CACHE_RESTORE_SECONDS')
+          card={'schema':'cvm-performance-build-image-v1','candidate':sha,'buildIdentity':os.environ['BUILD_IDENTITY'],'buildPath':os.environ['BUILD_PATH'],'version':os.environ['APP_EFFECTIVE_VERSION'],'imageId':image['Id'],'archiveSha256':digest,'revision':image['Config']['Labels']['org.opencontainers.image.revision'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['IMAGE_STARTED_AT'],'finishedAt':finished,'elapsedSeconds':elapsed,'cache':{'namespace':'observability-performance-v2','status':'hit' if os.environ['COMPLETE_IMAGE_CACHE_HIT']=='true' else 'assembled','restore':'hit' if os.environ['COMPLETE_IMAGE_CACHE_HIT']=='true' else 'miss','restoreSeconds':float(restore_seconds) if restore_seconds else None,'save':'pending','saveSeconds':None,'key':os.environ['CACHE_KEY']},'transfer':{'archiveBytes':archive.stat().st_size},'fallbackReason':os.environ['FALLBACK_REASON']}
           (root/'candidate.json').write_text(json.dumps({'schema':'cvm-performance-candidate-v1','candidate':sha,'buildIdentity':os.environ['BUILD_IDENTITY'],'buildPath':os.environ['BUILD_PATH'],'imageId':image['Id'],'archiveSha256':digest,'revision':sha,'version':os.environ['APP_EFFECTIVE_VERSION']},indent=2)+'\n')
           (root/'image.json').write_text(json.dumps(card,indent=2)+'\n')
           PY

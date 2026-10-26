@@ -58,6 +58,17 @@ def load_actions_jobs(path: pathlib.Path) -> dict[str, dict[str, Any]]:
     return indexed
 
 
+def validate_card_shape(card: dict[str, Any]) -> None:
+    schema = card.get("schema")
+    if schema == "cvm-performance-build-component-v1":
+        if card.get("component") not in {"rust", "web", "runtime-base"}:
+            raise ValueError(f"build card {card.get('_path', '<unknown>')} has an invalid component")
+    elif schema == "cvm-performance-build-image-v1":
+        return
+    else:
+        raise ValueError(f"unsupported build card schema: {schema!r}")
+
+
 def actions_job_name(card: dict[str, Any]) -> str:
     component = card.get("component")
     if component in {"rust", "web", "runtime-base"}:
@@ -166,13 +177,25 @@ def main() -> None:
         cards = []
         validation_errors.append(str(error))
     actions_jobs = load_actions_jobs(args.jobs_json)
+    valid_cards: list[dict[str, Any]] = []
+    for card in cards:
+        if card.get("schema") not in {"cvm-performance-build-component-v1", "cvm-performance-build-image-v1"}:
+            continue
+        try:
+            validate_card_shape(card)
+        except ValueError as error:
+            if not args.workflow_failure:
+                raise
+            validation_errors.append(str(error))
+            continue
+        valid_cards.append(card)
     components = {
         card["component"]: card
-        for card in cards
+        for card in valid_cards
         if card.get("schema") == "cvm-performance-build-component-v1"
     }
     image = next(
-        (card for card in cards if card.get("schema") == "cvm-performance-build-image-v1"),
+        (card for card in valid_cards if card.get("schema") == "cvm-performance-build-image-v1"),
         None,
     )
     jobs = []
@@ -236,16 +259,9 @@ def main() -> None:
     ready_at = image.get("finishedAt") if image else None
     queue_seconds = [job["queueSeconds"] for job in jobs]
     execution_seconds = [job["executionSeconds"] for job in jobs]
-    restore_seconds = [
-        card.get("cache", {}).get("restoreSeconds")
-        for card in components.values()
-        if card.get("cache", {}).get("restoreSeconds") is not None
-    ]
-    save_seconds = [
-        card.get("cache", {}).get("saveSeconds")
-        for card in components.values()
-        if card.get("cache", {}).get("saveSeconds") is not None
-    ]
+    cache_cards = [*components.values(), *([image] if image else [])]
+    restore_seconds = [card.get("cache", {}).get("restoreSeconds") for card in cache_cards if card.get("cache", {}).get("restoreSeconds") is not None]
+    save_seconds = [card.get("cache", {}).get("saveSeconds") for card in cache_cards if card.get("cache", {}).get("saveSeconds") is not None]
     transfer_bytes = [
         job.get("transfer", {}).get("archiveBytes")
         for job in jobs
@@ -297,7 +313,7 @@ def main() -> None:
             "runnerUsageSeconds": optional_sum(execution_seconds),
             "cacheRestoreSeconds": optional_sum(restore_seconds),
             "cacheSaveSeconds": optional_sum(save_seconds),
-            "cacheTimingComplete": bool(components) and len(restore_seconds) == len(components) and len(save_seconds) == len(components),
+            "cacheTimingComplete": bool(cache_cards) and len(restore_seconds) == len(cache_cards) and len(save_seconds) == len(cache_cards),
             "transferBytes": optional_sum(transfer_bytes),
             "phaseSeconds": {name: optional_sum(values) for name, values in phase_values.items()},
             "actionsObserved": True,

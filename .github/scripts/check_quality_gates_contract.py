@@ -242,13 +242,21 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require("git -C candidate rev-parse HEAD" in identity_run and "[0-9a-f]{40}" in identity_run and "cvm-performance-build-v1" in identity_run and all(token in identity_run for token in ("recipe_digest", "build_identity", "rust_cache_key", "rust_deps_cache_key", "rust_target_cache_key", "rust_system_cache_key", "web_cache_key", "web_deps_cache_key", "runtime_cache_key", "base_image_digests", "trusted_recipe_digest", "rust_image", "web_image", "runtime_image", "def pinned", "cache_digest", 'build_only == "true"')) and "rust_target_cache_key=observability-performance-v2-rust-target-" in identity_run and "-{candidate}" in identity_run, f"{workflow_path} must bind candidate, pinned base images, candidate-scoped target cache and build identity")
     require('candidate_recipe_contract_digest == trusted_recipe_digest or build_only == "true"' not in identity_run, f"{workflow_path} build_only must not bypass the trusted recipe fallback")
     outputs = require_mapping(resolve.get("outputs"), f"{workflow_path}.jobs.observability-performance-resolve.outputs")
-    require(outputs.get("candidate") == "${{ steps.identity.outputs.candidate }}" and outputs.get("trusted_ref") == "${{ steps.refs.outputs.trusted_ref }}" and outputs.get("effective_build_path") == "${{ steps.identity.outputs.effective_build_path }}" and outputs.get("complete_image_cache_hit") == "${{ steps.complete-image-cache-check.outputs.valid }}", f"{workflow_path} resolver outputs drifted")
+    require(outputs.get("candidate") == "${{ steps.identity.outputs.candidate }}" and outputs.get("trusted_ref") == "${{ steps.refs.outputs.trusted_ref }}" and outputs.get("effective_build_path") == "${{ steps.identity.outputs.effective_build_path }}" and outputs.get("complete_image_cache_hit") == "${{ steps.complete-image-cache-check.outputs.valid }}" and outputs.get("complete_image_cache_restore_seconds") == "${{ steps.complete-image-cache-timing.outputs.restore_seconds }}", f"{workflow_path} resolver outputs drifted")
     complete_cache = uses_step_config(resolve, "Restore complete candidate image cache", PERF_ACTION_CACHE_RESTORE, workflow_path)
     require(
         complete_cache.get("with", {}).get("path") == "${{ runner.temp }}/observability-image"
         and "observability-performance-v2-image-" in str(complete_cache.get("with", {}).get("key", ""))
         and complete_cache.get("continue-on-error") is True,
         f"{workflow_path} complete image cache restore must be isolated and recoverable",
+    )
+    restore_timing = step_config(resolve, "Finalize complete image cache restore timing", workflow_path)
+    require(
+        restore_timing.get("id") == "complete-image-cache-timing"
+        and restore_timing.get("if") == "always()"
+        and "RESTORE_STARTED" in require_mapping(restore_timing.get("env"), "complete image cache restore timing env")
+        and "restore_seconds" in str(restore_timing.get("run", "")),
+        f"{workflow_path} complete image cache restore must report elapsed time",
     )
     cache_check = step_config(resolve, "Verify complete candidate image cache identity", workflow_path)
     require(cache_check.get("id") == "complete-image-cache-check" and "archiveSha256" in str(cache_check.get("run", "")) and "buildIdentity" in str(cache_check.get("run", "")), f"{workflow_path} complete image cache must be identity checked")
@@ -289,7 +297,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
             "always()" in str(finalize.get("if", ""))
             and "CACHE_SAVE_OUTCOME" in finalize_env
             and '"cache"]["save"]' in finalize_run
-            and all(status in finalize_run for status in ("saved", "failed", "skipped", "unknown")),
+            and all(status in finalize_run for status in (("saved", "partial", "failed", "skipped", "unknown") if name == "Finalize Rust cache report" else ("saved", "failed", "skipped", "unknown"))),
             f"{workflow_path} {name} must record the actual cache save outcome",
         )
     runtime_producer = step_config(producer, "Build runtime-base production artifact", workflow_path)
@@ -355,6 +363,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     contexts = str(auto_build_with.get("build-contexts", ""))
     require(
         "rust-builder=${{ runner.temp }}/" in contexts
+        and "rust-symbols=${{ runner.temp }}/" in contexts
         and "web-builder=${{ runner.temp }}/" in contexts
         and "runtime-base=oci-layout://" in contexts,
         f"{workflow_path} auto image must consume verified local and OCI producer contexts",
@@ -390,6 +399,12 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and "saveSeconds" in image_cache_report_run
         and all(status in image_cache_report_run for status in ("saved", "failed", "skipped", "unknown")),
         f"{workflow_path} complete image cache save outcome must be recorded",
+    )
+    image_export = step_config(image, "Export immutable candidate image", workflow_path)
+    require(
+        "COMPLETE_IMAGE_CACHE_RESTORE_SECONDS" in require_mapping(image_export.get("env"), "image export env")
+        and "restoreSeconds" in str(image_export.get("run", "")),
+        f"{workflow_path} image cards must include complete-image cache restore timing",
     )
     clock = step_config(image, "Start shared acceptance wall clock", workflow_path)
     require(clock.get("id") == "acceptance_clock" and "date +%s" in str(clock.get("run", "")) and "GITHUB_OUTPUT" in str(clock.get("run", "")) and clock.get("timeout-minutes") == 1, f"{workflow_path} image job must emit one shared clock")

@@ -120,6 +120,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("Finalize Rust cache report", workflow)
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
+        self.assertIn('result = "partial" if "success" in outcomes else "failed"', workflow)
         producer = self.workflow["jobs"]["observability-performance-producer"]
         save_conditions = {
             step["name"]: step["if"]
@@ -184,6 +185,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
         auto = next(step for step in image["steps"] if step["name"] == "Assemble production image from verified contexts")
         contexts = auto["with"]["build-contexts"]
         self.assertIn("rust-builder=${{ runner.temp }}/", contexts)
+        self.assertIn("rust-symbols=${{ runner.temp }}/", contexts)
         self.assertIn("web-builder=${{ runner.temp }}/", contexts)
         self.assertIn("runtime-base=oci-layout://", contexts)
 
@@ -197,11 +199,14 @@ class PerformanceBuildContractTests(unittest.TestCase):
     def test_complete_image_cache_uses_the_same_path_for_restore_and_save(self) -> None:
         resolver = self.workflow["jobs"]["observability-performance-resolve"]
         restore = next(step for step in resolver["steps"] if step["name"] == "Restore complete candidate image cache")
+        restore_timing = next(step for step in resolver["steps"] if step["name"] == "Finalize complete image cache restore timing")
         verify = next(step for step in resolver["steps"] if step["name"] == "Verify complete candidate image cache identity")
         upload = next(step for step in resolver["steps"] if step["name"] == "Upload cached candidate image for assembly")
         image = self.workflow["jobs"]["observability-performance-image"]
         save = next(step for step in image["steps"] if step["name"] == "Save complete candidate image cache")
         self.assertEqual(restore["with"]["path"], "${{ runner.temp }}/observability-image")
+        self.assertEqual(restore_timing["id"], "complete-image-cache-timing")
+        self.assertIn("restore_seconds", restore_timing["run"])
         self.assertIn("$RUNNER_TEMP/observability-image", verify["run"])
         self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/observability-image/")
         self.assertEqual(save["with"]["path"], "${{ runner.temp }}/observability-image")
@@ -242,7 +247,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "status": "ready",
                 "startedAt": "2026-10-25T00:01:15Z",
                 "finishedAt": "2026-10-25T00:01:45Z",
-                "cache": {"status": "hit"},
+                "cache": {"status": "hit", "restoreSeconds": 1.25, "saveSeconds": 0.0},
                 "transfer": {"archiveBytes": 12},
                 "imageId": "sha256:image",
                 "artifact": "candidate.tar.gz",
@@ -287,7 +292,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertGreater(value["timing"]["imageReadySeconds"], 0)
             self.assertEqual(value["timing"]["queueSeconds"], 2.0)
             self.assertEqual(value["timing"]["runnerUsageSeconds"], 92.0)
-            self.assertEqual(value["timing"]["cacheRestoreSeconds"], 1.5)
+            self.assertEqual(value["timing"]["cacheRestoreSeconds"], 2.75)
             self.assertEqual(value["timing"]["cacheSaveSeconds"], 2.5)
             self.assertEqual(value["timing"]["transferBytes"], 12.0)
             self.assertEqual(value["jobs"][0]["actions"]["databaseId"], 101)
@@ -434,7 +439,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
                 "status": "ready",
                 "startedAt": "2026-10-25T00:00:10Z",
                 "finishedAt": "2026-10-25T00:00:20Z",
-                "cache": {"status": "hit"},
+                "cache": {"status": "hit", "restoreSeconds": 1.25, "saveSeconds": 0.0},
                 "artifact": "candidate.tar.gz",
                 "archiveSha256": hashlib.sha256(b"image").hexdigest(),
             }))
@@ -466,9 +471,9 @@ class PerformanceBuildContractTests(unittest.TestCase):
             self.assertEqual(value["status"], "passed")
             self.assertEqual(value["cache"]["image"]["status"], "hit")
             self.assertEqual([job["component"] for job in value["jobs"]], ["image"])
-            self.assertIsNone(value["timing"]["cacheRestoreSeconds"])
-            self.assertIsNone(value["timing"]["cacheSaveSeconds"])
-            self.assertFalse(value["timing"]["cacheTimingComplete"])
+            self.assertEqual(value["timing"]["cacheRestoreSeconds"], 1.25)
+            self.assertEqual(value["timing"]["cacheSaveSeconds"], 0.0)
+            self.assertTrue(value["timing"]["cacheTimingComplete"])
 
     def test_build_report_preserves_workflow_failure_as_failed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -492,6 +497,35 @@ class PerformanceBuildContractTests(unittest.TestCase):
             value = json.loads(output.read_text())
             self.assertEqual(value["status"], "failed")
             self.assertIn("workflow dependency result was not successful", value["validationErrors"])
+
+    def test_build_report_preserves_failure_for_malformed_component_card(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            component_dir = root / "rust"
+            component_dir.mkdir()
+            (component_dir / "component.json").write_text(json.dumps({
+                "schema": "cvm-performance-build-component-v1",
+                "candidate": "a" * 40,
+                "buildIdentity": "b" * 64,
+            }))
+            jobs_json = root / "actions-jobs.json"
+            jobs_json.write_text(json.dumps({"jobs": []}))
+            output = root / "report.json"
+            import sys
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "observability-build-report.py", "--input", str(root), "--output", str(output),
+                    "--candidate", "a" * 40, "--build-identity", "b" * 64, "--build-path", "auto",
+                    "--run-started", "2026-10-25T00:00:00Z", "--jobs-json", str(jobs_json),
+                    "--repository", "IvanLi-CN/codex-vibe-monitor", "--run-id", "123", "--workflow-failure",
+                ]
+                report.main()
+            finally:
+                sys.argv = old_argv
+            value = json.loads(output.read_text())
+            self.assertEqual(value["status"], "failed")
+            self.assertTrue(any("component.json" in error for error in value["validationErrors"]))
 
     def test_build_report_writes_failure_when_input_directory_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
