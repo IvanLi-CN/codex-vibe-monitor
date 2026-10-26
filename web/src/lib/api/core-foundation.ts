@@ -6794,13 +6794,22 @@ export async function fetchStorageMigrationStatus(
 
 export async function updateStorageMigrationControl(
   paused: boolean,
-  signal?: AbortSignal,
+  options: { adminToken?: string; signal?: AbortSignal } = {},
 ): Promise<StorageMigrationResponse> {
   const request: StorageMigrationControlRequest = { paused };
+  const adminToken = options.adminToken?.trim();
   const response = await fetchJson<unknown>("/api/system/storage-migration", {
     method: "PATCH",
     body: JSON.stringify(request),
-    signal,
+    signal: options.signal,
+    ...(adminToken
+      ? {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${adminToken}`,
+          },
+        }
+      : {}),
   });
   return normalizeStorageMigrationResponse(response);
 }

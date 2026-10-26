@@ -115,7 +115,7 @@ function withEvidenceSurface(Story: () => ReactNode) {
     <I18nProvider initialLocale="zh" persistLocale={false}>
       <ThemeProvider>
         <div
-          className="min-h-screen bg-base-200 p-4 sm:p-6"
+          className="min-h-screen bg-base-200 p-7"
           data-visual-evidence-surface="storage-migration-status"
         >
           <div className="mx-auto max-w-7xl" data-visual-evidence-target>

@@ -221,6 +221,17 @@ describe("SystemStorageMigrationPage", () => {
     renderPage();
     await flushEffects();
 
+    const tokenInput = host?.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(tokenInput).toBeTruthy();
+    await act(async () => {
+      if (tokenInput) {
+        const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setValue?.call(tokenInput, "migration-admin-token-1234");
+        tokenInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+
     const pauseButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
       button.textContent?.includes("暂停"),
     );
@@ -229,6 +240,8 @@ describe("SystemStorageMigrationPage", () => {
       pauseButton?.click();
       await Promise.resolve();
     });
-    expect(apiMocks.updateStorageMigrationControl).toHaveBeenCalledWith(true);
+    expect(apiMocks.updateStorageMigrationControl).toHaveBeenCalledWith(true, {
+      adminToken: "migration-admin-token-1234",
+    });
   });
 });

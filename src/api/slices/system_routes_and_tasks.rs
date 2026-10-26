@@ -1975,12 +1975,7 @@ pub(crate) async fn update_storage_migration_control(
     headers: HeaderMap,
     Json(request): Json<StorageMigrationControlRequest>,
 ) -> Result<Json<StorageMigrationResponse>, (StatusCode, String)> {
-    if !is_same_origin_settings_write(&headers) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "cross-origin storage migration controls are forbidden".to_string(),
-        ));
-    }
+    authorize_control_request(&headers, &state.config.storage)?;
     state
         .storage_migration
         .apply_control(request)
@@ -1994,7 +1989,7 @@ pub(crate) async fn stream_storage_migration_events(
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
 {
     let runtime = state.storage_migration.clone();
-    let events = runtime.subscribe();
+    let mut events = runtime.subscribe();
     let initial_event = events.borrow().clone();
     let initial_revision = initial_event.revision;
     let initial = stream::once(async move {
@@ -2006,11 +2001,11 @@ pub(crate) async fn stream_storage_migration_events(
     });
     let updates = async_stream::stream! {
         let mut last_revision = initial_revision;
-        let mut cadence = tokio::time::interval(Duration::from_secs(1));
-        cadence.tick().await;
         loop {
-            cadence.tick().await;
-            let event = events.borrow().clone();
+            if events.changed().await.is_err() {
+                break;
+            }
+            let event = events.borrow_and_update().clone();
             if event.revision <= last_revision {
                 continue;
             }

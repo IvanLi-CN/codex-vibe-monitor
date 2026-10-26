@@ -325,6 +325,26 @@ async fn system_storage_endpoint_reads_only_the_memory_snapshot_when_sqlite_is_c
 }
 
 #[tokio::test]
+async fn storage_migration_control_route_rejects_missing_admin_token() {
+    let mut config = test_config();
+    config.storage.migration_admin_token = Some("migration-admin-token-1234".to_string());
+    let state = test_state_from_config(config, true).await;
+
+    let response = build_app_router(state)
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PATCH")
+                .uri("/api/system/storage-migration")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"paused":false}"#))
+                .expect("build migration control request"),
+        )
+        .await
+        .expect("serve migration control request");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_cursor_advanced() {
     use std::time::Duration as StdDuration;
 

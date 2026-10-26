@@ -3,6 +3,7 @@ use super::core::{BackendKind, MigrationState, MigrationStatus, StorageModule};
 use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::{Pool, Row, Sqlite};
 use tokio::sync::{Mutex, watch};
 
 const MIGRATION_ID: &str = "storage-migration";
@@ -10,15 +11,38 @@ const INSTALLATION_ID: &str = "local";
 const SOURCE_IDENTITY: &str = "sqlite:local";
 const TARGET_IDENTITY_CONFIGURED: &str = "postgres:configured";
 const TARGET_IDENTITY_UNCONFIGURED: &str = "postgres:unconfigured";
+const STORAGE_MIGRATION_RUNTIME_TABLE: &str = "storage_migration_runtime";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+const MIGRATION_HELD_TASK_KEYS: &[&str] = &[
+    "retention_archive",
+    "pool_upstream_attempt_archive",
+    "forward_proxy_attempt_archive",
+    "invocation_detail_prune",
+    "quota_snapshot_compaction",
+    "model_route_expiry",
+    "task_run_history_cleanup",
+    "invocation_identity_cleanup",
+    "raw_orphan_sweep",
+    "raw_compression",
+    "archive_upstream_activity_manifest",
+    "materialize_historical_rollups",
+    "verify_archive_storage",
+    "prune_archive_batches",
+    "prune_legacy_archive_batches",
+    "prepare_performance_indexes",
+    "startup_hourly_rollup_bootstrap",
+    "startup_backfill",
+    "prompt_cache_materialization",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StorageMigrationBackend {
     Sqlite,
     Postgres,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StorageMigrationState {
     #[default]
@@ -83,7 +107,7 @@ impl From<StorageMigrationState> for MigrationState {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationEndpoint {
     pub(crate) backend: StorageMigrationBackend,
@@ -91,14 +115,14 @@ pub(crate) struct StorageMigrationEndpoint {
     pub(crate) identity: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationAuthority {
     pub(crate) backend: StorageMigrationBackend,
     pub(crate) generation: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StorageMigrationDrainState {
     NotStarted,
@@ -108,14 +132,14 @@ pub(crate) enum StorageMigrationDrainState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationHeartbeat {
     pub(crate) at: String,
     pub(crate) healthy: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationIndexPreparation {
     pub(crate) prepared: Option<u64>,
@@ -123,7 +147,7 @@ pub(crate) struct StorageMigrationIndexPreparation {
     pub(crate) last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationProgress {
     pub(crate) committed_rows: Option<u64>,
@@ -142,7 +166,7 @@ pub(crate) struct StorageMigrationProgress {
     pub(crate) phase: StorageMigrationState,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationTableProgress {
     pub(crate) table_name: String,
@@ -160,7 +184,7 @@ pub(crate) struct StorageMigrationTableProgress {
     pub(crate) verified_chunks: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationBacklog {
     pub(crate) source_p1: Option<u64>,
@@ -168,7 +192,7 @@ pub(crate) struct StorageMigrationBacklog {
     pub(crate) oldest_change_age_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationVerification {
     pub(crate) dirty_chunks: Option<u64>,
@@ -176,7 +200,7 @@ pub(crate) struct StorageMigrationVerification {
     pub(crate) last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationTaskHolds {
     pub(crate) held: bool,
@@ -186,7 +210,7 @@ pub(crate) struct StorageMigrationTaskHolds {
     pub(crate) last_safe_checkpoint: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationPressure {
     pub(crate) source_backlog: Option<u64>,
@@ -199,7 +223,7 @@ pub(crate) struct StorageMigrationPressure {
     pub(crate) non_convergent: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationSwitch {
     pub(crate) budget_ms: u64,
@@ -210,7 +234,7 @@ pub(crate) struct StorageMigrationSwitch {
     pub(crate) failure_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationModuleProgress {
     pub(crate) module: String,
@@ -226,7 +250,7 @@ pub(crate) struct StorageMigrationModuleProgress {
     pub(crate) failure_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationRecovery {
     pub(crate) required: bool,
@@ -235,10 +259,10 @@ pub(crate) struct StorageMigrationRecovery {
     pub(crate) authority_generation: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationControls {
-    pub(crate) permission: &'static str,
+    pub(crate) permission: String,
     pub(crate) can_start: bool,
     pub(crate) can_pause: bool,
     pub(crate) can_resume: bool,
@@ -246,7 +270,7 @@ pub(crate) struct StorageMigrationControls {
     pub(crate) last_action_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageMigrationResponse {
     pub(crate) revision: u64,
@@ -306,6 +330,73 @@ struct StorageMigrationRuntimeState {
 pub(crate) struct StorageMigrationRuntime {
     state: Mutex<StorageMigrationRuntimeState>,
     events: watch::Sender<StorageMigrationEvent>,
+    #[allow(dead_code)]
+    event_receiver: watch::Receiver<StorageMigrationEvent>,
+    pool: Option<Pool<Sqlite>>,
+}
+
+pub(crate) async fn ensure_persistence_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {STORAGE_MIGRATION_RUNTIME_TABLE} (\
+            migration_id TEXT PRIMARY KEY,\
+            status_json TEXT NOT NULL,\
+            response_json TEXT NOT NULL,\
+            last_action TEXT,\
+            last_action_at TEXT,\
+            updated_at TEXT NOT NULL\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .map_err(|error| anyhow::anyhow!("failed to ensure storage migration persistence: {error}"))?;
+    Ok(())
+}
+
+pub(crate) fn authorize_control_request(
+    headers: &axum::http::HeaderMap,
+    config: &StorageConfig,
+) -> std::result::Result<(), (axum::http::StatusCode, String)> {
+    if !crate::is_same_origin_settings_write(headers) {
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            "cross-origin storage migration controls are forbidden".to_string(),
+        ));
+    }
+    let Some(expected) = config.migration_admin_token.as_deref() else {
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            "storage migration admin control is not configured".to_string(),
+        ));
+    };
+    let Some(provided) = crate::bearer_token_from_headers(headers) else {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "missing storage migration admin token".to_string(),
+        ));
+    };
+    if !storage_migration_admin_token_matches(provided, expected) {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "invalid storage migration admin token".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn storage_migration_admin_token_matches(provided: &str, expected: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let Ok(mut expected_mac) = Hmac::<Sha256>::new_from_slice(expected.as_bytes()) else {
+        return false;
+    };
+    expected_mac.update(b"cvm-storage-migration-admin-token");
+    let signature = expected_mac.finalize().into_bytes();
+    let Ok(mut provided_mac) = Hmac::<Sha256>::new_from_slice(provided.as_bytes()) else {
+        return false;
+    };
+    provided_mac.update(b"cvm-storage-migration-admin-token");
+    provided_mac.verify_slice(&signature).is_ok()
 }
 
 impl Default for StorageMigrationRuntime {
@@ -316,6 +407,57 @@ impl Default for StorageMigrationRuntime {
 
 impl StorageMigrationRuntime {
     pub(crate) fn new(config: &StorageConfig) -> Self {
+        Self::from_parts(config, None)
+    }
+
+    pub(crate) async fn load(config: &StorageConfig, pool: Pool<Sqlite>) -> Result<Self> {
+        let mut runtime = Self::from_parts(config, Some(pool.clone()));
+        let row = sqlx::query(&format!(
+            "SELECT status_json, response_json, last_action, last_action_at \
+             FROM {STORAGE_MIGRATION_RUNTIME_TABLE} WHERE migration_id = ?1"
+        ))
+        .bind(MIGRATION_ID)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to load storage migration status: {error}"))?;
+
+        if let Some(row) = row {
+            let status: MigrationStatus =
+                serde_json::from_str(row.try_get::<String, _>("status_json")?.as_str()).map_err(
+                    |error| anyhow::anyhow!("invalid persisted storage migration status: {error}"),
+                )?;
+            status.validate()?;
+            let response: StorageMigrationResponse = serde_json::from_str(
+                row.try_get::<String, _>("response_json")?.as_str(),
+            )
+            .map_err(|error| {
+                anyhow::anyhow!("invalid persisted storage migration response: {error}")
+            })?;
+            let last_action = row.try_get::<Option<String>, _>("last_action")?;
+            let last_action_at = row.try_get::<Option<String>, _>("last_action_at")?;
+            let mut state = StorageMigrationRuntimeState {
+                status,
+                response,
+                target_configured: runtime.target_configured(config),
+                last_action,
+                last_action_at,
+            };
+            refresh_response(&mut state);
+            let event = StorageMigrationEvent {
+                kind: "snapshot",
+                revision: state.response.revision,
+                status: state.response.clone(),
+            };
+            runtime.events.send_replace(event);
+            *runtime.state.get_mut() = state;
+        } else {
+            let state = runtime.state.get_mut().clone();
+            runtime.persist_state(&state).await?;
+        }
+        Ok(runtime)
+    }
+
+    fn from_parts(config: &StorageConfig, pool: Option<Pool<Sqlite>>) -> Self {
         let target_configured = config
             .postgres_database_url
             .as_deref()
@@ -349,7 +491,7 @@ impl StorageMigrationRuntime {
             None,
             None,
         );
-        let (events, _) = watch::channel(StorageMigrationEvent {
+        let (events, event_receiver) = watch::channel(StorageMigrationEvent {
             kind: "snapshot",
             revision: response.revision,
             status: response.clone(),
@@ -363,7 +505,48 @@ impl StorageMigrationRuntime {
                 last_action_at: None,
             }),
             events,
+            event_receiver,
+            pool,
         }
+    }
+
+    fn target_configured(&self, config: &StorageConfig) -> bool {
+        config
+            .postgres_database_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+    }
+
+    async fn persist_state(&self, state: &StorageMigrationRuntimeState) -> Result<()> {
+        let Some(pool) = self.pool.as_ref() else {
+            return Ok(());
+        };
+        let status_json = serde_json::to_string(&state.status).map_err(|error| {
+            anyhow::anyhow!("failed to encode storage migration status: {error}")
+        })?;
+        let response_json = serde_json::to_string(&state.response).map_err(|error| {
+            anyhow::anyhow!("failed to encode storage migration response: {error}")
+        })?;
+        sqlx::query(&format!(
+            "INSERT INTO {STORAGE_MIGRATION_RUNTIME_TABLE} \
+                (migration_id, status_json, response_json, last_action, last_action_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+             ON CONFLICT(migration_id) DO UPDATE SET \
+                status_json = excluded.status_json, \
+                response_json = excluded.response_json, \
+                last_action = excluded.last_action, \
+                last_action_at = excluded.last_action_at, \
+                updated_at = excluded.updated_at"
+        ))
+        .bind(MIGRATION_ID)
+        .bind(status_json)
+        .bind(response_json)
+        .bind(&state.last_action)
+        .bind(&state.last_action_at)
+        .execute(pool)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to persist storage migration status: {error}"))?;
+        Ok(())
     }
 
     pub(crate) async fn snapshot(&self) -> StorageMigrationResponse {
@@ -374,11 +557,29 @@ impl StorageMigrationRuntime {
         self.events.subscribe()
     }
 
+    pub(crate) async fn migration_hold_reason(&self, task_key: &str) -> Option<&'static str> {
+        let state = self.state.lock().await;
+        (migration_hold_active(state.status.state) && is_migration_held_task(task_key))
+            .then_some("migration_hold")
+    }
+
+    pub(crate) async fn held_task_keys(&self) -> Vec<String> {
+        let state = self.state.lock().await;
+        if !migration_hold_active(state.status.state) {
+            return Vec::new();
+        }
+        MIGRATION_HELD_TASK_KEYS
+            .iter()
+            .map(|key| (*key).to_string())
+            .collect()
+    }
+
     pub(crate) async fn apply_control(
         &self,
         request: StorageMigrationControlRequest,
     ) -> Result<StorageMigrationResponse> {
         let mut state = self.state.lock().await;
+        let previous = state.clone();
         let now = Utc::now();
         let action = if request.paused {
             if !can_pause_state(state.status.state) {
@@ -430,8 +631,12 @@ impl StorageMigrationRuntime {
         state.last_action_at = Some(now.to_rfc3339());
         advance_revision(&mut state.response)?;
         refresh_response(&mut state);
+        if let Err(error) = self.persist_state(&state).await {
+            *state = previous;
+            return Err(error);
+        }
         let response = state.response.clone();
-        let _ = self.events.send(StorageMigrationEvent {
+        self.events.send_replace(StorageMigrationEvent {
             kind: "status",
             revision: response.revision,
             status: response.clone(),
@@ -445,6 +650,13 @@ impl StorageMigrationRuntime {
         mut progress: StorageMigrationProgress,
     ) -> Result<StorageMigrationResponse> {
         let mut state = self.state.lock().await;
+        let previous = state.clone();
+        if matches!(
+            state.status.state,
+            MigrationState::Paused | MigrationState::Blocked
+        ) {
+            bail!("migration progress is held while the migration is paused or blocked");
+        }
         if let (Some(replay), Some(incoming)) = (
             progress.replay_throughput_per_sec,
             progress.incoming_rate_per_sec,
@@ -455,10 +667,13 @@ impl StorageMigrationRuntime {
         }
         let now = Utc::now();
         let next_state = MigrationState::from(progress.phase);
-        if state.status.state != next_state {
-            state
+        if state.status.state != next_state
+            && let Err(error) = state
                 .status
-                .transition_to(next_state, now.timestamp_millis())?;
+                .transition_to(next_state, now.timestamp_millis())
+        {
+            *state = previous;
+            return Err(error);
         }
         state.response.progress = progress;
         state.response.backlog.pending_keys = state.response.progress.pending_keys;
@@ -471,9 +686,16 @@ impl StorageMigrationRuntime {
         state.status.updated_at_epoch_ms =
             now.timestamp_millis().max(state.status.updated_at_epoch_ms);
         refresh_response(&mut state);
-        advance_revision(&mut state.response)?;
+        if let Err(error) = advance_revision(&mut state.response) {
+            *state = previous;
+            return Err(error);
+        }
+        if let Err(error) = self.persist_state(&state).await {
+            *state = previous;
+            return Err(error);
+        }
         let response = state.response.clone();
-        let _ = self.events.send(StorageMigrationEvent {
+        self.events.send_replace(StorageMigrationEvent {
             kind: "progress",
             revision: response.revision,
             status: response.clone(),
@@ -490,6 +712,18 @@ fn build_response(
     last_action_at: Option<String>,
 ) -> StorageMigrationResponse {
     let state = StorageMigrationState::from(status.state);
+    let authority_backend = authority_backend(status.state);
+    let task_hold_active = migration_hold_active(status.state);
+    let task_hold_reason = if task_hold_active {
+        Some(
+            status
+                .hold_reason
+                .clone()
+                .unwrap_or_else(|| "migration_hold".to_string()),
+        )
+    } else {
+        status.hold_reason.clone()
+    };
     StorageMigrationResponse {
         revision: 0,
         migration_id: Some(status.migration_id.clone()),
@@ -502,7 +736,7 @@ fn build_response(
         source: StorageMigrationEndpoint {
             backend: BackendKind::Sqlite.into(),
             configured: true,
-            identity: SOURCE_IDENTITY.to_string(),
+            identity: status.source_identity.clone(),
         },
         target: StorageMigrationEndpoint {
             backend: BackendKind::Postgres.into(),
@@ -510,7 +744,7 @@ fn build_response(
             identity: status.target_identity.clone(),
         },
         authority: StorageMigrationAuthority {
-            backend: BackendKind::Sqlite.into(),
+            backend: authority_backend,
             generation: status.authority_generation,
         },
         queued_modules: Vec::new(),
@@ -534,7 +768,7 @@ fn build_response(
             dependency_ready: None,
             unapplied_changes: None,
             final_proof_coverage: None,
-            task_hold: status.hold_reason.clone(),
+            task_hold: task_hold_reason.clone(),
             drain_state: StorageMigrationDrainState::Unknown,
             switch_attempt_count: 0,
             switch_duration_ms: None,
@@ -544,9 +778,9 @@ fn build_response(
         backlog: StorageMigrationBacklog::default(),
         verification: StorageMigrationVerification::default(),
         task_holds: StorageMigrationTaskHolds {
-            held: status.hold_reason.is_some(),
+            held: task_hold_active,
             preserved_task_keys: Vec::new(),
-            reason: status.hold_reason.clone(),
+            reason: task_hold_reason,
             drain_state: StorageMigrationDrainState::Unknown,
             last_safe_checkpoint: None,
         },
@@ -562,11 +796,11 @@ fn build_response(
         recovery: StorageMigrationRecovery {
             required: matches!(status.state, MigrationState::Recovering),
             reason: None,
-            authority_backend: Some(BackendKind::Sqlite.into()),
+            authority_backend: Some(authority_backend),
             authority_generation: Some(status.authority_generation),
         },
         controls: StorageMigrationControls {
-            permission: "admin",
+            permission: "admin".to_string(),
             can_start: target_configured && matches!(status.state, MigrationState::Pending),
             can_pause: matches!(
                 status.state,
@@ -596,7 +830,7 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
     let verification = state.response.verification.clone();
     let pressure = state.response.pressure.clone();
     let switch = state.response.switch.clone();
-    let recovery = state.response.recovery.clone();
+    let recovery_reason = state.response.recovery.reason.clone();
     let mut response = build_response(
         &state.status,
         state.target_configured,
@@ -615,7 +849,7 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
     response.verification = verification;
     response.pressure = pressure;
     response.switch = switch;
-    response.recovery = recovery;
+    response.recovery.reason = recovery_reason;
     response.heartbeat.at = response.updated_at.clone();
     let active_module = response.module.clone();
     if let Some(module) = response
@@ -655,6 +889,33 @@ fn can_pause_state(state: MigrationState) -> bool {
 
 fn can_resume_state(state: MigrationState) -> bool {
     matches!(state, MigrationState::Paused | MigrationState::Blocked)
+}
+
+fn migration_hold_active(state: MigrationState) -> bool {
+    matches!(
+        state,
+        MigrationState::Preparing
+            | MigrationState::Copying
+            | MigrationState::CatchingUp
+            | MigrationState::Verifying
+            | MigrationState::Ready
+            | MigrationState::Switching
+            | MigrationState::Recovering
+    )
+}
+
+fn is_migration_held_task(task_key: &str) -> bool {
+    task_key.starts_with("startup_backfill.")
+        || MIGRATION_HELD_TASK_KEYS.contains(&task_key)
+        || task_key == "startup_backfill"
+        || task_key == "prompt_cache_materialization"
+}
+
+fn authority_backend(state: MigrationState) -> StorageMigrationBackend {
+    match state {
+        MigrationState::Postgres => BackendKind::Postgres.into(),
+        _ => BackendKind::Sqlite.into(),
+    }
 }
 
 fn module_name(module: StorageModule) -> &'static str {

@@ -1,8 +1,11 @@
+use crate::authorize_control_request;
 use crate::storage::config::StorageConfig;
 use crate::storage::migration_status::{
-    StorageMigrationControlRequest, StorageMigrationProgress, StorageMigrationRuntime,
-    StorageMigrationState,
+    StorageMigrationBackend, StorageMigrationControlRequest, StorageMigrationProgress,
+    StorageMigrationRuntime, StorageMigrationState,
 };
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use sqlx::sqlite::SqlitePoolOptions;
 
 #[tokio::test]
 async fn default_status_exposes_safe_target_and_unknown_progress() {
@@ -48,6 +51,7 @@ async fn controls_follow_monotonic_migration_state_contract() {
     assert_eq!(paused.revision, started.revision + 1);
     assert_eq!(paused.progress.phase, paused.state);
     assert_eq!(paused.task_holds.reason.as_deref(), Some("operator_pause"));
+    assert!(!paused.task_holds.held);
 
     let resumed = runtime
         .apply_control(StorageMigrationControlRequest { paused: false })
@@ -56,7 +60,8 @@ async fn controls_follow_monotonic_migration_state_contract() {
     assert_eq!(resumed.state, StorageMigrationState::Preparing);
     assert_eq!(resumed.revision, paused.revision + 1);
     assert_eq!(resumed.progress.phase, resumed.state);
-    assert!(!resumed.task_holds.held);
+    assert!(resumed.task_holds.held);
+    assert_eq!(resumed.task_holds.reason.as_deref(), Some("migration_hold"));
 }
 
 #[tokio::test]
@@ -167,4 +172,197 @@ async fn progress_events_keep_the_latest_full_snapshot_and_revision() {
     assert_eq!(event.status.progress.pending_keys, Some(2));
     assert!(first.revision < latest.revision);
     assert!(initial_revision < event.revision);
+}
+
+#[tokio::test]
+async fn durable_status_recovers_pause_progress_and_revision_after_restart() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = StorageMigrationRuntime::load(&config, pool.clone())
+        .await
+        .expect("initial migration runtime should load");
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+    runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Copying,
+            committed_rows: Some(12),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("copying progress is accepted");
+    let paused = runtime
+        .apply_control(StorageMigrationControlRequest { paused: true })
+        .await
+        .expect("pause is accepted");
+    drop(runtime);
+
+    let recovered = StorageMigrationRuntime::load(&config, pool)
+        .await
+        .expect("migration runtime should recover persisted state");
+    let status = recovered.snapshot().await;
+    assert_eq!(status.state, StorageMigrationState::Paused);
+    assert_eq!(status.revision, paused.revision);
+    assert_eq!(status.progress.committed_rows, Some(12));
+    assert_eq!(status.task_holds.reason.as_deref(), Some("operator_pause"));
+    assert!(!status.task_holds.held);
+    assert_eq!(status.authority.backend, StorageMigrationBackend::Sqlite);
+}
+
+#[tokio::test]
+async fn progress_persistence_failure_restores_the_previous_runtime_snapshot() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = StorageMigrationRuntime::load(&config, pool.clone())
+        .await
+        .expect("migration runtime should load");
+    let before = runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("migration should start before closing persistence");
+    pool.close().await;
+
+    let error = runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Copying,
+            committed_rows: Some(12),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect_err("progress persistence should fail after the pool closes");
+    assert!(
+        error
+            .to_string()
+            .contains("persist storage migration status")
+    );
+
+    let after = runtime.snapshot().await;
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(
+        after.progress.committed_rows,
+        before.progress.committed_rows
+    );
+}
+
+#[tokio::test]
+async fn postgres_cutover_publishes_postgres_authority_and_completed_module() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let runtime = StorageMigrationRuntime::new(&config);
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+    for phase in [
+        StorageMigrationState::Copying,
+        StorageMigrationState::CatchingUp,
+        StorageMigrationState::Verifying,
+        StorageMigrationState::Ready,
+        StorageMigrationState::Switching,
+        StorageMigrationState::Postgres,
+    ] {
+        runtime
+            .publish_progress(StorageMigrationProgress {
+                phase,
+                ..StorageMigrationProgress::default()
+            })
+            .await
+            .expect("migration phase is accepted");
+    }
+
+    let status = runtime.snapshot().await;
+    assert_eq!(status.authority.backend, StorageMigrationBackend::Postgres);
+    assert_eq!(
+        status.recovery.authority_backend,
+        Some(StorageMigrationBackend::Postgres)
+    );
+    assert_eq!(status.completed_modules, vec!["traffic_archive"]);
+    assert!(!status.task_holds.held);
+}
+
+#[tokio::test]
+async fn migration_hold_admission_preserves_non_competing_tasks() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let runtime = StorageMigrationRuntime::new(&config);
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+
+    assert_eq!(
+        runtime.migration_hold_reason("retention_archive").await,
+        Some("migration_hold")
+    );
+    assert_eq!(
+        runtime
+            .migration_hold_reason("startup_backfill.historical_rollups")
+            .await,
+        Some("migration_hold")
+    );
+    assert_eq!(runtime.migration_hold_reason("oauth_refresh").await, None);
+}
+
+#[test]
+fn migration_control_authentication_fails_closed_without_the_dedicated_token() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer migration-admin-token-1234"),
+    );
+    let unconfigured = StorageConfig::default();
+    let error = authorize_control_request(&headers, &unconfigured)
+        .expect_err("control must stay closed when the token is unconfigured");
+    assert_eq!(error.0, StatusCode::FORBIDDEN);
+
+    let configured = StorageConfig {
+        migration_admin_token: Some("migration-admin-token-1234".to_string()),
+        ..StorageConfig::default()
+    };
+    let missing = authorize_control_request(&HeaderMap::new(), &configured)
+        .expect_err("missing token must be unauthorized");
+    assert_eq!(missing.0, StatusCode::UNAUTHORIZED);
+
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer wrong-migration-admin-token"),
+    );
+    let invalid = authorize_control_request(&headers, &configured)
+        .expect_err("invalid token must be unauthorized");
+    assert_eq!(invalid.0, StatusCode::UNAUTHORIZED);
+
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer migration-admin-token-1234"),
+    );
+    authorize_control_request(&headers, &configured).expect("the dedicated token authorizes");
 }

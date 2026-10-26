@@ -2138,6 +2138,8 @@ const baseTranslations = {
     "system.storageMigration.controls.title": "Operator controls",
     "system.storageMigration.controls.description":
       "Control is limited to the admin settings boundary; progress is reported by the migration worker.",
+    "system.storageMigration.controls.adminToken": "Admin control token",
+    "system.storageMigration.controls.adminTokenPlaceholder": "Enter token",
     "system.storageMigration.actions.start": "Start",
     "system.storageMigration.actions.pause": "Pause",
     "system.storageMigration.actions.resume": "Resume",
@@ -5729,6 +5731,8 @@ const baseTranslations = {
     "system.storageMigration.controls.title": "操作控制",
     "system.storageMigration.controls.description":
       "控制遵循管理员设置写入边界；进度由迁移 worker 上报。",
+    "system.storageMigration.controls.adminToken": "管理员控制 token",
+    "system.storageMigration.controls.adminTokenPlaceholder": "输入 token",
     "system.storageMigration.actions.start": "开始",
     "system.storageMigration.actions.pause": "暂停",
     "system.storageMigration.actions.resume": "继续",

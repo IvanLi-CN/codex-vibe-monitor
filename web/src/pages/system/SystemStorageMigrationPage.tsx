@@ -1,3 +1,4 @@
+import type { JSX } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { AppIcon } from "../../features/shared/AppIcon";
@@ -19,13 +20,14 @@ function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-export default function SystemStorageMigrationPage() {
+export default function SystemStorageMigrationPage(): JSX.Element {
   const { t } = useTranslation();
   const [status, setStatus] = useState<StorageMigrationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isActionPending, setIsActionPending] = useState(false);
   const [streamConnected, setStreamConnected] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const next = await fetchStorageMigrationStatus(signal);
@@ -94,7 +96,7 @@ export default function SystemStorageMigrationPage() {
   const handleAction = async (action: StorageMigrationControlAction) => {
     setIsActionPending(true);
     try {
-      const next = await updateStorageMigrationControl(action === "pause");
+      const next = await updateStorageMigrationControl(action === "pause", { adminToken });
       setStatus((current) => (current && next.revision < current.revision ? current : next));
       setError(null);
     } catch (cause) {
@@ -145,6 +147,8 @@ export default function SystemStorageMigrationPage() {
           status={status}
           error={error}
           isActionPending={isActionPending}
+          adminToken={adminToken}
+          onAdminTokenChange={setAdminToken}
           onAction={(action) => void handleAction(action)}
         />
       ) : null}

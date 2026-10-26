@@ -63,6 +63,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     rollups_statistics::finish_rollup_backfills(pool, rollup_backfill_state).await?;
     runtime_system::ensure_runtime_system_schema(pool).await?;
     summary_coverage::ensure_summary_coverage_revision_schema(pool).await?;
+    crate::storage::migration_status::ensure_persistence_schema(pool).await?;
 
     Ok(())
 }

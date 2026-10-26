@@ -1,6 +1,8 @@
+import type { JSX } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Chip, type ChipTone } from "../../components/ui/chip";
+import { Input } from "../../components/ui/input";
 import { useTranslation } from "../../i18n";
 import type {
   StorageMigrationControlAction,
@@ -15,6 +17,8 @@ export interface StorageMigrationStatusCardProps {
   status: StorageMigrationResponse;
   error?: string | null;
   isActionPending?: boolean;
+  adminToken?: string;
+  onAdminTokenChange?: (value: string) => void;
   onAction?: (action: StorageMigrationControlAction) => void;
 }
 
@@ -90,7 +94,15 @@ function stateLabel(
   return t(`system.storageMigration.states.${state}`);
 }
 
-function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Metric({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}): JSX.Element {
   return (
     <div className="metric-cell h-full">
       <div className="metric-label normal-case tracking-normal">{label}</div>
@@ -112,7 +124,7 @@ function TableRow({
   table: StorageMigrationTableProgress;
   unknownLabel: string;
   t: ReturnType<typeof useTranslation>["t"];
-}) {
+}): JSX.Element {
   return (
     <tr className="border-t border-base-300/65 text-sm">
       <td className="whitespace-nowrap py-3 pr-4 font-medium text-base-content">
@@ -164,7 +176,7 @@ function ModuleRow({
   module: StorageMigrationModuleProgress;
   unknownLabel: string;
   t: ReturnType<typeof useTranslation>["t"];
-}) {
+}): JSX.Element {
   return (
     <div className="border-t border-base-300/65 py-3 first:border-t-0 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -206,8 +218,10 @@ export default function StorageMigrationStatusCard({
   status,
   error,
   isActionPending = false,
+  adminToken = "",
+  onAdminTokenChange,
   onAction,
-}: StorageMigrationStatusCardProps) {
+}: StorageMigrationStatusCardProps): JSX.Element {
   const { t } = useTranslation();
   const unknownLabel = t("system.storageMigration.unknown");
   const progress =
@@ -245,7 +259,7 @@ export default function StorageMigrationStatusCard({
         ) : null}
 
         {onAction ? (
-          <div className="flex flex-col gap-3 border-y border-base-300/70 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="grid gap-4 border-y border-base-300/70 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)_auto] lg:items-end">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-base-content">
                 {t("system.storageMigration.controls.title")}
@@ -254,12 +268,25 @@ export default function StorageMigrationStatusCard({
                 {t("system.storageMigration.controls.description")}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <label className="space-y-1 text-sm">
+              <span className="font-medium text-base-content">
+                {t("system.storageMigration.controls.adminToken")}
+              </span>
+              <Input
+                type="password"
+                value={adminToken}
+                onChange={(event) => onAdminTokenChange?.(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={t("system.storageMigration.controls.adminTokenPlaceholder")}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2 lg:justify-end">
               {status.controls.canStart ? (
                 <Button
                   type="button"
                   size="sm"
-                  disabled={isActionPending}
+                  disabled={isActionPending || !adminToken.trim()}
                   onClick={() => onAction("start")}
                 >
                   <AppIcon name="sync" className="mr-1.5 h-4 w-4" aria-hidden />
@@ -271,7 +298,7 @@ export default function StorageMigrationStatusCard({
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={isActionPending}
+                  disabled={isActionPending || !adminToken.trim()}
                   onClick={() => onAction("pause")}
                 >
                   <AppIcon name="close" className="mr-1.5 h-4 w-4" aria-hidden />
@@ -283,7 +310,7 @@ export default function StorageMigrationStatusCard({
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={isActionPending}
+                  disabled={isActionPending || !adminToken.trim()}
                   onClick={() => onAction("resume")}
                 >
                   <AppIcon name="refresh" className="mr-1.5 h-4 w-4" aria-hidden />
