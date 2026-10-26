@@ -42,6 +42,8 @@ class PerformanceBuildContractTests(unittest.TestCase):
         recipe = (ROOT / "scripts/production-build.sh").read_text()
         self.assertIn("cargo build --release --locked", recipe)
         self.assertIn("bun install --frozen-lockfile", recipe)
+        self.assertIn("rm -rf node_modules", recipe)
+        self.assertNotIn("if [ ! -d node_modules ]", recipe)
         self.assertIn("bun run build", recipe)
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertIn("production-build.sh rust", dockerfile)
@@ -86,6 +88,20 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("Finalize Rust cache report", workflow)
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
+
+    def test_bun_cache_never_persists_candidate_node_modules(self) -> None:
+        producer = self.workflow["jobs"]["observability-performance-producer"]
+        for name in ("Restore Bun dependency cache", "Save Bun dependency cache"):
+            step = next(step for step in producer["steps"] if step["name"] == name)
+            self.assertEqual(step["with"]["path"], "${{ runner.temp }}/cvm-bun")
+        workflow = copy.deepcopy(self.workflow)
+        restore = next(
+            step for step in workflow["jobs"]["observability-performance-producer"]["steps"]
+            if step["name"] == "Restore Bun dependency cache"
+        )
+        restore["with"]["path"] = "candidate/web/node_modules"
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
 
     def test_auto_dag_has_three_required_producers_and_complete_image_join(self) -> None:
         producer = self.workflow["jobs"]["observability-performance-producer"]

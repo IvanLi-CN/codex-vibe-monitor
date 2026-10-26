@@ -389,9 +389,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/restore@v4
         with:
-          path: |
-            ${{ runner.temp }}/cvm-bun
-            candidate/web/node_modules
+          path: ${{ runner.temp }}/cvm-bun
           key: ${{ needs.observability-performance-resolve.outputs.web_deps_cache_key }}
 
       - name: Record dependency cache restore timing
@@ -672,9 +670,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: |
-            ${{ runner.temp }}/cvm-bun
-            candidate/web/node_modules
+          path: ${{ runner.temp }}/cvm-bun
           key: ${{ needs.observability-performance-resolve.outputs.web_deps_cache_key }}
 
       - name: Finalize Web cache report

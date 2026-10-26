@@ -1,5 +1,9 @@
 # 独立性能遥测历史
 
+- 2026-10-26：Bun cache 只复用 lockfile 兼容的下载目录；不再跨 candidate 保存或恢复
+  `web/node_modules`，每次生产构建清理后执行 `bun install --frozen-lockfile`，避免候选构建
+  产生的依赖树污染后续 trusted candidate。
+
 - 2026-10-26：为 build report 补齐 `checks: read` 只读权限，使 `gh api` 获取同一 trusted
   workflow SHA 的 check-run 时间戳与既有 `contents: read`、`actions: read` 权限合同一致；不改变
   cache、artifact、测量或性能预算语义。

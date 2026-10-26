@@ -17,9 +17,8 @@ case "$mode" in
   web)
     : "${VITE_APP_VERSION:?VITE_APP_VERSION is required}"
     export VITE_APP_VERSION
-    if [ ! -d node_modules ]; then
-      bun install --frozen-lockfile
-    fi
+    rm -rf node_modules
+    bun install --frozen-lockfile
     bun run build
     ;;
   *)

@@ -457,8 +457,10 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(producer_strategy.get("fail-fast") is False and producer_matrix.get("component") == ["rust", "web", "runtime-base"], f"{workflow_path} producer matrix drifted")
     for name in ("Restore Rust dependency cache", "Restore Rust target cache", "Restore Bun dependency cache", "Save Rust dependency and target cache", "Save Rust target cache", "Save Bun dependency cache"):
         require(step_config(producer, name, workflow_path).get("continue-on-error") is True, f"{workflow_path} {name} must remain best effort")
-    rust_save = step_config(producer, "Save Rust dependency and target cache", workflow_path)
+    web_restore = step_config(producer, "Restore Bun dependency cache", workflow_path)
     web_save = step_config(producer, "Save Bun dependency cache", workflow_path)
+    require(web_restore.get("with", {}).get("path") == "${{ runner.temp }}/cvm-bun" and web_save.get("with", {}).get("path") == "${{ runner.temp }}/cvm-bun", f"{workflow_path} Bun cache must contain downloads only, never candidate node_modules")
+    rust_save = step_config(producer, "Save Rust dependency and target cache", workflow_path)
     require(
         rust_save.get("id") == "rust-cache-save"
         and "rust-deps-cache.outputs.cache-hit != 'true'" in str(rust_save.get("if", ""))
