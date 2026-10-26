@@ -488,7 +488,7 @@ export default function SystemTasksPage(): JSX.Element {
                   kind="queue"
                   waitingStartedAt={run.requestedAt}
                   elapsed={getElapsed(run.waitingMs, runtimeReceivedAt, runtimeAdvanceUntil)}
-                  detail={`第 ${run.position} 位 · ${managedTaskTriggerLabel({ triggerMode: run.triggerKind, isManual: run.triggerKind === "manual", cronExpr: null })}`}
+                  detail={`${run.waitReason ? `等待原因：${run.waitReason} · ` : ""}第 ${run.position} 位 · ${managedTaskTriggerLabel({ triggerMode: run.triggerKind, isManual: run.triggerKind === "manual", cronExpr: null })}`}
                 />
               ))
             ) : (

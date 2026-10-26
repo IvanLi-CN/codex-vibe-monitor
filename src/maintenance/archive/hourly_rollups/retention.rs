@@ -615,6 +615,9 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
     let mut source_incomplete = false;
 
     for archive_file in archive_files {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok((0, 0));
+        }
         let archive_path = PathBuf::from(&archive_file.file_path);
         if archive_path.parent().is_none_or(|parent| !parent.exists()) || !archive_path.is_file() {
             warn!(
@@ -661,6 +664,11 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
         let mut archive_cursor_id = 0_i64;
         loop {
+            if crate::maintenance::migration_hold_signal_reached() {
+                archive_pool.close().await;
+                drop(temp_cleanup);
+                return Ok((0, 0));
+            }
             let mut archive_rows =
                 sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
                     .bind(archive_cursor_id)
@@ -701,6 +709,9 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
     );
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut live_conn).await?;
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok((0, 0));
+        }
         let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
             r#"
             SELECT
@@ -767,6 +778,9 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
     }
     drop(live_conn);
 
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok((0, 0));
+    }
     if source_incomplete {
         let hourly_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
@@ -779,6 +793,9 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         return Ok((hourly_count.max(0) as usize, minute_count.max(0) as usize));
     }
 
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok((0, 0));
+    }
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM upstream_account_stats_hourly")
         .execute(tx.as_mut())
