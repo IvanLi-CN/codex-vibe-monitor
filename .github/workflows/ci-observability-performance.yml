@@ -1213,25 +1213,6 @@ jobs:
           path: trusted
           persist-credentials: false
 
-      - name: Checkout candidate report generator (build-only)
-        if: env.BUILD_ONLY == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: ${{ github.repository }}
-          ref: refs/heads/main
-          fetch-depth: 0
-          path: candidate-report
-          persist-credentials: false
-
-      - name: Pin candidate report generator (build-only)
-        if: env.BUILD_ONLY == 'true'
-        env:
-          CANDIDATE: ${{ needs.observability-performance-resolve.outputs.candidate }}
-        run: |
-          set -euo pipefail
-          git -C candidate-report fetch --no-tags --force origin "$CANDIDATE"
-          git -C candidate-report checkout --detach FETCH_HEAD
-
       - name: Download producer reports
         if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true' && needs.observability-performance-producer.result == 'success'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
@@ -1321,10 +1302,8 @@ jobs:
           elif [ "$BUILD_PATH" = "auto" ] && [ "$PRODUCER_RESULT" != "success" ] && [ "$COMPLETE_IMAGE_CACHE_HIT" != "true" ]; then
             args+=(--workflow-failure)
           fi
-          report_root="$PWD/trusted"
-          if [ "$BUILD_ONLY" = "true" ]; then report_root="$PWD/candidate-report"; fi
-          test -f "$report_root/scripts/observability-build-report.py"
-          python3 "$report_root/scripts/observability-build-report.py" "${args[@]}"
+          test -f "$PWD/trusted/scripts/observability-build-report.py"
+          python3 "$PWD/trusted/scripts/observability-build-report.py" "${args[@]}"
 
       - name: Upload build report
         if: always()

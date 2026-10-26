@@ -42,6 +42,10 @@ class PerformanceBuildContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = contract.load_yaml(WORKFLOW_PATH)
 
+    def test_performance_contract_has_one_executable_definition(self) -> None:
+        source = CONTRACT_PATH.read_text()
+        self.assertEqual(source.count("def require_observability_performance_contract("), 1)
+
     def test_shared_recipe_preserves_production_commands(self) -> None:
         recipe = (ROOT / "scripts/production-build.sh").read_text()
         self.assertIn("cargo build --release --locked", recipe)
@@ -523,12 +527,14 @@ class PerformanceBuildContractTests(unittest.TestCase):
             'elif [ "$BUILD_PATH" = "auto" ] && [ "$PRODUCER_RESULT" != "success" ]',
             run,
         )
+        self.assertIn('python3 "$PWD/trusted/scripts/observability-build-report.py"', run)
+        self.assertNotIn("candidate-report", run)
 
     def test_candidate_branch_and_sha_pinning_uses_fetch_head(self) -> None:
         workflow = WORKFLOW_PATH.read_text()
         self.assertGreaterEqual(workflow.count("git -C candidate fetch --no-tags --force origin"), 5)
         self.assertGreaterEqual(workflow.count("git -C candidate checkout --detach FETCH_HEAD"), 5)
-        self.assertIn("git -C candidate-report checkout --detach FETCH_HEAD", workflow)
+        self.assertNotIn("candidate-report", workflow)
         self.assertNotIn('checkout --detach "$CANDIDATE"', workflow)
         self.assertNotIn('checkout --detach "$CANDIDATE_REF"', workflow)
 
