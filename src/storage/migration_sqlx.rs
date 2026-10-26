@@ -18,8 +18,8 @@ use super::{
     },
     migration::{
         CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange, CopyLimits,
-        EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage, TableCopyPlan,
-        TableCoverageProof, VersionedRow, validate_checkpoint_progress,
+        EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage, SourceRangeSnapshot,
+        TableCopyPlan, TableCoverageProof, VersionedRow, validate_checkpoint_progress,
     },
 };
 
@@ -333,13 +333,12 @@ impl SqliteMigrationSource {
             "SELECT migration_id, source_identity, source_version, table_name, stable_key,
                     previous_key, kind, payload, payload_digest
                FROM {capture_table}
-              WHERE migration_id = ? AND source_identity = ?
+              WHERE migration_id = ?
                 AND source_version > ? AND source_version <= ?
               ORDER BY source_version ASC, capture_id ASC LIMIT ?"
         );
         let rows = sqlx::query(&query)
             .bind(&self.migration_id)
-            .bind(&self.source_identity)
             .bind(after)
             .bind(through)
             .bind(i64::try_from(limit).context("SQLite migration change limit overflowed")?)
@@ -348,7 +347,7 @@ impl SqliteMigrationSource {
             .context("read SQLite migration change capture")?;
         let initial_changes = rows
             .into_iter()
-            .map(decode_sqlite_change)
+            .map(|row| decode_sqlite_change(row, &self.migration_id, &self.source_identity))
             .collect::<Result<Vec<_>>>()?;
         let Some(boundary_version) = initial_changes.last().map(|change| change.source_version)
         else {
@@ -364,26 +363,29 @@ impl SqliteMigrationSource {
             "SELECT migration_id, source_identity, source_version, table_name, stable_key,
                     previous_key, kind, payload, payload_digest
                FROM {capture_table}
-              WHERE migration_id = ? AND source_identity = ?
+              WHERE migration_id = ?
                 AND source_version > ? AND source_version <= ?
               ORDER BY source_version ASC, capture_id ASC"
         );
         sqlx::query(&complete_query)
             .bind(&self.migration_id)
-            .bind(&self.source_identity)
             .bind(after)
             .bind(boundary_version)
             .fetch_all(&self.pool)
             .await
             .context("read complete SQLite migration change boundary")?
             .into_iter()
-            .map(decode_sqlite_change)
+            .map(|row| decode_sqlite_change(row, &self.migration_id, &self.source_identity))
             .collect()
     }
 }
 
-fn decode_sqlite_change(row: SqliteRow) -> Result<CapturedChange> {
-    Ok(CapturedChange {
+fn decode_sqlite_change(
+    row: SqliteRow,
+    migration_id: &str,
+    source_identity: &str,
+) -> Result<CapturedChange> {
+    let change = CapturedChange {
         migration_id: row.try_get("migration_id")?,
         source_identity: row.try_get("source_identity")?,
         source_version: row.try_get("source_version")?,
@@ -393,7 +395,9 @@ fn decode_sqlite_change(row: SqliteRow) -> Result<CapturedChange> {
         kind: parse_change_kind(row.try_get::<String, _>("kind")?.as_str())?,
         payload: row.try_get("payload")?,
         payload_digest: row.try_get("payload_digest")?,
-    })
+    };
+    change.validate_for(migration_id, source_identity)?;
+    Ok(change)
 }
 
 fn change_kind_name(kind: ChangeKind) -> &'static str {
@@ -538,29 +542,33 @@ impl MigrationSource for SqliteMigrationSource {
         })
     }
 
-    async fn rows_in_range(
+    async fn rows_in_range_snapshot(
         &self,
         table_name: &str,
         range: &ChunkRange,
-    ) -> Result<Vec<VersionedRow>> {
+    ) -> Result<SourceRangeSnapshot> {
         let spec = self.spec(table_name)?;
         let table = quote_identifier(&spec.source_table_name, "source migration table")?;
         let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
         let version = quote_identifier(&spec.source_version_column, "source version column")?;
         let payload = quote_identifier(&spec.source_payload_column, "source payload column")?;
+        let capture_table =
+            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
         let query = format!(
             "SELECT {key} AS stable_key, {version} AS source_version, {payload} AS payload
                FROM {table}
               WHERE {key} >= ? AND {key} <= ?
               ORDER BY {key} ASC"
         );
+        let mut transaction = self.pool.begin().await?;
         let rows = sqlx::query(&query)
             .bind(&range.first_key)
             .bind(&range.last_key)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *transaction)
             .await
             .context("read SQLite migration verification range")?;
-        rows.into_iter()
+        let rows = rows
+            .into_iter()
             .map(|row| {
                 Ok(VersionedRow {
                     stable_key: row.try_get("stable_key")?,
@@ -570,7 +578,26 @@ impl MigrationSource for SqliteMigrationSource {
                         .unwrap_or_default(),
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        let watermark_query = format!(
+            "SELECT COALESCE(MAX(source_version), 0)
+               FROM {capture_table}
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        let source_watermark = sqlx::query_scalar(&watermark_query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read SQLite verification snapshot watermark")?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration verification snapshot")?;
+        Ok(SourceRangeSnapshot {
+            source_watermark,
+            rows,
+        })
     }
 
     async fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<CapturedChange>> {
@@ -1043,6 +1070,7 @@ impl MigrationTarget for PostgresMigrationTarget {
     async fn apply_change_batch(
         &self,
         migration_id: &str,
+        source_identity: &str,
         changes: &[CapturedChange],
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
@@ -1056,8 +1084,8 @@ impl MigrationTarget for PostgresMigrationTarget {
             .ok_or_else(|| anyhow!("PostgreSQL migration checkpoint is missing"))?;
         validate_checkpoint_progress(Some(&existing), checkpoint)?;
         for change in changes {
-            if change.migration_id != migration_id
-                || change.table_name != checkpoint.table_name
+            change.validate_for(migration_id, source_identity)?;
+            if change.table_name != checkpoint.table_name
                 || change.source_version > checkpoint.captured_through
             {
                 bail!("PostgreSQL replay change does not match its checkpoint");

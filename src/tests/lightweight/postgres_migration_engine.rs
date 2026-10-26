@@ -68,6 +68,41 @@ fn engine(
 }
 
 #[tokio::test]
+async fn file_migration_store_reopens_after_parent_synced_replace() -> Result<()> {
+    let (directory, path) = state_path("durability");
+    let initial = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let updated = AuthorityRecoveryContext {
+        source_watermark: 7,
+        ..initial.clone()
+    };
+    let store = FileMigrationStore::new(&path, initial.clone());
+    store.set_recovery_context(&updated).await?;
+    drop(store);
+
+    assert!(!path.with_extension("tmp").exists());
+    let reopened = FileMigrationStore::new(&path, initial);
+    assert!(matches!(
+        reopened
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::NeverMigrated {
+            source_watermark: 7,
+            ..
+        }
+    ));
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn migration_engine_copies_catches_up_verifies_and_publishes_authority() -> Result<()> {
     let (directory, path) = state_path("authority");
     let source = Arc::new(InMemoryMigrationSource::new(
@@ -227,6 +262,94 @@ async fn migration_rejects_incomplete_module_table_sets() -> Result<()> {
             .is_err()
     );
     assert!(!fence.is_fenced().await);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn switch_does_not_hold_source_writes_during_large_pre_fence_verification() -> Result<()> {
+    let (directory, path) = state_path("pre-fence-verification");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    source.register_module_table("events").await?;
+    let fence = SourceWriteFence::new(1);
+    let initial_changes = (b'a'..=b'h')
+        .map(|key| {
+            change(
+                "events",
+                &String::from_utf8(vec![key]).expect("ASCII key"),
+                ChangeKind::Insert,
+                &[key],
+            )
+        })
+        .collect();
+    source.write(&fence, initial_changes).await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    while !migration.copy_next("events").await?.complete {}
+    source
+        .set_verification_delay_for_test(Duration::from_millis(100))
+        .await;
+
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let switching = {
+        let migration = migration.clone();
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            migration
+                .switch_authority(
+                    &gate,
+                    AuthorityRecoveryContext {
+                        migration_id: "migration-engine-test".into(),
+                        installation_id: "installation-test".into(),
+                        module: StorageModule::TrafficArchive,
+                        source_identity: "sqlite-test".into(),
+                        target_identity: "postgres-test".into(),
+                        source_watermark: 1,
+                    },
+                    Duration::from_secs(1),
+                )
+                .await
+        })
+    };
+    source.wait_for_verification_for_test().await;
+    assert!(
+        source
+            .write(
+                &fence,
+                vec![change("events", "z", ChangeKind::Insert, b"late")],
+            )
+            .await
+            .is_ok()
+    );
+    assert!(switching.await.expect("authority switch task").is_err());
+    assert!(!fence.is_fenced().await);
+
     fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -416,6 +539,47 @@ async fn sqlite_capture_replay_keeps_same_version_boundary_after_failed_apply() 
 }
 
 #[tokio::test]
+async fn sqlite_capture_rejects_corrupt_digest_and_source_identity() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+    let first = source
+        .append_change(1, change("events", "a", ChangeKind::Insert, b"one"))
+        .await?;
+    sqlx::query("UPDATE migration_change_log SET payload_digest = ? WHERE source_version = 1")
+        .bind("corrupt-digest")
+        .execute(&pool)
+        .await?;
+    assert!(source.changes_after(0, 1).await.is_err());
+
+    sqlx::query("UPDATE migration_change_log SET payload_digest = ? WHERE source_version = 1")
+        .bind(&first.payload_digest)
+        .execute(&pool)
+        .await?;
+    source
+        .append_change(2, change("events", "b", ChangeKind::Insert, b"two"))
+        .await?;
+    sqlx::query("UPDATE migration_change_log SET source_identity = ? WHERE source_version = 2")
+        .bind("another-source")
+        .execute(&pool)
+        .await?;
+    assert!(source.changes_after(0, 2).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Result<()> {
     let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
         eprintln!(
@@ -504,6 +668,7 @@ async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Res
     target
         .apply_change_batch(
             &plan.migration_id,
+            "sqlite-test",
             &[replay],
             &EngineCheckpoint {
                 captured_through: 1,

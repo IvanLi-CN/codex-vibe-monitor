@@ -6,7 +6,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::{
@@ -291,6 +291,12 @@ pub(crate) struct SourcePage {
     pub(crate) complete: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceRangeSnapshot {
+    pub(crate) source_watermark: i64,
+    pub(crate) rows: Vec<VersionedRow>,
+}
+
 impl SourcePage {
     fn validate(
         &self,
@@ -565,11 +571,11 @@ pub(crate) trait MigrationSource: Send + Sync {
         upper_bound: Option<&str>,
         limits: CopyLimits,
     ) -> Result<SourcePage>;
-    async fn rows_in_range(
+    async fn rows_in_range_snapshot(
         &self,
         table_name: &str,
         range: &ChunkRange,
-    ) -> Result<Vec<VersionedRow>>;
+    ) -> Result<SourceRangeSnapshot>;
     async fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<CapturedChange>>;
     async fn changes_through(
         &self,
@@ -604,6 +610,7 @@ pub(crate) trait MigrationTarget: Send + Sync {
     async fn apply_change_batch(
         &self,
         migration_id: &str,
+        source_identity: &str,
         changes: &[CapturedChange],
         checkpoint: &EngineCheckpoint,
     ) -> Result<()>;
@@ -821,6 +828,8 @@ pub(crate) struct InMemoryMigrationSource {
     migration_id: String,
     source_identity: String,
     state: Arc<Mutex<InMemorySourceState>>,
+    verification_delay: Arc<Mutex<Duration>>,
+    verification_started: Arc<Notify>,
 }
 
 #[derive(Debug, Default)]
@@ -838,6 +847,24 @@ impl InMemoryMigrationSource {
             migration_id: migration_id.into(),
             source_identity: source_identity.into(),
             state: Arc::new(Mutex::new(InMemorySourceState::default())),
+            verification_delay: Arc::new(Mutex::new(Duration::ZERO)),
+            verification_started: Arc::new(Notify::new()),
+        }
+    }
+
+    pub(crate) async fn set_verification_delay_for_test(&self, delay: Duration) {
+        *self.verification_delay.lock().await = delay;
+    }
+
+    pub(crate) async fn wait_for_verification_for_test(&self) {
+        self.verification_started.notified().await;
+    }
+
+    async fn before_verification_read(&self) {
+        self.verification_started.notify_waiters();
+        let delay = *self.verification_delay.lock().await;
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
     }
 
@@ -1074,23 +1101,28 @@ impl MigrationSource for InMemoryMigrationSource {
         })
     }
 
-    async fn rows_in_range(
+    async fn rows_in_range_snapshot(
         &self,
         table_name: &str,
         range: &ChunkRange,
-    ) -> Result<Vec<VersionedRow>> {
-        Ok(self
-            .state
-            .lock()
-            .await
-            .rows
-            .get(table_name)
-            .map(|rows| {
-                rows.range(range.first_key.clone()..=range.last_key.clone())
-                    .map(|(_, row)| row.clone())
-                    .collect()
-            })
-            .unwrap_or_default())
+    ) -> Result<SourceRangeSnapshot> {
+        self.before_verification_read().await;
+        let state = self.state.lock().await;
+        if state.continuity_lost {
+            bail!("source change capture continuity has been lost");
+        }
+        Ok(SourceRangeSnapshot {
+            source_watermark: state.next_version,
+            rows: state
+                .rows
+                .get(table_name)
+                .map(|rows| {
+                    rows.range(range.first_key.clone()..=range.last_key.clone())
+                        .map(|(_, row)| row.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
     }
 
     async fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<CapturedChange>> {
@@ -1311,6 +1343,7 @@ impl MigrationTarget for InMemoryMigrationTarget {
     async fn apply_change_batch(
         &self,
         migration_id: &str,
+        source_identity: &str,
         changes: &[CapturedChange],
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
@@ -1329,8 +1362,8 @@ impl MigrationTarget for InMemoryMigrationTarget {
         {
             let rows = state.rows.entry(checkpoint.table_name.clone()).or_default();
             for change in changes {
-                if change.migration_id != migration_id
-                    || change.table_name != checkpoint.table_name
+                change.validate_for(migration_id, source_identity)?;
+                if change.table_name != checkpoint.table_name
                     || change.source_version > checkpoint.captured_through
                 {
                     bail!("replay change does not match its checkpoint");
@@ -1674,6 +1707,10 @@ impl FileMigrationStore {
                 temporary.display()
             )
         })?;
+        File::open(parent)
+            .with_context(|| format!("open migration metadata directory {}", parent.display()))?
+            .sync_all()
+            .with_context(|| format!("sync migration metadata directory {}", parent.display()))?;
         Ok(())
     }
 }
@@ -2235,6 +2272,18 @@ where
 
     pub(crate) async fn catch_up(&self, table_name: &str) -> Result<MigrationProgress> {
         self.ensure_running().await?;
+        let watermark = self.source.capture_watermark().await?;
+        self.catch_up_through(table_name, watermark).await
+    }
+
+    async fn catch_up_through(
+        &self,
+        table_name: &str,
+        watermark: i64,
+    ) -> Result<MigrationProgress> {
+        if watermark < 0 {
+            bail!("migration catch-up watermark must not be negative");
+        }
         let Some(mut checkpoint) = self
             .target
             .load_checkpoint(self.source.migration_id(), table_name)
@@ -2242,36 +2291,48 @@ where
         else {
             bail!("migration checkpoint is missing for table {table_name}");
         };
-        let watermark = self.source.capture_watermark().await?;
-        if watermark == checkpoint.applied_through {
-            return self.progress_for(&checkpoint).await;
+        if checkpoint.applied_through > watermark {
+            bail!("migration checkpoint is ahead of the requested catch-up watermark");
         }
-        let changes = self
-            .source
-            .changes_through(
-                checkpoint.applied_through,
-                watermark,
-                self.limits.max_queued_operations,
-            )
-            .await?;
-        if changes.is_empty() {
-            bail!("source capture skipped a required migration watermark prefix");
+        while checkpoint.applied_through < watermark {
+            let changes = self
+                .source
+                .changes_through(
+                    checkpoint.applied_through,
+                    watermark,
+                    self.limits.max_queued_operations,
+                )
+                .await?;
+            if changes.is_empty() {
+                bail!("source capture skipped a required migration watermark prefix");
+            }
+            for change in &changes {
+                change.validate_for(self.source.migration_id(), self.source.source_identity())?;
+            }
+            let through = changes
+                .last()
+                .map(|change| change.source_version)
+                .ok_or_else(|| anyhow!("migration change batch is unexpectedly empty"))?;
+            if through <= checkpoint.applied_through || through > watermark {
+                bail!("source capture returned an invalid migration watermark batch");
+            }
+            let table_changes = changes
+                .iter()
+                .filter(|change| change.table_name == table_name)
+                .cloned()
+                .collect::<Vec<_>>();
+            checkpoint.captured_through = through;
+            checkpoint.applied_through = through;
+            self.target
+                .apply_change_batch(
+                    self.source.migration_id(),
+                    self.source.source_identity(),
+                    &table_changes,
+                    &checkpoint,
+                )
+                .await?;
+            self.persist_checkpoint(&checkpoint).await?;
         }
-        let through = changes
-            .last()
-            .map(|change| change.source_version)
-            .ok_or_else(|| anyhow!("migration change batch is unexpectedly empty"))?;
-        let table_changes = changes
-            .iter()
-            .filter(|change| change.table_name == table_name)
-            .cloned()
-            .collect::<Vec<_>>();
-        checkpoint.captured_through = through;
-        checkpoint.applied_through = through;
-        self.target
-            .apply_change_batch(self.source.migration_id(), &table_changes, &checkpoint)
-            .await?;
-        self.persist_checkpoint(&checkpoint).await?;
         self.progress_for(&checkpoint).await
     }
 
@@ -2280,18 +2341,26 @@ where
         table_name: &str,
         range: ChunkRange,
     ) -> Result<ChunkVerification> {
-        let source_rows = self.source.rows_in_range(table_name, &range).await?;
+        let source_snapshot = self
+            .source
+            .rows_in_range_snapshot(table_name, &range)
+            .await?;
+        let source_watermark = source_snapshot.source_watermark;
+        let source_rows = source_snapshot.rows;
         let target_rows = self.target.rows_in_range(table_name, &range).await?;
         let source_digest = rows_digest(&source_rows);
         let target_digest = rows_digest(&target_rows);
-        if source_rows != target_rows || source_digest != target_digest {
+        if source_rows != target_rows
+            || source_digest != target_digest
+            || self.source.capture_watermark().await? != source_watermark
+        {
             return Ok(ChunkVerification::Dirty);
         }
         let proof = ChunkProof {
             migration_id: self.source.migration_id().to_owned(),
             table_name: table_name.to_owned(),
             range,
-            source_watermark: self.source.capture_watermark().await?,
+            source_watermark,
             row_count: source_rows.len() as u64,
             byte_count: source_rows.iter().map(|row| row.payload.len() as u64).sum(),
             digest: source_digest,
@@ -2323,12 +2392,24 @@ where
             .zip(last)
             .map(|(first, last)| ChunkRange::new(first, last))
             .transpose()?;
-        let (source_rows, target_rows) = match &range {
-            Some(range) => (
-                self.source.rows_in_range(table_name, range).await?,
-                self.target.rows_in_range(table_name, range).await?,
-            ),
-            None => (Vec::new(), Vec::new()),
+        let source_snapshot = match &range {
+            Some(range) => {
+                self.source
+                    .rows_in_range_snapshot(table_name, range)
+                    .await?
+            }
+            None => SourceRangeSnapshot {
+                source_watermark: self.source.capture_watermark().await?,
+                rows: Vec::new(),
+            },
+        };
+        if source_snapshot.source_watermark != source_watermark {
+            bail!("source changed while migration coverage was being verified");
+        }
+        let source_rows = source_snapshot.rows;
+        let target_rows = match &range {
+            Some(range) => self.target.rows_in_range(table_name, range).await?,
+            None => Vec::new(),
         };
         let proof = TableCoverageProof {
             migration_id: self.source.migration_id().to_owned(),
@@ -2379,32 +2460,55 @@ where
         {
             bail!("migration authority switch does not match the old SQLite generation");
         }
+        let tables = self.target.known_tables(self.source.migration_id()).await?;
+        let source_tables = self
+            .source
+            .module_tables(self.module)
+            .await?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let target_tables = tables.into_iter().collect::<BTreeSet<_>>();
+        if source_tables.is_empty() || target_tables != source_tables {
+            bail!("migration authority switch requires an exact prepared table set");
+        }
+        for table_name in &target_tables {
+            if self
+                .target
+                .load_plan(self.source.migration_id(), table_name)
+                .await?
+                .is_none()
+            {
+                bail!("migration authority switch requires a prepared plan for {table_name}");
+            }
+            let progress = self
+                .catch_up_through(table_name, pre_fence_watermark)
+                .await?;
+            if !progress.complete {
+                bail!("migration table {table_name} is not complete before switch");
+            }
+            self.verify_table_coverage_at(table_name, pre_fence_watermark)
+                .await?;
+        }
+        if self.source.capture_watermark().await? != pre_fence_watermark {
+            bail!("source writes continued during pre-fence migration verification");
+        }
+
         self.fence.close_and_drain(switch_budget).await?;
         let result = async {
             let watermark = self.source.capture_watermark().await?;
+            // The fence window deliberately contains no full replay or verification. If an
+            // in-flight source transaction advanced H while the fence drained, leave the source
+            // authoritative and retry the pre-fence preparation instead of holding writes.
+            if watermark != pre_fence_watermark {
+                bail!(
+                    "source capture advanced during the switch fence; retry pre-fence preparation"
+                );
+            }
             let final_expected = AuthorityRecoveryContext {
                 source_watermark: watermark,
                 ..expected.clone()
             };
             self.store.set_recovery_context(&final_expected).await?;
-            let tables = self.target.known_tables(self.source.migration_id()).await?;
-            let source_tables = self
-                .source
-                .module_tables(self.module)
-                .await?
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            let target_tables = tables.into_iter().collect::<BTreeSet<_>>();
-            if source_tables.is_empty() || target_tables != source_tables {
-                bail!("migration authority switch requires an exact prepared table set");
-            }
-            for table_name in &target_tables {
-                let progress = self.catch_up(table_name).await?;
-                if !progress.complete {
-                    bail!("migration table {table_name} is not complete before switch");
-                }
-                self.verify_table_coverage_at(table_name, watermark).await?;
-            }
             let manifest = ModuleAuthorityManifest {
                 migration_id: final_expected.migration_id.clone(),
                 installation_id: final_expected.installation_id.clone(),
