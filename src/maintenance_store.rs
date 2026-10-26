@@ -3059,9 +3059,7 @@ pub(crate) async fn migration_task_is_held(task_key: &str) -> bool {
 }
 
 pub(crate) async fn migration_task_hold_checkpoint(task_key: &str) -> Option<String> {
-    let Some(store) = global() else {
-        return None;
-    };
+    let store = global()?;
     store
         .migration_task_hold_checkpoint(task_key)
         .await
@@ -3255,13 +3253,13 @@ impl MaintenanceStore {
                         .map_err(|error| anyhow!("invalid existing migration hold state: {error}"))
                 })
                 .transpose()?;
-        if let Some(existing_state) = existing_state.as_ref() {
-            if existing_state.migration_id != state.migration_id {
-                return Err(anyhow!(
-                    "migration hold is already owned by migration {}",
-                    existing_state.migration_id
-                ));
-            }
+        if let Some(existing_state) = existing_state.as_ref()
+            && existing_state.migration_id != state.migration_id
+        {
+            return Err(anyhow!(
+                "migration hold is already owned by migration {}",
+                existing_state.migration_id
+            ));
         }
         state.hold_generation = match existing_state.as_ref() {
             Some(existing_state) => existing_state
