@@ -470,10 +470,11 @@ impl SummaryCoverageRecoverySupervisor {
                 });
             }
         };
-        record_recovery(RecoveryDiagnostic::StatisticsHistoricalCoverage);
-        if let Some(turn) = run_compacted_source_recovery_turn_with_runtime(state, runtime).await? {
-            return Ok(turn);
-        }
+        crate::maintenance::retention::with_retention_db_pressure_slot_held(async {
+            record_recovery(RecoveryDiagnostic::StatisticsHistoricalCoverage);
+            if let Some(turn) = run_compacted_source_recovery_turn_with_runtime(state, runtime).await? {
+                return Ok(turn);
+            }
         let started_at = Instant::now();
         // Required 30-day authority takes priority over all-time aggregation. Each V2 turn is
         // page- and time-bounded, and committed cursor/hash progress is immediately eligible
@@ -751,14 +752,16 @@ impl SummaryCoverageRecoverySupervisor {
                 Err(error) => return Err(error),
             }
         }
-        Ok(SummaryCoverageRecoveryTurn {
-            next_turn: if summary_coverage_recovery_requires_second_v2_turn(&backfill) {
-                SummaryCoverageRecoveryNextTurn::Immediate
-            } else {
-                SummaryCoverageRecoveryNextTurn::Idle
-            },
-            reservation: None,
+            Ok(SummaryCoverageRecoveryTurn {
+                next_turn: if summary_coverage_recovery_requires_second_v2_turn(&backfill) {
+                    SummaryCoverageRecoveryNextTurn::Immediate
+                } else {
+                    SummaryCoverageRecoveryNextTurn::Idle
+                },
+                reservation: None,
+            })
         })
+        .await
     }
 }
 

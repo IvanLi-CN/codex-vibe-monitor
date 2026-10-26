@@ -56,11 +56,20 @@ pub(crate) static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> 
 tokio::task_local! {
     pub(crate) static RETENTION_SHUTDOWN: CancellationToken;
     pub(crate) static RETENTION_MAINTENANCE_ACTIVE: ();
+    pub(crate) static RETENTION_DB_PRESSURE_SLOT_HELD: ();
     pub(crate) static RETENTION_RUN_DEADLINE: RefCell<Option<Instant>>;
     pub(crate) static RETENTION_RUN_DEFER_REASON: RefCell<Option<String>>;
     pub(crate) static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
     pub(crate) static RETENTION_TRY_ARCHIVE_LOCKS: ();
     pub(crate) static RETENTION_RAW_CAPTURE_CIRCUIT: RefCell<Option<Arc<RawCaptureCircuitBreaker>>>;
+}
+
+pub(crate) fn retention_db_pressure_slot_held() -> bool {
+    RETENTION_DB_PRESSURE_SLOT_HELD.try_with(|_| ()).is_ok()
+}
+
+pub(crate) async fn with_retention_db_pressure_slot_held<F: Future>(future: F) -> F::Output {
+    RETENTION_DB_PRESSURE_SLOT_HELD.scope((), future).await
 }
 
 pub(crate) async fn mark_retention_raw_inventory_reset_intent(pool: &Pool<Sqlite>) -> Result<()> {

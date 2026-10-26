@@ -620,6 +620,7 @@ pub(super) async fn acquire_write_admission(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let nested_pressure_slot = super::retention_db_pressure_slot_held();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
     loop {
@@ -641,15 +642,30 @@ pub(super) async fn acquire_write_admission(
                     continue;
                 }
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                    if wait_for_busy
+                    if nested_pressure_slot {
+                        // The enclosing recovery turn already owns the sole pressure slot. It
+                        // still needs a fresh SQLite coordinator permit for this write, but must
+                        // not request a second process-wide pressure slot and self-defer.
+                    } else if wait_for_busy
                         && wait_for_background_change(gate, operation, generation).await
                     {
                         continue;
+                    } else if nested_pressure_slot {
+                        // Continue to the coordinator admission below.
+                    } else {
+                        retention_record_defer(operation, reason);
+                        return None;
                     }
                 }
             }
-            retention_record_defer(operation, reason);
-            return None;
+            if !matches!(
+                reason,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            ) || !nested_pressure_slot
+            {
+                retention_record_defer(operation, reason);
+                return None;
+            }
         }
         if retention_run_budget_expired() {
             retention_record_defer(operation, "retention_work_budget");
@@ -663,7 +679,22 @@ pub(super) async fn acquire_write_admission(
             return None;
         }
         let try_generation = gate.eligibility_generation();
-        match gate.try_begin_background(operation) {
+        let pressure_permit = if nested_pressure_slot {
+            if matches!(
+                gate.background_deny_reason(),
+                Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. })
+            ) {
+                write_permit.revoke_fairness_admission();
+                drop(write_permit);
+                retention_record_defer(operation, "pressure_cooldown");
+                return None;
+            }
+            crate::task_timeline::clear_background_denial(operation);
+            Ok(crate::db_pressure::DbBackgroundPermit::nested())
+        } else {
+            gate.try_begin_background(operation)
+        };
+        match pressure_permit {
             Ok(pressure_permit) => {
                 crate::task_runtime_observation::mark_managed_maintenance_work_started();
                 return Some(RetentionWriteAdmission {
@@ -711,6 +742,46 @@ pub(super) async fn acquire_write_admission(
                 return None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nested_recovery_write_reuses_parent_pressure_slot() {
+        let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+            1,
+            Duration::from_secs(1),
+        ));
+        let parent = gate
+            .try_begin_background("summary_historical_coverage_recovery")
+            .expect("recovery owns the background pressure slot");
+        let coordinator =
+            crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+
+        let admission = RETENTION_TEST_DB_PRESSURE_GATE
+            .scope(
+                gate.clone(),
+                RETENTION_TEST_WRITE_COORDINATOR.scope(
+                    coordinator,
+                    RETENTION_DB_PRESSURE_SLOT_HELD.scope(
+                        (),
+                        acquire_write_admission("summary_snapshot_proof_promotion", false),
+                    ),
+                ),
+            )
+            .await;
+
+        assert!(admission.is_some(), "nested write must not self-defer");
+        drop(admission);
+        assert!(matches!(
+            gate.try_begin_background("other_background_work"),
+            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy)
+        ));
+        drop(parent);
+        assert!(gate.try_begin_background("other_background_work").is_ok());
     }
 }
 
