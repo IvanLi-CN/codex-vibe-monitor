@@ -94,10 +94,10 @@ impl AuthorityManifestStore for TestAuthorityStore {
                 && module == expected.module
                 && source_identity == expected.source_identity
         ) {
-            return Ok(AuthorityPublication::NotCommitted);
+            return Ok(AuthorityPublication::Conflict);
         }
         if self.manifest.lock().await.is_some() {
-            return Ok(AuthorityPublication::NotCommitted);
+            return Ok(AuthorityPublication::Conflict);
         }
         *self.manifest.lock().await = Some(manifest.clone());
         *recovery_slot = None;
@@ -582,9 +582,43 @@ async fn publication_rejects_a_stale_durable_recovery_context() {
         .await
         .is_err()
     );
-    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
-    assert_eq!(current.lease.authority.backend, BackendKind::Sqlite);
-    assert_eq!(current.lease.authority.generation, 1);
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn publication_conflict_does_not_reopen_sqlite_after_manifest_is_committed() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = Arc::new(TestAuthorityStore::default());
+    *store.manifest.lock().await = Some(authority_manifest_for_migration(
+        2,
+        BackendKind::Postgres,
+        "migration-committed",
+    ));
+
+    assert!(
+        gate.switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest(2, BackendKind::Postgres),
+            recovery_context(),
+            std::time::Duration::from_secs(1),
+            store.clone(),
+        )
+        .await
+        .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    assert!(
+        gate.recover_authority(store.as_ref(), &recovery_context())
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
 }
 
 #[tokio::test]

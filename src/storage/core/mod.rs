@@ -67,8 +67,11 @@ pub(crate) enum AuthorityRecoveryRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuthorityPublication {
+    /// The store confirms the expected recovery context still selects the source authority.
     NotCommitted,
     Committed,
+    /// Compare-and-publish found a different durable recovery context or authority.
+    Conflict,
     Indeterminate,
 }
 
@@ -455,6 +458,12 @@ impl ModuleGenerationGate {
                 self.0.changed.notify_waiters();
                 Ok(())
             }
+            AuthorityPublication::Conflict => {
+                self.0.recovery_required.store(true, Ordering::Release);
+                bail!(
+                    "module authority publication conflicted with durable state; admission remains closed for recovery"
+                )
+            }
             AuthorityPublication::Indeterminate => {
                 self.0.recovery_required.store(true, Ordering::Release);
                 bail!(
@@ -681,8 +690,10 @@ pub(crate) trait MigrationTaskAdmission: Send + Sync {
 }
 
 /// Authority persistence must compare the full active recovery context before publishing and
-/// atomically replace its matching no-cutover marker with the manifest. This fences stale writers
-/// and prevents two migration attempts from publishing over one another.
+/// atomically replace its matching no-cutover marker with the manifest. `NotCommitted` is valid
+/// only when the store confirms the source is still selected; changed durable state returns
+/// `Conflict`, keeping admission closed for recovery. This fences stale writers and prevents two
+/// migration attempts from publishing over one another.
 #[async_trait::async_trait]
 pub(crate) trait AuthorityManifestStore: Send + Sync {
     async fn load_authority_manifest(
