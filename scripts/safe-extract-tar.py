@@ -49,10 +49,13 @@ def _ensure_parent(root: Path, parts: tuple[str, ...]) -> Path:
 
 
 def _reject_symlink_components(path: Path) -> Path:
-    """Reject a symlink destination before resolving its real path."""
+    """Reject any existing symlink in the destination path before resolving it."""
     absolute = Path(os.path.abspath(path))
-    if absolute.is_symlink():
-        raise ArchiveError(f"destination path contains a symlink: {absolute}")
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise ArchiveError(f"destination path contains a symlink: {current}")
     return absolute
 
 

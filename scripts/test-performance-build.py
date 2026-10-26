@@ -71,7 +71,14 @@ class PerformanceBuildContractTests(unittest.TestCase):
             if step["name"] == "Bind candidate and build identity"
         )
         run = identity["run"]
-        for path in ("web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json"):
+        for path in (
+            "web/tsconfig.json",
+            "web/tsconfig.app.json",
+            "web/tsconfig.node.json",
+            "web/postcss.config.js",
+            "web/tailwind.config.js",
+            "web/scripts/write-version.mjs",
+        ):
             self.assertIn(path, run)
 
     def test_build_report_has_cache_write_and_check_run_permissions(self) -> None:
@@ -109,6 +116,21 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("Finalize Rust cache report", workflow)
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
+
+    def test_writable_producer_cache_keys_are_candidate_scoped(self) -> None:
+        identity = next(
+            step for step in self.workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Bind candidate and build identity"
+        )
+        self.assertGreaterEqual(identity["run"].count("-{candidate}"), 6)
+        workflow = copy.deepcopy(self.workflow)
+        mutated = next(
+            step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
+            if step["name"] == "Bind candidate and build identity"
+        )
+        mutated["run"] = mutated["run"].replace("-{candidate}", "", 1)
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
 
     def test_bun_cache_never_persists_candidate_node_modules(self) -> None:
         producer = self.workflow["jobs"]["observability-performance-producer"]
@@ -162,7 +184,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
 
     def test_build_report_schema_contains_measured_cache_and_timing_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             component_dir = root / "rust"
             component_dir.mkdir()
             archive = component_dir / "component.tar.gz"
@@ -535,7 +557,7 @@ class PerformanceBuildContractTests(unittest.TestCase):
 
     def test_safe_extractor_rejects_traversal_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             traversal = root / "traversal.tar.gz"
             with tarfile.open(traversal, "w:gz") as archive:
                 member = tarfile.TarInfo("../escape")
@@ -560,9 +582,16 @@ class PerformanceBuildContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "destination path contains a symlink"):
                 safe_extract.extract(link_archive, destination_link)
 
+            parent_target = root / "parent-target"
+            parent_target.mkdir()
+            parent_link = root / "parent-link"
+            parent_link.symlink_to(parent_target, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "destination path contains a symlink"):
+                safe_extract.extract(link_archive, parent_link / "new")
+
     def test_safe_extractor_preserves_valid_context_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             archive_path = root / "valid.tar.gz"
             with tarfile.open(archive_path, "w:gz") as archive:
                 member = tarfile.TarInfo("app/target/release/codex-vibe-monitor")

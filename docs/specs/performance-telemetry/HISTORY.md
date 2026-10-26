@@ -5,6 +5,10 @@
   固定基础镜像和系统包配方隔离的 APT archives/lists cache，报告记录其恢复与保存结果。
   trusted archive extractor 在 resolve 前拒绝目标路径及父路径 symlink，并补齐路径安全回归。
 
+- 2026-10-26：进一步隔离候选可写 cache：Rust、APT 和 Bun producer cache key 绑定完整
+  candidate SHA，同一候选重跑可复用但跨候选不再共享可写缓存；Web 构建的 PostCSS、Tailwind
+  和版本写入脚本纳入 recipe/build identity，避免配置单独变化时错误命中完整镜像。
+
 - 2026-10-26：Bun cache 只复用 lockfile 兼容的下载目录；不再跨 candidate 保存或恢复
   `web/node_modules`，外部 producer 每次清理后执行 `bun install --frozen-lockfile`，避免候选
   构建产生的依赖树污染后续 trusted candidate。
