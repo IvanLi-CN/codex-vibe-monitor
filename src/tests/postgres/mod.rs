@@ -75,6 +75,16 @@ impl AuthorityManifestStore for TestAuthorityStore {
         if publication != AuthorityPublication::Committed {
             return Ok(publication);
         }
+        if manifest.migration_id != expected.migration_id
+            || manifest.installation_id != expected.installation_id
+            || manifest.module != expected.module
+            || manifest.source_identity != expected.source_identity
+            || manifest.target_identity != expected.target_identity
+            || manifest.source_watermark != expected.source_watermark
+            || manifest.authority.backend != BackendKind::Postgres
+        {
+            return Ok(AuthorityPublication::Conflict);
+        }
         let mut recovery_slot = self.recovery.lock().await;
         let recovery = recovery_slot
             .clone()
@@ -550,6 +560,91 @@ async fn recovery_rejects_no_cutover_marker_for_another_module() {
 }
 
 #[tokio::test]
+async fn recovery_rejects_no_cutover_marker_with_another_full_context() {
+    let expected = recovery_context();
+    let mut markers = Vec::new();
+
+    let mut marker = AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: expected.migration_id.clone(),
+        installation_id: expected.installation_id.clone(),
+        module: expected.module,
+        source_identity: expected.source_identity.clone(),
+        target_identity: expected.target_identity.clone(),
+        source_watermark: expected.source_watermark,
+    };
+    if let AuthorityRecoveryRecord::NeverMigrated {
+        installation_id, ..
+    } = &mut marker
+    {
+        *installation_id = "another-installation".into();
+    }
+    markers.push(marker);
+
+    let mut marker = AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: expected.migration_id.clone(),
+        installation_id: expected.installation_id.clone(),
+        module: expected.module,
+        source_identity: expected.source_identity.clone(),
+        target_identity: expected.target_identity.clone(),
+        source_watermark: expected.source_watermark,
+    };
+    if let AuthorityRecoveryRecord::NeverMigrated {
+        source_identity, ..
+    } = &mut marker
+    {
+        *source_identity = "another-source".into();
+    }
+    markers.push(marker);
+
+    let mut marker = AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: expected.migration_id.clone(),
+        installation_id: expected.installation_id.clone(),
+        module: expected.module,
+        source_identity: expected.source_identity.clone(),
+        target_identity: expected.target_identity.clone(),
+        source_watermark: expected.source_watermark,
+    };
+    if let AuthorityRecoveryRecord::NeverMigrated {
+        target_identity, ..
+    } = &mut marker
+    {
+        *target_identity = "another-target".into();
+    }
+    markers.push(marker);
+
+    let mut marker = AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: expected.migration_id.clone(),
+        installation_id: expected.installation_id.clone(),
+        module: expected.module,
+        source_identity: expected.source_identity.clone(),
+        target_identity: expected.target_identity.clone(),
+        source_watermark: expected.source_watermark,
+    };
+    if let AuthorityRecoveryRecord::NeverMigrated {
+        source_watermark, ..
+    } = &mut marker
+    {
+        *source_watermark += 1;
+    }
+    markers.push(marker);
+
+    for marker in markers {
+        let gate = ModuleGenerationGate::new(
+            StorageModule::TrafficArchive,
+            ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            },
+        );
+        let store = TestAuthorityStore::default();
+        *store.recovery.lock().await = Some(marker);
+
+        assert!(gate.recover_authority(&store, &expected).await.is_err());
+        assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    }
+}
+
+#[tokio::test]
 async fn recovery_rejects_context_for_another_module() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
@@ -686,6 +781,48 @@ async fn publication_compare_rejects_another_target_or_watermark() {
         AuthorityPublication::Conflict
     );
     assert!(store.manifest.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn publication_compare_rejects_manifest_with_another_context() {
+    let expected = recovery_context();
+    let mut manifests = Vec::new();
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.migration_id = "another-migration".into();
+    manifests.push(manifest);
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.installation_id = "another-installation".into();
+    manifests.push(manifest);
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.source_identity = "another-source".into();
+    manifests.push(manifest);
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.target_identity = "another-target".into();
+    manifests.push(manifest);
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.source_watermark += 1;
+    manifests.push(manifest);
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.module = StorageModule::Analytics;
+    manifests.push(manifest);
+
+    for manifest in manifests {
+        let store = TestAuthorityStore::default();
+        assert_eq!(
+            store
+                .publish_authority_manifest(&manifest, &expected)
+                .await
+                .unwrap(),
+            AuthorityPublication::Conflict
+        );
+        assert!(store.manifest.lock().await.is_none());
+    }
 }
 
 #[tokio::test]
