@@ -131,6 +131,65 @@ async fn adapter() -> Result<Option<(PgPool, ArchiveStorageAdapter)>> {
     Ok(Some((pool, archive)))
 }
 
+async fn legacy_archive_schema_adapter()
+-> Result<Option<(PgPool, PgPool, ArchiveStorageAdapter, String)>> {
+    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+        return Ok(None);
+    };
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .context("connect PostgreSQL archive migration test database")?;
+    let (_, schema_suffix) = fixture_identity();
+    let schema = format!("archive_prune_migration_{schema_suffix}");
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin_pool)
+        .await
+        .context("create isolated archive migration schema")?;
+
+    let search_path = format!("SET search_path TO \"{schema}\", public");
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .after_connect(move |connection, _metadata| {
+            let search_path = search_path.clone();
+            Box::pin(async move {
+                sqlx::query(&search_path).execute(connection).await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url)
+        .await
+        .context("connect isolated archive migration schema")?;
+    sqlx::query(
+        "CREATE TABLE archive_batches (
+            archive_batch_id BIGINT PRIMARY KEY,
+            file_path TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("create legacy archive batch fixture")?;
+    sqlx::query(
+        "CREATE TABLE archive_prune_ledger (
+            archive_batch_id BIGINT PRIMARY KEY,
+            manifest_sha256 TEXT NOT NULL,
+            file_identity_sha256 TEXT NOT NULL,
+            prepared_at_epoch_ms BIGINT NOT NULL,
+            metadata_pruned_at_epoch_ms BIGINT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("create legacy archive prune ledger fixture")?;
+    let archive = ArchiveStorageAdapter::new(
+        pool.clone(),
+        PathBuf::from("/var/lib/codex/archive"),
+        PathBuf::from("/var/lib/codex/raw"),
+    );
+    Ok(Some((admin_pool, pool, archive, schema)))
+}
+
 async fn cleanup(
     pool: &PgPool,
     batch_ids: &[i64],
@@ -482,5 +541,80 @@ async fn postgres_archive_release_and_prune_wait_for_live_raw_link_transactions(
     }
     .await;
     cleanup(&pool, &batch_ids, &file_paths, &raw_path).await?;
+    result
+}
+
+#[tokio::test]
+async fn postgres_archive_prune_ledger_upgrade_backfills_only_recoverable_paths() -> Result<()> {
+    let Some((admin_pool, pool, archive, schema)) = legacy_archive_schema_adapter().await? else {
+        return Ok(());
+    };
+    let (suffix, base_batch_id) = fixture_identity();
+    let recoverable_batch_id = base_batch_id;
+    let unrecoverable_batch_id = base_batch_id + 1;
+    let recoverable_path = format!("legacy-archive-tests/{suffix}/recoverable.sqlite.gz");
+    let manifest_sha = digest("legacy-manifest");
+    let file_identity_sha = digest("legacy-file");
+
+    let result: Result<()> = async {
+        sqlx::query("INSERT INTO archive_batches (archive_batch_id, file_path) VALUES ($1, $2)")
+            .bind(recoverable_batch_id)
+            .bind(&recoverable_path)
+            .execute(&pool)
+            .await
+            .context("seed legacy archive batch path")?;
+        for (batch_id, metadata_pruned_at_epoch_ms) in [
+            (recoverable_batch_id, None),
+            (unrecoverable_batch_id, Some(2_i64)),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_prune_ledger
+                    (archive_batch_id, manifest_sha256, file_identity_sha256,
+                     prepared_at_epoch_ms, metadata_pruned_at_epoch_ms)
+                 VALUES ($1, $2, $3, 1, $4)",
+            )
+            .bind(batch_id)
+            .bind(&manifest_sha)
+            .bind(&file_identity_sha)
+            .bind(metadata_pruned_at_epoch_ms)
+            .execute(&pool)
+            .await
+            .context("seed legacy archive prune ledger row")?;
+        }
+
+        archive.ensure_schema().await?;
+        archive.ensure_schema().await?;
+
+        let recovered_path: Option<String> = sqlx::query_scalar(
+            "SELECT file_path FROM archive_prune_ledger WHERE archive_batch_id = $1",
+        )
+        .bind(recoverable_batch_id)
+        .fetch_one(&pool)
+        .await
+        .context("read recovered archive prune ledger path")?;
+        assert_eq!(recovered_path.as_deref(), Some(recoverable_path.as_str()));
+
+        let unrecovered_path: Option<String> = sqlx::query_scalar(
+            "SELECT file_path FROM archive_prune_ledger WHERE archive_batch_id = $1",
+        )
+        .bind(unrecoverable_batch_id)
+        .fetch_one(&pool)
+        .await
+        .context("read unrecoverable archive prune ledger path")?;
+        assert!(
+            unrecovered_path.is_none(),
+            "a legacy row without an authoritative manifest must remain fail-closed"
+        );
+        Ok(())
+    }
+    .await;
+
+    pool.close().await;
+    let drop_result = sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(&admin_pool)
+        .await
+        .context("drop isolated archive migration schema");
+    admin_pool.close().await;
+    drop_result?;
     result
 }

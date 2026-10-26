@@ -319,6 +319,13 @@ const ARCHIVE_STORAGE_SCHEMA_UPGRADES: &[&str] = &[
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS upstream_activity_manifest_refreshed_at TEXT",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS historical_rollups_materialized_at TEXT",
     "ALTER TABLE archive_prune_ledger ADD COLUMN IF NOT EXISTS file_path TEXT",
+    // Legacy rows that still have their manifest can be repaired from the authoritative path.
+    // Rows whose metadata was already pruned intentionally remain NULL and fail closed.
+    "UPDATE archive_prune_ledger AS ledger
+        SET file_path = batches.file_path
+       FROM archive_batches AS batches
+      WHERE ledger.file_path IS NULL
+        AND ledger.archive_batch_id = batches.archive_batch_id",
     "ALTER TABLE proxy_raw_payload_blobs ADD COLUMN IF NOT EXISTS file_identity_sha256 TEXT",
 ];
 
@@ -2710,12 +2717,14 @@ impl ArchiveStorageAdapter {
         let ledger_manifest_sha: String = ledger_row.try_get("manifest_sha256")?;
         let ledger_file_identity_sha: String = ledger_row.try_get("file_identity_sha256")?;
         let metadata_pruned_at: Option<i64> = ledger_row.try_get("metadata_pruned_at_epoch_ms")?;
-        if ledger_file_path.as_deref() != Some(plan.manifest.file_path.as_str())
-            || ledger_manifest_sha != plan.manifest.sha256
-            || ledger_file_identity_sha != plan.file_identity_sha256
-        {
-            bail!("archive prune ledger identity or path conflicts with current plan");
-        }
+        validate_archive_prune_ledger_identity(
+            ledger_file_path.as_deref(),
+            &ledger_manifest_sha,
+            &ledger_file_identity_sha,
+            &plan.manifest.file_path,
+            &plan.manifest.sha256,
+            &plan.file_identity_sha256,
+        )?;
         if metadata_pruned_at.is_some() {
             return Ok(false);
         }
@@ -2955,6 +2964,23 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn normalize_archive_path(path: &str, archive_root: &Path) -> Result<String> {
     normalize_bounded_path(path, archive_root, "archive")
+}
+
+pub(crate) fn validate_archive_prune_ledger_identity(
+    ledger_file_path: Option<&str>,
+    ledger_manifest_sha: &str,
+    ledger_file_identity_sha: &str,
+    expected_file_path: &str,
+    expected_manifest_sha: &str,
+    expected_file_identity_sha: &str,
+) -> Result<()> {
+    if ledger_file_path != Some(expected_file_path)
+        || ledger_manifest_sha != expected_manifest_sha
+        || ledger_file_identity_sha != expected_file_identity_sha
+    {
+        bail!("archive prune ledger identity or path conflicts with current plan");
+    }
+    Ok(())
 }
 
 fn normalize_raw_path(path: &str, raw_root: &Path) -> Result<String> {

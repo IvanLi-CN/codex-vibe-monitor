@@ -474,6 +474,30 @@ fn prune_plan_requires_proof_rollup_and_zero_raw_references() {
 }
 
 #[test]
+fn prune_recovery_requires_a_persisted_file_path() {
+    validate_archive_prune_ledger_identity(
+        Some("2026/10/archive.sqlite.gz"),
+        "manifest-sha",
+        "file-identity-sha",
+        "2026/10/archive.sqlite.gz",
+        "manifest-sha",
+        "file-identity-sha",
+    )
+    .unwrap();
+
+    let error = validate_archive_prune_ledger_identity(
+        None,
+        "manifest-sha",
+        "file-identity-sha",
+        "2026/10/archive.sqlite.gz",
+        "manifest-sha",
+        "file-identity-sha",
+    )
+    .expect_err("a legacy ledger without a trusted path must fail closed");
+    assert!(error.to_string().contains("identity or path conflicts"));
+}
+
+#[test]
 fn legacy_reader_bounded_projection_uses_nulls_for_missing_columns() {
     let schema = LegacyArchiveSchema::new(
         "codex_invocations",
