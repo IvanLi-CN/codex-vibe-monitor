@@ -416,7 +416,6 @@ async fn durable_status_recovers_pause_progress_and_revision_after_restart() {
             incoming_rate_per_sec: Some(4.5),
             converged: Some(true),
             eta_ms: Some(1_234),
-            ..StorageMigrationProgress::default()
         })
         .await
         .expect("copying progress is accepted");
