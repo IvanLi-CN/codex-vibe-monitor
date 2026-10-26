@@ -152,7 +152,7 @@ jobs:
             test "$digest" != "" && [[ "$digest" == sha256:* ]]
             printf '%s' "$digest"
           }
-          rust_digest="$(resolve_digest rust:1.96.0-bookworm)"
+          rust_digest="$(resolve_digest rust:1.99.1-bookworm)"
           web_digest="$(resolve_digest oven/bun:1.3.14-alpine)"
           runtime_digest="$(resolve_digest debian:bookworm-slim)"
           BASE_IMAGES="rust=$rust_digest web=$web_digest runtime=$runtime_digest" python3 - <<'PY' >> "$GITHUB_OUTPUT"

@@ -22,7 +22,7 @@ impl PendingQueueAccounting {
     }
 
     pub(super) fn observe_attempt_progress_age(&self, age_ms: u64) {
-        let _ = self.attempt_progress_oldest_age_ms.fetch_update(
+        let _ = self.attempt_progress_oldest_age_ms.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.max(age_ms)),
@@ -31,11 +31,11 @@ impl PendingQueueAccounting {
 
     pub(super) fn observe_p1_replace(&self, old: usize, new: usize) {
         if self.observability.get().is_some_and(|m| m.enabled) {
-            let _ = self.observed_p1_depth.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |value| Some(value.saturating_sub(old).saturating_add(new)),
-            );
+            let _ =
+                self.observed_p1_depth
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        Some(value.saturating_sub(old).saturating_add(new))
+                    });
         }
     }
 
@@ -282,7 +282,7 @@ impl PendingQueueAccounting {
             return;
         }
         let previous = counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(amount))
             })
             .expect("accounting update always returns a value");
@@ -302,7 +302,7 @@ impl PendingQueueAccounting {
             return;
         }
         let previous = counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_sub(amount))
             })
             .expect("accounting update always returns a value");

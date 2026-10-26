@@ -12,8 +12,8 @@ tmp_dir="$(mktemp -d)"
 partition_workspace="/tmp/codex-vibe-monitor-backend-test-contract-${PPID}"
 trap 'rm -rf "${tmp_dir}" "${partition_workspace}"' EXIT
 
-backend_test_stage="$(sed -n '/^FROM rust:1.96.0-bookworm AS backend-test$/,/^# Stage 8:/p' "$dockerfile")"
-grep -q '^FROM rust:1.96.0-bookworm AS backend-test$' "$dockerfile"
+backend_test_stage="$(sed -n '/^FROM rust:1.99.1-bookworm AS backend-test$/,/^# Stage 8:/p' "$dockerfile")"
+grep -q '^FROM rust:1.99.1-bookworm AS backend-test$' "$dockerfile"
 grep -q '^  backend-test:$' "$compose_file"
 grep -q 'target: backend-test' "$compose_file"
 grep -q 'CARGO_NEXTEST_VERSION=0.9.138' "$dockerfile"

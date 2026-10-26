@@ -1,3 +1,8 @@
+#![expect(
+    clippy::result_large_err,
+    reason = "OAuth transport errors intentionally retain structured response diagnostics."
+)]
+
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,

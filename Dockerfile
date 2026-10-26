@@ -7,7 +7,7 @@ ARG RUST_SYMBOLS_CONTEXT=observability-symbols
 ARG WEB_CONTEXT=web-builder-canonical
 ARG RUNTIME_CONTEXT=runtime-base-builder
 ARG BUN_BASE=oven/bun:1.3.14-alpine
-ARG RUST_BASE=rust:1.96.0-bookworm
+ARG RUST_BASE=rust:1.99.1-bookworm
 ARG RUNTIME_BASE=debian:bookworm-slim
 
 # Stage 1: build the web assets
@@ -177,7 +177,7 @@ CMD ["codex-vibe-monitor"]
 # Stage 7: project-owned backend test environment. This target is intentionally
 # separate from the production image so test tooling and writable build paths
 # cannot alter the release runtime contract.
-FROM rust:1.96.0-bookworm AS backend-test
+FROM rust:1.99.1-bookworm AS backend-test
 ARG CARGO_NEXTEST_VERSION=0.9.138
 ARG CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216
 

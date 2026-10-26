@@ -15,6 +15,8 @@
 
 ## 变更记录（Change log）
 
+- 2026-10-26: 将本地、CI、Docker 和生产 fixture 的 Rust 工具链基线统一升级到 `1.99.1`；同步 1.99.1 对 `Atomic::fetch_update` 的兼容性修复与既有结构化错误诊断的 Clippy expectation，并验证 macOS `sqlx-macros` 动态库可加载。
+
 - 2026-07-12: 根目录引入 Biome `2.5.3`，移除 web ESLint 配置与依赖，统一 `web/`、`docs-site/` lint/format/import organization 入口；完成全量前端格式化和阻断诊断收敛。
 - 2026-07-13: 对 unsafe Hook 自动修复引发的行为回归完成测试收敛；保留 recommended 规则报告，将现存行为敏感诊断以 warning 呈现，并把历史 Hook 例外迁移为带理由的文件级 Biome suppression。
 - 2026-07-12: `Lint & Format Check` 和 pre-commit 改为严格 Clippy，清理 Rust 诊断并验证 `cargo clippy --locked --all-targets --all-features -- -D warnings`；required-check 名称与 quality-gates contract 保持不变。
