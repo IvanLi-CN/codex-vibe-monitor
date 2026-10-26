@@ -481,7 +481,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     producer_strategy = require_mapping(producer.get("strategy"), f"{workflow_path}.producer.strategy")
     producer_matrix = require_mapping(producer_strategy.get("matrix"), f"{workflow_path}.producer.strategy.matrix")
     require(producer_strategy.get("fail-fast") is False and producer_matrix.get("component") == ["rust", "web", "runtime-base"], f"{workflow_path} producer matrix drifted")
-    for name in ("Restore Rust dependency cache", "Restore Rust target cache", "Restore Rust system package cache", "Restore Bun dependency cache", "Save Rust dependency and target cache", "Save Rust target cache", "Save Rust system package cache", "Save Bun dependency cache"):
+    for name in ("Restore Rust dependency cache", "Restore Rust target cache", "Restore Rust system package cache", "Restore Bun dependency cache", "Save Rust dependency cache", "Save Rust target cache", "Save Rust system package cache", "Save Bun dependency cache"):
         require(step_config(producer, name, workflow_path).get("continue-on-error") is True, f"{workflow_path} {name} must remain best effort")
     web_restore = step_config(producer, "Restore Bun dependency cache", workflow_path)
     web_save = step_config(producer, "Save Bun dependency cache", workflow_path)
@@ -495,7 +495,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
         and "rust_system_cache_key" in str(rust_system_save.get("with", {}).get("key", "")),
         f"{workflow_path} Rust system package cache must be isolated and source-keyed",
     )
-    rust_save = step_config(producer, "Save Rust dependency and target cache", workflow_path)
+    rust_save = step_config(producer, "Save Rust dependency cache", workflow_path)
     require(
         rust_save.get("id") == "rust-cache-save"
         and "rust-deps-cache.outputs.cache-hit != 'true'" in str(rust_save.get("if", ""))
@@ -533,7 +533,8 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     for name in ("Build Rust production artifact", "Build Web production artifact", "Build runtime-base production artifact"):
         step = step_config(producer, name, workflow_path)
         require("matrix.component" in str(step.get("if", "")) and "production" in str(step.get("run", "")), f"{workflow_path} {name} must remain required")
-    require("$RUST_IMAGE" in str(step_config(producer, "Build Rust production artifact", workflow_path).get("run", "")), f"{workflow_path} Rust producer must use the resolved immutable base image")
+    rust_run = str(step_config(producer, "Build Rust production artifact", workflow_path).get("run", ""))
+    require("$RUST_IMAGE" in rust_run and 'SYSTEM_CACHE_HIT="$SYSTEM_CACHE_HIT"' in rust_run and 'SYSTEM_CACHE_KEY="$SYSTEM_CACHE_KEY"' in rust_run, f"{workflow_path} Rust producer must use the resolved immutable base image and report all cache inputs")
     require("$WEB_IMAGE" in str(step_config(producer, "Build Web production artifact", workflow_path).get("run", "")), f"{workflow_path} Web producer must use the resolved immutable base image")
     require("$RUNTIME_IMAGE" in runtime_run, f"{workflow_path} runtime-base producer must use the resolved immutable base image")
     cached_upload = uses_step_config(resolve, "Upload cached candidate image for assembly", PERF_ACTION_UPLOAD_ARTIFACT, workflow_path)

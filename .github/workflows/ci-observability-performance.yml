@@ -459,7 +459,7 @@ jobs:
           cp -R "$root/symbols" "$root/context/symbols"
           tar -C "$root/context" -czf "$root/component.tar.gz" .
           finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" DEPS_CACHE_HIT="$DEPS_CACHE_HIT" TARGET_CACHE_HIT="$TARGET_CACHE_HIT" DEPS_CACHE_KEY="$DEPS_CACHE_KEY" TARGET_CACHE_KEY="$TARGET_CACHE_KEY" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
+          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" DEPS_CACHE_HIT="$DEPS_CACHE_HIT" TARGET_CACHE_HIT="$TARGET_CACHE_HIT" SYSTEM_CACHE_HIT="$SYSTEM_CACHE_HIT" DEPS_CACHE_KEY="$DEPS_CACHE_KEY" TARGET_CACHE_KEY="$TARGET_CACHE_KEY" SYSTEM_CACHE_KEY="$SYSTEM_CACHE_KEY" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           from datetime import datetime
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'rust'
@@ -632,7 +632,7 @@ jobs:
           path.write_text(json.dumps(value))
           PY
 
-      - name: Save Rust dependency and target cache
+      - name: Save Rust dependency cache
         id: rust-cache-save
         if: matrix.component == 'rust' && steps.rust-deps-cache.outputs.cache-hit != 'true'
         continue-on-error: true

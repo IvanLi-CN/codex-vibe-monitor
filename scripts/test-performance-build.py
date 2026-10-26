@@ -116,6 +116,30 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("Finalize Rust cache report", workflow)
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
+        producer = self.workflow["jobs"]["observability-performance-producer"]
+        save_conditions = {
+            step["name"]: step["if"]
+            for step in producer["steps"]
+            if step.get("name") in {
+                "Save Rust dependency cache",
+                "Save Rust target cache",
+                "Save Rust system package cache",
+            }
+        }
+        self.assertEqual(
+            save_conditions,
+            {
+                "Save Rust dependency cache": "matrix.component == 'rust' && steps.rust-deps-cache.outputs.cache-hit != 'true'",
+                "Save Rust target cache": "matrix.component == 'rust' && steps.rust-target-cache.outputs.cache-hit != 'true'",
+                "Save Rust system package cache": "matrix.component == 'rust' && steps.rust-system-cache.outputs.cache-hit != 'true'",
+            },
+        )
+        rust_build = next(
+            step for step in self.workflow["jobs"]["observability-performance-producer"]["steps"]
+            if step["name"] == "Build Rust production artifact"
+        )
+        self.assertIn('SYSTEM_CACHE_HIT="$SYSTEM_CACHE_HIT"', rust_build["run"])
+        self.assertIn('SYSTEM_CACHE_KEY="$SYSTEM_CACHE_KEY"', rust_build["run"])
 
     def test_rust_target_cache_key_is_candidate_scoped(self) -> None:
         identity = next(
