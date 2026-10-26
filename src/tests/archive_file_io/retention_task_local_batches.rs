@@ -1055,7 +1055,7 @@ async fn retention_task_local_transaction_cancel_rolls_back_before_releasing_adm
             .expect("source remains after transaction cancellation"),
         1
     );
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
         .await
         .expect("independent writer after cancellation");
@@ -1405,14 +1405,14 @@ async fn retention_quota_prepare_timeout_discards_work_and_reselects_live_source
             .fetch_one(&pool).await.expect("no committed quota manifest"),
         0,
     );
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     let next = crate::maintenance::compact_old_quota_snapshots(&pool, &config, false)
         .await.expect("fresh live-row selection");
     assert_eq!(next, (1, 1));
     let remaining: Vec<String> = sqlx::query_scalar("SELECT captured_at FROM codex_quota_snapshots")
         .fetch_all(&pool).await.expect("daily representative remains");
     assert_eq!(remaining, vec![late]);
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
             },
         ),
     ).await;
@@ -1685,6 +1685,34 @@ fn assert_no_task_work_files(directory: &Path) {
                 "unfinished file: {name}"
             );
         }
+    }
+}
+
+fn has_task_work_files(directory: &Path) -> bool {
+    fs::read_dir(directory)
+        .expect("list archive directory")
+        .any(|entry| {
+            let entry = entry.expect("archive entry");
+            if entry.file_type().expect("archive entry type").is_dir() {
+                has_task_work_files(&entry.path())
+            } else {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".task-") || name.ends_with(".restore")
+            }
+        })
+}
+
+async fn wait_for_no_task_work_files(directory: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if !has_task_work_files(directory) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "unfinished task work files did not drain before the bounded wait"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
