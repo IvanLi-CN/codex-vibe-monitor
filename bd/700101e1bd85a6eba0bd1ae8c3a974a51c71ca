@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.13",
+  "base_stable_version": "4.13.12",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-26T03:46:26Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.13",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "29c63728ba8fbd5bff7d7ca7072f92a0f61ac88f",
+  "pr_number": 1214,
+  "pr_title": "refactor(tests): split parallel work stats fixtures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.13",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.13",
+  "target_sha": "bd700101e1bd85a6eba0bd1ae8c3a974a51c71ca",
+  "type_label": "type:patch"
+}
