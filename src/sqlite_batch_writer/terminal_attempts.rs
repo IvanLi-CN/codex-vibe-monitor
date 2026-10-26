@@ -366,7 +366,7 @@ pub(super) async fn persist_runtime_attempt_snapshot_postgres_tx_with_invocation
     }
     query.push(
         r#")
-        ON CONFLICT DO UPDATE SET
+        ON CONFLICT (attempt_public_id) WHERE (attempt_public_id IS NOT NULL) DO UPDATE SET
             invoke_id = EXCLUDED.invoke_id,
             occurred_at = EXCLUDED.occurred_at,
             endpoint = EXCLUDED.endpoint,
