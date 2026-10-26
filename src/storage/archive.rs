@@ -325,6 +325,7 @@ const ARCHIVE_STORAGE_SCHEMA_UPGRADES: &[&str] = &[
         SET file_path = batches.file_path
        FROM archive_batches AS batches
       WHERE ledger.file_path IS NULL
+        AND ledger.metadata_pruned_at_epoch_ms IS NULL
         AND ledger.archive_batch_id = batches.archive_batch_id",
     "ALTER TABLE proxy_raw_payload_blobs ADD COLUMN IF NOT EXISTS file_identity_sha256 TEXT",
 ];

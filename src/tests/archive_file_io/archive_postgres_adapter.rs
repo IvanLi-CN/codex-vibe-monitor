@@ -552,20 +552,30 @@ async fn postgres_archive_prune_ledger_upgrade_backfills_only_recoverable_paths(
     let (suffix, base_batch_id) = fixture_identity();
     let recoverable_batch_id = base_batch_id;
     let unrecoverable_batch_id = base_batch_id + 1;
+    let already_pruned_batch_id = base_batch_id + 2;
     let recoverable_path = format!("legacy-archive-tests/{suffix}/recoverable.sqlite.gz");
+    let already_pruned_path = format!("legacy-archive-tests/{suffix}/already-pruned.sqlite.gz");
     let manifest_sha = digest("legacy-manifest");
     let file_identity_sha = digest("legacy-file");
 
     let result: Result<()> = async {
-        sqlx::query("INSERT INTO archive_batches (archive_batch_id, file_path) VALUES ($1, $2)")
-            .bind(recoverable_batch_id)
-            .bind(&recoverable_path)
+        for (batch_id, file_path) in [
+            (recoverable_batch_id, recoverable_path.as_str()),
+            (already_pruned_batch_id, already_pruned_path.as_str()),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_batches (archive_batch_id, file_path) VALUES ($1, $2)",
+            )
+            .bind(batch_id)
+            .bind(file_path)
             .execute(&pool)
             .await
             .context("seed legacy archive batch path")?;
+        }
         for (batch_id, metadata_pruned_at_epoch_ms) in [
             (recoverable_batch_id, None),
             (unrecoverable_batch_id, Some(2_i64)),
+            (already_pruned_batch_id, Some(2_i64)),
         ] {
             sqlx::query(
                 "INSERT INTO archive_prune_ledger
@@ -593,6 +603,18 @@ async fn postgres_archive_prune_ledger_upgrade_backfills_only_recoverable_paths(
         .await
         .context("read recovered archive prune ledger path")?;
         assert_eq!(recovered_path.as_deref(), Some(recoverable_path.as_str()));
+
+        let already_pruned_path: Option<String> = sqlx::query_scalar(
+            "SELECT file_path FROM archive_prune_ledger WHERE archive_batch_id = $1",
+        )
+        .bind(already_pruned_batch_id)
+        .fetch_one(&pool)
+        .await
+        .context("read already-pruned archive ledger path")?;
+        assert!(
+            already_pruned_path.is_none(),
+            "a row already marked pruned must remain fail-closed even if its batch remains"
+        );
 
         let unrecovered_path: Option<String> = sqlx::query_scalar(
             "SELECT file_path FROM archive_prune_ledger WHERE archive_batch_id = $1",
