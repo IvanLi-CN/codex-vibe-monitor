@@ -200,6 +200,31 @@ def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
     )
 
 
+def task_run_is_recoverable_competitor_chunk(row: dict[str, Any]) -> bool:
+    """Recognize a progressed chunk whose transient failure was retried later."""
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict) or details.get("hasMore") is not True:
+        return False
+    released = details.get("filesReleased")
+    checked = details.get("filesChecked")
+    failures = details.get("failures", 0)
+    return (
+        isinstance(released, int)
+        and not isinstance(released, bool)
+        and released > 0
+        and isinstance(checked, int)
+        and not isinstance(checked, bool)
+        and checked >= released
+        and isinstance(failures, int)
+        and not isinstance(failures, bool)
+        and failures > 0
+    )
+
+
 def _number(value: Any, message: str) -> float:
     _require(
         isinstance(value, (int, float))
@@ -317,6 +342,7 @@ def _validate_task_runs(
     setup_start: datetime,
     cleanup_end: datetime,
     require_competitor_overlap: bool,
+    competitor_oracle: dict[str, Any] | None = None,
 ) -> int:
     rows = trial.get("task_runs")
     _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
@@ -334,6 +360,16 @@ def _validate_task_runs(
             if key == COMPETITOR_TASK
             else task_run_is_accepted_terminal(row)
         )
+        if (
+            not accepted
+            and key == COMPETITOR_TASK
+            and isinstance(competitor_oracle, dict)
+            and competitor_oracle.get("verified_empty") is True
+            and competitor_oracle.get("remaining_count") == 0
+            and competitor_oracle.get("remaining_bytes") == 0
+            and task_run_is_recoverable_competitor_chunk(row)
+        ):
+            accepted = True
         _require(accepted, f"background task {key} did not finish successfully or commit valid work")
         work = row.get("committed_work")
         _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
@@ -590,14 +626,6 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             raw_samples = trial["latency_samples_ms"]
             _require(len(raw_samples["write"]) == invocation_count, "foreground response latency sample count does not match HTTP writes")
             _require(len(raw_samples["read"]) == workload["pool_read_requests"], "foreground read latency sample count is inconsistent")
-            competitor_workloads[version].append(
-                _validate_task_runs(
-                    trial,
-                    setup_start,
-                    cleanup_end,
-                    require_competitor_overlap=version == "candidate",
-                )
-            )
             competitor_oracle = trial.get("competitor_file_oracle")
             _require(
                 isinstance(competitor_oracle, dict)
@@ -607,6 +635,15 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 and competitor_oracle.get("remaining_bytes") == 0
                 and competitor_oracle.get("verified_empty") is True,
                 "fixed competitor file oracle is missing or not empty",
+            )
+            competitor_workloads[version].append(
+                _validate_task_runs(
+                    trial,
+                    setup_start,
+                    cleanup_end,
+                    require_competitor_overlap=version == "candidate",
+                    competitor_oracle=competitor_oracle,
+                )
             )
             scrape_rows = trial.get("write_hold_samples")
             _require(isinstance(scrape_rows, list) and len(scrape_rows) >= 2, "raw production write-hold histogram evidence is missing")

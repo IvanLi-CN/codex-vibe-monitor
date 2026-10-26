@@ -44,6 +44,7 @@ from contract import (
     parse_time,
     sha256_bytes,
     task_run_is_accepted_competitor_chunk,
+    task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
 )
@@ -1252,8 +1253,13 @@ def wait_for_task_evidence(
     while time.monotonic() < deadline:
         latest = task_runs(maintenance_db)
         try:
-            validate_task_snapshot(latest)
             raw_oracle = competitor_file_oracle(competitor_raw_dir) if competitor_raw_dir is not None else None
+            validate_task_snapshot(
+                latest,
+                allow_recoverable_competitor_failures=bool(
+                    raw_oracle is not None and raw_oracle["verified_empty"]
+                ),
+            )
             proof_status = archive_proof_status(main_db, cutoff, added_counts)
             proof_ready = proof_status["ready"] if require_summary_proof else proof_status["reference_ready"]
             # The fixed seed snapshot intentionally contains 100,000 expired rows. Waiting
@@ -1285,11 +1291,19 @@ def wait_for_task_evidence(
     raise AcceptanceError("production task/evidence drain timed out")
 
 
-def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
+def validate_task_snapshot(
+    rows: list[dict[str, Any]],
+    *,
+    allow_recoverable_competitor_failures: bool = False,
+) -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if row.get("actual_finished_at") is not None and (
             task_run_is_accepted_competitor_chunk(row)
+            or (
+                allow_recoverable_competitor_failures
+                and task_run_is_recoverable_competitor_chunk(row)
+            )
             if row.get("task_key") == COMPETITOR_TASK
             else task_run_is_accepted_terminal(row)
         ):

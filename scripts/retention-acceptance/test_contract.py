@@ -22,6 +22,7 @@ from contract import (
     AcceptanceError,
     sha256_json,
     task_run_is_accepted_competitor_chunk,
+    task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
 )
@@ -331,12 +332,35 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(task_run_is_accepted_competitor_chunk(row))
         row["details"]["failures"] = 1
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        row["details"]["hasMore"] = True
+        self.assertTrue(task_run_is_recoverable_competitor_chunk(row))
         row["details"]["filesReleased"] = 0
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        self.assertFalse(task_run_is_recoverable_competitor_chunk(row))
         row["status"] = "success"
         row["details"]["filesReleased"] = 32
         row["details"]["failures"] = 1
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        self.assertFalse(task_run_is_recoverable_competitor_chunk(row))
+
+    def test_evidence_validator_accepts_retried_competitor_chunk_after_oracle_completion(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "partial",
+                "error_detail": None,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+            }
+        )
+        validate_evidence(evidence)
 
     def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
         evidence = valid_evidence()
