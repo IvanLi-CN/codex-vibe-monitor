@@ -339,10 +339,8 @@ impl SourcePage {
         if self.next_cursor.as_deref() != self.rows.last().map(|row| row.stable_key.as_str()) {
             bail!("source page cursor does not match its final row");
         }
-        if self.complete && upper_bound.is_some_and(|key| self.next_cursor.as_deref() != Some(key))
-        {
-            bail!("a complete source page must reach its scan upper bound");
-        }
+        // The fixed upper-bound row may be deleted while copying. A complete page means the
+        // source observed no more rows in the planned range; it need not end on that key.
         if !self.complete && self.next_cursor.as_deref() == cursor {
             bail!("an incomplete source page must advance its cursor");
         }
@@ -2196,21 +2194,69 @@ where
         {
             bail!("migration preparation must cover the selected module's exact table set");
         }
-        let capture_start = self.source.capture_watermark().await?;
+        let mut existing_plans = BTreeMap::new();
         for table_name in table_names {
-            let plan = TableCopyPlan {
-                migration_id: self.source.migration_id().to_owned(),
-                table_name: table_name.clone(),
-                scan_lower_bound: self.source.table_lower_bound(table_name).await?,
-                scan_upper_bound: self.source.table_upper_bound(table_name).await?,
-                capture_start,
+            if let Some(plan) = self
+                .target
+                .load_plan(self.source.migration_id(), table_name)
+                .await?
+            {
+                if plan.migration_id != self.source.migration_id()
+                    || plan.table_name != *table_name
+                    || plan.capture_start < 0
+                {
+                    bail!("durable migration plan has an invalid identity");
+                }
+                validate_table_bounds(
+                    "durable migration plan",
+                    &plan.scan_lower_bound,
+                    &plan.scan_upper_bound,
+                )?;
+                existing_plans.insert(table_name.clone(), plan);
+            }
+        }
+        // A durable plan's capture_start is the migration generation. Reuse it for every table
+        // after a partial prepare so a restart never creates a second capture boundary.
+        let capture_start = if let Some(plan) = existing_plans.values().next() {
+            let capture_start = plan.capture_start;
+            if existing_plans
+                .values()
+                .any(|existing| existing.capture_start != capture_start)
+            {
+                bail!("durable migration plans use different capture generations");
+            }
+            capture_start
+        } else {
+            self.source.capture_watermark().await?
+        };
+        for table_name in table_names {
+            let existing = existing_plans.get(table_name);
+            let plan = if let Some(plan) = existing {
+                plan.clone()
+            } else {
+                TableCopyPlan {
+                    migration_id: self.source.migration_id().to_owned(),
+                    table_name: table_name.clone(),
+                    scan_lower_bound: self.source.table_lower_bound(table_name).await?,
+                    scan_upper_bound: self.source.table_upper_bound(table_name).await?,
+                    capture_start,
+                }
             };
-            self.target.save_plan(&plan).await?;
+            if existing.is_none() {
+                self.target.save_plan(&plan).await?;
+            }
             if let Some(checkpoint) = self
                 .target
                 .load_checkpoint(&plan.migration_id, &plan.table_name)
                 .await?
             {
+                if checkpoint.migration_id != plan.migration_id
+                    || checkpoint.table_name != plan.table_name
+                    || checkpoint.capture_start != plan.capture_start
+                    || checkpoint.scan_upper_bound != plan.scan_upper_bound
+                {
+                    bail!("durable migration checkpoint does not match its plan");
+                }
                 self.store
                     .save_checkpoint(
                         &checkpoint
@@ -2549,7 +2595,7 @@ where
             .await
         }
         .await;
-        if result.is_err() {
+        if result.is_err() && !gate.requires_recovery() {
             self.fence.reopen().await;
         }
         result

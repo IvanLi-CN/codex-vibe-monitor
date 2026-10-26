@@ -712,6 +712,10 @@ impl ModuleGenerationGate {
         self.0.state.lock().await.authority
     }
 
+    pub(crate) fn requires_recovery(&self) -> bool {
+        self.0.recovery_required.load(Ordering::Acquire)
+    }
+
     #[cfg(test)]
     pub(crate) fn require_recovery_for_test(&self) {
         self.0.recovery_required.store(true, Ordering::Release);
