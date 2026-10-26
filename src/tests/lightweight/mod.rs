@@ -5,6 +5,7 @@ use super::*;
 pub(crate) use super::*;
 
 mod app_config_and_invocation_index_contracts;
+mod archive_storage;
 mod capture_snapshot_and_replay;
 mod forward_proxy_binding_and_capture_diagnostics;
 mod forward_proxy_subscription_and_weights;
