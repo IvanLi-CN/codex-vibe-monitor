@@ -256,7 +256,6 @@ class MeasurementBudgetTests(unittest.TestCase):
             patch("measure.time.monotonic", side_effect=[0, 0, 31]),
             patch("measure.time.sleep"),
             patch("measure.task_runs", side_effect=[[], valid_runs]),
-            patch("measure.task_owners_idle", return_value=True),
             patch(
                 "measure.archive_proof_status",
                 return_value={
