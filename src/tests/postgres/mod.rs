@@ -50,6 +50,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
         }
         Ok(self.manifest.lock().await.as_ref().cloned().map_or(
             AuthorityRecoveryRecord::NeverMigrated {
+                migration_id: "migration-01".into(),
                 installation_id: "test-installation".into(),
                 source_identity: "test-source".into(),
             },
@@ -76,7 +77,16 @@ impl AuthorityManifestStore for TestAuthorityStore {
 }
 
 fn authority_manifest(generation: u64, backend: BackendKind) -> ModuleAuthorityManifest {
+    authority_manifest_for_migration(generation, backend, "migration-01")
+}
+
+fn authority_manifest_for_migration(
+    generation: u64,
+    backend: BackendKind,
+    migration_id: &str,
+) -> ModuleAuthorityManifest {
     ModuleAuthorityManifest {
+        migration_id: migration_id.into(),
         installation_id: "test-installation".into(),
         source_identity: "test-source".into(),
         module: StorageModule::TrafficArchive,
@@ -90,7 +100,12 @@ fn authority_manifest(generation: u64, backend: BackendKind) -> ModuleAuthorityM
 }
 
 fn recovery_context() -> AuthorityRecoveryContext {
+    recovery_context_for_migration("migration-01")
+}
+
+fn recovery_context_for_migration(migration_id: &str) -> AuthorityRecoveryContext {
     AuthorityRecoveryContext {
+        migration_id: migration_id.into(),
         installation_id: "test-installation".into(),
         source_identity: "test-source".into(),
         target_identity: "test-target".into(),
@@ -336,6 +351,80 @@ async fn generation_gate_does_not_publish_after_recovery_becomes_required_during
 }
 
 #[tokio::test]
+async fn switch_rejects_manifest_from_another_migration_attempt() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = Arc::new(TestAuthorityStore::default());
+    let result = gate
+        .switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest_for_migration(2, BackendKind::Postgres, "migration-stale"),
+            recovery_context_for_migration("migration-current"),
+            std::time::Duration::from_secs(1),
+            store.clone(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(store.publication_count.load(Ordering::Acquire), 0);
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.generation, 1);
+}
+
+#[tokio::test]
+async fn recovery_rejects_authority_manifest_from_another_migration_attempt() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = TestAuthorityStore::default();
+    *store.manifest.lock().await = Some(authority_manifest_for_migration(
+        2,
+        BackendKind::Postgres,
+        "migration-stale",
+    ));
+
+    assert!(
+        gate.recover_authority(&store, &recovery_context_for_migration("migration-current"))
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn recovery_rejects_no_cutover_marker_from_another_migration_attempt() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = TestAuthorityStore::default();
+    *store.recovery.lock().await = Some(AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: "migration-stale".into(),
+        installation_id: "test-installation".into(),
+        source_identity: "test-source".into(),
+    });
+
+    assert!(
+        gate.recover_authority(&store, &recovery_context_for_migration("migration-current"))
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
 async fn unpolled_transaction_completion_cancel_fences_authority_before_releasing_lease() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
@@ -467,8 +556,8 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
         second_gate
             .switch_authority(
                 StorageModule::TrafficArchive,
-                authority_manifest(3, BackendKind::Postgres),
-                recovery_context(),
+                authority_manifest_for_migration(3, BackendKind::Postgres, "migration-02"),
+                recovery_context_for_migration("migration-02"),
                 std::time::Duration::from_secs(1),
                 second_store,
             )

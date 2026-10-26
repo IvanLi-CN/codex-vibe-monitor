@@ -33,6 +33,7 @@ pub(crate) struct ModuleAuthority {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleAuthorityManifest {
+    pub(crate) migration_id: String,
     pub(crate) installation_id: String,
     pub(crate) source_identity: String,
     pub(crate) module: StorageModule,
@@ -43,6 +44,7 @@ pub(crate) struct ModuleAuthorityManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AuthorityRecoveryContext {
+    pub(crate) migration_id: String,
     pub(crate) installation_id: String,
     pub(crate) source_identity: String,
     pub(crate) target_identity: String,
@@ -51,8 +53,9 @@ pub(crate) struct AuthorityRecoveryContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthorityRecoveryRecord {
-    /// The durable store confirms this installation has never cut over this module.
+    /// The durable store confirms this migration attempt has not cut over the module.
     NeverMigrated {
+        migration_id: String,
         installation_id: String,
         source_identity: String,
     },
@@ -483,13 +486,15 @@ impl ModuleGenerationGate {
         }
         match metadata.load_authority_manifest(self.0.module).await? {
             AuthorityRecoveryRecord::NeverMigrated {
+                migration_id,
                 installation_id,
                 source_identity,
             } => {
-                if installation_id != expected.installation_id
+                if migration_id != expected.migration_id
+                    || installation_id != expected.installation_id
                     || source_identity != expected.source_identity
                 {
-                    bail!("no-cutover recovery marker belongs to another installation or source");
+                    bail!("no-cutover recovery marker belongs to another migration identity");
                 }
                 if self.0.state.lock().await.authority.backend != BackendKind::Sqlite {
                     bail!("missing authority manifest cannot restore a PostgreSQL-selected module");
@@ -497,6 +502,7 @@ impl ModuleGenerationGate {
             }
             AuthorityRecoveryRecord::Manifest(manifest) => {
                 if manifest.module != self.0.module
+                    || manifest.migration_id != expected.migration_id
                     || manifest.installation_id != expected.installation_id
                     || manifest.source_identity != expected.source_identity
                     || manifest.target_identity != expected.target_identity
@@ -580,13 +586,14 @@ fn validate_switch_manifest(
     expected: &AuthorityRecoveryContext,
 ) -> Result<()> {
     if manifest.module != module
+        || manifest.migration_id != expected.migration_id
         || manifest.installation_id != expected.installation_id
         || manifest.source_identity != expected.source_identity
         || manifest.target_identity != expected.target_identity
         || manifest.source_watermark != expected.source_watermark
         || manifest.authority.backend != BackendKind::Postgres
     {
-        bail!("authority manifest does not match the verified PostgreSQL migration target");
+        bail!("authority manifest does not match the verified PostgreSQL migration attempt");
     }
     Ok(())
 }
@@ -664,6 +671,7 @@ pub(crate) trait MigrationTaskAdmission: Send + Sync {
     fn decision(&self, task_key: &str) -> AdmissionDecision;
 }
 
+/// Authority persistence must store the migration ID with every manifest and no-cutover marker.
 #[async_trait::async_trait]
 pub(crate) trait AuthorityManifestStore: Send + Sync {
     async fn load_authority_manifest(
