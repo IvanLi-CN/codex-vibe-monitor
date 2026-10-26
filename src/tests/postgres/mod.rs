@@ -333,7 +333,7 @@ async fn generation_gate_does_not_publish_after_recovery_becomes_required_during
 }
 
 #[tokio::test]
-async fn cancelled_transaction_completion_fences_authority_before_releasing_lease() {
+async fn unpolled_transaction_completion_cancel_fences_authority_before_releasing_lease() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
         ModuleAuthority {

@@ -115,9 +115,8 @@ enum TransactionCompletion {
 async fn complete_transaction(
     backend: StorageTransactionBackend,
     completion: TransactionCompletion,
-    lease: Option<ModuleGenerationLease>,
+    mut completion_lease: TransactionCompletionLease,
 ) -> Result<()> {
-    let mut completion_lease = TransactionCompletionLease::new(lease);
     let result = match (backend, completion) {
         (StorageTransactionBackend::Sqlite(transaction), TransactionCompletion::Commit) => {
             transaction.commit().await.map_err(Into::into)
@@ -145,8 +144,9 @@ impl StorageTransaction {
             bail!("storage transaction is already complete");
         };
         let lease = self.lease.take();
+        let completion_lease = TransactionCompletionLease::new(lease);
         tokio::spawn(async move {
-            complete_transaction(backend, TransactionCompletion::Commit, lease).await
+            complete_transaction(backend, TransactionCompletion::Commit, completion_lease).await
         })
         .await??;
         Ok(())
@@ -157,8 +157,9 @@ impl StorageTransaction {
             bail!("storage transaction is already complete");
         };
         let lease = self.lease.take();
+        let completion_lease = TransactionCompletionLease::new(lease);
         tokio::spawn(async move {
-            complete_transaction(backend, TransactionCompletion::Rollback, lease).await
+            complete_transaction(backend, TransactionCompletion::Rollback, completion_lease).await
         })
         .await??;
         Ok(())
@@ -172,8 +173,14 @@ impl Drop for StorageTransaction {
         };
         let lease = self.lease.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let completion_lease = TransactionCompletionLease::new(lease);
             runtime.spawn(async move {
-                let _ = complete_transaction(backend, TransactionCompletion::Rollback, lease).await;
+                let _ = complete_transaction(
+                    backend,
+                    TransactionCompletion::Rollback,
+                    completion_lease,
+                )
+                .await;
             });
         } else {
             if let Some(lease) = lease.as_ref() {
@@ -511,8 +518,9 @@ impl ModuleGenerationGate {
         &self,
         lease: ModuleGenerationLease,
     ) -> tokio::task::JoinHandle<()> {
+        let completion_lease = TransactionCompletionLease::new(Some(lease));
         tokio::spawn(async move {
-            let _completion_lease = TransactionCompletionLease::new(Some(lease));
+            let _completion_lease = completion_lease;
             std::future::pending::<()>().await;
         })
     }
