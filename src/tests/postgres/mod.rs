@@ -453,6 +453,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
             )
             .await
     });
+    drop(old);
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
         store.publication_started.notified(),
@@ -476,7 +477,6 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
     gate.wait_for_switch_attempts_for_test(second_attempt).await;
     assert_eq!(store.publication_count.load(Ordering::Acquire), 1);
     store.publication_release.notify_one();
-    drop(old);
     first.await.unwrap().unwrap();
     assert!(second.await.unwrap().is_err());
 
