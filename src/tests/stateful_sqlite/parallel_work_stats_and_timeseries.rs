@@ -3,7 +3,7 @@ use super::*;
 mod pruned_summary_archives;
 use crate::api::DashboardTerminalProjectionSlice;
 use serde_json::json;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 static TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -21759,6 +21759,10 @@ async fn timeseries_startup_recovery_baseline_reenters_after_stopped_release() {
 
 #[tokio::test]
 async fn restart_schema_refreshes_existing_objects_across_primed_pool_connections() {
+    let _target_timing = test_timing_target(
+        "tests::stateful_sqlite::parallel_work_stats_and_timeseries::restart_schema_refreshes_existing_objects_across_primed_pool_connections",
+    );
+    let _whole_test = test_timing_span("whole_test");
     let temp_dir = make_temp_test_dir("existing-schema-objects-across-pool");
     let database_path = temp_dir.join("projection.db");
     fs::File::create(&database_path).expect("create projection database");
@@ -21791,9 +21795,12 @@ async fn restart_schema_refreshes_existing_objects_across_primed_pool_connection
     }
     drop(connections);
 
-    crate::ensure_schema(&pool)
-        .await
-        .expect("restart schema initialization must refresh existing schema objects");
+    crate::test_timed!(
+        "production_operation",
+        crate::ensure_schema(&pool)
+            .await
+            .expect("restart schema initialization must refresh existing schema objects")
+    );
 
     let trigger_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement'",
@@ -23058,15 +23065,24 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         .execute(&state.pool)
         .await
         .expect("create summary projection interleave gate");
-    let interleave = install_summary_projection_test_interleave();
+    let interleave = install_summary_projection_test_interleave_at(
+        SummaryProjectionTestInterleaveStage::BeforeArchiveIdentityRevalidation,
+    );
+    let stage_reached = Arc::new(Notify::new());
+    let replacement_cancelled = Arc::new(Notify::new());
     let replacement_path = archive_path.to_string_lossy().to_string();
     let concurrent_terminal_at = archived_at.clone();
     let replacement_pool = state.pool.clone();
     let replacement_interleave = interleave.clone();
+    let replacement_stage_reached = stage_reached.clone();
+    let replacement_cancelled_for_writer = replacement_cancelled.clone();
     let replacement_archive_path_for_writer = replacement_archive_path.clone();
     let archive_path_for_writer = archive_path.clone();
     let replacement = tokio::spawn(async move {
-        replacement_interleave.wait_for_writer().await;
+        tokio::select! {
+            _ = replacement_stage_reached.notified() => {}
+            _ = replacement_cancelled_for_writer.notified() => return,
+        }
         fs::rename(
             &replacement_archive_path_for_writer,
             &archive_path_for_writer,
@@ -23109,11 +23125,19 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             .expect("legacy manifest replacement must not block the snapshot reader")
             .expect("commit legacy manifest replacement");
     });
-    let hydration =
-        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
-            .await;
-    replacement.await.expect("run legacy manifest replacement");
+    // This test exercises archive identity revalidation after a complete boundary admission.
+    let hydration = refresh_summary_snapshots_with_test_setup_deadline(
+        state.as_ref(),
+        SummaryProjectionBuildMode::Rolling,
+        Duration::from_secs(30),
+        interleave.clone(),
+        stage_reached,
+    )
+    .await;
+    replacement_cancelled.notify_one();
+    let replacement_result = replacement.await;
     clear_summary_projection_test_interleave();
+    replacement_result.expect("run legacy manifest replacement");
     let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");
     assert!(
         hydration_error
