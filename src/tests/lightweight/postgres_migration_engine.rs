@@ -388,6 +388,108 @@ async fn migration_switch_serializes_concurrent_authority_attempts() -> Result<(
 }
 
 #[tokio::test]
+async fn migration_switch_abort_does_not_leave_source_fenced() -> Result<()> {
+    let (directory, path) = state_path("authority-cancelled");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let active_write = fence.begin_write().await?;
+    let waiter = tokio::spawn({
+        let migration = migration.clone();
+        let gate = gate.clone();
+        async move {
+            migration
+                .switch_authority(
+                    &gate,
+                    AuthorityRecoveryContext {
+                        migration_id: "migration-engine-test".into(),
+                        installation_id: "installation-test".into(),
+                        module: StorageModule::TrafficArchive,
+                        source_identity: "sqlite-test".into(),
+                        target_identity: "postgres-test".into(),
+                        source_watermark: 1,
+                    },
+                    Duration::from_millis(50),
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if fence.is_fenced().await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    waiter.abort();
+    assert!(
+        waiter
+            .await
+            .expect_err("switch waiter should be aborted")
+            .is_cancelled()
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !fence.is_fenced().await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    drop(active_write);
+    assert_eq!(gate.current_authority().await.backend, BackendKind::Sqlite);
+    source
+        .write(
+            &fence,
+            vec![change("events", "b", ChangeKind::Insert, b"after-cancel")],
+        )
+        .await?;
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn migration_rejects_incomplete_module_table_sets() -> Result<()> {
     let (directory, path) = state_path("table-set");
     let source = Arc::new(InMemoryMigrationSource::new(

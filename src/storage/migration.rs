@@ -2107,7 +2107,7 @@ fn value_to_stored_reservation(reservation: &MigrationReservation) -> StoredRese
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct MigrationEngine<S, T, M> {
     source: Arc<S>,
     target: Arc<T>,
@@ -2120,6 +2120,24 @@ pub(crate) struct MigrationEngine<S, T, M> {
     fence: SourceWriteFence,
     switching: Arc<Mutex<()>>,
     run_control: MigrationRunControl,
+}
+
+impl<S, T, M> Clone for MigrationEngine<S, T, M> {
+    fn clone(&self) -> Self {
+        Self {
+            source: Arc::clone(&self.source),
+            target: Arc::clone(&self.target),
+            store: Arc::clone(&self.store),
+            module: self.module,
+            installation_id: self.installation_id.clone(),
+            target_identity: self.target_identity.clone(),
+            authority_generation: self.authority_generation,
+            limits: self.limits,
+            fence: self.fence.clone(),
+            switching: Arc::clone(&self.switching),
+            run_control: self.run_control.clone(),
+        }
+    }
 }
 
 impl<S, T, M> MigrationEngine<S, T, M>
@@ -2495,6 +2513,23 @@ where
     }
 
     pub(crate) async fn switch_authority(
+        &self,
+        gate: &ModuleGenerationGate,
+        expected: AuthorityRecoveryContext,
+        switch_budget: Duration,
+    ) -> Result<()> {
+        let migration = (*self).clone();
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            migration
+                .switch_authority_inner(&gate, expected, switch_budget)
+                .await
+        })
+        .await
+        .context("migration authority switch worker failed")?
+    }
+
+    async fn switch_authority_inner(
         &self,
         gate: &ModuleGenerationGate,
         expected: AuthorityRecoveryContext,
