@@ -2824,17 +2824,28 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
         .await
         .expect("close repaired partial archive");
     assert_eq!(archive_row_count, 64);
+    let archive_path = archive_path.to_string_lossy().to_string();
+    let repaired_manifest = sqlx::query_as::<_, (i64, String)>(
+        "SELECT row_count, sha256 FROM archive_batches
+         WHERE dataset='codex_invocations' AND file_path=?1
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired partial archive manifest");
+    assert_eq!(repaired_manifest.0, 64);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT row_count FROM archive_batches
-             WHERE dataset='codex_invocations' AND file_path=?1
-             ORDER BY id DESC LIMIT 1",
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay
+             WHERE dataset='codex_invocations' AND file_path=?1 AND archive_sha256=?2",
         )
-        .bind(archive_path.to_string_lossy().to_string())
+        .bind(&archive_path)
+        .bind(&repaired_manifest.1)
         .fetch_one(&pool)
         .await
-        .expect("load repaired partial archive manifest row count"),
-        64
+        .expect("load replay markers for repaired partial archive"),
+        INVOCATION_HOURLY_ROLLUP_TARGETS.len() as i64
     );
     let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await

@@ -398,6 +398,21 @@ async fn repair_partial_invocation_archive(
         crate::prepare_verified_summary_archive_snapshot(pool, batch_id, &repaired_outcome.sha256)
             .await?;
     crate::publish_verified_summary_archive_snapshot(pool, &proof).await?;
+
+    // Partial repair replaces the published file and therefore changes its manifest SHA. Refresh
+    // every replay marker after that replacement so the rollup proof stays bound to the repaired
+    // artifact rather than the pre-repair file identity.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+        mark_hourly_rollup_archive_replayed_tx(
+            &mut transaction,
+            target,
+            repaired_outcome.dataset,
+            &repaired_outcome.file_path,
+        )
+        .await?;
+    }
+    transaction.commit().await?;
     Ok(())
 }
 
