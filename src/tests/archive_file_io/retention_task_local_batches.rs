@@ -2907,44 +2907,47 @@ async fn retention_task_local_partial_timestamped_archive_reselects_without_dupl
     .expect("timestamped archive candidates");
 
     let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
-    let pressure = Arc::new(crate::db_pressure::DbPressureGate::new(
-        1,
-        Duration::from_secs(30),
-    ));
     let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("timestamped archive path");
     let select_sql = "SELECT id, occurred_at AS timestamp_value
                       FROM pool_upstream_request_attempts
                       WHERE occurred_at < ?1
                       ORDER BY occurred_at ASC, id ASC LIMIT ?2";
     let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
         coordinator,
-        crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
-            pressure.clone(),
-            crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
-                probe.clone(),
-                crate::maintenance::retention_test_with_work_budget(
-                    Duration::from_secs(60),
-                    archive_timestamped_dataset(
-                        &pool,
-                        &config,
-                        archive_table_spec("pool_upstream_request_attempts"),
-                        select_sql,
-                        "9999-01-01 00:00:00".to_string(),
-                        false,
-                        None,
-                    ),
+        crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_work_budget(
+                Duration::from_secs(60),
+                archive_timestamped_dataset(
+                    &pool,
+                    &config,
+                    archive_table_spec("pool_upstream_request_attempts"),
+                    select_sql,
+                    "9999-01-01 00:00:00".to_string(),
+                    false,
+                    None,
                 ),
             ),
         ),
     );
     let competitor = async {
         probe.committed.notified().await;
-        let owner = pressure
-            .try_begin_background("partial-timestamped-competitor")
-            .expect("claim pressure slot after first committed chunk");
+        sqlx::query(
+            "UPDATE archive_batches
+             SET cleanup_state=?1
+             WHERE dataset=?2 AND month_key=?3 AND file_path=?4",
+        )
+        .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+        .bind("pool_upstream_request_attempts")
+        .bind(&occurred_at[..7])
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("mark timestamped archive cleanup pending");
         probe.resume.notify_one();
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        drop(owner);
     };
     let (first, ()) = tokio::join!(work, competitor);
     let first = first.expect("timestamped archive should defer after a committed prefix");
@@ -2957,9 +2960,6 @@ async fn retention_task_local_partial_timestamped_archive_reselects_without_dupl
         936
     );
 
-    let archive_path =
-        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
-            .expect("timestamped archive path");
     let manifest_row_count: i64 = sqlx::query_scalar(
         "SELECT row_count FROM archive_batches
          WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
