@@ -1241,9 +1241,13 @@ async fn open_archive_batch_pool(
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
             // The owner task below is the only path allowed to open this pool. The long watchdog
-            // is not a retention budget; it prevents SQLx's default short acquire timeout from
-            // cancelling native SQLite initialization before the drain owner can close it.
-            .acquire_timeout(Duration::from_secs(365 * 24 * 60 * 60))
+            // is not a retention budget; SQLx exposes only a finite Duration here, so use a
+            // process-lifetime-scale sentinel instead of its default short acquire timeout.
+            .acquire_timeout(Duration::from_secs(100 * 365 * 24 * 60 * 60))
+            // Never let the pool retire the prewarmed connection and silently start a new native
+            // worker outside the owner task.
+            .idle_timeout(None)
+            .max_lifetime(None)
             // The owner task prewarms the sole connection. Without a pre-acquire ping, later
             // cancellation cannot drop an already-idle native connection between acquire and
             // handing it to the archive query.
