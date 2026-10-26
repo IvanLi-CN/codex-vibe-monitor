@@ -36,6 +36,7 @@ fn archive_sha_log_ref(sha256: &str) -> &str {
 const SUMMARY_ACCOUNT_ARCHIVE_MAX_ROWS: usize = 50_000;
 const SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES: usize = 4_096;
 
+pub(crate) mod analytics_adapter;
 mod archive_loaders;
 mod live_queries;
 mod range_and_models;
