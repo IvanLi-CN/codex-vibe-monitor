@@ -206,7 +206,7 @@ PR Ready，且不得把未运行写成预算已验证。分支在 resolver job �
 上并行生成 Rust、Web 和 runtime-base，再由 `Observability Performance Image` 使用
 verified named contexts 装配生产镜像，并从同一 Rust context 装入精确的
 `/usr/local/share/codex-vibe-monitor/symbols` 树。兼容缓存位于独立的 `observability-performance-v2`
-namespace，Rust/Web producer 的可写 cache 绑定 candidate SHA，同一候选重跑可复用，跨候选不共享；缓存写入为 60 秒 best-effort；命中完整镜像时跳过 producer，未知配方回退到
+namespace，Rust target 编译产物 cache 绑定 candidate SHA；Cargo/Bun 下载和 APT 包 cache 按锁文件、基础镜像与包配方复用并由包管理器校验；缓存写入为 60 秒 best-effort；命中完整镜像时跳过 producer，未知配方回退到
 候选自己的 canonical Dockerfile。每个 build run 上传保留 14 天的
 `cvm-performance-build-report-v1`，报告实际恢复/保存、队列/执行、传输、装配和镜像 ready
 时间；workflow 使用 `contents: read`、`actions: write` 和 `checks: read`：`actions: write` 仅用于保存隔离的性能构建 cache，

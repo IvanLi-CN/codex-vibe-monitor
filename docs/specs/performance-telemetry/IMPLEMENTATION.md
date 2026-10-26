@@ -49,7 +49,7 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 [指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式 parallel workload lane 的 60 分钟共享上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
 
 性能镜像构建使用 `observability-performance-v2` 命名空间：Rust 依赖下载、Rust target、
-Rust 基础镜像系统包（APT archives/lists）、Bun 下载 cache、runtime-base 和完整镜像分别按有效输入恢复；由候选代码写入的 Rust/Web producer cache 还绑定 candidate SHA，同一候选重跑可复用，跨候选不共享可写缓存，避免候选污染 trusted 后续运行。外部 Web producer 每次按
+Rust 基础镜像系统包（APT archives/lists）、Bun 下载 cache、runtime-base 和完整镜像分别按有效输入恢复；Rust target 编译产物绑定 candidate SHA，同一候选重跑可复用且跨候选不共享；Cargo/Bun 下载 cache 由 lockfile/integrity 校验，APT cache 由仓库签名校验后按兼容输入跨候选复用，避免跨候选复用可执行编译产物。外部 Web producer 每次按
 lockfile 重新安装 `web/node_modules`，canonical Docker stage 复用其已验证的依赖层；BuildKit 使用 `mode=max`、60 秒超时和
 `ignore-error=true` 保存；cache restore/save 失败只回退到干净构建，必需编译、产物
 交接和身份校验仍 fail-closed。Rust/Web producer 在独立 runner 上调用

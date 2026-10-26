@@ -117,12 +117,13 @@ class PerformanceBuildContractTests(unittest.TestCase):
         self.assertIn("Finalize Web cache report", workflow)
         self.assertNotIn("'save':'best-effort'", workflow)
 
-    def test_writable_producer_cache_keys_are_candidate_scoped(self) -> None:
+    def test_rust_target_cache_key_is_candidate_scoped(self) -> None:
         identity = next(
             step for step in self.workflow["jobs"]["observability-performance-resolve"]["steps"]
             if step["name"] == "Bind candidate and build identity"
         )
-        self.assertGreaterEqual(identity["run"].count("-{candidate}"), 6)
+        self.assertEqual(identity["run"].count("-{candidate}"), 1)
+        self.assertIn("rust_target_cache_key=observability-performance-v2-rust-target-", identity["run"])
         workflow = copy.deepcopy(self.workflow)
         mutated = next(
             step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
