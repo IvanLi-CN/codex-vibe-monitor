@@ -1852,7 +1852,10 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
             }
             result
         }?;
-        finalize_archive_sqlite_file(&work_path).await?;
+        {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            finalize_archive_sqlite_file(&work_path).await?;
+        }
         deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup(&work_path, &temp_gzip_path)
             .await?;
         let sha256 = sha256_hex_file_with_operation_budget_for_cleanup(&temp_gzip_path).await?;
@@ -1907,6 +1910,7 @@ pub(crate) async fn rebuild_task_month_snapshot_pages_for_archive(
     let cleanup_work_path = work_path.clone();
     let result = async {
         inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
+        let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
         let pages = prepare_task_month_snapshot_pages(pool, &work_path, outcome, batch_id).await?;
         Ok::<_, anyhow::Error>(pages)
     }

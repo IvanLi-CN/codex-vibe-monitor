@@ -1308,6 +1308,20 @@ def validate_task_snapshot(
             else task_run_is_accepted_terminal(row)
         ):
             by_key.setdefault(row["task_key"], []).append(row)
+    if allow_recoverable_competitor_failures:
+        for row in rows:
+            if not task_run_is_recoverable_competitor_chunk(row):
+                continue
+            finished = parse_time(row.get("actual_finished_at"))
+            if not any(
+                candidate is not row
+                and candidate.get("task_key") == COMPETITOR_TASK
+                and candidate.get("actual_started_at") is not None
+                and parse_time(candidate["actual_started_at"]) >= finished
+                and task_run_is_accepted_competitor_chunk(candidate)
+                for candidate in rows
+            ):
+                raise AcceptanceError("recoverable competitor chunk has no later successful retry")
     for key in (DATASETS[name]["task_key"] for name in DATASETS):
         runs = by_key.get(key, [])
         scheduled = [row for row in runs if row.get("trigger_kind") == "schedule"]

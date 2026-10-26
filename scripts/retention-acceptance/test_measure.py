@@ -189,6 +189,18 @@ class MeasurementBudgetTests(unittest.TestCase):
                 "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
                 "error_detail": None,
             },
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": "2026-10-25T00:00:02Z",
+                "actual_finished_at": "2026-10-25T00:00:03Z",
+                "committed_work": 0,
+                "committed_bytes": 0,
+                "details": {},
+                "error_detail": None,
+            },
             *[
                 {
                     "task_key": task_key,
@@ -216,6 +228,47 @@ class MeasurementBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "fixed workload"):
             validate_task_snapshot(rows)
         validate_task_snapshot(rows, allow_recoverable_competitor_failures=True)
+
+    def test_recoverable_competitor_failure_waits_for_successful_retry(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "error_detail": None,
+            },
+            *[
+                {
+                    "task_key": task_key,
+                    "trigger_kind": trigger_kind,
+                    "status": "success",
+                    "completion": "complete",
+                    "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                    "committed_work": 1000,
+                    "details": {},
+                    "error_detail": None,
+                }
+                for index, (task_key, trigger_kind) in enumerate(
+                    [
+                        ("retention_archive", "schedule"),
+                        ("retention_archive", "catchup"),
+                        ("pool_upstream_attempt_archive", "schedule"),
+                        ("pool_upstream_attempt_archive", "catchup"),
+                    ],
+                    start=1,
+                )
+            ],
+        ]
+
+        with self.assertRaisesRegex(AcceptanceError, "no later successful retry"):
+            validate_task_snapshot(rows, allow_recoverable_competitor_failures=True)
 
     def test_fixture_history_timestamps_match_retention_local_time_contract(self) -> None:
         timestamp = _history_timestamp("2026-10-24 00:00:00", 0)
