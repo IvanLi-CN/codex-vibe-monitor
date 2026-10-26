@@ -156,7 +156,11 @@ The initial supported source is the deployed program state from `4.13.11`; other
 
 DDL, current-data routing/authority changes and historical copying remain separately identified, observable and pauseable in the [persistent-state migration record](../adr/assets/module-owned-postgresql-migration/persistent-state-migration-record.json). This is a design contract, not completed runtime validation.
 
-The [version-impact record](../adr/assets/module-owned-postgresql-migration/version-impact-record.json) keeps public API and durable-state compatibility separate. The inspected key transaction boundaries establish feasibility; they are not an exhaustive table/trigger inventory. The complete inventory and PostgreSQL adapters are implementation deliverables.
+The [version-impact record](../adr/assets/module-owned-postgresql-migration/version-impact-record.json)
+keeps public API and durable-state compatibility separate. The [pg01 inventory contract](postgresql-module-inventory.md) is the executable
+table/trigger/FK/transaction/recovery classification and preserves the A1
+complete-enumeration gate. Runtime actor call-site reconciliation and PostgreSQL
+adapters remain implementation deliverables; the former is a pg08 boundary.
 
 Required implementation evidence:
 
