@@ -515,12 +515,12 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     Ok(true)
 }
 
-pub(crate) async fn summary_archive_snapshot_has_final_proof_tx(
+pub(crate) async fn summary_archive_snapshot_final_proof_marker_exists_tx(
     connection: &mut SqliteConnection,
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
-    let marker_exists = sqlx::query_scalar::<_, i64>(
+    sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(
             SELECT 1 FROM summary_archive_snapshot_v2_proof
             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2
@@ -529,11 +529,8 @@ pub(crate) async fn summary_archive_snapshot_has_final_proof_tx(
     .bind(archive_batch_id)
     .bind(manifest_sha256)
     .fetch_one(&mut *connection)
-    .await?;
-    if marker_exists == 0 {
-        return Ok(false);
-    }
-    summary_archive_snapshot_has_proof_tx(connection, archive_batch_id, manifest_sha256).await
+    .await
+    .map(|exists| exists != 0)
 }
 
 pub(crate) async fn store_summary_archive_snapshot_v2_final_proof_tx(
@@ -581,6 +578,20 @@ pub(crate) async fn prepare_verified_summary_archive_snapshot(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<VerifiedSummaryArchiveSnapshot> {
+    let Some(proof) =
+        prepare_verified_summary_archive_snapshot_if_valid(pool, archive_batch_id, manifest_sha256)
+            .await?
+    else {
+        bail!("Summary Snapshot V2 semantic proof validation failed");
+    };
+    Ok(proof)
+}
+
+async fn prepare_verified_summary_archive_snapshot_if_valid(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<Option<VerifiedSummaryArchiveSnapshot>> {
     let mut transaction = pool.begin().await?;
     if !summary_archive_snapshot_has_proof_tx(
         transaction.as_mut(),
@@ -589,7 +600,8 @@ pub(crate) async fn prepare_verified_summary_archive_snapshot(
     )
     .await?
     {
-        bail!("Summary Snapshot V2 semantic proof validation failed");
+        transaction.rollback().await?;
+        return Ok(None);
     }
     let pages = sqlx::query_as::<_, (i64, String, i64, String, String)>(
         "SELECT page_index, snapshot_sha256, row_count, coverage_start, coverage_end \
@@ -607,12 +619,12 @@ pub(crate) async fn prepare_verified_summary_archive_snapshot(
         "SELECT page_index, format_version, payload_bytes FROM summary_archive_snapshot WHERE archive_batch_id=?1 AND manifest_sha256=?2 ORDER BY page_index"
     ).bind(archive_batch_id).bind(manifest_sha256).fetch_all(transaction.as_mut()).await?;
     transaction.rollback().await?;
-    Ok(VerifiedSummaryArchiveSnapshot {
+    Ok(Some(VerifiedSummaryArchiveSnapshot {
         archive_batch_id,
         manifest_sha256: manifest_sha256.to_string(),
         pages,
         storage,
-    })
+    }))
 }
 
 pub(crate) async fn validate_verified_summary_archive_snapshot_tx(
@@ -748,19 +760,24 @@ pub(crate) async fn ensure_summary_archive_snapshot_v2_final_proof(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    if !summary_archive_snapshot_has_proof_tx(tx.as_mut(), archive_batch_id, manifest_sha256)
-        .await?
-    {
-        tx.rollback().await?;
+    let Some(proof) =
+        prepare_verified_summary_archive_snapshot_if_valid(pool, archive_batch_id, manifest_sha256)
+            .await?
+    else {
         return Ok(false);
-    }
-    store_summary_archive_snapshot_v2_final_proof_tx(
+    };
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if summary_archive_snapshot_final_proof_marker_exists_tx(
         tx.as_mut(),
         archive_batch_id,
         manifest_sha256,
     )
-    .await?;
+    .await?
+    {
+        tx.commit().await?;
+        return Ok(true);
+    }
+    store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
     tx.commit().await?;
     Ok(true)
 }

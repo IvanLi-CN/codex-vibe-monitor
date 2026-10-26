@@ -1253,7 +1253,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         // No incomplete V2 page may survive a source replacement. The manifest identity scopes
         // the outcome row, while this filesystem identity fences work that spans attempts.
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+        if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
             tx.as_mut(),
             candidate.id,
             &candidate.sha256,
@@ -1356,7 +1356,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             // A pre-V2 checkpoint only proves ID order. It cannot be combined with the
             // chronological V2 proof, so discard its unproven pages and restart this manifest.
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-            if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+            if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
                 tx.as_mut(),
                 candidate.id,
                 &candidate.sha256,
@@ -1488,7 +1488,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             // publishes its proof; a deferred transaction would then rewrite the page and fire
             // the trigger that revokes the newly published authority.
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-            if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+            if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
                 tx.as_mut(),
                 candidate.id,
                 &candidate.sha256,

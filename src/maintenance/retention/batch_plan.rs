@@ -494,7 +494,7 @@ pub(crate) async fn stage_task_summary_archive_manifest(
             .fetch_optional(resources.connection_mut())
             .await?;
             if let Some(batch_id) = proven_batch_id
-                && crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+                && crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
                     resources.connection_mut(),
                     batch_id,
                     existing_sha256,
@@ -757,7 +757,7 @@ pub(crate) async fn store_task_summary_snapshot_page(
         // A completed proof is an authority fence. A retry may have selected this page before
         // proof publication, but it must not rewrite a proven page set after the final marker
         // commits and trigger proof invalidation.
-        if crate::summary_source_change::summary_archive_snapshot_has_final_proof_tx(
+        if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
             resources.connection_mut(),
             batch_id,
             &outcome.sha256,

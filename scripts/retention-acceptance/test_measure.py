@@ -257,7 +257,29 @@ class MeasurementBudgetTests(unittest.TestCase):
             patch("measure.time.sleep"),
             patch("measure.task_runs", side_effect=[[], valid_runs]),
             patch("measure.task_owners_idle", return_value=True),
-            patch("measure.archive_proof_status", return_value={"ready": True, "reference_ready": True}),
+            patch(
+                "measure.archive_proof_status",
+                return_value={
+                    "ready": True,
+                    "reference_ready": True,
+                    "datasets": {
+                        "invocations": {
+                            "dataset": "codex_invocations",
+                            "ready": True,
+                            "reference_ready": True,
+                            "summary_proof_complete": True,
+                            "summary_proof_missing": [],
+                        },
+                        "pool_upstream_attempts": {
+                            "dataset": "pool_upstream_request_attempts",
+                            "ready": True,
+                            "reference_ready": True,
+                            "summary_proof_complete": True,
+                            "summary_proof_missing": [],
+                        },
+                    },
+                },
+            ),
         ):
             result = wait_for_task_evidence(
                 Path("main.sqlite"),

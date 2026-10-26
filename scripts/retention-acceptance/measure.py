@@ -1193,6 +1193,7 @@ def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, in
                 dataset_status["reference_missing"].append(missing_conversion)
             dataset_status["summary_proof_complete"] = not dataset_status["summary_proof_missing"]
             dataset_status["reference_ready"] = not dataset_status["reference_missing"]
+            dataset_status["ready"] = not dataset_status["missing"]
             datasets[name] = dataset_status
         return {
             "ready": all(not dataset["missing"] for dataset in datasets.values()),
