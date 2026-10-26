@@ -1878,9 +1878,49 @@ async fn sqlite_capture_persists_source_fence_and_rejects_stale_generations() ->
             .is_err()
     );
 
+    let stale_reopen = restarted
+        .reopen_source_writes(1)
+        .await
+        .expect_err("stale source generation must not reopen writes");
+    assert!(stale_reopen.to_string().contains("stale"));
+
     // A failed pre-commit switch may explicitly reopen the source at the current generation;
-    // the previous generation remains rejected even after that recovery path.
+    // the previous generation remains rejected even after that recovery path. Repeating the
+    // same-generation reopen is intentionally idempotent.
     restarted.reopen_source_writes(2).await?;
+    restarted.reopen_source_writes(2).await?;
+    assert_eq!(
+        restarted.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: false,
+        }
+    );
+
+    let reopened_after_restart = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    reopened_after_restart.ensure_capture_schema().await?;
+    assert_eq!(
+        reopened_after_restart.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: false,
+        }
+    );
+    let stale_reopen_after_restart = reopened_after_restart
+        .reopen_source_writes(1)
+        .await
+        .expect_err("stale source generation must remain rejected after restart");
+    assert!(stale_reopen_after_restart.to_string().contains("stale"));
+    reopened_after_restart.reopen_source_writes(2).await?;
     assert!(
         restarted
             .append_change_for_generation(

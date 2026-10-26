@@ -831,6 +831,21 @@ impl SqliteMigrationSource {
         if expected_generation == 0 {
             bail!("source authority generation must be non-zero");
         }
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        if state.authority_generation != expected_generation {
+            bail!(
+                "source writer generation is stale during reopen: expected {expected_generation}, current {}",
+                state.authority_generation
+            );
+        }
+        if !state.source_writes_fenced {
+            transaction
+                .commit()
+                .await
+                .context("commit idempotent SQLite source write reopen")?;
+            return Ok(());
+        }
         let state_table = quote_identifier(
             &self.capture_state_table_name,
             "SQLite migration capture state table",
@@ -843,13 +858,20 @@ impl SqliteMigrationSource {
                 AND authority_generation = ?
                 AND source_writes_fenced = 1"
         );
-        sqlx::query(&query)
+        let result = sqlx::query(&query)
             .bind(&self.migration_id)
             .bind(&self.source_identity)
             .bind(i64::try_from(expected_generation).context("authority generation overflow")?)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await
             .context("reopen SQLite source writes")?;
+        if result.rows_affected() != 1 {
+            bail!("SQLite source write authority changed during reopen");
+        }
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite source write reopen")?;
         Ok(())
     }
 
