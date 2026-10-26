@@ -216,6 +216,44 @@ fn cleanup_discarded_p2_runtime_overlays(
         .count()
 }
 
+fn terminal_journal_ack_is_deferred(
+    deferred: &PendingBatch,
+    terminal: &BatchedTerminalInvocationWrite,
+) -> bool {
+    deferred.invocation_derived.values().any(|derived| {
+        derived.terminal_journal_ack.as_ref().is_some_and(|ack| {
+            ack.raw_capture == terminal.raw_capture
+                && ack.record.invoke_id == terminal.record.invoke_id
+                && ack.record.occurred_at == terminal.record.occurred_at
+        })
+    })
+}
+
+fn has_pending_terminal_journal_acks(batch: &PendingBatch) -> bool {
+    batch
+        .invocation_derived
+        .values()
+        .any(|derived| derived.terminal_journal_ack.is_some())
+}
+
+fn acknowledge_terminal_journal_acks(
+    terminal_journal: &Arc<TrackedTerminalJournal>,
+    batch: &PendingBatch,
+) {
+    for terminal in batch
+        .invocation_derived
+        .values()
+        .filter_map(|derived| derived.terminal_journal_ack.as_ref())
+    {
+        terminal_journal.acknowledge(
+            &terminal.record.invoke_id,
+            &terminal.record.occurred_at,
+            terminal.raw_capture,
+            &terminal.attempts,
+        );
+    }
+}
+
 fn quarantine_system_task_batch(
     terminal_journal: &Arc<TrackedTerminalJournal>,
     batch: &PendingBatch,
@@ -359,7 +397,7 @@ pub(crate) async fn flush_pending_batch(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
     pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
-    mut batch: PendingBatch,
+    batch: PendingBatch,
     reason: FlushReason,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
@@ -600,7 +638,8 @@ pub(crate) async fn flush_pending_batch_with_authority(
                         terminal.record.invoke_id.clone(),
                         terminal.record.occurred_at.clone(),
                         terminal.raw_capture,
-                    )) {
+                    )) && !terminal_journal_ack_is_deferred(&deferred, terminal)
+                    {
                         terminal_journal.acknowledge(
                             &terminal.record.invoke_id,
                             &terminal.record.occurred_at,
@@ -756,6 +795,7 @@ pub(crate) async fn flush_pending_batch_with_authority(
         .as_ref()
         .is_some_and(crate::db_pressure::is_db_pressure_error);
 
+    let pending_terminal_journal_acks = has_pending_terminal_journal_acks(&batch);
     match flush_pending_batch_inner_with_authority(
         pool,
         traffic_authority,
@@ -773,6 +813,12 @@ pub(crate) async fn flush_pending_batch_with_authority(
     {
         Ok(main_deferred) => {
             deferred_batch.merge_p2(main_deferred);
+            if pending_terminal_journal_acks {
+                // PostgreSQL facts and SQLite-owned observations have both committed. The
+                // source journal is now safe to acknowledge; an acknowledgement failure leaves
+                // the same terminal available for idempotent replay.
+                acknowledge_terminal_journal_acks(terminal_journal, &batch);
+            }
             if let Some(system_task_error) = system_task_failure.as_ref() {
                 if !system_task_retryable_failure {
                     let system_task_batch_ref = system_task_batch
@@ -840,6 +886,24 @@ pub(crate) async fn flush_pending_batch_with_authority(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
+            if pending_terminal_journal_acks {
+                // Never discard a terminal whose journal acknowledgement is still pending. If
+                // the PG fact transaction committed before a later side effect failed, retrying
+                // the full batch is idempotent and the journal remains the durable fallback after
+                // a process restart.
+                let mut retry_batch = if system_task_failure.is_some() {
+                    system_task_batch.unwrap_or_default()
+                } else {
+                    PendingBatch::default()
+                };
+                retry_batch.merge_p2(deferred_batch);
+                retry_batch.merge_p2(batch);
+                return Some(RetainedBatch::p2_failed(
+                    retry_batch,
+                    true,
+                    system_task_lock_failure || is_batch_writer_sqlite_lock_error(&err),
+                ));
+            }
             if !crate::db_pressure::is_db_pressure_error(&err)
                 && let Some(system_task_error) = system_task_failure.as_ref()
             {
@@ -1025,6 +1089,77 @@ pub(crate) async fn flush_pending_batch_inner(
     .await
 }
 
+async fn flush_sqlite_owned_p2_side_effects(
+    pool: &Pool<Sqlite>,
+    batch: &PendingBatch,
+    write_legacy_task_runs: bool,
+) -> Result<()> {
+    let has_derived_account_activity = batch
+        .invocation_derived
+        .values()
+        .any(|derived| derived.upstream_account_id.is_some());
+    if batch.account_selected_touches.is_empty()
+        && !has_derived_account_activity
+        && (!write_legacy_task_runs || batch.system_task_finishes.is_empty())
+    {
+        return Ok(());
+    }
+    let mut transaction = pool.begin().await?;
+    for derived in batch.invocation_derived.values() {
+        crate::touch_upstream_account_last_activity_tx(
+            &mut transaction,
+            &derived.occurred_at,
+            derived.upstream_account_id,
+        )
+        .await?;
+    }
+    for touch in batch.account_selected_touches.values() {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_selected_at = CASE
+                    WHEN last_selected_at IS NULL OR last_selected_at < ?2 THEN ?2
+                    ELSE last_selected_at
+                END,
+                updated_at = CASE
+                    WHEN updated_at IS NULL OR updated_at < ?2 THEN ?2
+                    ELSE updated_at
+                END
+            WHERE id = ?1
+            "#,
+        )
+        .bind(touch.account_id)
+        .bind(&touch.selected_at)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    if write_legacy_task_runs {
+        for finish in batch.system_task_finishes.values() {
+            sqlx::query(
+                r#"
+                UPDATE system_task_runs
+                SET status = ?1,
+                    summary = COALESCE(?2, summary),
+                    detail = ?3,
+                    finished_at = ?4,
+                    duration_ms = ?5
+                WHERE id = ?6
+                "#,
+            )
+            .bind(finish.status.as_str())
+            .bind(finish.summary.as_deref())
+            .bind(finish.detail.as_deref())
+            .bind(&finish.finished_at)
+            .bind(finish.duration_ms)
+            .bind(finish.run_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Flush dependencies mirror the single-writer ownership boundaries."
@@ -1052,6 +1187,7 @@ async fn flush_pending_batch_inner_with_authority(
     let mut prompt_cache_keys_touched = HashSet::new();
     let mut active_prompt_cache_key_releases = Vec::new();
     let recovery_replay = batch.recovery_replay;
+    let mut terminal_backend_for_derived = crate::storage::core::BackendKind::Sqlite;
     let _dashboard_reconcile_guard = if recovery_replay {
         timeout(
             crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
@@ -1089,6 +1225,8 @@ async fn flush_pending_batch_inner_with_authority(
                 .begin_with_pool_acquisition_duration()
                 .await?
         };
+        let terminal_backend = terminal_tx.backend_kind();
+        terminal_backend_for_derived = terminal_backend;
         diagnostic_batch.pool_acquired();
         if let Some(m) = observability {
             m.duration(
@@ -1098,7 +1236,9 @@ async fn flush_pending_batch_inner_with_authority(
             );
         }
         execute_started = Instant::now();
-        let recovery_setup_result: Result<()> = if recovery_replay {
+        let recovery_setup_result: Result<()> = if recovery_replay
+            && terminal_backend == crate::storage::core::BackendKind::Sqlite
+        {
             sqlx::query(&format!(
                 "PRAGMA busy_timeout = {}",
                 crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
@@ -1115,34 +1255,68 @@ async fn flush_pending_batch_inner_with_authority(
         } else {
             async {
         for terminal in batch.terminal_invocations.values() {
-            let persisted = if terminal.raw_capture {
-                let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
-                persist_proxy_capture_record_tx(
-                    terminal_tx.sqlite_connection()?,
-                    capture_started,
-                    terminal.record.clone(),
-                    false,
-                )
-                .await
-                .with_context(|| "flush terminal raw proxy invocation")?
-            } else {
-                persist_proxy_capture_runtime_record_tx(
-                    terminal_tx.sqlite_connection()?,
-                    terminal.record.clone(),
-                    false,
-                )
-                .await
-                .with_context(|| "flush terminal runtime proxy invocation")?
+            let persisted = match terminal_backend {
+                crate::storage::core::BackendKind::Sqlite => {
+                    if terminal.raw_capture {
+                        let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
+                        persist_proxy_capture_record_tx(
+                            terminal_tx.sqlite_connection()?,
+                            capture_started,
+                            terminal.record.clone(),
+                            false,
+                        )
+                        .await
+                        .with_context(|| "flush terminal raw proxy invocation")?
+                    } else {
+                        persist_proxy_capture_runtime_record_tx(
+                            terminal_tx.sqlite_connection()?,
+                            terminal.record.clone(),
+                            false,
+                        )
+                        .await
+                        .with_context(|| "flush terminal runtime proxy invocation")?
+                    }
+                }
+                crate::storage::core::BackendKind::Postgres => {
+                    if terminal.raw_capture {
+                        persist_proxy_capture_record_postgres_tx(
+                            terminal_tx.postgres_connection()?,
+                            terminal.capture_started.unwrap_or_else(Instant::now),
+                            terminal.record.clone(),
+                        )
+                        .await
+                        .with_context(|| "flush terminal raw proxy invocation in PostgreSQL")?
+                    } else {
+                        persist_proxy_capture_runtime_record_postgres_tx(
+                            terminal_tx.postgres_connection()?,
+                            terminal.record.clone(),
+                        )
+                        .await
+                        .with_context(|| "flush terminal runtime proxy invocation in PostgreSQL")?
+                    }
+                }
             };
             let derived_identity = if let Some(persisted) = persisted.as_ref() {
                 Some((persisted.id, persisted.occurred_at.clone()))
             } else {
-                let identity = load_persisted_invocation_identity_tx(
-                    terminal_tx.sqlite_connection()?,
-                    &terminal.record.invoke_id,
-                    &terminal.record.occurred_at,
-                )
-                .await?;
+                let identity = match terminal_backend {
+                    crate::storage::core::BackendKind::Sqlite => {
+                        load_persisted_invocation_identity_tx(
+                            terminal_tx.sqlite_connection()?,
+                            &terminal.record.invoke_id,
+                            &terminal.record.occurred_at,
+                        )
+                        .await?
+                    }
+                    crate::storage::core::BackendKind::Postgres => {
+                        load_persisted_invocation_identity_postgres_tx(
+                            terminal_tx.postgres_connection()?,
+                            &terminal.record.invoke_id,
+                            &terminal.record.occurred_at,
+                        )
+                        .await?
+                    }
+                };
                 identity.map(|row| (row.id, terminal.record.occurred_at.clone()))
             };
             let (invocation_id, occurred_at) = derived_identity.ok_or_else(|| {
@@ -1158,18 +1332,26 @@ async fn flush_pending_batch_inner_with_authority(
                 occurred_at.clone(),
             )?;
             for attempt in &terminal.attempts {
-                persist_runtime_attempt_snapshot_for_invocation_tx(
-                    terminal_tx.sqlite_connection()?,
-                    &fact_identity,
-                    attempt,
-                )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "flush terminal proxy attempt {}",
-                            attempt.attempt_public_id
+                let attempt_result = match terminal_backend {
+                    crate::storage::core::BackendKind::Sqlite => {
+                        persist_runtime_attempt_snapshot_for_invocation_tx(
+                            terminal_tx.sqlite_connection()?,
+                            &fact_identity,
+                            attempt,
                         )
-                    })?;
+                        .await
+                    }
+                    crate::storage::core::BackendKind::Postgres => {
+                        persist_runtime_attempt_snapshot_for_invocation_postgres_tx(
+                            terminal_tx.postgres_connection()?,
+                            &fact_identity,
+                            attempt,
+                        )
+                        .await
+                    }
+                };
+                attempt_result
+                    .with_context(|| format!("flush terminal proxy attempt {}", attempt.attempt_public_id))?;
             }
             let payload_metadata =
                 persisted
@@ -1223,22 +1405,39 @@ async fn flush_pending_batch_inner_with_authority(
                 })
                 .collect();
             let descriptor = SummarySourceChangeDescriptor::terminal_batch(source_revision, entries)?;
-            append_summary_source_change_descriptor_tx(
-                terminal_tx.sqlite_connection()?,
-                &descriptor,
-            )
-            .await?;
+            match terminal_backend {
+                crate::storage::core::BackendKind::Sqlite => {
+                    append_summary_source_change_descriptor_tx(
+                        terminal_tx.sqlite_connection()?,
+                        &descriptor,
+                    )
+                    .await?;
+                }
+                crate::storage::core::BackendKind::Postgres => {
+                    append_summary_source_change_descriptor_postgres_tx(
+                        terminal_tx.postgres_connection()?,
+                        &descriptor,
+                    )
+                    .await?;
+                }
+            }
         }
         Ok(())
         }
-        .await;
+        .await
         };
         if recovery_replay {
-            let restore_result: Result<()> = sqlx::query("PRAGMA busy_timeout = 30000")
-                .execute(terminal_tx.sqlite_connection()?)
-                .await
-                .context("restore SQLite busy timeout after startup recovery")
-                .map(|_| ());
+            let restore_result: Result<()> = if terminal_backend
+                == crate::storage::core::BackendKind::Sqlite
+            {
+                sqlx::query("PRAGMA busy_timeout = 30000")
+                    .execute(terminal_tx.sqlite_connection()?)
+                    .await
+                    .context("restore SQLite busy timeout after startup recovery")
+                    .map(|_| ())
+            } else {
+                Ok(())
+            };
             match (fact_result, restore_result) {
                 (Ok(()), Ok(())) => {}
                 (Err(error), Ok(())) => return Err(error),
@@ -1363,6 +1562,16 @@ async fn flush_pending_batch_inner_with_authority(
         let payload_metadata = payload_metadata.unwrap_or_else(|| {
             crate::terminal_payload_metadata(terminal.record.payload.as_deref())
         });
+        // Recovered PostgreSQL journal records intentionally omit payload text. Attempts carry
+        // the authoritative account identity, so use them to rebuild the SQLite observation
+        // obligation after a restart.
+        let upstream_account_id = payload_metadata.upstream_account_id.or_else(|| {
+            terminal
+                .attempts
+                .iter()
+                .rev()
+                .find_map(|attempt| (attempt.upstream_account_id > 0).then_some(attempt.upstream_account_id))
+        });
         if let Some(prompt_cache_key) = payload_metadata
             .prompt_cache_key
             .as_deref()
@@ -1376,11 +1585,14 @@ async fn flush_pending_batch_inner_with_authority(
             BatchedInvocationDerivedWrites {
                 invocation_id,
                 occurred_at,
-                upstream_account_id: payload_metadata.upstream_account_id,
+                upstream_account_id,
                 terminal_overlay_key: Some((
                     terminal.record.invoke_id.clone(),
                     terminal.record.occurred_at.clone(),
                 )),
+                terminal_journal_ack: (terminal_backend_for_derived
+                    == crate::storage::core::BackendKind::Postgres)
+                .then(|| terminal.clone()),
             },
         ));
     }
@@ -1453,6 +1665,7 @@ async fn flush_pending_batch_inner_with_authority(
             .begin_with_pool_acquisition_duration()
             .await?
     };
+    let traffic_backend = traffic_tx.backend_kind();
     if let Some(m) = observability {
         m.duration(
             "cvm_sqlite_pool_acquire_duration_seconds",
@@ -1463,7 +1676,9 @@ async fn flush_pending_batch_inner_with_authority(
     let execute_started = Instant::now();
     let mut terminal_overlay_keys = Vec::new();
     let execute_result: Result<()> = async {
-    let recovery_setup_result: Result<()> = if recovery_replay {
+    let recovery_setup_result: Result<()> = if recovery_replay
+        && traffic_backend == crate::storage::core::BackendKind::Sqlite
+    {
         sqlx::query(&format!(
             "PRAGMA busy_timeout = {}",
             crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
@@ -1479,6 +1694,14 @@ async fn flush_pending_batch_inner_with_authority(
         Err(error)
     } else {
         async {
+    if traffic_backend == crate::storage::core::BackendKind::Postgres {
+        // Analytics consumes the durable PostgreSQL source-change journal. The PG fact write is
+        // therefore the source obligation; requeueing InvocationDerived here would make FlushNow
+        // permanently non-convergent because this SQLite rollup path cannot consume PG facts.
+        for progress in batch.attempt_progress.values() {
+            attempt_progress::persist_postgres(traffic_tx.postgres_transaction()?, progress).await?;
+        }
+    } else {
     for progress in batch.attempt_progress.values() {
         attempt_progress::persist(traffic_tx.sqlite_transaction()?, progress).await?;
     }
@@ -1580,16 +1803,24 @@ async fn flush_pending_batch_inner_with_authority(
             .await?;
         }
     }
+    }
+    Ok(())
 
         }
-        .await;
+        .await
     };
     if recovery_replay {
-        let restore_result: Result<()> = sqlx::query("PRAGMA busy_timeout = 30000")
-            .execute(traffic_tx.sqlite_connection()?)
-            .await
-            .context("restore SQLite busy timeout after startup recovery")
-            .map(|_| ());
+        let restore_result: Result<()> = if traffic_backend
+            == crate::storage::core::BackendKind::Sqlite
+        {
+            sqlx::query("PRAGMA busy_timeout = 30000")
+                .execute(traffic_tx.sqlite_connection()?)
+                .await
+                .context("restore SQLite busy timeout after startup recovery")
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
         match (fact_result, restore_result) {
             (Ok(()), Ok(())) => {}
             (Err(error), Ok(())) => return Err(error),
@@ -1604,6 +1835,15 @@ async fn flush_pending_batch_inner_with_authority(
         fact_result?;
     }
     traffic_tx.commit().await?;
+    if traffic_backend == crate::storage::core::BackendKind::Postgres {
+        flush_sqlite_owned_p2_side_effects(pool, batch, write_legacy_task_runs).await?;
+        terminal_overlay_keys.extend(
+            batch
+                .invocation_derived
+                .values()
+                .filter_map(|derived| derived.terminal_overlay_key.clone()),
+        );
+    }
     Ok(())
     }
     .await;

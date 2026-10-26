@@ -1591,6 +1591,7 @@ async fn invocation_derived_batch_advances_live_progress_cursor_with_replay() {
                 occurred_at: "2026-07-01 10:00:00".to_string(),
                 upstream_account_id: None,
                 terminal_overlay_key: None,
+                terminal_journal_ack: None,
             },
         )],
     )

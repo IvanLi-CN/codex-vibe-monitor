@@ -93,13 +93,17 @@ impl TrafficFactStore {
         &self,
     ) -> Result<(TrafficFactTransaction, std::time::Duration)> {
         let lease = self.gate.acquire(StorageModule::TrafficArchive).await?;
+        let backend = lease.lease.authority.backend;
         let pool_acquisition_started = Instant::now();
         let transaction = self
             .pools
             .begin_typed::<TrafficArchiveTransaction>(lease)
             .await?;
         Ok((
-            TrafficFactTransaction { transaction },
+            TrafficFactTransaction {
+                transaction,
+                backend,
+            },
             pool_acquisition_started.elapsed(),
         ))
     }
@@ -152,15 +156,30 @@ impl TrafficFactStore {
 
 pub(crate) struct TrafficFactTransaction {
     transaction: TypedStorageTransaction<TrafficArchiveTransaction>,
+    backend: BackendKind,
 }
 
 impl TrafficFactTransaction {
+    pub(crate) fn backend_kind(&self) -> BackendKind {
+        self.backend
+    }
+
     pub(crate) fn sqlite_transaction(&mut self) -> Result<&mut sqlx::Transaction<'static, Sqlite>> {
         self.transaction.sqlite_transaction()
     }
 
     pub(crate) fn sqlite_connection(&mut self) -> Result<&mut SqliteConnection> {
         Ok(self.transaction.sqlite_transaction()?.as_mut())
+    }
+
+    pub(crate) fn postgres_transaction(
+        &mut self,
+    ) -> Result<&mut sqlx::Transaction<'static, Postgres>> {
+        self.transaction.postgres_transaction()
+    }
+
+    pub(crate) fn postgres_connection(&mut self) -> Result<&mut PgConnection> {
+        Ok(self.transaction.postgres_transaction()?.as_mut())
     }
 
     pub(crate) async fn commit(self) -> Result<()> {
@@ -172,7 +191,10 @@ impl TrafficFactTransaction {
     }
 }
 
-fn finish_authority_read<T>(result: Result<T>, rollback_result: Result<()>) -> Result<T> {
+pub(crate) fn finish_authority_read<T>(
+    result: Result<T>,
+    rollback_result: Result<()>,
+) -> Result<T> {
     match (result, rollback_result) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
