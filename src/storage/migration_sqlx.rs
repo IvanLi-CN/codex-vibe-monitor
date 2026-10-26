@@ -12,10 +12,8 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Postgres, Row, Sqlite, SqlitePool, Transaction, sqlite::SqliteRow};
 
 use super::{
-    core::{
-        StorageModule,
-        catalog::{ModuleCatalog, ModuleId},
-    },
+    catalog::{ModuleCatalog, ModuleId},
+    core::StorageModule,
     migration::{
         CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange, CopyLimits,
         EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage, SourceRangeSnapshot,
@@ -38,6 +36,7 @@ pub(crate) struct MigrationTableSpec {
 }
 
 impl MigrationTableSpec {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         module: StorageModule,
         logical_table_name: impl Into<String>,

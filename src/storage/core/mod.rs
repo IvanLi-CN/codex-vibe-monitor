@@ -1174,6 +1174,7 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
 /// pg01 specifies the load/save, outbox, and capacity obligations and their typed
 /// values. Concrete persistence, worker execution, and startup recovery are later
 /// migration-engine/runtime work; this trait is not a claim that those paths exist.
+#[async_trait::async_trait]
 pub(crate) trait MigrationMetadataStore: AuthorityManifestStore {
     async fn set_recovery_context(&self, _context: &AuthorityRecoveryContext) -> Result<()> {
         Ok(())

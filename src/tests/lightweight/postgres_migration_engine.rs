@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use sqlx::{PgPoolOptions, sqlite::SqlitePoolOptions};
+use sqlx::{postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 
 use crate::storage::{
     core::{
@@ -434,8 +434,9 @@ async fn sqlite_migration_source_uses_real_pool_capture_and_keyset_pages() -> Re
     assert!(second_page.complete);
     assert_eq!(
         source
-            .rows_in_range("events", &ChunkRange::new("a", "b")?)
+            .rows_in_range_snapshot("events", &ChunkRange::new("a", "b")?)
             .await?
+            .rows
             .len(),
         2
     );

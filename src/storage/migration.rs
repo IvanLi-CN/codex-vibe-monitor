@@ -1495,13 +1495,12 @@ fn apply_change_to_rows(rows: &mut BTreeMap<String, VersionedRow>, change: &Capt
             }
         }
         ChangeKind::Replace => {
-            if let Some(previous_key) = &change.previous_key {
-                if rows
+            if let Some(previous_key) = &change.previous_key
+                && rows
                     .get(previous_key)
                     .is_none_or(|row| row.source_version <= change.source_version)
-                {
-                    rows.remove(previous_key);
-                }
+            {
+                rows.remove(previous_key);
             }
             upsert_versioned_row(
                 rows,
@@ -2126,6 +2125,7 @@ where
     T: MigrationTarget + 'static,
     M: MigrationMetadataStore + 'static,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         source: Arc<S>,
         target: Arc<T>,
