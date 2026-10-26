@@ -346,7 +346,7 @@ pub(crate) async fn execute_owned_maintenance(
             )
             .await;
             if let Some((stage, cause)) = raw_result.as_ref().err().and_then(|error| {
-                is_retention_write_deferred(error).then(|| {
+                is_raw_orphan_sweep_deferred(error).then(|| {
                     raw_orphan_sweep_admission_details(error)
                         .unwrap_or(("resource_wait", "retention_write_pressure"))
                 })
