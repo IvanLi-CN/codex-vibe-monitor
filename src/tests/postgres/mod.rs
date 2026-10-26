@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use anyhow::Result;
@@ -20,6 +20,7 @@ struct TestAuthorityStore {
     recovery: Mutex<Option<AuthorityRecoveryRecord>>,
     publication: Mutex<AuthorityPublication>,
     hold_publication: AtomicBool,
+    publication_count: AtomicUsize,
     publication_started: Notify,
     publication_release: Notify,
 }
@@ -31,6 +32,7 @@ impl Default for TestAuthorityStore {
             recovery: Mutex::new(None),
             publication: Mutex::new(AuthorityPublication::Committed),
             hold_publication: AtomicBool::new(false),
+            publication_count: AtomicUsize::new(0),
             publication_started: Notify::new(),
             publication_release: Notify::new(),
         }
@@ -59,6 +61,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
         &self,
         manifest: &ModuleAuthorityManifest,
     ) -> Result<AuthorityPublication> {
+        self.publication_count.fetch_add(1, Ordering::AcqRel);
         if self.hold_publication.load(Ordering::Acquire) {
             self.publication_started.notify_one();
             self.publication_release.notified().await;
@@ -400,6 +403,32 @@ async fn publication_deadline_keeps_admission_closed_until_durable_recovery() {
 }
 
 #[tokio::test]
+async fn cancelled_unpolled_publication_releases_recovery_waiter() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let publication = gate.pending_publication_for_test();
+    publication.abort();
+    assert!(publication.await.is_err());
+
+    let store = TestAuthorityStore::default();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        gate.recover_authority(&store, &recovery_context()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
+    assert_eq!(current.lease.authority.backend, BackendKind::Sqlite);
+    assert_eq!(current.lease.authority.generation, 1);
+}
+
+#[tokio::test]
 async fn generation_gate_serializes_concurrent_authority_switches() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
@@ -410,6 +439,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
     );
     let old = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     let store = Arc::new(TestAuthorityStore::default());
+    store.hold_publication.store(true, Ordering::Release);
     let first_gate = gate.clone();
     let first_store = Arc::clone(&store);
     let first = tokio::spawn(async move {
@@ -423,8 +453,15 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
             )
             .await
     });
-    wait_for_admission_closed(&gate).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        store.publication_started.notified(),
+    )
+    .await
+    .unwrap();
+    let second_attempt = gate.switch_attempts_for_test() + 1;
     let second_gate = gate.clone();
+    let second_store = Arc::clone(&store);
     let second = tokio::spawn(async move {
         second_gate
             .switch_authority(
@@ -432,11 +469,13 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
                 authority_manifest(3, BackendKind::Postgres),
                 recovery_context(),
                 std::time::Duration::from_secs(1),
-                store,
+                second_store,
             )
             .await
     });
-    wait_for_admission_closed(&gate).await;
+    gate.wait_for_switch_attempts_for_test(second_attempt).await;
+    assert_eq!(store.publication_count.load(Ordering::Acquire), 1);
+    store.publication_release.notify_one();
     drop(old);
     first.await.unwrap().unwrap();
     assert!(second.await.unwrap().is_err());

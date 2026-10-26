@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -218,6 +219,10 @@ struct ModuleGate {
     recovery_required: AtomicBool,
     publication_in_flight: AtomicBool,
     changed: Notify,
+    #[cfg(test)]
+    switch_attempts: AtomicUsize,
+    #[cfg(test)]
+    switch_attempts_changed: Notify,
 }
 
 struct PublicationInFlightGuard(Arc<ModuleGate>);
@@ -227,6 +232,22 @@ impl Drop for PublicationInFlightGuard {
         self.0.publication_in_flight.store(false, Ordering::Release);
         self.0.changed.notify_one();
     }
+}
+
+fn spawn_tracked_publication<F, T>(
+    gate: Arc<ModuleGate>,
+    publication: F,
+) -> tokio::task::JoinHandle<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    gate.publication_in_flight.store(true, Ordering::Release);
+    let guard = PublicationInFlightGuard(Arc::clone(&gate));
+    tokio::spawn(async move {
+        let _publication = guard;
+        publication.await
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +308,10 @@ impl ModuleGenerationGate {
             recovery_required: AtomicBool::new(false),
             publication_in_flight: AtomicBool::new(false),
             changed: Notify::new(),
+            #[cfg(test)]
+            switch_attempts: AtomicUsize::new(0),
+            #[cfg(test)]
+            switch_attempts_changed: Notify::new(),
         }))
     }
 
@@ -337,6 +362,11 @@ impl ModuleGenerationGate {
         drain_budget: Duration,
         metadata: Arc<dyn AuthorityManifestStore>,
     ) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.0.switch_attempts.fetch_add(1, Ordering::AcqRel);
+            self.0.switch_attempts_changed.notify_one();
+        }
         let _switch = self.0.switching.lock().await;
         let deadline = tokio::time::Instant::now() + drain_budget;
         {
@@ -376,12 +406,9 @@ impl ModuleGenerationGate {
             bail!("timed out before publishing {module:?} authority");
         }
 
-        self.0.publication_in_flight.store(true, Ordering::Release);
-        let publication_gate = Arc::clone(&self.0);
         let publication_manifest = manifest.clone();
         // Bound the wait without cancelling a store operation that may still commit.
-        let publication_task = tokio::spawn(async move {
-            let _publication = PublicationInFlightGuard(publication_gate);
+        let publication_task = spawn_tracked_publication(Arc::clone(&self.0), async move {
             metadata
                 .publish_authority_manifest(&publication_manifest)
                 .await
@@ -523,6 +550,27 @@ impl ModuleGenerationGate {
             let _completion_lease = completion_lease;
             std::future::pending::<()>().await;
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_publication_for_test(&self) -> tokio::task::JoinHandle<()> {
+        spawn_tracked_publication(Arc::clone(&self.0), std::future::pending())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_switch_attempts_for_test(&self, target: usize) {
+        loop {
+            let notified = self.0.switch_attempts_changed.notified();
+            if self.0.switch_attempts.load(Ordering::Acquire) >= target {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn switch_attempts_for_test(&self) -> usize {
+        self.0.switch_attempts.load(Ordering::Acquire)
     }
 }
 
