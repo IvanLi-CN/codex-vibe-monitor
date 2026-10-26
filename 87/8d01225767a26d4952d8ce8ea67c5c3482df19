@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.12",
+  "base_stable_version": "4.13.11",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-26T02:08:06Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.12",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6e7c4aab7f17e09c5b75d7495553c0be2424eea7",
+  "pr_number": 1192,
+  "pr_title": "test(stateful): optimize SQLite fixture setup",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.12",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.12",
+  "target_sha": "878d01225767a26d4952d8ce8ea67c5c3482df19",
+  "type_label": "type:patch"
+}
