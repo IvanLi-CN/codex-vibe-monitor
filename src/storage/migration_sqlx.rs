@@ -15,12 +15,11 @@ use super::{
     catalog::{ModuleCatalog, ModuleId},
     core::StorageModule,
     migration::{
-        CaptureCheckpoint, CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange,
-        CopyLimits, CoverageCheckpoint, DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_MAX_QUEUED_BYTES,
-        EngineCheckpoint, INITIAL_AUTHORITY_GENERATION, INITIAL_CAPTURE_GENERATION,
-        MigrationSource, MigrationTarget, SourcePage, SourceRangePage, SourceRangeSnapshot,
-        SourceWriteAuthority, TableCopyPlan, TableCoverageProof, VersionedRow,
-        validate_checkpoint_progress,
+        CaptureCheckpoint, CapturedChange, ChangeBatchLimits, ChangeInput, ChangeKind, ChunkProof,
+        ChunkRange, CopyLimits, CoverageCheckpoint, DEFAULT_MAX_CAPTURE_BYTES, EngineCheckpoint,
+        INITIAL_AUTHORITY_GENERATION, INITIAL_CAPTURE_GENERATION, MigrationSource, MigrationTarget,
+        SourcePage, SourceRangePage, SourceRangeSnapshot, SourceWriteAuthority, TableCopyPlan,
+        TableCoverageProof, VersionedRow, select_change_batch, validate_checkpoint_progress,
     },
 };
 
@@ -885,14 +884,19 @@ impl SqliteMigrationSource {
         &self,
         after: i64,
         through: i64,
-        limit: usize,
+        limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>> {
-        if after < 0 || through < after || limit == 0 {
+        if after < 0 || through < after {
             bail!("invalid SQLite migration change range");
         }
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
-        let limit_i64 = i64::try_from(limit).context("SQLite migration change limit overflowed")?;
+        let query_limit = limits
+            .max_rows
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("SQLite migration change row limit overflowed"))?;
+        let query_limit_i64 =
+            i64::try_from(query_limit).context("SQLite migration change limit overflowed")?;
         let query = format!(
             "SELECT migration_id, source_identity, source_version, table_name, stable_key,
                     previous_key, kind, payload, payload_digest
@@ -914,103 +918,24 @@ impl SqliteMigrationSource {
             .bind(&self.source_identity)
             .bind(after)
             .bind(through)
-            .bind(limit_i64)
+            .bind(query_limit_i64)
             .fetch_all(&mut *transaction)
             .await
             .context("read SQLite migration change capture")?;
-        let initial_changes = rows
+        let changes = rows
             .into_iter()
             .map(|row| decode_sqlite_change(row, &self.migration_id, &self.source_identity))
             .collect::<Result<Vec<_>>>()?;
-        validate_sqlite_change_batch_limits(&initial_changes, limit)?;
-        let Some(boundary_version) = initial_changes.last().map(|change| change.source_version)
-        else {
-            transaction
-                .commit()
-                .await
-                .context("commit empty SQLite migration change read")?;
-            return Ok(Vec::new());
-        };
-        if initial_changes.len() < limit {
-            transaction
-                .commit()
-                .await
-                .context("commit SQLite migration change read")?;
-            return Ok(initial_changes);
-        }
-
-        // A source transaction may contain several changes with one version. Re-read through
-        // the complete boundary version so the caller never acknowledges a partial transaction.
-        // Count it in the same read transaction first so the boundary re-fetch cannot bypass the
-        // queue budget when one source transaction contains more rows than the initial LIMIT.
-        let count_query = format!(
-            "SELECT COUNT(*) AS row_count,
-                    COALESCE(SUM(COALESCE(length(payload), 0)), 0) AS byte_count
-               FROM {capture_table}
-              WHERE migration_id = ?
-                AND source_identity = ?
-                AND source_version > ? AND source_version <= ?"
-        );
-        let count_row = sqlx::query(&count_query)
-            .bind(&self.migration_id)
-            .bind(&self.source_identity)
-            .bind(after)
-            .bind(boundary_version)
-            .fetch_one(&mut *transaction)
-            .await
-            .context("count SQLite migration change boundary")?;
-        let boundary_rows = usize::try_from(count_row.try_get::<i64, _>("row_count")?)
-            .context("SQLite migration change row count overflowed")?;
-        let boundary_bytes = usize::try_from(count_row.try_get::<i64, _>("byte_count")?)
-            .context("SQLite migration change byte count overflowed")?;
-        if boundary_rows > limit {
-            bail!("SQLite migration transaction exceeds the bounded change row budget");
-        }
-        if boundary_bytes > DEFAULT_MAX_QUEUED_BYTES {
-            bail!("SQLite migration transaction exceeds the bounded change byte budget");
-        }
-        let complete_query = format!(
-            "SELECT migration_id, source_identity, source_version, table_name, stable_key,
-                    previous_key, kind, payload, payload_digest
-               FROM {capture_table}
-              WHERE migration_id = ?
-                AND source_identity = ?
-                AND source_version > ? AND source_version <= ?
-              ORDER BY source_version ASC, capture_id ASC"
-        );
-        let complete_changes = sqlx::query(&complete_query)
-            .bind(&self.migration_id)
-            .bind(&self.source_identity)
-            .bind(after)
-            .bind(boundary_version)
-            .fetch_all(&mut *transaction)
-            .await
-            .context("read complete SQLite migration change boundary")?
-            .into_iter()
-            .map(|row| decode_sqlite_change(row, &self.migration_id, &self.source_identity))
-            .collect::<Result<Vec<_>>>()?;
-        validate_sqlite_change_batch_limits(&complete_changes, limit)?;
+        // Fetch one sentinel row beyond the row budget. This lets the shared selector distinguish
+        // a complete boundary from a partial source transaction without ever returning a partial
+        // source version. A source transaction that itself exceeds either budget is rejected.
+        let selected = select_change_batch(&changes, limits)?;
         transaction
             .commit()
             .await
-            .context("commit complete SQLite migration change read")?;
-        Ok(complete_changes)
+            .context("commit SQLite migration change read")?;
+        Ok(selected)
     }
-}
-
-fn validate_sqlite_change_batch_limits(changes: &[CapturedChange], limit: usize) -> Result<()> {
-    if changes.len() > limit {
-        bail!("SQLite migration transaction exceeds the bounded change row budget");
-    }
-    let payload_bytes = changes.iter().try_fold(0_usize, |total, change| {
-        total
-            .checked_add(change.payload.as_ref().map_or(0, Vec::len))
-            .ok_or_else(|| anyhow!("SQLite migration change byte count overflowed"))
-    })?;
-    if payload_bytes > DEFAULT_MAX_QUEUED_BYTES {
-        bail!("SQLite migration transaction exceeds the bounded change byte budget");
-    }
-    Ok(())
 }
 
 fn decode_sqlite_change(
@@ -1275,17 +1200,21 @@ impl MigrationSource for SqliteMigrationSource {
         })
     }
 
-    async fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<CapturedChange>> {
-        self.read_changes(after, i64::MAX, limit).await
+    async fn changes_after(
+        &self,
+        after: i64,
+        limits: ChangeBatchLimits,
+    ) -> Result<Vec<CapturedChange>> {
+        self.read_changes(after, i64::MAX, limits).await
     }
 
     async fn changes_through(
         &self,
         after: i64,
         through: i64,
-        limit: usize,
+        limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>> {
-        self.read_changes(after, through, limit).await
+        self.read_changes(after, through, limits).await
     }
 
     fn migration_id(&self) -> &str {

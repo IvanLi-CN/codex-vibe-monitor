@@ -14,10 +14,11 @@ use crate::storage::{
         ModuleGenerationGate, StorageModule,
     },
     migration::{
-        CapturedChange, ChangeInput, ChangeKind, ChunkRange, CopyLimits, DEFAULT_MAX_QUEUED_BYTES,
-        EngineCheckpoint, FileMigrationStore, InMemoryMigrationSource, InMemoryMigrationTarget,
-        MigrationEngine, MigrationLimits, MigrationSource, MigrationTarget, SourcePage,
-        SourceWriteFence, TableCopyPlan, TableCoverageProof, VersionCapture, VersionedRow,
+        CapturedChange, ChangeBatchLimits, ChangeInput, ChangeKind, ChunkRange, CopyLimits,
+        DEFAULT_COPY_MAX_BYTES, DEFAULT_COPY_MAX_ROWS, EngineCheckpoint, FileMigrationStore,
+        InMemoryMigrationSource, InMemoryMigrationTarget, MigrationEngine, MigrationLimits,
+        MigrationSource, MigrationTarget, SourcePage, SourceWriteFence, TableCopyPlan,
+        TableCoverageProof, VersionCapture, VersionedRow,
     },
     migration_sqlx::{MigrationTableSpec, PostgresMigrationTarget, SqliteMigrationSource},
 };
@@ -44,6 +45,13 @@ fn replace_change(
         previous_key: Some(previous_key.into()),
         kind: ChangeKind::Replace,
         payload: Some(payload.to_vec()),
+    }
+}
+
+fn replay_limits(max_rows: usize, max_bytes: usize) -> ChangeBatchLimits {
+    ChangeBatchLimits {
+        max_rows,
+        max_bytes,
     }
 }
 
@@ -1081,8 +1089,13 @@ async fn in_memory_capture_returns_complete_same_version_boundary_within_budget(
         )
         .await?;
 
-    let changes =
-        <InMemoryMigrationSource as MigrationSource>::changes_through(&source, 0, 1, 3).await?;
+    let changes = <InMemoryMigrationSource as MigrationSource>::changes_through(
+        &source,
+        0,
+        1,
+        replay_limits(3, DEFAULT_COPY_MAX_BYTES),
+    )
+    .await?;
     assert_eq!(changes.len(), 3);
     assert!(changes.iter().all(|change| change.source_version == 1));
     assert_eq!(
@@ -1092,6 +1105,82 @@ async fn in_memory_capture_returns_complete_same_version_boundary_within_budget(
             .collect::<Vec<_>>(),
         vec!["a", "b", "c"]
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn in_memory_capture_enforces_copy_batch_row_and_byte_boundaries() -> Result<()> {
+    let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
+    let fence = SourceWriteFence::new(1);
+    let row_changes = (0..DEFAULT_COPY_MAX_ROWS)
+        .map(|index| {
+            change(
+                "events",
+                &format!("row-{index:03}"),
+                ChangeKind::Insert,
+                b"row",
+            )
+        })
+        .collect();
+    source.write(&fence, row_changes).await?;
+
+    let exact_payload = vec![0_u8; DEFAULT_COPY_MAX_BYTES];
+    source
+        .write(
+            &fence,
+            vec![change(
+                "events",
+                "exact-byte-boundary",
+                ChangeKind::Insert,
+                &exact_payload,
+            )],
+        )
+        .await?;
+
+    let row_boundary = source
+        .changes_through(
+            0,
+            2,
+            replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        )
+        .await?;
+    assert_eq!(row_boundary.len(), DEFAULT_COPY_MAX_ROWS);
+    assert!(row_boundary.iter().all(|change| change.source_version == 1));
+
+    let byte_boundary = source
+        .changes_through(
+            1,
+            2,
+            replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        )
+        .await?;
+    assert_eq!(byte_boundary.len(), 1);
+    assert_eq!(
+        byte_boundary[0].payload.as_deref(),
+        Some(exact_payload.as_slice())
+    );
+
+    let oversized_payload = vec![0_u8; DEFAULT_COPY_MAX_BYTES + 1];
+    source
+        .write(
+            &fence,
+            vec![change(
+                "events",
+                "oversized-byte-boundary",
+                ChangeKind::Insert,
+                &oversized_payload,
+            )],
+        )
+        .await?;
+    let error = source
+        .changes_through(
+            2,
+            3,
+            replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        )
+        .await
+        .expect_err("a source transaction over 2 MiB must be rejected");
+    assert!(error.to_string().contains("bounded change byte budget"));
     Ok(())
 }
 
@@ -1148,9 +1237,14 @@ async fn in_memory_capture_rejects_transaction_exceeding_row_budget() -> Result<
         )
         .await?;
 
-    let error = <InMemoryMigrationSource as MigrationSource>::changes_through(&source, 0, 1, 2)
-        .await
-        .expect_err("same-version capture must respect the row budget");
+    let error = <InMemoryMigrationSource as MigrationSource>::changes_through(
+        &source,
+        0,
+        1,
+        replay_limits(2, DEFAULT_COPY_MAX_BYTES),
+    )
+    .await
+    .expect_err("same-version capture must respect the row budget");
     assert!(error.to_string().contains("bounded change row budget"));
     Ok(())
 }
@@ -1159,7 +1253,7 @@ async fn in_memory_capture_rejects_transaction_exceeding_row_budget() -> Result<
 async fn in_memory_capture_rejects_transaction_exceeding_byte_budget() -> Result<()> {
     let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
     let fence = SourceWriteFence::new(1);
-    let payload = vec![0_u8; DEFAULT_MAX_QUEUED_BYTES + 1];
+    let payload = vec![0_u8; DEFAULT_COPY_MAX_BYTES + 1];
     source
         .write(
             &fence,
@@ -1167,9 +1261,14 @@ async fn in_memory_capture_rejects_transaction_exceeding_byte_budget() -> Result
         )
         .await?;
 
-    let error = <InMemoryMigrationSource as MigrationSource>::changes_through(&source, 0, 1, 2)
-        .await
-        .expect_err("oversized capture must respect the byte budget");
+    let error = <InMemoryMigrationSource as MigrationSource>::changes_through(
+        &source,
+        0,
+        1,
+        replay_limits(2, DEFAULT_COPY_MAX_BYTES),
+    )
+    .await
+    .expect_err("oversized capture must respect the byte budget");
     assert!(error.to_string().contains("bounded change byte budget"));
     Ok(())
 }
@@ -1651,7 +1750,13 @@ async fn sqlite_capture_replay_keeps_same_version_boundary_after_failed_apply() 
     }
     transaction.commit().await?;
 
-    assert_eq!(source.changes_through(0, 1, 4).await?.len(), 3);
+    assert_eq!(
+        source
+            .changes_through(0, 1, replay_limits(4, DEFAULT_COPY_MAX_BYTES))
+            .await?
+            .len(),
+        3
+    );
     target.fail_next_operation().await;
     assert!(migration.catch_up("events").await.is_err());
     assert_eq!(
@@ -1723,7 +1828,12 @@ async fn sqlite_capture_rejects_corrupt_digest_and_isolates_source_identity() ->
     .bind(1_i64)
     .execute(&pool)
     .await?;
-    assert!(source.changes_after(0, 1).await.is_err());
+    assert!(
+        source
+            .changes_after(0, replay_limits(1, DEFAULT_COPY_MAX_BYTES))
+            .await
+            .is_err()
+    );
 
     sqlx::query(
         "UPDATE migration_change_log
@@ -1735,7 +1845,13 @@ async fn sqlite_capture_rejects_corrupt_digest_and_isolates_source_identity() ->
     .bind(1_i64)
     .execute(&pool)
     .await?;
-    assert_eq!(source.changes_after(0, 1).await?.len(), 1);
+    assert_eq!(
+        source
+            .changes_after(0, replay_limits(1, DEFAULT_COPY_MAX_BYTES))
+            .await?
+            .len(),
+        1
+    );
     source
         .append_change(2, change("events", "b", ChangeKind::Insert, b"two"))
         .await?;
@@ -1749,7 +1865,13 @@ async fn sqlite_capture_rejects_corrupt_digest_and_isolates_source_identity() ->
     .bind(2_i64)
     .execute(&pool)
     .await?;
-    assert_eq!(source.changes_after(0, 2).await?.len(), 1);
+    assert_eq!(
+        source
+            .changes_after(0, replay_limits(2, DEFAULT_COPY_MAX_BYTES))
+            .await?
+            .len(),
+        1
+    );
     Ok(())
 }
 
@@ -1797,7 +1919,12 @@ async fn sqlite_capture_persists_continuity_loss_and_requires_a_new_generation()
     )?;
     restarted.ensure_capture_schema().await?;
     assert!(restarted.capture_checkpoint().await?.continuity_lost);
-    assert!(restarted.changes_after(0, 1).await.is_err());
+    assert!(
+        restarted
+            .changes_after(0, replay_limits(1, DEFAULT_COPY_MAX_BYTES))
+            .await
+            .is_err()
+    );
 
     let new_generation = restarted.start_new_capture_generation().await?;
     assert_eq!(new_generation.capture_generation, 2);
@@ -1960,10 +2087,277 @@ async fn sqlite_capture_rejects_oversized_same_version_transaction() -> Result<(
             .await?;
     }
     let error = source
-        .changes_through(0, 1, 2)
+        .changes_through(0, 1, replay_limits(2, DEFAULT_COPY_MAX_BYTES))
         .await
         .expect_err("same-version capture must respect the row budget");
     assert!(error.to_string().contains("bounded change row budget"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_enforces_copy_batch_row_and_byte_boundaries() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+
+    let mut transaction = pool.begin().await?;
+    for index in 0..DEFAULT_COPY_MAX_ROWS {
+        let captured = CapturedChange::from_input(
+            "migration-engine-test",
+            "sqlite-test",
+            1,
+            change(
+                "events",
+                &format!("row-{index:03}"),
+                ChangeKind::Insert,
+                b"row",
+            ),
+        )?;
+        source
+            .append_captured_change_tx(&mut transaction, &captured)
+            .await?;
+    }
+    transaction.commit().await?;
+
+    let exact_payload = vec![0_u8; DEFAULT_COPY_MAX_BYTES];
+    source
+        .append_change(
+            2,
+            change(
+                "events",
+                "exact-byte-boundary",
+                ChangeKind::Insert,
+                &exact_payload,
+            ),
+        )
+        .await?;
+
+    let row_boundary = source
+        .changes_through(
+            0,
+            2,
+            replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        )
+        .await?;
+    assert_eq!(row_boundary.len(), DEFAULT_COPY_MAX_ROWS);
+    assert!(row_boundary.iter().all(|change| change.source_version == 1));
+
+    let byte_boundary = source
+        .changes_through(
+            1,
+            2,
+            replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        )
+        .await?;
+    assert_eq!(byte_boundary.len(), 1);
+    assert_eq!(
+        byte_boundary[0].payload.as_deref(),
+        Some(exact_payload.as_slice())
+    );
+
+    source
+        .append_change(
+            3,
+            change(
+                "events",
+                "oversized-byte-boundary",
+                ChangeKind::Insert,
+                &vec![0_u8; DEFAULT_COPY_MAX_BYTES + 1],
+            ),
+        )
+        .await?;
+    let error = source
+        .changes_through(
+            2,
+            3,
+            replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        )
+        .await
+        .expect_err("a source transaction over 2 MiB must be rejected");
+    assert!(error.to_string().contains("bounded change byte budget"));
+
+    let restarted = SqliteMigrationSource::new(
+        pool,
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    restarted.ensure_capture_schema().await?;
+    assert_eq!(
+        restarted
+            .changes_through(
+                0,
+                2,
+                replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+            )
+            .await?
+            .len(),
+        DEFAULT_COPY_MAX_ROWS
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_oversized_batch_does_not_advance_checkpoint_across_retry() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            stable_key TEXT PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    let source = Arc::new(SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?);
+    source.ensure_capture_schema().await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let fence = SourceWriteFence::new(1);
+    let (directory, path) = state_path("oversized-batch-retry");
+    let context = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 0,
+    };
+    let limits = MigrationLimits {
+        change_batch: replay_limits(DEFAULT_COPY_MAX_ROWS, DEFAULT_COPY_MAX_BYTES),
+        ..MigrationLimits::default()
+    };
+    let store = Arc::new(FileMigrationStore::new(&path, context.clone()));
+    let migration = MigrationEngine::new(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        StorageModule::TrafficArchive,
+        "installation-test",
+        "postgres-test",
+        1,
+        limits,
+        fence.clone(),
+    )?;
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+
+    source
+        .append_change(
+            1,
+            change(
+                "events",
+                "oversized",
+                ChangeKind::Insert,
+                &vec![0_u8; DEFAULT_COPY_MAX_BYTES + 1],
+            ),
+        )
+        .await?;
+    let first_error = migration
+        .catch_up("events")
+        .await
+        .expect_err("an oversized source transaction must reject catch-up");
+    assert!(
+        first_error
+            .to_string()
+            .contains("bounded change byte budget")
+    );
+    assert_eq!(
+        target
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .expect("baseline checkpoint")
+            .applied_through,
+        0
+    );
+
+    let retry_error = migration
+        .catch_up("events")
+        .await
+        .expect_err("retry must reject the same oversized source transaction");
+    assert!(
+        retry_error
+            .to_string()
+            .contains("bounded change byte budget")
+    );
+    assert_eq!(
+        target
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .expect("checkpoint after retry")
+            .applied_through,
+        0
+    );
+
+    let restarted_source = Arc::new(SqliteMigrationSource::new(
+        pool,
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?);
+    restarted_source.ensure_capture_schema().await?;
+    let restart_store = Arc::new(FileMigrationStore::new(&path, context));
+    let restarted = MigrationEngine::new(
+        Arc::clone(&restarted_source),
+        Arc::clone(&target),
+        Arc::clone(&restart_store),
+        StorageModule::TrafficArchive,
+        "installation-test",
+        "postgres-test",
+        1,
+        limits,
+        fence,
+    )?;
+    let restart_error = restarted
+        .catch_up("events")
+        .await
+        .expect_err("restart must reject the same oversized source transaction");
+    assert!(
+        restart_error
+            .to_string()
+            .contains("bounded change byte budget")
+    );
+    assert_eq!(
+        target
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .expect("checkpoint after restart")
+            .applied_through,
+        0
+    );
+
+    fs::remove_dir_all(directory)?;
     Ok(())
 }
 

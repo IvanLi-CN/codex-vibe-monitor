@@ -34,7 +34,6 @@ pub(crate) const DEFAULT_COPY_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const DEFAULT_SOURCE_READ_BUDGET: Duration = Duration::from_millis(50);
 pub(crate) const DEFAULT_BATCH_YIELD: Duration = Duration::from_millis(25);
 pub(crate) const DEFAULT_MAX_QUEUED_OPERATIONS: usize = 128;
-pub(crate) const DEFAULT_MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const DEFAULT_MIN_SOURCE_FREE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_CAPTURE_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const INITIAL_CAPTURE_GENERATION: u64 = 1;
@@ -555,6 +554,30 @@ impl CopyLimits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChangeBatchLimits {
+    pub(crate) max_rows: usize,
+    pub(crate) max_bytes: usize,
+}
+
+impl Default for ChangeBatchLimits {
+    fn default() -> Self {
+        Self {
+            max_rows: DEFAULT_COPY_MAX_ROWS,
+            max_bytes: DEFAULT_COPY_MAX_BYTES,
+        }
+    }
+}
+
+impl ChangeBatchLimits {
+    fn validate(self) -> Result<()> {
+        if self.max_rows == 0 || self.max_bytes == 0 {
+            bail!("migration change batch limits must be positive");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct EngineCheckpoint {
     pub(crate) migration_id: String,
@@ -807,12 +830,16 @@ pub(crate) trait MigrationSource: Send + Sync {
         table_name: &str,
         range: &ChunkRange,
     ) -> Result<SourceRangeSnapshot>;
-    async fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<CapturedChange>>;
+    async fn changes_after(
+        &self,
+        after: i64,
+        limits: ChangeBatchLimits,
+    ) -> Result<Vec<CapturedChange>>;
     async fn changes_through(
         &self,
         after: i64,
         through: i64,
-        limit: usize,
+        limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>>;
     fn migration_id(&self) -> &str;
     fn source_identity(&self) -> &str;
@@ -889,6 +916,7 @@ pub(crate) struct MigrationPressure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MigrationLimits {
     pub(crate) copy: CopyLimits,
+    pub(crate) change_batch: ChangeBatchLimits,
     pub(crate) max_queued_operations: usize,
     pub(crate) min_source_free_bytes: u64,
     pub(crate) max_capture_bytes: u64,
@@ -898,6 +926,7 @@ impl Default for MigrationLimits {
     fn default() -> Self {
         Self {
             copy: CopyLimits::default(),
+            change_batch: ChangeBatchLimits::default(),
             max_queued_operations: DEFAULT_MAX_QUEUED_OPERATIONS,
             min_source_free_bytes: DEFAULT_MIN_SOURCE_FREE_BYTES,
             max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
@@ -908,6 +937,7 @@ impl Default for MigrationLimits {
 impl MigrationLimits {
     fn validate(self) -> Result<()> {
         self.copy.validate()?;
+        self.change_batch.validate()?;
         if self.max_queued_operations == 0
             || self.min_source_free_bytes == 0
             || self.max_capture_bytes == 0
@@ -1369,13 +1399,13 @@ impl InMemoryMigrationSource {
         &self,
         after: i64,
         through: Option<i64>,
-        limit: usize,
+        limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>> {
         let state = self.state.lock().await;
         if state.continuity_lost {
             bail!("source change capture continuity has been lost");
         }
-        select_changes(&state.changes, after, through, limit)
+        select_changes(&state.changes, after, through, limits)
     }
 }
 
@@ -1383,35 +1413,60 @@ fn select_changes(
     changes: &[CapturedChange],
     after: i64,
     through: Option<i64>,
-    limit: usize,
+    limits: ChangeBatchLimits,
 ) -> Result<Vec<CapturedChange>> {
-    if after < 0 || limit == 0 || through.is_some_and(|value| value < after) {
+    if after < 0 || through.is_some_and(|value| value < after) {
         bail!("source change cursor and limit are invalid");
     }
+    let candidates = changes
+        .iter()
+        .filter(|change| {
+            change.source_version > after
+                && through.is_none_or(|watermark| change.source_version <= watermark)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    select_change_batch(&candidates, limits)
+}
+
+pub(crate) fn select_change_batch(
+    changes: &[CapturedChange],
+    limits: ChangeBatchLimits,
+) -> Result<Vec<CapturedChange>> {
+    limits.validate()?;
     let mut selected = Vec::new();
-    let mut versions = BTreeSet::new();
-    let mut payload_bytes = 0_usize;
-    for change in changes.iter().filter(|change| {
-        change.source_version > after
-            && through.is_none_or(|watermark| change.source_version <= watermark)
-    }) {
-        let inserted_version = versions.insert(change.source_version);
-        if inserted_version && versions.len() > limit {
+    let mut selected_bytes = 0_usize;
+    let mut offset = 0_usize;
+    while offset < changes.len() {
+        let source_version = changes[offset].source_version;
+        let group_start = offset;
+        while offset < changes.len() && changes[offset].source_version == source_version {
+            offset += 1;
+        }
+        let group = &changes[group_start..offset];
+        if group.len() > limits.max_rows {
+            bail!("source transaction exceeds the bounded change row budget");
+        }
+        let group_bytes = group.iter().try_fold(0_usize, |total, change| {
+            total
+                .checked_add(change.payload.as_ref().map_or(0, Vec::len))
+                .ok_or_else(|| anyhow!("migration change byte count overflowed"))
+        })?;
+        if group_bytes > limits.max_bytes {
+            bail!("source transaction exceeds the bounded change byte budget");
+        }
+        let next_rows = selected
+            .len()
+            .checked_add(group.len())
+            .ok_or_else(|| anyhow!("migration change row count overflowed"))?;
+        let next_bytes = selected_bytes
+            .checked_add(group_bytes)
+            .ok_or_else(|| anyhow!("migration change byte count overflowed"))?;
+        if next_rows > limits.max_rows || next_bytes > limits.max_bytes {
             break;
         }
-        if selected.len() >= limit {
-            if inserted_version {
-                break;
-            }
-            bail!("in-memory migration transaction exceeds the bounded change row budget");
-        }
-        payload_bytes = payload_bytes
-            .checked_add(change.payload.as_ref().map_or(0, Vec::len))
-            .ok_or_else(|| anyhow!("in-memory migration change byte count overflowed"))?;
-        if payload_bytes > DEFAULT_MAX_QUEUED_BYTES {
-            bail!("in-memory migration transaction exceeds the bounded change byte budget");
-        }
-        selected.push(change.clone());
+        selected.extend(group.iter().cloned());
+        selected_bytes = next_bytes;
     }
     Ok(selected)
 }
@@ -1590,17 +1645,21 @@ impl MigrationSource for InMemoryMigrationSource {
         })
     }
 
-    async fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<CapturedChange>> {
-        self.read_changes(after, None, limit).await
+    async fn changes_after(
+        &self,
+        after: i64,
+        limits: ChangeBatchLimits,
+    ) -> Result<Vec<CapturedChange>> {
+        self.read_changes(after, None, limits).await
     }
 
     async fn changes_through(
         &self,
         after: i64,
         through: i64,
-        limit: usize,
+        limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>> {
-        self.read_changes(after, Some(through), limit).await
+        self.read_changes(after, Some(through), limits).await
     }
 
     fn migration_id(&self) -> &str {
@@ -2933,7 +2992,7 @@ where
                 .changes_through(
                     checkpoint.applied_through,
                     watermark,
-                    self.limits.max_queued_operations,
+                    self.limits.change_batch,
                 )
                 .await?;
             if changes.is_empty() {
@@ -3222,7 +3281,7 @@ where
         }
         let changes = self
             .source
-            .changes_through(after, through, self.limits.max_queued_operations)
+            .changes_through(after, through, self.limits.change_batch)
             .await?;
         let last_change = changes
             .iter()
