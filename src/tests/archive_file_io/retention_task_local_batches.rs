@@ -1055,7 +1055,7 @@ async fn retention_task_local_transaction_cancel_rolls_back_before_releasing_adm
             .expect("source remains after transaction cancellation"),
         1
     );
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
         .await
         .expect("independent writer after cancellation");
