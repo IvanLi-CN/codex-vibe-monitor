@@ -234,6 +234,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                             OwnedMaintenanceContext {
                                 pool: &pool,
                                 config,
+                                storage_migration: None,
                                 cache: &cache,
                                 circuit: Arc::new(RawCaptureCircuitBreaker::new(
                                     config.resolved_proxy_raw_dir(),

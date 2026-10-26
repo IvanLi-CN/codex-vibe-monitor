@@ -1081,6 +1081,11 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
+        let storage_migration = Arc::new(
+            StorageMigrationRuntime::load(&config.storage, pool.clone())
+                .await
+                .context("failed to recover durable storage migration state")?,
+        );
         initialize_invocation_identity_cleanup_state(&pool).await?;
         let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
@@ -1129,7 +1134,11 @@ pub(crate) async fn run() -> Result<()> {
             }
         };
         log_startup_phase("schema", schema_started_at);
-        if should_run_blocking_startup_persistent_prep(&cli) {
+        let startup_prep_held = storage_migration
+            .migration_hold_reason("startup_hourly_rollup_bootstrap")
+            .await
+            .is_some();
+        if should_run_blocking_startup_persistent_prep(&cli) && !startup_prep_held {
             let prep_summary = run_startup_persistent_prep_inner_with_store(
                 maintenance_store.as_deref(),
                 &pool,
@@ -1158,6 +1167,10 @@ pub(crate) async fn run() -> Result<()> {
                     "legacy archive batches still need historical rollup materialization"
                 );
             }
+        } else if startup_prep_held {
+            info!(
+                "startup persistent prep deferred because storage migration holds competing tasks"
+            );
         }
         if let Some(command) = &cli.command {
             run_cli_command(&pool, &config, command).await?;
@@ -1249,6 +1262,7 @@ pub(crate) async fn run() -> Result<()> {
 
         let state = Arc::new(AppState {
             system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+            storage_migration,
             config: config.clone(),
             pool: pool.clone(),
             process_started_at_utc,
@@ -1995,6 +2009,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     blocked_task_keys.extend(
                         crate::maintenance_store::active_task_execution_task_keys(),
                     );
+                    blocked_task_keys.extend(state.storage_migration.held_task_keys().await);
                     blocked_task_keys.sort();
                     blocked_task_keys.dedup();
                     if blocked_task_keys.iter().any(|task_key| {
@@ -2929,6 +2944,19 @@ async fn run_managed_task_once_with_observation(
     run_id: i64,
     observation: &crate::TaskExecutionObservation,
 ) -> Result<ManagedTaskExecution> {
+    if let Some(reason) = state
+        .storage_migration
+        .migration_hold_reason(task_key)
+        .await
+    {
+        return Ok(ManagedTaskExecution {
+            summary: format!("{task_key} 已因迁移准入暂停"),
+            detail: Some("migration hold remains durable until migration resumes".to_string()),
+            completion: Some("deferred".to_string()),
+            core_completion: None,
+            details: Some(json!({"waitReason": reason})),
+        });
+    }
     let store = crate::maintenance_store::global().context("maintenance store unavailable")?;
     let migration_hold_active = match store.migration_task_is_held(task_key).await {
         Ok(active) => active,
@@ -3105,6 +3133,7 @@ async fn run_managed_task_once_with_scoped_observation(
             OwnedMaintenanceContext {
                 pool: &state.pool,
                 config: &state.config,
+                storage_migration: Some(state.storage_migration.as_ref()),
                 cache: &state.prompt_cache_conversation_cache,
                 circuit: state.raw_capture_circuit.clone(),
                 shutdown: &state.shutdown,
@@ -3420,6 +3449,7 @@ async fn run_managed_task_once(
                 task_key,
                 false,
                 &state.shutdown,
+                Some(state.storage_migration.as_ref()),
             )
             .await?;
             Ok(format!(
@@ -3802,6 +3832,18 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS);
         let mut p2_preemption_retry = initial_p2_preemption_retry;
         loop {
+            if state
+                .storage_migration
+                .migration_hold_reason("startup_hourly_rollup_bootstrap")
+                .await
+                .is_some()
+            {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
             if crate::maintenance_store::legacy_worker_should_skip(
                 "startup_hourly_rollup_bootstrap",
             )

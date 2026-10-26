@@ -138,6 +138,7 @@ pub(crate) struct OwnedMaintenanceExecution {
 pub(crate) struct OwnedMaintenanceContext<'a> {
     pub(crate) pool: &'a Pool<Sqlite>,
     pub(crate) config: &'a AppConfig,
+    pub(crate) storage_migration: Option<&'a StorageMigrationRuntime>,
     pub(crate) cache: &'a Arc<Mutex<PromptCacheConversationsCacheState>>,
     pub(crate) circuit: Arc<RawCaptureCircuitBreaker>,
     pub(crate) shutdown: &'a CancellationToken,
@@ -286,6 +287,7 @@ pub(crate) async fn execute_owned_maintenance(
                 task_key,
                 options.dry_run,
                 context.shutdown,
+                context.storage_migration,
             )
             .await?;
             return Ok(retention_owner_execution(

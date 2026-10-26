@@ -980,7 +980,16 @@ pub(crate) async fn run_retention_owner_task(
     task_key: &str,
     dry_run: bool,
     shutdown: &CancellationToken,
+    storage_migration: Option<&StorageMigrationRuntime>,
 ) -> Result<RetentionOwnerRunSummary> {
+    if let Some(storage_migration) = storage_migration
+        && let Some(reason) = storage_migration.migration_hold_reason(task_key).await
+    {
+        let mut summary = RetentionOwnerRunSummary::new(task_key, task_key, "rows");
+        summary.completion = "deferred";
+        summary.wait_reason = Some(reason.to_string());
+        return Ok(summary);
+    }
     let started_at = Instant::now();
     let result = RETENTION_MAINTENANCE_ACTIVE
         .scope(

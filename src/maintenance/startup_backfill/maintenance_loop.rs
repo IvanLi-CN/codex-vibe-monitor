@@ -364,6 +364,18 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     observation_parent_task_key: Option<&'static str>,
     managed_run_id: Option<i64>,
 ) -> StartupBackfillMaintenancePass {
+    if state
+        .storage_migration
+        .migration_hold_reason("startup_backfill")
+        .await
+        .is_some()
+    {
+        return StartupBackfillMaintenancePass {
+            deferred: true,
+            detail: Some("startup backfill deferred by migration_hold".to_string()),
+            ..StartupBackfillMaintenancePass::default()
+        };
+    }
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
@@ -599,6 +611,14 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     state: &Arc<AppState>,
     prep_cli: &CliArgs,
 ) -> bool {
+    if state
+        .storage_migration
+        .migration_hold_reason("startup_hourly_rollup_bootstrap")
+        .await
+        .is_some()
+    {
+        return true;
+    }
     if !should_run_startup_persistent_prep(prep_cli) {
         return true;
     }
@@ -662,6 +682,14 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     gate: &crate::db_pressure::DbPressureGate,
 ) {
     if cancel.is_cancelled() {
+        return;
+    }
+    if state
+        .storage_migration
+        .migration_hold_reason("startup_backfill")
+        .await
+        .is_some()
+    {
         return;
     }
     let Some(_execution_lease) =
