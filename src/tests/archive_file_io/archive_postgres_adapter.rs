@@ -349,10 +349,12 @@ async fn postgres_archive_release_and_prune_wait_for_live_raw_link_transactions(
     let (suffix, base_batch_id) = fixture_identity();
     let raw_path = format!("pg-raw-tests/{suffix}/concurrent.bin");
     let raw_identity = digest(&format!("raw:{raw_path}"));
-    let archive_manifest = manifest(base_batch_id, &suffix, "delete_pending");
+    let mut archive_manifest = manifest(base_batch_id, &suffix, "delete_pending");
+    let canonical_archive_path = archive_manifest.file_path.clone();
+    archive_manifest.file_path = format!("archive/{canonical_archive_path}");
     let cleanup_manifest = manifest(base_batch_id + 1, &suffix, "delete_pending");
     let file_paths = vec![
-        archive_manifest.file_path.clone(),
+        canonical_archive_path.clone(),
         cleanup_manifest.file_path.clone(),
     ];
     let batch_ids = vec![
@@ -469,6 +471,13 @@ async fn postgres_archive_release_and_prune_wait_for_live_raw_link_transactions(
             .execute(&pool)
             .await?;
         assert!(archive.prune_metadata(&plan).await?);
+        let ledger_file_path: String = sqlx::query_scalar(
+            "SELECT file_path FROM archive_prune_ledger WHERE archive_batch_id = $1",
+        )
+        .bind(archive_manifest.archive_batch_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(ledger_file_path, canonical_archive_path);
         Ok(())
     }
     .await;

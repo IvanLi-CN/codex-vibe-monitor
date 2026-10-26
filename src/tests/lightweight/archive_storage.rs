@@ -238,8 +238,18 @@ fn archive_roles_require_summary_evidence_and_canonical_raw_paths() {
         retention_recovery_cursor: None,
         retention_raw_reconciliation: Vec::new(),
     };
-    operation.validate(archive_root, raw_root).unwrap();
+    operation.manifest.file_path = "/var/lib/codex/archive/2026/10/26/part-0.sqlite.gz".to_owned();
+    for marker in &mut operation.replay_markers {
+        marker.file_path = "archive/2026/10/26/part-0.sqlite.gz".to_owned();
+    }
     let canonical = operation.canonicalized(archive_root, raw_root).unwrap();
+    assert_eq!(canonical.manifest.file_path, "2026/10/26/part-0.sqlite.gz");
+    assert!(
+        canonical
+            .replay_markers
+            .iter()
+            .all(|marker| marker.file_path == canonical.manifest.file_path)
+    );
     assert_eq!(
         canonical.raw_reference_changes[0].raw_path,
         "2026/10/request.bin"
@@ -438,6 +448,18 @@ fn prune_plan_requires_proof_rollup_and_zero_raw_references() {
         Path::new("/var/lib/codex/raw"),
     )
     .unwrap();
+    let mut aliased_plan = plan.clone();
+    aliased_plan.manifest.file_path = "archive/2026/10/26/part-0.sqlite.gz".to_owned();
+    let canonical_plan = aliased_plan
+        .canonicalized(
+            Path::new("/var/lib/codex/archive"),
+            Path::new("/var/lib/codex/raw"),
+        )
+        .unwrap();
+    assert_eq!(
+        canonical_plan.manifest.file_path,
+        "2026/10/26/part-0.sqlite.gz"
+    );
 
     let mut unsafe_plan = plan.clone();
     unsafe_plan.raw_reference_checks[0].active_reference_count = 1;
@@ -535,6 +557,17 @@ fn retention_state_preserves_empty_cursor_and_requires_structured_sources() {
     prepared
         .validate(Path::new("/var/lib/codex/archive"))
         .unwrap();
+    let mut aliased = prepared.clone();
+    aliased.file_path = "archive/2026/10/part-0.sqlite.gz".to_owned();
+    aliased.staged_file_path = Some("archive/staging/part-0.sqlite.gz".to_owned());
+    let canonical = aliased
+        .canonicalized(Path::new("/var/lib/codex/archive"))
+        .unwrap();
+    assert_eq!(canonical.file_path, "2026/10/part-0.sqlite.gz");
+    assert_eq!(
+        canonical.staged_file_path.as_deref(),
+        Some("staging/part-0.sqlite.gz")
+    );
 
     let mut invalid = prepared.clone();
     invalid.source_ids_json = "{}".to_owned();

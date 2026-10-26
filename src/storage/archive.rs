@@ -181,6 +181,7 @@ const ARCHIVE_STORAGE_SCHEMA: &[&str] = &[
     )",
     "CREATE TABLE IF NOT EXISTS archive_prune_ledger (
         archive_batch_id BIGINT PRIMARY KEY,
+        file_path TEXT NOT NULL,
         manifest_sha256 TEXT NOT NULL,
         file_identity_sha256 TEXT NOT NULL,
         prepared_at_epoch_ms BIGINT NOT NULL,
@@ -317,6 +318,7 @@ const ARCHIVE_STORAGE_SCHEMA_UPGRADES: &[&str] = &[
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS summary_source_kind TEXT NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS upstream_activity_manifest_refreshed_at TEXT",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS historical_rollups_materialized_at TEXT",
+    "ALTER TABLE archive_prune_ledger ADD COLUMN IF NOT EXISTS file_path TEXT",
     "ALTER TABLE proxy_raw_payload_blobs ADD COLUMN IF NOT EXISTS file_identity_sha256 TEXT",
 ];
 
@@ -398,6 +400,14 @@ impl ArchiveManifest {
         }
         Ok(())
     }
+
+    pub(crate) fn canonicalized(&self, archive_root: &Path) -> Result<Self> {
+        self.validate(archive_root)?;
+        let mut canonical = self.clone();
+        canonical.file_path = normalize_archive_path(&self.file_path, archive_root)?;
+        canonical.validate(archive_root)?;
+        Ok(canonical)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,6 +468,19 @@ impl RetentionPreparedArchive {
             bail!("prepared archive counters and timestamps are invalid");
         }
         Ok(())
+    }
+
+    pub(crate) fn canonicalized(&self, archive_root: &Path) -> Result<Self> {
+        self.validate(archive_root)?;
+        let mut canonical = self.clone();
+        canonical.file_path = normalize_archive_path(&self.file_path, archive_root)?;
+        canonical.staged_file_path = self
+            .staged_file_path
+            .as_deref()
+            .map(|path| normalize_archive_path(path, archive_root))
+            .transpose()?;
+        canonical.validate(archive_root)?;
+        Ok(canonical)
     }
 }
 
@@ -608,6 +631,13 @@ impl ArchiveReplayMarker {
             bail!("archive replay marker digest does not match the archive");
         }
         Ok(())
+    }
+
+    fn canonicalized(&self, manifest: &ArchiveManifest, archive_root: &Path) -> Result<Self> {
+        let mut canonical = self.clone();
+        canonical.file_path = normalize_archive_path(&self.file_path, archive_root)?;
+        canonical.validate(manifest)?;
+        Ok(canonical)
     }
 }
 
@@ -999,6 +1029,7 @@ impl ArchivePrunePlan {
     pub(crate) fn canonicalized(&self, archive_root: &Path, raw_root: &Path) -> Result<Self> {
         self.validate(archive_root, raw_root)?;
         let mut canonical = self.clone();
+        canonical.manifest = self.manifest.canonicalized(archive_root)?;
         canonical.raw_reference_checks = self
             .raw_reference_checks
             .iter()
@@ -1161,13 +1192,23 @@ impl ArchivePublishOperation {
     }
 
     pub(crate) fn canonicalized(&self, archive_root: &Path, raw_root: &Path) -> Result<Self> {
-        self.validate(archive_root, raw_root)?;
         let mut canonical = self.clone();
+        canonical.manifest = self.manifest.canonicalized(archive_root)?;
+        canonical.replay_markers = self
+            .replay_markers
+            .iter()
+            .map(|marker| marker.canonicalized(&canonical.manifest, archive_root))
+            .collect::<Result<Vec<_>>>()?;
         canonical.raw_reference_changes = self
             .raw_reference_changes
             .iter()
-            .map(|change| change.canonicalized(&self.manifest, raw_root))
+            .map(|change| change.canonicalized(&canonical.manifest, raw_root))
             .collect::<Result<Vec<_>>>()?;
+        canonical.retention_prepared_archive = self
+            .retention_prepared_archive
+            .as_ref()
+            .map(|prepared| prepared.canonicalized(archive_root))
+            .transpose()?;
         canonical.retention_raw_reconciliation = self
             .retention_raw_reconciliation
             .iter()
@@ -1272,8 +1313,7 @@ impl ArchiveStorageAdapter {
             updated_at_epoch_ms: row.try_get("updated_at_epoch_ms")?,
             quarantined_at: row.try_get("quarantined_at")?,
         };
-        value.validate(&self.archive_root)?;
-        Ok(Some(value))
+        Ok(Some(value.canonicalized(&self.archive_root)?))
     }
 
     pub(crate) async fn read_retention_recovery_cursor(
@@ -2644,12 +2684,13 @@ impl ArchiveStorageAdapter {
             .unwrap_or_default();
         sqlx::query(
             "INSERT INTO archive_prune_ledger
-                (archive_batch_id, manifest_sha256, file_identity_sha256,
+                (archive_batch_id, file_path, manifest_sha256, file_identity_sha256,
                  prepared_at_epoch_ms, metadata_pruned_at_epoch_ms)
-             VALUES ($1, $2, $3, $4, NULL)
+             VALUES ($1, $2, $3, $4, $5, NULL)
              ON CONFLICT (archive_batch_id) DO NOTHING",
         )
         .bind(plan.manifest.archive_batch_id)
+        .bind(&plan.manifest.file_path)
         .bind(&plan.manifest.sha256)
         .bind(&plan.file_identity_sha256)
         .bind(prepared_at_epoch_ms)
@@ -2657,20 +2698,23 @@ impl ArchiveStorageAdapter {
         .await
         .context("prepare archive prune ledger")?;
         let ledger_row = sqlx::query(
-            "SELECT manifest_sha256, file_identity_sha256, metadata_pruned_at_epoch_ms
+            "SELECT file_path, manifest_sha256, file_identity_sha256,
+                    metadata_pruned_at_epoch_ms
                FROM archive_prune_ledger WHERE archive_batch_id = $1",
         )
         .bind(plan.manifest.archive_batch_id)
         .fetch_one(&mut *transaction)
         .await
         .context("read archive prune ledger")?;
+        let ledger_file_path: Option<String> = ledger_row.try_get("file_path")?;
         let ledger_manifest_sha: String = ledger_row.try_get("manifest_sha256")?;
         let ledger_file_identity_sha: String = ledger_row.try_get("file_identity_sha256")?;
         let metadata_pruned_at: Option<i64> = ledger_row.try_get("metadata_pruned_at_epoch_ms")?;
-        if ledger_manifest_sha != plan.manifest.sha256
+        if ledger_file_path.as_deref() != Some(plan.manifest.file_path.as_str())
+            || ledger_manifest_sha != plan.manifest.sha256
             || ledger_file_identity_sha != plan.file_identity_sha256
         {
-            bail!("archive prune ledger identity conflicts with current plan");
+            bail!("archive prune ledger identity or path conflicts with current plan");
         }
         if metadata_pruned_at.is_some() {
             return Ok(false);
