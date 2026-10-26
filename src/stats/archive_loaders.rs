@@ -1236,29 +1236,39 @@ async fn open_archive_batch_pool(
             }
             return Err(err);
         }
-        // Lazy pool construction is synchronous.  The first connection, including native
-        // SQLite initialization, starts under the drain guard below rather than before it.
+        // Lazy pool construction is synchronous. The first connection is opened separately
+        // below so its native lifetime is owned by the drain task rather than by a cancellable
+        // SQLx pool-acquire future.
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
-            // Do not let SQLx cancel connection acquisition before the owner can drain the
-            // native worker. The bounded file-operation path owns cancellation and cleanup.
-            .acquire_timeout(Duration::from_secs(24 * 60 * 60))
             .connect_lazy(&sqlite_url_for_path(&temp_path))
             .context("failed to configure archive batch")?;
         let mut pool_drain =
             ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
         let expected_table_for_open = expected_table.to_owned();
-        let open_pool = archive_pool.clone();
+        let archive_url = sqlite_url_for_path(&temp_path);
         let open_task = tokio::spawn(crate::maintenance::with_file_phase_permit(
             file_phase.clone(),
             async move {
-                sqlx::query_scalar::<_, i64>(
+                let mut connection = SqliteConnection::connect(&archive_url)
+                    .await
+                    .context("failed to connect archive batch")?;
+                let result = sqlx::query_scalar::<_, i64>(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
                 )
                 .bind(expected_table_for_open)
-                .fetch_one(&open_pool)
+                .fetch_one(&mut connection)
                 .await
-                .context("failed to open archive batch")
+                .context("failed to open archive batch");
+                let close_result = connection
+                    .close()
+                    .await
+                    .context("failed to close archive batch opener");
+                match (result, close_result) {
+                    (Err(error), _) => Err(error),
+                    (Ok(_), Err(error)) => Err(error),
+                    (Ok(value), Ok(())) => Ok(value),
+                }
             },
         ));
         pool_drain.set_open_task(open_task);
