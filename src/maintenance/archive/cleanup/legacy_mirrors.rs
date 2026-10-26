@@ -61,7 +61,7 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
     if sha256_before_open != candidate.sha256 {
         return Ok(LegacyDetailMirrorProof::NotMirror);
     }
-    if started_at.elapsed() >= max_elapsed {
+    if crate::maintenance::migration_hold_signal_reached() || started_at.elapsed() >= max_elapsed {
         return Ok(LegacyDetailMirrorProof::BudgetExhausted);
     }
 
@@ -82,7 +82,7 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
         drop(temp_cleanup);
         return Ok(LegacyDetailMirrorProof::BudgetExhausted);
     }
-    if started_at.elapsed() >= max_elapsed {
+    if crate::maintenance::migration_hold_signal_reached() || started_at.elapsed() >= max_elapsed {
         drop(temp_cleanup);
         return Ok(LegacyDetailMirrorProof::BudgetExhausted);
     };
@@ -101,7 +101,9 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
     let mut matched_rows = 0_i64;
     let proof_result: Result<LegacyDetailMirrorProof> = async {
         loop {
-            if started_at.elapsed() >= max_elapsed {
+            if crate::maintenance::migration_hold_signal_reached()
+                || started_at.elapsed() >= max_elapsed
+            {
                 return Ok(LegacyDetailMirrorProof::BudgetExhausted);
             }
             let archive_rows = sqlx::query_as::<_, (i64, String)>(
@@ -117,7 +119,9 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
                     candidate.id
                 )
             })?;
-            if started_at.elapsed() >= max_elapsed {
+            if crate::maintenance::migration_hold_signal_reached()
+                || started_at.elapsed() >= max_elapsed
+            {
                 return Ok(LegacyDetailMirrorProof::BudgetExhausted);
             }
             let Some(last_id) = archive_rows.last().map(|(id, _)| *id) else {
@@ -140,7 +144,9 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
                 .fetch_all(pool)
                 .await
                 .context("failed to read live identities for legacy detail mirror recovery")?;
-            if started_at.elapsed() >= max_elapsed {
+            if crate::maintenance::migration_hold_signal_reached()
+                || started_at.elapsed() >= max_elapsed
+            {
                 return Ok(LegacyDetailMirrorProof::BudgetExhausted);
             }
             let live_row_count = live_rows.len();
@@ -192,7 +198,7 @@ fn legacy_detail_mirror_sha256_with_budget(
     started_at: Instant,
     max_elapsed: Duration,
 ) -> Result<Option<String>> {
-    if started_at.elapsed() >= max_elapsed {
+    if crate::maintenance::migration_hold_signal_reached() || started_at.elapsed() >= max_elapsed {
         return Ok(None);
     }
     let mut file = fs::File::open(path).with_context(|| {
@@ -214,7 +220,9 @@ fn legacy_detail_mirror_sha256_with_budget(
             break;
         }
         hasher.update(&buffer[..read]);
-        if started_at.elapsed() >= max_elapsed {
+        if crate::maintenance::migration_hold_signal_reached()
+            || started_at.elapsed() >= max_elapsed
+        {
             return Ok(None);
         }
     }
@@ -367,7 +375,9 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     let mut proven_mirrors = Vec::new();
     let mut ambiguous_mirrors = Vec::new();
     for candidate in candidates.iter() {
-        if started_at.elapsed() >= max_elapsed {
+        if crate::maintenance::migration_hold_signal_reached()
+            || started_at.elapsed() >= max_elapsed
+        {
             hit_budget = true;
             break;
         }

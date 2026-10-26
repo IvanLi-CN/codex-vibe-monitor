@@ -480,12 +480,18 @@ pub(crate) fn is_archive_temp_file_name(name: &str) -> bool {
 }
 
 pub(crate) fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     if !root.exists() {
         return Ok(());
     }
     for entry in fs::read_dir(root)
         .with_context(|| format!("failed to read archive directory {}", root.display()))?
     {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(());
+        }
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;

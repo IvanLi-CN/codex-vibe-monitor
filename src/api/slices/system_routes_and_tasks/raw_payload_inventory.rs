@@ -83,6 +83,9 @@ async fn persist_raw_capture_circuit(state: &AppState) -> Result<()> {
 }
 
 async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) -> Result<u64> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(0);
+    }
     let gate = crate::db_pressure::global_db_pressure_gate();
     let _permit = match gate.try_begin_background("system_raw_metrics_inventory") {
         Ok(permit) => permit,
@@ -111,6 +114,9 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
             metrics_source = "inventory",
             "system raw metrics inventory is waiting for retention reset batches"
         );
+        return Ok(0);
+    }
+    if crate::maintenance::migration_hold_signal_reached() {
         return Ok(0);
     }
     let rows = sqlx::query_as::<_, SystemRawPayloadInventoryRow>(
@@ -242,6 +248,9 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         })
         .collect::<Vec<_>>();
     let discovered_path_count = paths.len().saturating_add(recheck_changes.len());
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(0);
+    }
     let mut modified_paths = HashSet::new();
     let mut deltas = (0_i64, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64);
     let mut tx = state.pool.begin().await?;
@@ -529,6 +538,12 @@ pub(crate) async fn reset_system_raw_payload_metrics_inventory_batch(
     state: &AppState,
     max_paths: usize,
 ) -> Result<SystemRawPayloadInventoryResetOutcome> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(SystemRawPayloadInventoryResetOutcome {
+            removed_path_count: 0,
+            complete: false,
+        });
+    }
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         r#"
@@ -638,15 +653,68 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                 crate::maintenance_store::task_execution_class("raw_payload_metrics_inventory"),
                 "processing",
             );
+            let migration_hold_flag = Arc::new(AtomicBool::new(false));
+            let migration_hold_flag_for_task = Arc::clone(&migration_hold_flag);
+            let inventory_future = crate::maintenance::with_migration_hold_signal(
+                Arc::clone(&migration_hold_flag),
+                crate::maintenance::with_managed_task_key("raw_payload_metrics_inventory", async {
+                    crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref())
+                        .await?;
+                    if migration_hold_flag_for_task.load(std::sync::atomic::Ordering::Acquire)
+                        || crate::maintenance_store::migration_task_is_held(
+                            "raw_payload_metrics_inventory",
+                        )
+                        .await
+                    {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
+                    Ok::<(), anyhow::Error>(())
+                }),
+            );
+            tokio::pin!(inventory_future);
             let mut terminal_status = "success";
             let inventory_result =
                 crate::with_managed_task_observation(observation.clone(), async {
-                    crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref())
-                        .await?;
-                    refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
-                    Ok::<(), anyhow::Error>(())
+                    let migration_hold_watcher = async {
+                        loop {
+                            if crate::maintenance_store::migration_task_is_held(
+                                "raw_payload_metrics_inventory",
+                            )
+                            .await
+                            {
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    };
+                    tokio::select! {
+                        result = &mut inventory_future => result,
+                        _ = migration_hold_watcher => {
+                            migration_hold_flag.store(true, Ordering::Release);
+                            (&mut inventory_future).await
+                        }
+                    }
                 })
                 .await;
+            let migration_hold_active = migration_hold_flag.load(Ordering::Acquire)
+                || crate::maintenance_store::migration_task_is_held(
+                    "raw_payload_metrics_inventory",
+                )
+                .await;
+            if migration_hold_active && inventory_result.is_ok() {
+                terminal_status = "skipped";
+                if let Some(store) = crate::maintenance_store::global()
+                    && let Err(error) = store
+                        .mark_task_migration_held("raw_payload_metrics_inventory")
+                        .await
+                {
+                    warn!(
+                        error = %error,
+                        "raw metrics inventory migration-held progress could not be published"
+                    );
+                }
+            }
             if let Err(error) = inventory_result {
                 terminal_status = "failed";
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
@@ -660,7 +728,14 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                     crate::proxy::recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
                 }
             }
-            observation.finish_with_status(terminal_status);
+            if migration_hold_active && terminal_status == "skipped" {
+                observation.finish_with_status_and_reason(
+                    "skipped",
+                    Some(crate::maintenance_store::MIGRATION_HOLD_REASON),
+                );
+            } else {
+                observation.finish_with_status(terminal_status);
+            }
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}

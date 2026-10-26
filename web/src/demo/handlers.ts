@@ -3484,6 +3484,7 @@ function demoTaskOperationsRuntime() {
         requestedAt: new Date(now - 55_000).toISOString(),
         waitingMs: 55_000,
         position: 1,
+        waitReason: "migration_hold",
       },
     ],
     queuedRunsAvailable: true,

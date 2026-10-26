@@ -307,15 +307,17 @@ pub(crate) struct ActiveAccountActivityV2RepairOutcome {
 pub(crate) async fn repair_active_account_activity_v2_coverage(
     pool: &Pool<Sqlite>,
 ) -> Result<ActiveAccountActivityV2RepairOutcome> {
-    repair_active_account_activity_v2_coverage_with_progress(pool, |_| {}).await
+    repair_active_account_activity_v2_coverage_with_progress(pool, |_| false).await
 }
 
 pub(crate) async fn repair_active_account_activity_v2_coverage_with_progress(
     pool: &Pool<Sqlite>,
-    mut on_bucket_committed: impl FnMut(usize) + Send,
+    mut on_bucket_committed: impl FnMut(usize) -> bool + Send,
 ) -> Result<ActiveAccountActivityV2RepairOutcome> {
     let started_at = Instant::now();
-    if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
+    if crate::maintenance::migration_hold_signal_reached()
+        || started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET
+    {
         return Ok(ActiveAccountActivityV2RepairOutcome::default());
     }
     let Some(remaining_budget) =
@@ -343,7 +345,9 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_with_progress(
     let mut repaired_bucket_count = 0usize;
 
     for bucket_start_epoch in missing_buckets {
-        if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
+        if crate::maintenance::migration_hold_signal_reached()
+            || started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET
+        {
             break;
         }
         let Some(remaining_budget) =
@@ -424,7 +428,9 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_with_progress(
         .await?;
         tx.commit().await?;
         repaired_bucket_count += 1;
-        on_bucket_committed(repaired_bucket_count);
+        if on_bucket_committed(repaired_bucket_count) {
+            break;
+        }
     }
 
     let outcome = ActiveAccountActivityV2RepairOutcome {
@@ -664,6 +670,9 @@ pub(super) async fn mark_live_account_activity_v2_coverage_tx(
 pub(crate) async fn repair_live_invocation_usage_breakdown_rollups(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(());
+    }
     if load_hourly_rollup_live_progress(
         pool,
         INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET,
@@ -675,6 +684,9 @@ pub(crate) async fn repair_live_invocation_usage_breakdown_rollups(
     }
 
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(());
+        }
         let updated = repair_live_invocation_usage_breakdown_rollups_once(pool).await?;
         if updated == 0 {
             return Ok(());

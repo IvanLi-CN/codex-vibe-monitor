@@ -31,6 +31,9 @@ pub(crate) async fn backfill_invocation_archive_expiries(
     let candidate_count = candidates.len();
     let mut updated = 0usize;
     for candidate in candidates {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         let archive_expires_at = shanghai_archive_expiry_from_reference_timestamp(
             &candidate.coverage_end_at,
             config.invocation_archive_ttl_days,
@@ -619,6 +622,9 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
             && candidate.summary_source_kind
                 == crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
@@ -756,6 +762,9 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut deleted = 0usize;
     for candidate in eligible_candidates {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if finalize_archive_batch_file_deletion(
                 pool,
@@ -1029,6 +1038,9 @@ pub(crate) async fn prune_legacy_archive_batches(
     };
 
     for candidate in candidates {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             let deleted = if dry_run {
                 true

@@ -627,20 +627,33 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     // Holding the global background slot here would make those nested admissions reject every
     // startup pass before they can do any work.
     let defer_generation = super::retention::retention_defer_generation();
-    match run_startup_persistent_prep_inner(&state.pool, &state.config, prep_cli, false).await {
+    let maintenance_store = crate::maintenance_store::global().map(|store| store.as_ref());
+    match run_startup_persistent_prep_inner_with_store(
+        maintenance_store,
+        &state.pool,
+        &state.config,
+        prep_cli,
+        false,
+    )
+    .await
+    {
         Ok(summary) => {
-            let deferred = super::retention::retention_defer_generation() != defer_generation;
+            let retention_deferred =
+                super::retention::retention_defer_generation() != defer_generation;
+            let retry_pending =
+                summary.deferred || retention_deferred || summary.pending_manifest_batches > 0;
             info!(
+                migration_hold_deferred = summary.deferred,
                 refreshed_manifest_batches = summary.refreshed_manifest_batches,
                 refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
                 missing_manifest_files = summary.missing_manifest_files,
                 backfilled_archive_expiries = summary.backfilled_archive_expiries,
                 bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
                 pending_manifest_batches = summary.pending_manifest_batches,
-                deferred,
+                deferred = retention_deferred,
                 "startup background prep finished"
             );
-            !deferred && summary.pending_manifest_batches == 0
+            retry_pending
         }
         Err(err) => {
             let pressure_error = crate::db_pressure::global_db_pressure_gate()

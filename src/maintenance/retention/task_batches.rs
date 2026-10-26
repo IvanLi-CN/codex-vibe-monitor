@@ -121,6 +121,18 @@ fn mark_error(diagnostic: &mut RetentionDiagnosticRecorder, error: &anyhow::Erro
     }
 }
 
+async fn migration_hold_should_stop(diagnostic: &mut RetentionDiagnosticRecorder) -> bool {
+    if !crate::maintenance::migration_hold_boundary_reached().await {
+        return false;
+    }
+    retention_record_defer(
+        "retention_batch",
+        crate::maintenance_store::MIGRATION_HOLD_REASON,
+    );
+    diagnostic.mark_stop();
+    true
+}
+
 const INVOCATION_ARCHIVE_SELECTION_COLUMNS: &str = r#"
     id,
     invoke_id,
@@ -794,6 +806,9 @@ pub(crate) async fn prune_old_invocation_details(
         }
 
         for (group_key, group) in by_group {
+            if migration_hold_should_stop(&mut recovery_diagnostic).await {
+                break;
+            }
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
@@ -957,6 +972,9 @@ pub(crate) async fn prune_old_invocation_details(
             let mut committed_rows = 0;
             let mut pending_group = group;
             while !pending_group.is_empty() {
+                if migration_hold_should_stop(&mut recovery_diagnostic).await {
+                    break;
+                }
                 let group = take_retention_batch(
                     &mut pending_group,
                     config,
@@ -1358,6 +1376,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
         }
 
         for (group_key, group) in by_group {
+            if migration_hold_should_stop(&mut recovery_diagnostic).await {
+                break;
+            }
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
@@ -1657,6 +1678,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let mut chunk_index = 0usize;
             let mut pending_group = group;
             while !pending_group.is_empty() {
+                if migration_hold_should_stop(&mut recovery_diagnostic).await {
+                    break;
+                }
                 let group = take_retention_batch(
                     &mut pending_group,
                     config,
@@ -2125,6 +2149,9 @@ pub(crate) async fn archive_timestamped_dataset(
         }
 
         for (month_key, group) in by_month {
+            if migration_hold_should_stop(&mut recovery_diagnostic).await {
+                break;
+            }
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
@@ -2285,6 +2312,9 @@ pub(crate) async fn archive_timestamped_dataset(
             let mut committed_rows = 0;
             let mut pending_group = group;
             while !pending_group.is_empty() {
+                if migration_hold_should_stop(&mut recovery_diagnostic).await {
+                    break;
+                }
                 let group = take_retention_batch(
                     &mut pending_group,
                     config,
