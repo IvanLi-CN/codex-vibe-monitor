@@ -60,6 +60,8 @@ pub(crate) enum AuthorityRecoveryRecord {
         installation_id: String,
         module: StorageModule,
         source_identity: String,
+        target_identity: String,
+        source_watermark: i64,
     },
     Manifest(ModuleAuthorityManifest),
     Indeterminate,
@@ -527,11 +529,15 @@ impl ModuleGenerationGate {
                 installation_id,
                 module,
                 source_identity,
+                target_identity,
+                source_watermark,
             } => {
                 if migration_id != expected.migration_id
                     || installation_id != expected.installation_id
                     || module != expected.module
                     || source_identity != expected.source_identity
+                    || target_identity != expected.target_identity
+                    || source_watermark != expected.source_watermark
                 {
                     bail!("no-cutover recovery marker belongs to another migration identity");
                 }
@@ -733,8 +739,9 @@ pub(crate) trait MigrationTaskAdmission: Send + Sync {
     fn decision(&self, task_key: &str) -> AdmissionDecision;
 }
 
-/// Authority persistence must compare the full active recovery context before publishing and
-/// atomically replace its matching no-cutover marker with the manifest. `NotCommitted` is valid
+/// Authority persistence must compare migration, installation, module, source, target and
+/// watermark identities before publishing and atomically replace the matching no-cutover marker
+/// with the manifest. `NotCommitted` is valid
 /// only when the store confirms the source is still selected; changed durable state returns
 /// `Conflict`, keeping admission closed for recovery. This fences stale writers and prevents two
 /// migration attempts from publishing over one another.

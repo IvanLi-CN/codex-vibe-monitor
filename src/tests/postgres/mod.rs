@@ -54,6 +54,8 @@ impl AuthorityManifestStore for TestAuthorityStore {
                 installation_id: "test-installation".into(),
                 module,
                 source_identity: "test-source".into(),
+                target_identity: "test-target".into(),
+                source_watermark: 42,
             },
             AuthorityRecoveryRecord::Manifest,
         ))
@@ -81,6 +83,8 @@ impl AuthorityManifestStore for TestAuthorityStore {
                 installation_id: "test-installation".into(),
                 module: manifest.module,
                 source_identity: "test-source".into(),
+                target_identity: "test-target".into(),
+                source_watermark: 42,
             });
         if !matches!(
             recovery,
@@ -89,10 +93,14 @@ impl AuthorityManifestStore for TestAuthorityStore {
                 installation_id,
                 module,
                 source_identity,
+                target_identity,
+                source_watermark,
             } if migration_id == expected.migration_id
                 && installation_id == expected.installation_id
                 && module == expected.module
                 && source_identity == expected.source_identity
+                && target_identity == expected.target_identity
+                && source_watermark == expected.source_watermark
         ) {
             return Ok(AuthorityPublication::Conflict);
         }
@@ -502,6 +510,8 @@ async fn recovery_rejects_no_cutover_marker_from_another_migration_attempt() {
         installation_id: "test-installation".into(),
         module: StorageModule::TrafficArchive,
         source_identity: "test-source".into(),
+        target_identity: "test-target".into(),
+        source_watermark: 42,
     });
 
     assert!(
@@ -527,6 +537,8 @@ async fn recovery_rejects_no_cutover_marker_for_another_module() {
         installation_id: "test-installation".into(),
         module: StorageModule::Analytics,
         source_identity: "test-source".into(),
+        target_identity: "test-target".into(),
+        source_watermark: 42,
     });
 
     assert!(
@@ -552,6 +564,8 @@ async fn recovery_rejects_context_for_another_module() {
         installation_id: "test-installation".into(),
         module: StorageModule::Analytics,
         source_identity: "test-source".into(),
+        target_identity: "test-target".into(),
+        source_watermark: 42,
     });
     let mut expected = recovery_context();
     expected.module = StorageModule::Analytics;
@@ -632,6 +646,49 @@ async fn durable_publication_compare_and_replace_fences_concurrent_attempts() {
 }
 
 #[tokio::test]
+async fn publication_compare_rejects_another_target_or_watermark() {
+    let store = TestAuthorityStore::default();
+    let expected = recovery_context();
+    let manifest = authority_manifest(2, BackendKind::Postgres);
+    let mut marker = AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: expected.migration_id.clone(),
+        installation_id: expected.installation_id.clone(),
+        module: expected.module,
+        source_identity: expected.source_identity.clone(),
+        target_identity: "another-target".into(),
+        source_watermark: expected.source_watermark,
+    };
+
+    *store.recovery.lock().await = Some(marker.clone());
+    assert_eq!(
+        store
+            .publish_authority_manifest(&manifest, &expected)
+            .await
+            .unwrap(),
+        AuthorityPublication::Conflict
+    );
+
+    if let AuthorityRecoveryRecord::NeverMigrated {
+        target_identity,
+        source_watermark,
+        ..
+    } = &mut marker
+    {
+        *target_identity = expected.target_identity.clone();
+        *source_watermark = expected.source_watermark + 1;
+    }
+    *store.recovery.lock().await = Some(marker);
+    assert_eq!(
+        store
+            .publish_authority_manifest(&manifest, &expected)
+            .await
+            .unwrap(),
+        AuthorityPublication::Conflict
+    );
+    assert!(store.manifest.lock().await.is_none());
+}
+
+#[tokio::test]
 async fn publication_rejects_a_stale_durable_recovery_context() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
@@ -646,6 +703,8 @@ async fn publication_rejects_a_stale_durable_recovery_context() {
         installation_id: "test-installation".into(),
         module: StorageModule::TrafficArchive,
         source_identity: "test-source".into(),
+        target_identity: "test-target".into(),
+        source_watermark: 42,
     });
 
     assert!(
