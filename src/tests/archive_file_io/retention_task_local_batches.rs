@@ -3024,6 +3024,207 @@ async fn retention_task_local_partial_timestamped_archive_reselects_without_dupl
 }
 
 #[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_repairs_after_source_error() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-error").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-error-attempt-'||i, 'partial-error-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("timestamped archive error candidates");
+    sqlx::query("CREATE TRIGGER task_local_timestamped_error BEFORE DELETE ON pool_upstream_request_attempts WHEN OLD.id=65 BEGIN SELECT RAISE(ABORT,'injected timestamped source conversion failure'); END")
+        .execute(&pool)
+        .await
+        .expect("stop timestamped source conversion after first chunk");
+
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let result = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await;
+    result.expect_err("timestamped source error should be returned after repair");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("uncommitted timestamped sources remain"),
+        936
+    );
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("timestamped archive path");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("repaired timestamped archive manifest"),
+        64
+    );
+    let inflated_path = temp_dir.join("partial-timestamped-error.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate repaired timestamped error archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open repaired timestamped error archive");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count repaired timestamped error rows"),
+        64
+    );
+    archive_connection
+        .close()
+        .await
+        .expect("close repaired timestamped error archive");
+    assert_no_task_work_files(&config.archive_dir);
+    sqlx::query("DROP TRIGGER task_local_timestamped_error")
+        .execute(&pool)
+        .await
+        .expect("remove timestamped source error");
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_repairs_after_shutdown() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-shutdown").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-shutdown-attempt-'||i, 'partial-shutdown-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("timestamped archive shutdown candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_shutdown(
+                shutdown.clone(),
+                crate::maintenance::retention_test_with_work_budget(
+                    Duration::from_secs(60),
+                    archive_timestamped_dataset(
+                        &pool,
+                        &config,
+                        archive_table_spec("pool_upstream_request_attempts"),
+                        select_sql,
+                        "9999-01-01 00:00:00".to_string(),
+                        false,
+                        None,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let cancel_after_first_chunk = async {
+        probe.committed.notified().await;
+        shutdown.cancel();
+        probe.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(work, cancel_after_first_chunk);
+    result.expect_err("shutdown should stop timestamped work after repair");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("uncommitted shutdown sources remain"),
+        936
+    );
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("shutdown archive path");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("shutdown-repaired archive manifest"),
+        64
+    );
+    let inflated_path = temp_dir.join("partial-timestamped-shutdown.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate shutdown-repaired archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open shutdown-repaired archive");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count shutdown-repaired rows"),
+        64
+    );
+    archive_connection
+        .close()
+        .await
+        .expect("close shutdown-repaired archive");
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_month_writer_reads_the_shared_memory_source() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("task-local-memory-source").await;

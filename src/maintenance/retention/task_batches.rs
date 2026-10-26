@@ -2361,12 +2361,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
             .await;
             let proof_close_result = archive_identity_proof.close().await;
             let repair_result = if committed_rows > 0 && committed_rows < selected_group.len() {
-                repair_partial_invocation_archive(
+                crate::maintenance::retention_run_cleanup_scope(repair_partial_invocation_archive(
                     pool,
                     &archive_outcome,
                     &selected_group,
                     committed_rows,
-                )
+                ))
                 .await
                 .context("repair partially committed invocation archive")
             } else {
@@ -2700,7 +2700,8 @@ pub(crate) async fn archive_timestamped_dataset(
             let mut committed_rows = 0;
             let selected_group = group;
             let mut pending_group = selected_group.clone();
-            while !pending_group.is_empty() {
+            let operation_result: Result<()> = async {
+                while !pending_group.is_empty() {
                 let group = take_retention_batch(
                     &mut pending_group,
                     config,
@@ -3056,16 +3057,31 @@ pub(crate) async fn archive_timestamped_dataset(
                 }
                 #[cfg(test)]
                 batch_admission::pause_after_first_chunk(committed_rows).await;
+                }
+                Ok(())
             }
-            archive_identity_proof.close().await?;
-            repair_partial_timestamped_archive(
-                pool,
-                &archive_outcome,
-                &selected_group,
-                committed_rows,
+            .await;
+            let operation_result =
+                finish_archive_identity_proof(archive_identity_proof, operation_result).await;
+            let repair_result = crate::maintenance::retention_run_cleanup_scope(
+                repair_partial_timestamped_archive(
+                    pool,
+                    &archive_outcome,
+                    &selected_group,
+                    committed_rows,
+                ),
             )
             .await
-            .context("repair partially committed timestamped archive")?;
+            .context("repair partially committed timestamped archive");
+            if let Err(repair_error) = repair_result {
+                return Err(match operation_result {
+                    Ok(()) => repair_error,
+                    Err(operation_error) => repair_error.context(format!(
+                        "timestamped archive operation failed before partial repair: {operation_error}"
+                    )),
+                });
+            }
+            operation_result?;
             if committed_rows > 0 {
                 archive_batches += 1;
             }

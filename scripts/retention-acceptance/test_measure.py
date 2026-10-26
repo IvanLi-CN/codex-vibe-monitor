@@ -59,16 +59,22 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
-    def test_negative_control_oracle_skips_verified_input_digest_binding(self) -> None:
+    def test_negative_control_oracle_binds_remaining_dataset_input_digests(self) -> None:
         oracle = {
             "verified": False,
             "failure_class": "source_artifact_conservation",
+            "datasets": {
+                "pool_upstream_attempts": {},
+            },
         }
         add_observed_input_identity_digests(
             oracle,
             {"invocations": ["invoke-1"], "pool_upstream_attempts": ["attempt-1"]},
         )
-        self.assertNotIn("datasets", oracle)
+        self.assertRegex(
+            oracle["datasets"]["pool_upstream_attempts"]["added_ids_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
 
     def test_legacy_partial_status_is_accepted_when_selected_batch_is_complete(self) -> None:
         archive_details = {

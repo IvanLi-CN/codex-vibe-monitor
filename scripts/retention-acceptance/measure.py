@@ -1332,15 +1332,16 @@ def add_observed_input_identity_digests(
     oracle: dict[str, Any],
     added: dict[str, list[str]],
 ) -> None:
-    """Bind measured input identities only to a fully verified source oracle."""
-    if oracle.get("verified") is True:
-        datasets = oracle["datasets"]
-        datasets["invocations"]["added_ids_sha256"] = sha256_bytes(
-            "\n".join(added["invocations"]).encode()
-        )
-        datasets["pool_upstream_attempts"]["added_ids_sha256"] = sha256_bytes(
-            "\n".join(added["pool_upstream_attempts"]).encode()
-        )
+    """Bind measured input identities to every dataset result present in the oracle."""
+    datasets = oracle.get("datasets")
+    if not isinstance(datasets, dict):
+        return
+    for name in ("invocations", "pool_upstream_attempts"):
+        result = datasets.get(name)
+        if isinstance(result, dict):
+            result["added_ids_sha256"] = sha256_bytes(
+                "\n".join(added[name]).encode()
+            )
 
 
 def run_trial(

@@ -347,6 +347,7 @@ def _validate_task_runs(
     rows = trial.get("task_runs")
     _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
     by_key: dict[str, list[dict[str, Any]]] = {}
+    recoverable_competitor_rows: list[dict[str, Any]] = []
     for row in rows:
         _require(isinstance(row, dict), "malformed production task-run evidence")
         key = row.get("task_key")
@@ -370,10 +371,24 @@ def _validate_task_runs(
             and task_run_is_recoverable_competitor_chunk(row)
         ):
             accepted = True
+            recoverable_competitor_rows.append(row)
         _require(accepted, f"background task {key} did not finish successfully or commit valid work")
         work = row.get("committed_work")
         _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
+
+    for row in recoverable_competitor_rows:
+        finished = parse_time(row["actual_finished_at"])
+        _require(
+            any(
+                candidate is not row
+                and candidate.get("task_key") == COMPETITOR_TASK
+                and parse_time(candidate["actual_started_at"]) >= finished
+                and task_run_is_accepted_competitor_chunk(candidate)
+                for candidate in rows
+            ),
+            "recoverable competitor chunk has no later successful retry",
+        )
 
     targets = [DATASETS[name]["task_key"] for name in DATASETS]
     for key in targets:

@@ -375,7 +375,38 @@ class ContractTests(unittest.TestCase):
                 "committed_bytes": 512 * 256,
             }
         )
+        evidence["versions"]["baseline"]["trials"][0]["task_runs"].append(
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(datetime(2026, 10, 24, 0, 0, 11, tzinfo=timezone.utc)),
+                "actual_finished_at": timestamp(datetime(2026, 10, 24, 0, 0, 12, tzinfo=timezone.utc)),
+                "status": "success",
+                "committed_work": 0,
+                "committed_bytes": 0,
+            }
+        )
         validate_evidence(evidence)
+
+    def test_evidence_validator_rejects_recoverable_competitor_without_retry(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "partial",
+                "error_detail": None,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+            }
+        )
+        with self.assertRaisesRegex(AcceptanceError, "no later successful retry"):
+            validate_evidence(evidence)
 
     def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
         evidence = valid_evidence()

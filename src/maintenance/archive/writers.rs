@@ -1821,12 +1821,11 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     };
 
     let result = async {
-        inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
+        inflate_gzip_sqlite_file_with_operation_budget_for_cleanup(final_path, &work_path).await?;
         let ids_json = serde_json::to_string(remove_ids)
             .context("encode partial archive repair source ids")?;
         let row_count = {
-            let file_phase =
-                super::super::acquire_file_phase_permit("archive_partial_repair").await?;
+            let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
             let mut connection = open_archive_sqlite_connection(&work_path).await?;
             let result: Result<i64> = async {
                 let delete_sql = format!(
@@ -1854,8 +1853,9 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
             result
         }?;
         finalize_archive_sqlite_file(&work_path).await?;
-        deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await?;
-        let sha256 = sha256_hex_file_with_operation_budget(&temp_gzip_path).await?;
+        deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup(&work_path, &temp_gzip_path)
+            .await?;
+        let sha256 = sha256_hex_file_with_operation_budget_for_cleanup(&temp_gzip_path).await?;
         Ok::<_, anyhow::Error>((temp_gzip_path, row_count, sha256))
     }
     .await;

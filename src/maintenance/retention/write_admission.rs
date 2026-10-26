@@ -874,6 +874,12 @@ pub(crate) fn retention_run_shutdown_token() -> Option<CancellationToken> {
     RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
 }
 
+pub(crate) async fn retention_run_cleanup_scope<F: std::future::Future>(work: F) -> F::Output {
+    RETENTION_SHUTDOWN
+        .scope(CancellationToken::new(), work)
+        .await
+}
+
 pub(crate) fn retention_run_defer_reason() -> Option<String> {
     RETENTION_RUN_DEFER_REASON
         .try_with(|reason| reason.borrow().clone())
