@@ -1505,6 +1505,24 @@ def run_trial(
             )
             if negative_control is None:
                 raise
+            negative_dataset_name = next(
+                name
+                for name, definition in DATASETS.items()
+                if definition["manifest_dataset"] == negative_control["dataset"]
+            )
+            remaining_oracle = verify_trial(
+                main_db,
+                trial_dir / "archives",
+                added,
+                attempt_states,
+                template / "codex_vibe_monitor.db",
+                cutoff,
+                root / f"oracle-{version}-{index}-remaining",
+                require_summary_proof=version == "candidate",
+                budget_check=lambda: remaining_budget(phase_started),
+                skip_datasets={negative_dataset_name},
+            )
+            negative_control["datasets"] = remaining_oracle["datasets"]
             oracle = negative_control
     except BaseException as error:
         trial_error = error

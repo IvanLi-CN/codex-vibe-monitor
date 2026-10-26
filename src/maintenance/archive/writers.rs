@@ -1863,6 +1863,11 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     if result.is_err() {
         remove_temp_sqlite_artifacts(&cleanup_work_path);
         remove_temp_sqlite_artifacts(&cleanup_temp_gzip_path);
+    } else {
+        // The native archive worker has drained after the awaited deflate/hash operations. The
+        // compressed result remains owned by the caller; the decompressed repair workspace does
+        // not, so remove it before returning successfully.
+        remove_temp_sqlite_artifacts_unchecked(&cleanup_work_path);
     }
     result
 }

@@ -491,10 +491,14 @@ def verify_trial(
     scratch: Path,
     require_summary_proof: bool = True,
     budget_check: Callable[[], float] | None = None,
+    skip_datasets: set[str] | None = None,
 ) -> dict[str, Any]:
     scratch.mkdir(parents=True, exist_ok=True)
     results = {}
+    skipped = skip_datasets or set()
     for name, definition in DATASETS.items():
+        if name in skipped:
+            continue
         seed_ids = {
             f"retention-seed-{name}-{index:06d}"
             for index in range(1, definition["seed_rows"] + 1)

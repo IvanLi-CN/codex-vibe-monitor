@@ -1680,10 +1680,7 @@ fn assert_no_task_work_files(directory: &Path) {
             assert_no_task_work_files(&entry.path());
         } else {
             let name = entry.file_name().to_string_lossy().into_owned();
-            assert!(
-                !name.contains(".task-") && !name.ends_with(".restore"),
-                "unfinished file: {name}"
-            );
+            assert!(!is_task_work_file(&name), "unfinished file: {name}");
         }
     }
 }
@@ -1697,9 +1694,13 @@ fn has_task_work_files(directory: &Path) -> bool {
                 has_task_work_files(&entry.path())
             } else {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                name.contains(".task-") || name.ends_with(".restore")
+                is_task_work_file(&name)
             }
         })
+}
+
+fn is_task_work_file(name: &str) -> bool {
+    name.contains(".task-") || name.ends_with(".restore") || name.contains(".partial-repair-")
 }
 
 async fn wait_for_no_task_work_files(directory: &Path) {

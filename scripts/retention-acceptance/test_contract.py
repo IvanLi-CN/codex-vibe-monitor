@@ -31,6 +31,21 @@ from contract import (
 RUN_ID = "123456abcdef"
 
 
+def baseline_negative_control_oracle(evidence: dict, *, lost_rows: int = 0, duplicate_rows: int = 132) -> dict:
+    datasets = evidence["versions"]["baseline"]["trials"][0]["oracle"]["datasets"]
+    return {
+        "verified": False,
+        "failure_class": "source_artifact_conservation",
+        "dataset": "codex_invocations",
+        "lost_rows": lost_rows,
+        "duplicate_rows": duplicate_rows,
+        "error": f"codex_invocations source/artifact conservation failed: lost={lost_rows}, duplicates={duplicate_rows}",
+        "datasets": {
+            name: result for name, result in datasets.items() if name != "invocations"
+        },
+    }
+
+
 def timestamp(value: datetime) -> str:
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -597,40 +612,32 @@ class ContractTests(unittest.TestCase):
 
     def test_baseline_duplicate_publication_is_recorded_as_negative_control(self) -> None:
         evidence = valid_evidence()
-        evidence["versions"]["baseline"]["trials"][0]["oracle"] = {
-            "verified": False,
-            "failure_class": "source_artifact_conservation",
-            "dataset": "codex_invocations",
-            "lost_rows": 0,
-            "duplicate_rows": 132,
-            "error": "codex_invocations source/artifact conservation failed: lost=0, duplicates=132",
-        }
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence)
         self.assertEqual(validate_evidence(evidence)["status"], "passed")
 
-    def test_baseline_negative_control_oracle_has_no_dataset_digest_requirement(self) -> None:
+    def test_baseline_negative_control_requires_remaining_dataset_evidence(self) -> None:
         evidence = valid_evidence()
-        evidence["versions"]["baseline"]["trials"][0]["oracle"] = {
-            "verified": False,
-            "failure_class": "source_artifact_conservation",
-            "dataset": "codex_invocations",
-            "lost_rows": 0,
-            "duplicate_rows": 132,
-            "error": "codex_invocations source/artifact conservation failed: lost=0, duplicates=132",
-        }
-        self.assertNotIn("datasets", evidence["versions"]["baseline"]["trials"][0]["oracle"])
+        oracle = baseline_negative_control_oracle(evidence)
+        del oracle["datasets"]["pool_upstream_attempts"]
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = oracle
+        with self.assertRaisesRegex(AcceptanceError, "oracle dataset evidence is incomplete"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence)
         self.assertEqual(validate_evidence(evidence)["status"], "passed")
 
     def test_baseline_negative_control_cannot_hide_lost_rows(self) -> None:
         evidence = valid_evidence()
-        evidence["versions"]["baseline"]["trials"][0]["oracle"] = {
-            "verified": False,
-            "failure_class": "source_artifact_conservation",
-            "dataset": "codex_invocations",
-            "lost_rows": 1,
-            "duplicate_rows": 132,
-            "error": "codex_invocations source/artifact conservation failed: lost=1, duplicates=132",
-        }
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence, lost_rows=1)
         with self.assertRaisesRegex(AcceptanceError, "baseline negative-control counts"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        oracle = baseline_negative_control_oracle(evidence)
+        oracle["datasets"]["pool_upstream_attempts"]["lost_rows"] = 1
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = oracle
+        with self.assertRaisesRegex(AcceptanceError, "found lost pool_upstream_attempts"):
             validate_evidence(evidence)
 
     def test_write_hold_is_recomputed_from_raw_histogram_scrapes(self) -> None:

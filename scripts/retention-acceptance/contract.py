@@ -698,6 +698,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
 
             oracle = trial.get("oracle")
             _require(isinstance(oracle, dict), "source/artifact oracle evidence is missing")
+            negative_dataset_name: str | None = None
             if version == "baseline" and oracle.get("verified") is False:
                 _require(
                     oracle.get("failure_class") == BASELINE_NEGATIVE_CONTROL_FAILURE,
@@ -723,17 +724,22 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     f"lost=0, duplicates={duplicate_rows}",
                     "baseline negative-control error is not bound to its counts",
                 )
-                trial_read_metrics.append(
-                    latency_summary([float(item["elapsed_ms"]) for item in raw_samples["read"]])
+                negative_dataset_name = next(
+                    name
+                    for name, definition in DATASETS.items()
+                    if definition["manifest_dataset"] == dataset
                 )
-                trial_write_metrics.append(
-                    latency_summary([float(item["elapsed_ms"]) for item in raw_samples["write"]])
-                )
-                continue
-            _require(oracle.get("verified") is True, "source/artifact oracle evidence is missing")
+            else:
+                _require(oracle.get("verified") is True, "source/artifact oracle evidence is missing")
             datasets = oracle.get("datasets")
-            _require(isinstance(datasets, dict) and set(datasets) == set(DATASETS), "oracle dataset evidence is incomplete")
+            expected_dataset_names = set(DATASETS) - ({negative_dataset_name} if negative_dataset_name else set())
+            _require(
+                isinstance(datasets, dict) and set(datasets) == expected_dataset_names,
+                "oracle dataset evidence is incomplete",
+            )
             for name in DATASETS:
+                if name == negative_dataset_name:
+                    continue
                 result = datasets[name]
                 _require(isinstance(result, dict), f"oracle result for {name} is malformed")
                 _require(result.get("dataset") == DATASETS[name]["manifest_dataset"], f"oracle dataset mismatch for {name}")
