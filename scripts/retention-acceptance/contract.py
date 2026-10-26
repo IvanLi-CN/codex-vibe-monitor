@@ -42,7 +42,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
 CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
 CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
@@ -604,6 +604,24 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             if version == "candidate":
                 _require(hold_p95 <= MAX_WRITE_HOLD_P95_MS, "steady write-hold p95 exceeded 250ms")
 
+            proof_status = trial.get("archive_proof_status")
+            _require(isinstance(proof_status, dict), "archive proof status evidence is missing")
+            proof_datasets = proof_status.get("datasets")
+            _require(
+                isinstance(proof_datasets, dict) and set(proof_datasets) == set(DATASETS),
+                "archive proof status dataset evidence is incomplete",
+            )
+            for name in DATASETS:
+                dataset_status = proof_datasets[name]
+                _require(isinstance(dataset_status, dict), f"archive proof status for {name} is malformed")
+                _require(dataset_status.get("dataset") == DATASETS[name]["manifest_dataset"], f"archive proof status dataset mismatch for {name}")
+                _require(dataset_status.get("reference_ready") is True, f"archive reference evidence for {name} is incomplete")
+                _require(isinstance(dataset_status.get("summary_proof_complete"), bool), f"archive summary proof status for {name} is malformed")
+                if version == "candidate":
+                    _require(dataset_status.get("ready") is True, f"candidate archive proof status for {name} is incomplete")
+                    _require(dataset_status.get("summary_proof_complete") is True, f"candidate summary proof for {name} is incomplete")
+                    _require(dataset_status.get("summary_proof_missing") == [], f"candidate summary proof for {name} has missing obligations")
+
             oracle = trial.get("oracle")
             _require(isinstance(oracle, dict) and oracle.get("verified") is True, "source/artifact oracle evidence is missing")
             datasets = oracle.get("datasets")
@@ -612,6 +630,10 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 result = datasets[name]
                 _require(isinstance(result, dict), f"oracle result for {name} is malformed")
                 _require(result.get("dataset") == DATASETS[name]["manifest_dataset"], f"oracle dataset mismatch for {name}")
+                _require(result.get("summary_proof_required") is (version == "candidate"), f"oracle summary proof requirement for {name} is not bound to the version")
+                _require(isinstance(result.get("summary_proof_verified"), bool), f"oracle summary proof result for {name} is malformed")
+                if version == "candidate":
+                    _require(result.get("summary_proof_verified") is True, f"candidate summary proof for {name} was not verified")
                 _require(result.get("seed_rows") == DATASETS[name]["seed_rows"], f"oracle seed population mismatch for {name}")
                 _require(result.get("actual_added_rows") == trial["input_counts"][name], f"oracle {name} addition count is not bound to measured writes")
                 for field in ("actual_added_rows", "converted_rows", "distinct_archived_rows", "live_rows", "lost_rows", "duplicate_rows"):

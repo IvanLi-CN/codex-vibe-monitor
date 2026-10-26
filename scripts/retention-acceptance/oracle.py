@@ -244,6 +244,7 @@ def verify_dataset(
     seed_ids: set[str],
     added_attempt_invocations: dict[str, str],
     cutoff: str,
+    require_summary_proof: bool = True,
     budget_check: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     dataset = DATASETS[dataset_name]["manifest_dataset"]
@@ -269,6 +270,7 @@ def verify_dataset(
     template = sqlite3.connect(f"file:{template_database}?mode=ro", uri=True)
     archive_counts: Counter[str] = Counter()
     content_records: list[tuple[str, str, str]] = []
+    summary_proof_verified = True
     try:
         source_columns = _table_columns(connection, table)
         template_columns = _table_columns(template, table)
@@ -309,7 +311,14 @@ def verify_dataset(
             if dataset == "codex_invocations":
                 if manifest["summary_source_kind"] != "authoritative":
                     raise AcceptanceError("invocation archive manifest is not authoritative")
-                _verify_summary_proof(connection, manifest["id"], manifest["sha256"], manifest["file_path"])
+                proof_exists = connection.execute(
+                    "SELECT 1 FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
+                    (manifest["id"], manifest["sha256"]),
+                ).fetchone() is not None
+                if proof_exists or require_summary_proof:
+                    _verify_summary_proof(connection, manifest["id"], manifest["sha256"], manifest["file_path"])
+                else:
+                    summary_proof_verified = False
             path = _archive_path(database, archive_root, manifest["file_path"], dataset, manifest["month_key"])
             decompressed = scratch / f"{dataset}-{manifest['id']}.sqlite"
             with _verified_archive_snapshot(path, manifest["sha256"], scratch, dataset, budget_check) as snapshot:
@@ -413,6 +422,8 @@ def verify_dataset(
         "row_content_columns": len(source_columns),
         "row_content_rows_checked": len(content_records),
         "row_content_sha256": content_digest.hexdigest(),
+        "summary_proof_required": require_summary_proof,
+        "summary_proof_verified": summary_proof_verified,
         **({"attempt_invocation_map_sha256": sha256_json(sorted([[attempt_id, invoke_id] for attempt_id, invoke_id in added_attempt_invocations.items()]))} if dataset == "pool_upstream_request_attempts" else {}),
         "verified": True,
     }
@@ -426,6 +437,7 @@ def verify_trial(
     template_database: Path,
     cutoff: str,
     scratch: Path,
+    require_summary_proof: bool = True,
     budget_check: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     scratch.mkdir(parents=True, exist_ok=True)
@@ -454,6 +466,7 @@ def verify_trial(
                 for row in attempt_states
             } if name == "pool_upstream_attempts" else {},
             cutoff=cutoff,
+            require_summary_proof=require_summary_proof,
             budget_check=budget_check,
         )
         results[name] = result

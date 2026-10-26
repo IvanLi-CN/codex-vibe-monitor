@@ -257,7 +257,7 @@ class MeasurementBudgetTests(unittest.TestCase):
             patch("measure.time.sleep"),
             patch("measure.task_runs", side_effect=[[], valid_runs]),
             patch("measure.task_owners_idle", return_value=True),
-            patch("measure.archive_proofs_ready", return_value=True),
+            patch("measure.archive_proof_status", return_value={"ready": True, "reference_ready": True}),
         ):
             result = wait_for_task_evidence(
                 Path("main.sqlite"),

@@ -158,6 +158,23 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
     ))
     oracle_datasets = {name: oracle_result(name, input_counts[name]) for name in DATASETS}
     oracle_datasets["pool_upstream_attempts"]["attempt_invocation_map_sha256"] = attempt_map_digest
+    for result in oracle_datasets.values():
+        result["summary_proof_required"] = version == "candidate"
+        result["summary_proof_verified"] = version == "candidate"
+    archive_proof_status = {
+        "ready": version == "candidate",
+        "reference_ready": True,
+        "datasets": {
+            name: {
+                "dataset": DATASETS[name]["manifest_dataset"],
+                "ready": version == "candidate",
+                "reference_ready": True,
+                "summary_proof_complete": version == "candidate",
+                "summary_proof_missing": [] if version == "candidate" else ["summary proof:baseline-reference"],
+            }
+            for name in DATASETS
+        },
+    }
     return {
         "trial_index": index,
         "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
@@ -200,6 +217,7 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
             },
         },
         "task_runs": task_runs(start),
+        "archive_proof_status": archive_proof_status,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
         "oracle": {
