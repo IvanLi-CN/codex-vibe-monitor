@@ -343,7 +343,6 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     ensure_schema(&pool)
         .await
         .expect("schema should initialize");
-
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.request_timeout = Duration::from_millis(200);

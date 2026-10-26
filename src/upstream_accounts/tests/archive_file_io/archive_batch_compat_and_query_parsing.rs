@@ -4129,7 +4129,6 @@ pub(crate) async fn test_app_state_with_usage_and_oauth_base(
     )
     .await
 }
-
 async fn test_app_state_with_upstream_endpoints_and_parallelism(
     usage_base_url: &str,
     oauth_issuer: &str,

@@ -143,7 +143,6 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
             .await
             .expect("serve kaisoumail test app");
     });
-
     let mut config =
         usage_snapshot_test_config("https://chatgpt.com/backend-api", "codex-vibe-monitor/test");
     config.upstream_accounts_kaisoumail = Some(UpstreamAccountsKaisouMailConfig {
