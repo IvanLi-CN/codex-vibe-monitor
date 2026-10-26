@@ -484,6 +484,7 @@ mod tests {
     async fn test_authority(database_url: String) -> Result<TrafficFactStore> {
         let config = crate::storage::config::StorageConfig {
             postgres_database_url: Some(database_url),
+            migration_admin_token: None,
             postgres_max_connections: 1,
             migration_switch_budget: std::time::Duration::from_secs(3),
         };

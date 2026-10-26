@@ -277,6 +277,7 @@ bun run worktree:setup -- --force
 | `METRICS_BIND`                                         | 应用 exporter 地址，默认 `127.0.0.1:9091`；容器私网用 `0.0.0.0:9091`                                               |
 | `METRICS_TOKEN_FILE`                                   | 两个私网 exporter 的 scrape Token 文件；非 loopback 必须配置                                                       |
 | `OBSERVABILITY_READ_TOKEN_FILE`                        | 三个 hotpath 只读报告的独立 Token 文件，与 scrape Token 不同                                                       |
+| `STORAGE_MIGRATION_ADMIN_TOKEN`                        | 存储迁移 PATCH 控制的专用管理员 Token；未配置时控制接口保持关闭                                               |
 | `GRAFANA_PUBLIC_URL`                                   | Grafana 公网 HTTPS 基址；未配置时应用显示配置缺失                                                                  |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                |
 | `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖 |

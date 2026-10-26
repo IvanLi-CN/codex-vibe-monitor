@@ -4129,7 +4129,6 @@ pub(crate) async fn test_app_state_with_usage_and_oauth_base(
     )
     .await
 }
-
 async fn test_app_state_with_upstream_endpoints_and_parallelism(
     usage_base_url: &str,
     oauth_issuer: &str,
@@ -4151,6 +4150,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
     let pool = test_pool().await;
     Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        storage_migration: Arc::new(StorageMigrationRuntime::default()),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         config,
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
