@@ -711,6 +711,14 @@ impl ModuleGenerationGate {
         authorities
     }
 
+    pub(crate) async fn current_authority(&self) -> ModuleAuthority {
+        self.0.state.lock().await.authority
+    }
+
+    pub(crate) fn requires_recovery(&self) -> bool {
+        self.0.recovery_required.load(Ordering::Acquire)
+    }
+
     #[cfg(test)]
     pub(crate) fn require_recovery_for_test(&self) {
         self.0.recovery_required.store(true, Ordering::Release);
@@ -960,7 +968,9 @@ pub(crate) struct MigrationCheckpoint {
     pub(crate) cursor: Option<String>,
     pub(crate) captured_through: Option<i64>,
     pub(crate) applied_through: Option<i64>,
+    pub(crate) installation_id: String,
     pub(crate) source_identity: String,
+    pub(crate) target_identity: String,
     pub(crate) authority_generation: u64,
 }
 
@@ -972,8 +982,11 @@ impl MigrationCheckpoint {
         {
             bail!("migration checkpoint requires identity, table and stable key");
         }
-        if self.source_identity.trim().is_empty() {
-            bail!("migration checkpoint requires a source identity");
+        if self.installation_id.trim().is_empty()
+            || self.source_identity.trim().is_empty()
+            || self.target_identity.trim().is_empty()
+        {
+            bail!("migration checkpoint requires installation, source and target identities");
         }
         if self.authority_generation == 0 {
             bail!("migration checkpoint requires a non-zero authority generation");
@@ -1174,7 +1187,11 @@ pub(crate) trait AuthorityManifestStore: Send + Sync {
 /// pg01 specifies the load/save, outbox, and capacity obligations and their typed
 /// values. Concrete persistence, worker execution, and startup recovery are later
 /// migration-engine/runtime work; this trait is not a claim that those paths exist.
+#[async_trait::async_trait]
 pub(crate) trait MigrationMetadataStore: AuthorityManifestStore {
+    async fn set_recovery_context(&self, _context: &AuthorityRecoveryContext) -> Result<()> {
+        Ok(())
+    }
     async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>>;
     async fn save_status(&self, status: &MigrationStatus) -> Result<()>;
     async fn load_checkpoint(
