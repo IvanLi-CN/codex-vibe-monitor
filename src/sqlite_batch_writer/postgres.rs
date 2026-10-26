@@ -47,6 +47,13 @@ async fn replace_postgres_raw_payload_links(
                    SELECT 1
                    FROM proxy_raw_payload_blob_links AS link
                    WHERE link.raw_path = blob.raw_path
+               )
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM archive_raw_reference_changes AS archive_link
+                   WHERE archive_link.raw_path = blob.raw_path
+                     AND archive_link.action = 'link'
+                     AND archive_link.state = 'active'
                )",
         )
         .bind(raw_path)
@@ -655,6 +662,18 @@ mod tests {
                 UNIQUE (raw_path, owner_kind, owner_id, raw_role)
             )
             "#,
+            r#"
+            CREATE TEMP TABLE archive_raw_reference_changes (
+                archive_batch_id BIGINT NOT NULL,
+                raw_path TEXT NOT NULL,
+                owner_kind TEXT NOT NULL,
+                owner_id BIGINT NOT NULL,
+                raw_role TEXT NOT NULL,
+                action TEXT NOT NULL,
+                raw_identity_sha256 TEXT,
+                state TEXT NOT NULL
+            )
+            "#,
         ] {
             sqlx::query(statement).execute(&mut *connection).await?;
         }
@@ -833,6 +852,19 @@ mod tests {
         );
         transaction.commit().await?;
 
+        let mut archive_reference = authority.begin().await?;
+        sqlx::query(
+            "INSERT INTO archive_raw_reference_changes
+                (archive_batch_id, raw_path, owner_kind, owner_id, raw_role, action,
+                 raw_identity_sha256, state)
+             VALUES (9001, 'request-a.raw', 'invocation', $1, 'request', 'link',
+                     'archive-request-a', 'active')",
+        )
+        .bind(invocation_id)
+        .execute(archive_reference.postgres_connection()?)
+        .await?;
+        archive_reference.commit().await?;
+
         let mut transaction = authority.begin().await?;
         persist_proxy_capture_runtime_record_postgres_tx(
             transaction.postgres_connection()?,
@@ -858,7 +890,7 @@ mod tests {
             ]
         );
         transaction.commit().await?;
-        assert_eq!(authority_blob_count(&authority).await?, 2);
+        assert_eq!(authority_blob_count(&authority).await?, 3);
 
         let mut transaction = authority.begin().await?;
         persist_proxy_capture_runtime_record_postgres_tx(
@@ -882,7 +914,15 @@ mod tests {
             .is_empty()
         );
         transaction.commit().await?;
-        assert_eq!(authority_blob_count(&authority).await?, 0);
+        assert_eq!(authority_blob_count(&authority).await?, 1);
+        let mut verification = authority.begin().await?;
+        let retained_archive_blob: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM proxy_raw_payload_blobs WHERE raw_path = 'request-a.raw'",
+        )
+        .fetch_one(verification.postgres_connection()?)
+        .await?;
+        assert_eq!(retained_archive_blob, 1);
+        verification.rollback().await?;
 
         let mut transaction = authority.begin().await?;
         persist_proxy_capture_runtime_record_postgres_tx(
