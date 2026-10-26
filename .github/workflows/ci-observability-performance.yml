@@ -28,6 +28,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  checks: read
 
 jobs:
   observability-performance-resolve:

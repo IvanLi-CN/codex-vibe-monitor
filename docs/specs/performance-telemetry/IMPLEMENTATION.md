@@ -62,7 +62,8 @@ cache restore/save phase timing、传输和镜像 ready 时间；报告 job
 通过只读 `gh run view --json jobs` 绑定 GitHub Actions 的 job ID、成功状态和实际时间戳，
 任一失败或身份不匹配都会拒绝生成 passed 报告。完整镜像 cache 的 restore/save 使用完全相同的路径，
 避免 cache version 漂移造成假 miss。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
-权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
+使用 `contents: read`、`actions: read` 和 `checks: read` 的只读权限读取构建 job/check-run 时间戳；
+可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
 合成夹具使用与应用校验一致的 HTTPS `/v1/traces` endpoint。隔离入口在该摄入路径接受应用专属的固定非秘密测试 token 或可信客户端的独立摄入凭据；固定 token 不获得查询能力，应用容器不挂载随机生成的 Tempo 摄入或查询凭据。配置和请求处理的定向回归验证路径、凭据隔离及拒绝边界；生产 endpoint 校验、真实鉴权和性能验收断言不变。
 

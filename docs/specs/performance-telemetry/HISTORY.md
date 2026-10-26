@@ -1,5 +1,9 @@
 # 独立性能遥测历史
 
+- 2026-10-26：为 build report 补齐 `checks: read` 只读权限，使 `gh api` 获取同一 trusted
+  workflow SHA 的 check-run 时间戳与既有 `contents: read`、`actions: read` 权限合同一致；不改变
+  cache、artifact、测量或性能预算语义。
+
 - 2026-10-26：build report 仅把 GitHub Actions check-run 提供的 `created_at` 用于排队时间；当前 API
   可能返回空值时保留 `queueSeconds=null` 与 `queueTimingComplete=false`，不以 run 起始时间或零值
   替代。producer/image 的执行、阶段、传输、缓存和镜像 ready 时间仍必须真实且完整。

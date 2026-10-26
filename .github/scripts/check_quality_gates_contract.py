@@ -390,7 +390,7 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     build_path_input = require_mapping(dispatch_inputs["build_path"], f"{workflow_path}.build_path")
     require(build_path_input.get("required") is True and build_path_input.get("type") == "choice" and build_path_input.get("default") == "auto" and build_path_input.get("options") == ["auto", "canonical"], f"{workflow_path} build_path choices drifted")
     permissions = require_mapping(workflow.get("permissions"), f"{workflow_path}.permissions")
-    require(permissions == {"contents": "read", "actions": "read"}, f"{workflow_path} permissions must allow read-only Actions job timestamps")
+    require(permissions == {"contents": "read", "actions": "read", "checks": "read"}, f"{workflow_path} permissions must allow read-only Actions and check-run timestamps")
 
     resolve = job_config(workflow, "observability-performance-resolve", workflow_path)
     producer = job_config(workflow, "observability-performance-producer", workflow_path)

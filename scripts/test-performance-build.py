@@ -65,6 +65,16 @@ class PerformanceBuildContractTests(unittest.TestCase):
         for path in ("web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json"):
             self.assertIn(path, run)
 
+    def test_build_report_has_read_only_check_run_permission(self) -> None:
+        self.assertEqual(
+            self.workflow["permissions"],
+            {"contents": "read", "actions": "read", "checks": "read"},
+        )
+        workflow = copy.deepcopy(self.workflow)
+        workflow["permissions"].pop("checks")
+        with self.assertRaises(contract.ContractError):
+            contract.require_observability_performance_contract(workflow)
+
     def test_cache_save_results_are_reported(self) -> None:
         workflow = WORKFLOW_PATH.read_text()
         self.assertIn("id: rust-cache-save", workflow)
