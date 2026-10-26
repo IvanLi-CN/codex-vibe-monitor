@@ -1198,15 +1198,26 @@ async fn open_archive_batch_pool(
             }
             return Err(err);
         }
-        let archive_pool = match SqlitePoolOptions::new()
+        // Lazy pool construction is synchronous.  The first connection, including native
+        // SQLite initialization, starts under the drain guard below rather than before it.
+        let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .context("failed to open archive batch")
+            .connect_lazy(&sqlite_url_for_path(&temp_path))
+            .context("failed to configure archive batch")?;
+        let mut pool_drain =
+            ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
+        let has_expected_table = match sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(expected_table)
+        .fetch_one(&archive_pool)
+        .await
+        .context("failed to open archive batch")
         {
-            Ok(pool) => pool,
+            Ok(value) => value != 0,
             Err(err) => {
-                drop(temp_cleanup);
+                archive_pool.close().await;
+                pool_drain.complete();
                 if is_unreadable_invocation_summary_archive_error(&err) {
                     warn!(
                         read_surface,
@@ -1219,15 +1230,6 @@ async fn open_archive_batch_pool(
                 return Err(err);
             }
         };
-        let mut pool_drain =
-            ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
-        let has_expected_table = sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        )
-        .bind(expected_table)
-        .fetch_one(&archive_pool)
-        .await?
-            != 0;
         if !has_expected_table {
             archive_pool.close().await;
             pool_drain.complete();
