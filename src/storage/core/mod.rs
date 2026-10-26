@@ -477,6 +477,9 @@ impl ModuleGenerationGate {
         let _switch = self.0.switching.lock().await;
         self.0.state.lock().await.accepting = false;
         self.0.recovery_required.store(true, Ordering::Release);
+        if expected.module != self.0.module {
+            bail!("module authority recovery context targets another module");
+        }
         if self.0.active.load(Ordering::Acquire) != 0 {
             bail!("cannot recover module authority while generation leases are active");
         }

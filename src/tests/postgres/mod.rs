@@ -484,6 +484,77 @@ async fn recovery_rejects_no_cutover_marker_for_another_module() {
 }
 
 #[tokio::test]
+async fn recovery_rejects_context_for_another_module() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = TestAuthorityStore::default();
+    *store.recovery.lock().await = Some(AuthorityRecoveryRecord::NeverMigrated {
+        migration_id: "migration-01".into(),
+        installation_id: "test-installation".into(),
+        module: StorageModule::Analytics,
+        source_identity: "test-source".into(),
+    });
+    let mut expected = recovery_context();
+    expected.module = StorageModule::Analytics;
+
+    assert!(gate.recover_authority(&store, &expected).await.is_err());
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn recovery_rejects_manifest_for_another_module() {
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let store = TestAuthorityStore::default();
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.module = StorageModule::Analytics;
+    *store.manifest.lock().await = Some(manifest);
+
+    assert!(
+        gate.recover_authority(&store, &recovery_context())
+            .await
+            .is_err()
+    );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+}
+
+#[tokio::test]
+async fn durable_publication_compare_and_replace_fences_concurrent_attempts() {
+    let store = Arc::new(TestAuthorityStore::default());
+    let first_context = recovery_context_for_migration("migration-01");
+    let second_context = recovery_context_for_migration("migration-02");
+    let first_manifest = authority_manifest_for_migration(2, BackendKind::Postgres, "migration-01");
+    let second_manifest =
+        authority_manifest_for_migration(3, BackendKind::Postgres, "migration-02");
+
+    let (first, second) = tokio::join!(
+        store.publish_authority_manifest(&first_manifest, &first_context),
+        store.publish_authority_manifest(&second_manifest, &second_context),
+    );
+
+    let outcomes = [first.unwrap(), second.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == AuthorityPublication::Committed)
+            .count(),
+        1
+    );
+    assert!(store.manifest.lock().await.is_some());
+    assert!(store.recovery.lock().await.is_none());
+}
+
+#[tokio::test]
 async fn publication_rejects_a_stale_durable_recovery_context() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
