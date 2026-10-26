@@ -48,20 +48,41 @@ Prompt Cache 专用唤醒同样在 SQL 成功完成且零更新时结清当前�
 
 [指标合同](CONTENTION-METRICS.md)与[比较手册](../../../ops/observability/contention-comparison.md)沿用此边界；必要的性能测试仅在 GitHub CI 执行并遵守显式 parallel workload lane 的 60 分钟共享上限，本地和 Agent VM 不执行压测。每个会话最多使用一台自有 Agent VM 进行已授权的非压测工作，合成 Grafana 预览只证明展示，不作为性能比较证据。
 
-性能镜像构建仅从 GitHub Actions 缓存恢复已有层，不向只读缓存导出；镜像构建、装载和后续 artifact 交接仍须成功。质量合同拒绝重新加入缓存导出，避免镜像构建完成后因 `failed to reserve cache` 阻止测量。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
+性能镜像构建使用 `observability-performance-v2` 命名空间：Rust 依赖下载、Rust target、
+Rust 基础镜像系统包（APT archives/lists）、Bun 下载 cache、runtime-base 和完整镜像分别按有效输入恢复；Rust target 编译产物绑定 candidate SHA，同一候选重跑可复用且跨候选不共享；Cargo/Bun 下载 cache 由 lockfile/integrity 校验，APT cache 由仓库签名校验后按兼容输入跨候选复用，避免跨候选复用可执行编译产物。外部 Web producer 每次按
+lockfile 重新安装 `web/node_modules`，canonical Docker stage 复用其已验证的依赖层；BuildKit 使用 `mode=max`、60 秒超时和
+`ignore-error=true` 保存；cache restore/save 失败只回退到干净构建，必需编译、产物
+交接和身份校验仍 fail-closed。Rust/Web producer 在独立 runner 上调用
+`scripts/production-build.sh`，image job 通过 named contexts 装配同一份 production
+runtime，并从同一 Rust context 装入精确的 `/symbols` 树；候选的 Dockerfile、`.dockerignore`、工具链和共享生产脚本只在与 trusted workflow
+recipe 合同一致时走 auto，否则回退到候选自己的 canonical Dockerfile；基础镜像 tag 在
+resolver 中解析为实际 manifest digest 并纳入 build identity。每次 run 还上传保留 14 天的
+`cvm-performance-build-report-v1`，记录 candidate/build identity、缓存命中、队列/执行
+时间（GitHub 未提供 check-run `created_at` 时显式为 unavailable）、总 runner 使用量、
+cache restore/save phase timing、传输和镜像 ready 时间；报告 job
+通过只读 `gh run view --json jobs` 绑定 GitHub Actions 的 job ID、成功状态和实际时间戳，
+任一失败或身份不匹配都会拒绝生成 passed 报告。完整镜像 cache 的 restore/save 使用完全相同的路径，
+避免 cache version 漂移造成假 miss。workflow 只从 trusted `main` 的 `workflow_dispatch` 启动，
+使用 `contents: read`、`actions: write` 和 `checks: read` 的最小权限：`actions: write` 仅用于保存隔离的性能构建 cache，
+构建 job/check-run 仍按只读方式读取；第三方 action 均固定到完整 commit SHA；
+可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
 
 合成夹具使用与应用校验一致的 HTTPS `/v1/traces` endpoint。隔离入口在该摄入路径接受应用专属的固定非秘密测试 token 或可信客户端的独立摄入凭据；固定 token 不获得查询能力，应用容器不挂载随机生成的 Tempo 摄入或查询凭据。配置和请求处理的定向回归验证路径、凭据隔离及拒绝边界；生产 endpoint 校验、真实鉴权和性能验收断言不变。
 
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
 合并的必要测试。`Observability Performance Budget` 通过 trusted `main` 上的
-`workflow_dispatch` 手动启动；唯一必填输入 `candidate_ref` 接受同仓库分支名或完整
-40 字符提交 SHA。分支先用 `git check-ref-format --branch` 校验并规范为
-`refs/heads/<name>`，image job checkout 后用 `git rev-parse HEAD` 固定 candidate SHA；
+`workflow_dispatch` 手动启动；`candidate_ref` 接受同仓库分支名或完整 40 字符提交 SHA，
+`build_only` 默认关闭，`build_path` 默认 `auto`，只有 build-only 验证允许选择
+`canonical`。分支先用 `git check-ref-format --branch` 校验并规范为
+`refs/heads/<name>`，resolver checkout 后用 `git rev-parse HEAD` 固定 candidate SHA；
 后续 workload 和汇总只消费该 SHA。workflow 与验收脚本始终来自 `github.sha` 绑定的
 trusted `main`，候选只作为隔离镜像运行时代码和身份 checkout。label、PR 事件、自动
 重试和 candidate-controlled harness 都不再启动或改变验收。普通 PR 与 merge queue
 事件不会默认消耗长时 runner。继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR
 smoke artifact producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
+build-only 为实现分支资格验证例外：它允许候选代码参与构建，并使用 candidate-compatible
+的 build-report 生成器描述资格运行；该报告明确不是预算或正式性能证据。该模式跳过
+workload、预算汇总和性能通过卡；正式模式仍只使用 trusted `main` 的生成器。
 本次请求生命周期 PR 的就绪判断不宣称该预算已验证；预算结论留给显式启动的专项运行。
 普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
 当 GitHub-hosted runner 因明确的资源压力无法提供有效测量时，验收步骤保留非零结果并由分类器将该辅助 job 收口为中性；`empirical-card.json` 仍为 `unavailable`，原始压力证据仍上传，功能/设置/证据错误和预算超标继续失败。
