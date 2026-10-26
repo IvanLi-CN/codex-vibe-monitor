@@ -57,6 +57,56 @@ pub(crate) struct RawOrphanSweepPassContext {
     pub(crate) candidate_deadline: Instant,
 }
 
+async fn wait_for_raw_orphan_sweep_pressure_cooldown(
+    gate: &crate::db_pressure::DbPressureGate,
+    retry_started: Instant,
+    retry_attempts: &mut usize,
+) -> Option<&'static str> {
+    let Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms }) =
+        gate.background_deny_reason()
+    else {
+        return None;
+    };
+    if *retry_attempts >= RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS
+        || retry_started.elapsed() >= RETENTION_PRESSURE_RETRY_BUDGET
+    {
+        return Some("pressure_cooldown");
+    }
+
+    let mut wait = Duration::from_millis(remaining_ms.saturating_add(50));
+    wait = wait.min(RETENTION_PRESSURE_RETRY_BUDGET.saturating_sub(retry_started.elapsed()));
+    if let Some(remaining) = retention_run_remaining_budget() {
+        wait = wait.min(remaining);
+    }
+    if wait.is_zero() {
+        return Some(if retention_run_budget_expired() {
+            "retention_work_budget"
+        } else {
+            "pressure_cooldown"
+        });
+    }
+
+    *retry_attempts += 1;
+    tracing::debug!(
+        operation = "raw_orphan_sweep",
+        attempt = *retry_attempts,
+        max_attempts = RETENTION_PRESSURE_RETRY_MAX_ATTEMPTS,
+        wait_ms = wait.as_millis() as u64,
+        "raw orphan sweep retry waiting for SQLite pressure cooldown"
+    );
+    let sleep = tokio::time::sleep(wait);
+    if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => return Some("shutdown"),
+            _ = sleep => {}
+        }
+    } else {
+        sleep.await;
+    }
+    retention_run_budget_expired().then_some("retention_work_budget")
+}
+
 impl RawOrphanSweepPassContext {
     pub(crate) fn candidate_budget_expired(&self) -> bool {
         Instant::now() >= self.candidate_deadline
@@ -195,29 +245,66 @@ pub(crate) async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanS
         None => crate::db_pressure::global_db_pressure_gate(),
     };
 
-    if let Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }) =
-        pressure_gate.background_deny_reason()
-    {
-        retention_record_defer("raw_orphan_sweep", "pressure_cooldown");
-        return Err(raw_orphan_sweep_admission_deferred(
-            "background_slot",
-            "pressure_cooldown",
-        ));
-    }
+    let pressure_retry_started = Instant::now();
+    let mut pressure_retry_attempts = 0;
+    let pressure_permit = loop {
+        if pressure_gate
+            .background_deny_reason()
+            .is_some_and(|reason| {
+                matches!(
+                    reason,
+                    crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }
+                )
+            })
+        {
+            if let Some(cause) = wait_for_raw_orphan_sweep_pressure_cooldown(
+                pressure_gate,
+                pressure_retry_started,
+                &mut pressure_retry_attempts,
+            )
+            .await
+            {
+                retention_record_defer("raw_orphan_sweep", cause);
+                return Err(raw_orphan_sweep_admission_deferred(
+                    "background_slot",
+                    cause,
+                ));
+            }
+            continue;
+        }
 
-    let pressure_permit = pressure_gate
-        .begin_priority_background_with_queue_wait("raw_orphan_sweep", RETENTION_FAIRNESS_INTERVAL)
-        .await
-        .map_err(|reason| {
-            let cause = match reason {
-                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
-                    "pressure_cooldown"
+        match pressure_gate
+            .begin_priority_background_with_queue_wait(
+                "raw_orphan_sweep",
+                RETENTION_FAIRNESS_INTERVAL,
+            )
+            .await
+        {
+            Ok(permit) => break permit,
+            Err(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. }) => {
+                if let Some(cause) = wait_for_raw_orphan_sweep_pressure_cooldown(
+                    pressure_gate,
+                    pressure_retry_started,
+                    &mut pressure_retry_attempts,
+                )
+                .await
+                {
+                    retention_record_defer("raw_orphan_sweep", cause);
+                    return Err(raw_orphan_sweep_admission_deferred(
+                        "background_slot",
+                        cause,
+                    ));
                 }
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => "background_busy",
-            };
-            retention_record_defer("raw_orphan_sweep", cause);
-            raw_orphan_sweep_admission_deferred("background_slot", cause)
-        })?;
+            }
+            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy) => {
+                retention_record_defer("raw_orphan_sweep", "background_busy");
+                return Err(raw_orphan_sweep_admission_deferred(
+                    "background_slot",
+                    "background_busy",
+                ));
+            }
+        }
+    };
 
     let coordinator = retention_write_coordinator_handle();
     let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {
