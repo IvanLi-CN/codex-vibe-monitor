@@ -13,6 +13,8 @@ use std::{
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -1928,6 +1930,20 @@ impl InMemoryMigrationTarget {
         }
         Ok(())
     }
+
+    fn validate_checkpoint_progress(
+        existing: Option<&EngineCheckpoint>,
+        checkpoint: &EngineCheckpoint,
+    ) -> Result<()> {
+        if let Some(existing) = existing
+            && (checkpoint.captured_through < existing.captured_through
+                || checkpoint.applied_through < existing.applied_through
+                || (existing.complete && !checkpoint.complete))
+        {
+            bail!("target checkpoint regresses migration progress");
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -2005,6 +2021,12 @@ impl MigrationTarget for InMemoryMigrationTarget {
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
         let mut state = self.state.lock().await;
+        Self::validate_checkpoint_progress(
+            state
+                .checkpoints
+                .get(&(plan.migration_id.clone(), plan.table_name.clone())),
+            checkpoint,
+        )?;
         Self::take_failure(&mut state).await?;
         for row in &page.rows {
             let tombstone = state
@@ -2035,6 +2057,12 @@ impl MigrationTarget for InMemoryMigrationTarget {
         checkpoint: &EngineCheckpoint,
     ) -> Result<()> {
         let mut state = self.state.lock().await;
+        Self::validate_checkpoint_progress(
+            state
+                .checkpoints
+                .get(&(migration_id.to_owned(), checkpoint.table_name.clone())),
+            checkpoint,
+        )?;
         Self::take_failure(&mut state).await?;
         for change in changes {
             match change.kind {
@@ -2291,6 +2319,8 @@ pub(crate) struct FileMigrationStore {
     file_lock_path: Arc<PathBuf>,
     initial_context: AuthorityRecoveryContext,
     lock: Arc<Mutex<()>>,
+    #[cfg(test)]
+    fail_next_authority_publication: Arc<AtomicBool>,
 }
 
 impl FileMigrationStore {
@@ -2303,11 +2333,19 @@ impl FileMigrationStore {
             path: Arc::new(path),
             file_lock_path: Arc::new(file_lock_path.into()),
             initial_context,
+            #[cfg(test)]
+            fail_next_authority_publication: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(crate) fn path(&self) -> &Path {
         self.path.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_authority_publication(&self) {
+        self.fail_next_authority_publication
+            .store(true, Ordering::Release);
     }
 
     async fn read_state(&self) -> Result<FileMigrationState> {
@@ -2576,6 +2614,13 @@ impl AuthorityManifestStore for FileMigrationStore {
         expected: &AuthorityRecoveryContext,
     ) -> Result<AuthorityPublication> {
         self.update_state(|state| {
+            #[cfg(test)]
+            if self
+                .fail_next_authority_publication
+                .swap(false, Ordering::AcqRel)
+            {
+                bail!("injected authority publication failure");
+            }
             if !context_matches_manifest(expected, manifest) {
                 return Ok(AuthorityPublication::Conflict);
             }
@@ -2646,7 +2691,6 @@ impl MigrationMetadataStore for FileMigrationStore {
             }) {
                 if checkpoint.captured_through < existing.captured_through
                     || checkpoint.applied_through < existing.applied_through
-                    || (existing.complete && !checkpoint.complete)
                 {
                     bail!("migration checkpoint regresses durable progress");
                 }

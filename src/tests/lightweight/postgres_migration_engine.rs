@@ -14,7 +14,7 @@ use crate::storage::{
     migration::{
         ChangeInput, ChangeKind, ChunkRange, CopyLimits, FileMigrationStore,
         InMemoryMigrationSource, InMemoryMigrationTarget, MigrationEngine, MigrationLimits,
-        SourceWriteFence,
+        MigrationTarget, SourceWriteFence,
     },
 };
 
@@ -377,10 +377,7 @@ async fn uncommitted_authority_switch_reopens_prepared_source_fence() -> Result<
     engine
         .verify_chunk("events", ChunkRange::new("a", "a")?)
         .await?;
-    let switch_context = AuthorityRecoveryContext {
-        target_identity: "wrong-target".into(),
-        ..context.clone()
-    };
+    store.fail_next_authority_publication();
 
     assert!(
         engine
@@ -392,7 +389,7 @@ async fn uncommitted_authority_switch_reopens_prepared_source_fence() -> Result<
                         generation: 1,
                     },
                 ),
-                switch_context,
+                context,
                 Duration::from_secs(1)
             )
             .await
