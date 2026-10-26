@@ -16,6 +16,7 @@ use crate::storage::core::{
 };
 
 struct TestAuthorityStore {
+    compare_and_publish: Mutex<()>,
     manifest: Mutex<Option<ModuleAuthorityManifest>>,
     recovery: Mutex<Option<AuthorityRecoveryRecord>>,
     publication: Mutex<AuthorityPublication>,
@@ -28,6 +29,7 @@ struct TestAuthorityStore {
 impl Default for TestAuthorityStore {
     fn default() -> Self {
         Self {
+            compare_and_publish: Mutex::new(()),
             manifest: Mutex::new(None),
             recovery: Mutex::new(None),
             publication: Mutex::new(AuthorityPublication::Committed),
@@ -45,6 +47,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
         &self,
         module: StorageModule,
     ) -> Result<AuthorityRecoveryRecord> {
+        let _compare_and_publish = self.compare_and_publish.lock().await;
         if let Some(recovery) = self.recovery.lock().await.clone() {
             return Ok(recovery);
         }
@@ -71,6 +74,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
             self.publication_started.add_permits(1);
             self.publication_release.acquire().await.unwrap().forget();
         }
+        let _compare_and_publish = self.compare_and_publish.lock().await;
         let publication = *self.publication.lock().await;
         if publication != AuthorityPublication::Committed {
             return Ok(publication);
@@ -692,6 +696,35 @@ async fn recovery_rejects_manifest_for_another_module() {
 }
 
 #[tokio::test]
+async fn recovery_rejects_manifest_for_another_target_or_watermark() {
+    let expected = recovery_context();
+    let mut manifests = Vec::new();
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.target_identity = "another-target".into();
+    manifests.push(manifest);
+
+    let mut manifest = authority_manifest(2, BackendKind::Postgres);
+    manifest.source_watermark += 1;
+    manifests.push(manifest);
+
+    for manifest in manifests {
+        let gate = ModuleGenerationGate::new(
+            StorageModule::TrafficArchive,
+            ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            },
+        );
+        let store = TestAuthorityStore::default();
+        *store.manifest.lock().await = Some(manifest);
+
+        assert!(gate.recover_authority(&store, &expected).await.is_err());
+        assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    }
+}
+
+#[tokio::test]
 async fn durable_publication_compare_and_replace_fences_concurrent_attempts() {
     let store = Arc::new(TestAuthorityStore::default());
     store.hold_publication.store(true, Ordering::Release);
@@ -700,6 +733,8 @@ async fn durable_publication_compare_and_replace_fences_concurrent_attempts() {
     let first_manifest = authority_manifest_for_migration(2, BackendKind::Postgres, "migration-01");
     let second_manifest =
         authority_manifest_for_migration(3, BackendKind::Postgres, "migration-02");
+    let expected_first_manifest = first_manifest.clone();
+    let expected_second_manifest = second_manifest.clone();
 
     let first_store = Arc::clone(&store);
     let first = tokio::spawn(async move {
@@ -725,18 +760,21 @@ async fn durable_publication_compare_and_replace_fences_concurrent_attempts() {
     }
     store.publication_release.add_permits(2);
 
-    let outcomes = [
-        first.await.unwrap().unwrap(),
-        second.await.unwrap().unwrap(),
-    ];
+    let first_outcome = first.await.unwrap().unwrap();
+    let second_outcome = second.await.unwrap().unwrap();
+    let committed_manifest = match (first_outcome, second_outcome) {
+        (AuthorityPublication::Committed, AuthorityPublication::Conflict) => {
+            expected_first_manifest
+        }
+        (AuthorityPublication::Conflict, AuthorityPublication::Committed) => {
+            expected_second_manifest
+        }
+        outcomes => panic!("expected one committed publication, got {outcomes:?}"),
+    };
     assert_eq!(
-        outcomes
-            .iter()
-            .filter(|outcome| **outcome == AuthorityPublication::Committed)
-            .count(),
-        1
+        store.manifest.lock().await.as_ref(),
+        Some(&committed_manifest)
     );
-    assert!(store.manifest.lock().await.is_some());
     assert!(store.recovery.lock().await.is_none());
 }
 
