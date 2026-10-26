@@ -149,7 +149,7 @@ def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
     if not isinstance(details, dict):
         return False
     failures = details.get("failures", 0)
-    if not isinstance(failures, int) or isinstance(failures, bool) or failures < 0:
+    if not isinstance(failures, int) or isinstance(failures, bool) or failures != 0:
         return False
     released = details.get("filesReleased")
     checked = details.get("filesChecked")

@@ -1019,6 +1019,8 @@ pub(super) fn classify_summary_archive_snapshot_backfill_error(
     });
     if is_sqlite_lock {
         "deferred:sqlite_busy_or_locked"
+    } else if super::super::retention::is_retention_archive_file_work_transient(error) {
+        "deferred:archive_file_phase"
     } else if let Some(error) = error.downcast_ref::<SummaryArchiveSnapshotVerificationError>() {
         match error.kind {
             "manifest_sha_mismatch" => "unavailable:manifest_sha_mismatch",
@@ -1102,12 +1104,98 @@ where
     .await
 }
 
-async fn run_summary_archive_temp_read_phase<F, T>(operation: F) -> Result<T>
+struct SummaryArchivePoolDrain {
+    pool: Option<Pool<Sqlite>>,
+    cleanup: Option<super::super::retention::TempSqliteCleanup>,
+}
+
+impl SummaryArchivePoolDrain {
+    fn new(pool: &Pool<Sqlite>, cleanup: super::super::retention::TempSqliteCleanup) -> Self {
+        Self {
+            pool: Some(pool.clone()),
+            cleanup: Some(cleanup),
+        }
+    }
+
+    fn complete(&mut self) {
+        self.pool.take();
+        self.cleanup.take();
+    }
+}
+
+impl Drop for SummaryArchivePoolDrain {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup)) = (self.pool.take(), self.cleanup.take()) else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+                crate::maintenance::with_file_phase_permit(file_phase, async move {
+                    pool.close().await;
+                    drop(cleanup);
+                })
+                .await;
+            }));
+        } else {
+            // Runtime teardown cannot provide a native SQLite drain acknowledgement.
+            std::mem::forget(pool);
+            std::mem::forget(cleanup);
+        }
+    }
+}
+
+struct SummaryArchiveTempReadDrain {
+    pool: Option<Pool<Sqlite>>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+impl SummaryArchiveTempReadDrain {
+    fn new(pool: &Pool<Sqlite>, file_phase: crate::maintenance::FilePhasePermit) -> Self {
+        Self {
+            pool: Some(pool.clone()),
+            file_phase: Some(file_phase),
+        }
+    }
+
+    fn complete(&mut self) {
+        self.pool.take();
+        self.file_phase.take();
+    }
+}
+
+impl Drop for SummaryArchiveTempReadDrain {
+    fn drop(&mut self) {
+        let (Some(pool), Some(file_phase)) = (self.pool.take(), self.file_phase.take()) else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                crate::maintenance::with_file_phase_permit(file_phase, async move {
+                    pool.close().await;
+                })
+                .await;
+            }));
+        } else {
+            // Runtime teardown cannot provide a native SQLite drain acknowledgement.
+            std::mem::forget(pool);
+            std::mem::forget(file_phase);
+        }
+    }
+}
+
+async fn run_summary_archive_temp_read_phase<F, T>(
+    archive_pool: &Pool<Sqlite>,
+    operation: F,
+) -> Result<T>
 where
     F: Future<Output = Result<T>>,
 {
     let file_phase = crate::acquire_file_phase_permit("summary_archive_snapshot_backfill").await?;
-    crate::with_file_phase_permit(file_phase, operation).await
+    let mut drain = SummaryArchiveTempReadDrain::new(archive_pool, file_phase.clone());
+    let result = crate::with_file_phase_permit(file_phase, operation).await;
+    drain.complete();
+    result
 }
 
 pub(super) enum SummaryArchiveHashAdvance {
@@ -1395,13 +1483,17 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     .await;
     let Some((archive_pool, temp_cleanup)) = (match archive_source {
         Ok(source) => source,
+        Err(error) if super::super::retention::is_retention_archive_file_work_transient(&error) => {
+            return Err(error);
+        }
         Err(_) => return Ok("unavailable:source_open_failed"),
     }) else {
         return Ok("unavailable:source_open_failed");
     };
+    let mut pool_drain = SummaryArchivePoolDrain::new(&archive_pool, temp_cleanup);
 
     let result = async {
-        let archive_columns = run_summary_archive_temp_read_phase(async {
+        let archive_columns = run_summary_archive_temp_read_phase(&archive_pool, async {
             load_archive_table_columns(&archive_pool, "codex_invocations").await
         })
         .await?;
@@ -1478,7 +1570,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
                 return Ok("deferred:budget");
             }
-            let (rows, has_more) = run_summary_archive_temp_read_phase(async {
+            let (rows, has_more) = run_summary_archive_temp_read_phase(&archive_pool, async {
                 load_invocation_archive_rows_time_chunk(
                     &archive_pool,
                     &query_sql,
@@ -1524,7 +1616,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                     separated.push_bind(row.id);
                 }
                 separated.push_unseparated(")");
-                run_summary_archive_temp_read_phase(async {
+                run_summary_archive_temp_read_phase(&archive_pool, async {
                     Ok(query
                         .build_query_as::<(i64, String)>()
                         .fetch_all(&archive_pool)
@@ -1672,9 +1764,16 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         Ok("complete")
     }
     .await;
-    archive_pool.close().await;
-    drop(temp_cleanup);
+    let close_result = run_summary_archive_temp_read_phase(&archive_pool, async {
+        archive_pool.close().await;
+        Ok(())
+    })
+    .await;
+    if close_result.is_ok() {
+        pool_drain.complete();
+    }
     result?;
+    close_result?;
     Ok("complete")
 }
 

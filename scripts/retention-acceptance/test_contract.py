@@ -319,7 +319,7 @@ class ContractTests(unittest.TestCase):
         row["details"]["selectedScope"]["hasMore"] = False
         self.assertFalse(task_run_is_accepted_terminal(row))
 
-    def test_competitor_partial_chunk_requires_positive_release(self) -> None:
+    def test_competitor_partial_chunk_requires_zero_failures(self) -> None:
         row = {
             "status": "skipped",
             "completion": "partial",
@@ -328,7 +328,7 @@ class ContractTests(unittest.TestCase):
         }
         self.assertTrue(task_run_is_accepted_competitor_chunk(row))
         row["details"]["failures"] = 1
-        self.assertTrue(task_run_is_accepted_competitor_chunk(row))
+        self.assertFalse(task_run_is_accepted_competitor_chunk(row))
         row["details"]["filesReleased"] = 0
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
 

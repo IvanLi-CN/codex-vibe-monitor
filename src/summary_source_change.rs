@@ -654,7 +654,8 @@ pub(crate) async fn validate_verified_summary_archive_snapshot_tx(
     let matches_manifest: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM archive_batches WHERE id=?1 AND sha256=?2
          AND row_count=?3 AND coverage_start_at=?4 AND coverage_end_at=?5
-         AND status IN ('materializing','completed') AND summary_source_kind='authoritative')",
+         AND status IN ('materializing','completed')
+         AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror')",
     )
     .bind(archive_batch_id)
     .bind(manifest_sha256)
