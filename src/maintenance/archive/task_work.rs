@@ -23,24 +23,33 @@ impl Drop for TaskWorkOwner {
         let Some(file) = self.file.take() else {
             return;
         };
-        if crate::is_archive_file_operation_active(&self.work_path) {
-            let owner_path = self.path.clone();
-            let work_path = self.work_path.clone();
-            std::thread::spawn(move || {
+        let owner_path = self.path.clone();
+        let work_path = self.work_path.clone();
+        let Some(handle) = tokio::runtime::Handle::try_current().ok() else {
+            // Runtime teardown cannot acknowledge file-phase or native-operation completion.
+            // Keep the owner lock through process exit so a later sweep cannot mistake this
+            // work for abandoned data while cleanup ownership is unresolved.
+            std::mem::forget(file);
+            return;
+        };
+        let current_file_phase = crate::maintenance::try_current_file_phase_permit();
+        drop(handle.spawn(async move {
+            let file_phase = match current_file_phase {
+                Some(file_phase) => file_phase,
+                None => crate::maintenance::acquire_file_phase_permit_for_cleanup().await,
+            };
+            crate::maintenance::with_file_phase_permit(file_phase, async move {
                 while crate::is_archive_file_operation_active(&work_path) {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
                 drop(file);
                 crate::maintenance::remove_temp_archive_file_operation_artifacts_unchecked(
                     &work_path,
                 );
                 let _ = fs::remove_file(owner_path);
-            });
-            return;
-        }
-        drop(file);
-        crate::maintenance::remove_temp_archive_file_operation_artifacts_unchecked(&self.work_path);
-        let _ = fs::remove_file(&self.path);
+            })
+            .await;
+        }));
     }
 }
 
