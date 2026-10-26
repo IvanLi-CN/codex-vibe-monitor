@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.13.14",
+  "base_stable_version": "4.13.13",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-26T05:03:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.13.14",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f8b655e626d7809e3d6209858496126ca1f8bc33",
+  "pr_number": 1215,
+  "pr_title": "perf(ci): reuse stateful Cargo dependency cache",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.13.14",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.13.14",
+  "target_sha": "75de098eb892932381f6c889157db0b9a74e545d",
+  "type_label": "type:patch"
+}
