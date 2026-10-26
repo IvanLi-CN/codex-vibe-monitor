@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -115,22 +115,29 @@ enum TransactionCompletion {
 async fn complete_transaction(
     backend: StorageTransactionBackend,
     completion: TransactionCompletion,
+    lease: Option<ModuleGenerationLease>,
 ) -> Result<()> {
-    match (backend, completion) {
+    let result = match (backend, completion) {
         (StorageTransactionBackend::Sqlite(transaction), TransactionCompletion::Commit) => {
-            transaction.commit().await?;
+            transaction.commit().await.map_err(Into::into)
         }
         (StorageTransactionBackend::Postgres(transaction), TransactionCompletion::Commit) => {
-            transaction.commit().await?;
+            transaction.commit().await.map_err(Into::into)
         }
         (StorageTransactionBackend::Sqlite(transaction), TransactionCompletion::Rollback) => {
-            transaction.rollback().await?;
+            transaction.rollback().await.map_err(Into::into)
         }
         (StorageTransactionBackend::Postgres(transaction), TransactionCompletion::Rollback) => {
-            transaction.rollback().await?;
+            transaction.rollback().await.map_err(Into::into)
         }
+    };
+    if result.is_err()
+        && let Some(lease) = lease.as_ref()
+    {
+        lease.gate.recovery_required.store(true, Ordering::Release);
     }
-    Ok(())
+    drop(lease);
+    result
 }
 
 impl StorageTransaction {
@@ -140,9 +147,7 @@ impl StorageTransaction {
         };
         let lease = self.lease.take();
         tokio::spawn(async move {
-            let result = complete_transaction(backend, TransactionCompletion::Commit).await;
-            drop(lease);
-            result
+            complete_transaction(backend, TransactionCompletion::Commit, lease).await
         })
         .await??;
         Ok(())
@@ -154,9 +159,7 @@ impl StorageTransaction {
         };
         let lease = self.lease.take();
         tokio::spawn(async move {
-            let result = complete_transaction(backend, TransactionCompletion::Rollback).await;
-            drop(lease);
-            result
+            complete_transaction(backend, TransactionCompletion::Rollback, lease).await
         })
         .await??;
         Ok(())
@@ -171,12 +174,15 @@ impl Drop for StorageTransaction {
         let lease = self.lease.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                let _ = complete_transaction(backend, TransactionCompletion::Rollback).await;
-                drop(lease);
+                let _ = complete_transaction(backend, TransactionCompletion::Rollback, lease).await;
             });
         } else {
+            if let Some(lease) = lease.as_ref() {
+                lease.gate.recovery_required.store(true, Ordering::Release);
+            }
             drop(backend);
-            drop(lease);
+            // Without a runtime, rollback cannot be awaited and the gate must stay closed.
+            std::mem::forget(lease);
         }
     }
 }
@@ -203,6 +209,7 @@ struct ModuleGate {
     state: Mutex<AdmissionState>,
     switching: Mutex<()>,
     active: AtomicUsize,
+    recovery_required: AtomicBool,
     changed: Notify,
 }
 
@@ -232,6 +239,7 @@ impl ModuleGenerationGate {
             }),
             switching: Mutex::new(()),
             active: AtomicUsize::new(0),
+            recovery_required: AtomicBool::new(false),
             changed: Notify::new(),
         }))
     }
@@ -241,7 +249,7 @@ impl ModuleGenerationGate {
             bail!("module generation gate cannot issue a lease for another module");
         }
         let state = self.0.state.lock().await;
-        if !state.accepting {
+        if !state.accepting || self.0.recovery_required.load(Ordering::Acquire) {
             bail!("module storage admission is closed during authority switching");
         }
         self.0.active.fetch_add(1, Ordering::AcqRel);
@@ -258,15 +266,17 @@ impl ModuleGenerationGate {
         &self,
         module: StorageModule,
         manifest: ModuleAuthorityManifest,
+        expected: AuthorityRecoveryContext,
         drain_budget: Duration,
         metadata: Arc<dyn AuthorityManifestStore>,
     ) -> Result<()> {
         if module != self.0.module {
             bail!("module generation gate cannot switch authority for another module");
         }
+        validate_switch_manifest(module, &manifest, &expected)?;
         let gate = self.clone();
         tokio::spawn(async move {
-            gate.switch_authority_inner(module, manifest, drain_budget, metadata)
+            gate.switch_authority_inner(module, manifest, expected, drain_budget, metadata)
                 .await
         })
         .await??;
@@ -277,6 +287,7 @@ impl ModuleGenerationGate {
         &self,
         module: StorageModule,
         manifest: ModuleAuthorityManifest,
+        expected: AuthorityRecoveryContext,
         drain_budget: Duration,
         metadata: Arc<dyn AuthorityManifestStore>,
     ) -> Result<()> {
@@ -284,7 +295,11 @@ impl ModuleGenerationGate {
         let deadline = tokio::time::Instant::now() + drain_budget;
         {
             let mut state = self.0.state.lock().await;
-            if manifest.module != module
+            if self.0.recovery_required.load(Ordering::Acquire) {
+                bail!("module authority requires recovery before another switch");
+            }
+            validate_switch_manifest(module, &manifest, &expected)?;
+            if state.authority.backend != BackendKind::Sqlite
                 || manifest.authority.generation <= state.authority.generation
             {
                 bail!("module authority manifest does not advance the selected module generation");
@@ -302,8 +317,17 @@ impl ModuleGenerationGate {
             }
         }
 
-        match metadata.publish_authority_manifest(&manifest).await? {
+        self.0.recovery_required.store(true, Ordering::Release);
+        let publication = match metadata.publish_authority_manifest(&manifest).await {
+            Ok(publication) => publication,
+            Err(error) => {
+                self.0.recovery_required.store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
+        match publication {
             AuthorityPublication::NotCommitted => {
+                self.0.recovery_required.store(false, Ordering::Release);
                 self.reopen_admission().await;
                 bail!(
                     "module authority manifest was not committed; source authority remains active"
@@ -315,11 +339,13 @@ impl ModuleGenerationGate {
                     bail!("published module authority generation is no longer monotonic");
                 }
                 state.authority = manifest.authority;
+                self.0.recovery_required.store(false, Ordering::Release);
                 state.accepting = true;
                 self.0.changed.notify_waiters();
                 Ok(())
             }
             AuthorityPublication::Indeterminate => {
+                self.0.recovery_required.store(true, Ordering::Release);
                 bail!(
                     "module authority publication is indeterminate; admission remains closed for recovery"
                 )
@@ -339,6 +365,7 @@ impl ModuleGenerationGate {
     ) -> Result<()> {
         let _switch = self.0.switching.lock().await;
         self.0.state.lock().await.accepting = false;
+        self.0.recovery_required.store(true, Ordering::Release);
         if self.0.active.load(Ordering::Acquire) != 0 {
             bail!("cannot recover module authority while generation leases are active");
         }
@@ -362,6 +389,7 @@ impl ModuleGenerationGate {
                     || manifest.source_identity != expected.source_identity
                     || manifest.target_identity != expected.target_identity
                     || manifest.source_watermark != expected.source_watermark
+                    || manifest.authority.backend != BackendKind::Postgres
                 {
                     bail!(
                         "recovered authority manifest does not match the active migration identity"
@@ -380,6 +408,7 @@ impl ModuleGenerationGate {
                 bail!("module authority recovery is indeterminate; admission remains closed");
             }
         }
+        self.0.recovery_required.store(false, Ordering::Release);
         self.reopen_admission().await;
         Ok(())
     }
@@ -393,6 +422,23 @@ impl ModuleGenerationGate {
         }
         authorities
     }
+}
+
+fn validate_switch_manifest(
+    module: StorageModule,
+    manifest: &ModuleAuthorityManifest,
+    expected: &AuthorityRecoveryContext,
+) -> Result<()> {
+    if manifest.module != module
+        || manifest.installation_id != expected.installation_id
+        || manifest.source_identity != expected.source_identity
+        || manifest.target_identity != expected.target_identity
+        || manifest.source_watermark != expected.source_watermark
+        || manifest.authority.backend != BackendKind::Postgres
+    {
+        bail!("authority manifest does not match the verified PostgreSQL migration target");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

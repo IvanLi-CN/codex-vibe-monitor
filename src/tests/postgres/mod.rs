@@ -271,6 +271,7 @@ async fn generation_gate_drains_old_leases_before_publishing_authority() {
             .switch_authority(
                 StorageModule::TrafficArchive,
                 authority_manifest(2, BackendKind::Postgres),
+                recovery_context(),
                 std::time::Duration::from_secs(1),
                 store,
             )
@@ -303,6 +304,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
             .switch_authority(
                 StorageModule::TrafficArchive,
                 authority_manifest(2, BackendKind::Postgres),
+                recovery_context(),
                 std::time::Duration::from_secs(1),
                 first_store,
             )
@@ -315,6 +317,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
             .switch_authority(
                 StorageModule::TrafficArchive,
                 authority_manifest(3, BackendKind::Postgres),
+                recovery_context(),
                 std::time::Duration::from_secs(1),
                 store,
             )
@@ -347,6 +350,7 @@ async fn cancelling_switch_waiter_does_not_cancel_authority_transition() {
             .switch_authority(
                 StorageModule::TrafficArchive,
                 authority_manifest(2, BackendKind::Postgres),
+                recovery_context(),
                 std::time::Duration::from_secs(1),
                 switch_store,
             )
@@ -439,6 +443,7 @@ async fn indeterminate_authority_publication_stays_closed_until_recovery() {
         gate.switch_authority(
             StorageModule::TrafficArchive,
             authority_manifest(2, BackendKind::Postgres),
+            recovery_context(),
             std::time::Duration::from_secs(1),
             publisher,
         )
@@ -469,6 +474,7 @@ async fn rejected_authority_publication_reopens_the_source_authority() {
         gate.switch_authority(
             StorageModule::TrafficArchive,
             authority_manifest(2, BackendKind::Postgres),
+            recovery_context(),
             std::time::Duration::from_secs(1),
             store,
         )
@@ -478,6 +484,46 @@ async fn rejected_authority_publication_reopens_the_source_authority() {
     let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     assert_eq!(current.lease.authority.backend, BackendKind::Sqlite);
     assert_eq!(current.lease.authority.generation, 1);
+}
+
+#[tokio::test]
+async fn authority_switch_rejects_unverified_identity_and_sqlite_failback() {
+    let store = Arc::new(TestAuthorityStore::default());
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        },
+    );
+    let publisher: Arc<dyn AuthorityManifestStore> = store.clone();
+    assert!(
+        gate.switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest(3, BackendKind::Sqlite),
+            recovery_context(),
+            std::time::Duration::from_secs(1),
+            publisher,
+        )
+        .await
+        .is_err()
+    );
+    assert!(store.manifest.lock().await.is_none());
+
+    let mut expected = recovery_context();
+    expected.target_identity = "different-target".into();
+    assert!(
+        gate.switch_authority(
+            StorageModule::TrafficArchive,
+            authority_manifest(3, BackendKind::Postgres),
+            expected,
+            std::time::Duration::from_secs(1),
+            store.clone(),
+        )
+        .await
+        .is_err()
+    );
+    assert!(store.manifest.lock().await.is_none());
 }
 
 #[tokio::test]
@@ -505,6 +551,7 @@ async fn storage_transaction_holds_generation_lease_until_commit() {
             .switch_authority(
                 StorageModule::TrafficArchive,
                 authority_manifest(2, BackendKind::Postgres),
+                recovery_context(),
                 std::time::Duration::from_secs(1),
                 store,
             )
