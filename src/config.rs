@@ -314,6 +314,7 @@ pub(crate) struct PerformanceIndexPreparationArgs {
 pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
+    pub(crate) storage: StorageConfig,
     pub(crate) observability: ObservabilityConfig,
     pub(crate) poll_interval: Duration,
     pub(crate) request_timeout: Duration,
@@ -420,6 +421,7 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var(ENV_DATABASE_PATH).ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
+        let storage = StorageConfig::from_env()?;
         let maintenance_database_path = Self::derive_maintenance_database_path(&database_path);
         if Self::normalized_path_identity(&maintenance_database_path)
             == Self::normalized_path_identity(&database_path)
@@ -759,6 +761,7 @@ impl AppConfig {
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
+            storage,
             observability,
             poll_interval,
             request_timeout,

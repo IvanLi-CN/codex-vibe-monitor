@@ -3406,6 +3406,7 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
+        storage: StorageConfig::default(),
         observability: ObservabilityConfig::default(),
         poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(5),

@@ -126,9 +126,13 @@ mod runtime;
 mod runtime_mutation_bus;
 mod schema;
 mod share_links;
+mod storage;
 mod summary_source_change;
 mod system_storage;
 pub(crate) use dashboard_network_speed::*;
+#[cfg(test)]
+#[path = "tests/postgres/mod.rs"]
+mod postgres_tests;
 mod sqlite_batch_writer;
 #[expect(
     clippy::type_complexity,
@@ -163,6 +167,7 @@ pub(crate) use schema::*;
 pub(crate) use share_links::*;
 use sqlite_batch_writer::*;
 use stats::*;
+pub(crate) use storage::config::*;
 pub(crate) use summary_source_change::*;
 pub(crate) use system_storage::*;
 pub(crate) use task_runtime_observation::*;
