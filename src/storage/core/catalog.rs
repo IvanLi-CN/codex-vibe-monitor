@@ -322,12 +322,12 @@ impl ModuleCatalog {
 
 fn classify_table(table: String) -> Result<TableOwner, CatalogError> {
     let (module, transaction_group, recovery_obligation) = if traffic_table(&table) {
-        let transaction_group = traffic_group(&table);
+        let transaction_group = traffic_group(&table)?;
         let recovery_obligation = match transaction_group {
             "traffic_fact" => RecoveryObligation::TrafficFact,
             "archive_publication" => RecoveryObligation::ArchivePublication,
             "traffic_recovery_obligation" => RecoveryObligation::TrafficRecovery,
-            _ => unreachable!("traffic table has an unknown transaction group"),
+            _ => return Err(CatalogError::UnknownOwnership(table)),
         };
         (
             ModuleId::TrafficArchive,
@@ -488,15 +488,19 @@ fn skip_quoted(sql: &str, index: &mut usize, quote: u8) {
     }
 }
 
-fn traffic_group(table: &str) -> &'static str {
+fn traffic_group(table: &str) -> Result<&'static str, CatalogError> {
     match table {
         "codex_invocations"
         | "pool_upstream_request_attempts"
         | "forward_proxy_attempts"
+        | "forward_proxy_metadata_history"
         | "proxy_raw_payload_blobs"
         | "proxy_raw_payload_blob_links"
+        | "proxy_raw_payload_blob_link_migrations"
+        | "codex_invocation_raw_codec_migrations"
+        | "codex_quota_snapshots"
         | "invocation_in_progress_live"
-        | "prompt_cache_working_set_live" => "traffic_fact",
+        | "prompt_cache_working_set_live" => Ok("traffic_fact"),
         "archive_batches"
         | "retention_prepared_archives"
         | "retention_recovery_cursors"
@@ -505,7 +509,7 @@ fn traffic_group(table: &str) -> &'static str {
         | "hourly_rollup_materialized_buckets"
         | "archive_batch_upstream_activity"
         | "pool_upstream_node_health_archive"
-        | "pool_upstream_node_health_hourly_archive" => "archive_publication",
+        | "pool_upstream_node_health_hourly_archive" => Ok("archive_publication"),
         "summary_source_change_journal"
         | "summary_source_change_cursor"
         | "summary_source_change_compaction_proof"
@@ -524,8 +528,8 @@ fn traffic_group(table: &str) -> &'static str {
         | "hourly_rollup_live_progress"
         | "hourly_rollup_repair_seen_invocation_ids"
         | "hourly_rollup_repair_cleared_buckets"
-        | "account_activity_v2_bucket_repair_watermarks" => "traffic_recovery_obligation",
-        _ => "traffic_fact",
+        | "account_activity_v2_bucket_repair_watermarks" => Ok("traffic_recovery_obligation"),
+        _ => Err(CatalogError::UnknownOwnership(table.into())),
     }
 }
 
