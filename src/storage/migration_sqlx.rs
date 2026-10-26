@@ -15,10 +15,12 @@ use super::{
     catalog::{ModuleCatalog, ModuleId},
     core::StorageModule,
     migration::{
-        CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange, CopyLimits,
-        CoverageCheckpoint, DEFAULT_MAX_QUEUED_BYTES, EngineCheckpoint, MigrationSource,
-        MigrationTarget, SourcePage, SourceRangePage, SourceRangeSnapshot, TableCopyPlan,
-        TableCoverageProof, VersionedRow, validate_checkpoint_progress,
+        CaptureCheckpoint, CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange,
+        CopyLimits, CoverageCheckpoint, DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_MAX_QUEUED_BYTES,
+        EngineCheckpoint, INITIAL_AUTHORITY_GENERATION, INITIAL_CAPTURE_GENERATION,
+        MigrationSource, MigrationTarget, SourcePage, SourceRangePage, SourceRangeSnapshot,
+        SourceWriteAuthority, TableCopyPlan, TableCoverageProof, VersionedRow,
+        validate_checkpoint_progress,
     },
 };
 
@@ -173,7 +175,33 @@ pub(crate) struct SqliteMigrationSource {
     migration_id: String,
     source_identity: String,
     capture_table_name: String,
+    capture_state_table_name: String,
+    max_capture_bytes: u64,
+    writer_generation: u64,
     specs: Arc<BTreeMap<String, MigrationTableSpec>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CaptureContinuityError;
+
+impl std::fmt::Display for CaptureContinuityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SQLite migration capture continuity has been lost")
+    }
+}
+
+impl std::error::Error for CaptureContinuityError {}
+
+#[derive(Debug, Clone, Copy)]
+struct SqliteCaptureState {
+    capture_generation: u64,
+    next_version: i64,
+    captured_bytes: u64,
+    max_capture_bytes: u64,
+    continuity_lost: bool,
+    baseline_required: bool,
+    authority_generation: u64,
+    source_writes_fenced: bool,
 }
 
 impl SqliteMigrationSource {
@@ -191,13 +219,37 @@ impl SqliteMigrationSource {
             bail!("SQLite migration source requires migration and source identities");
         }
         validate_identifier(&capture_table_name, "SQLite migration capture table")?;
+        let capture_state_table_name = format!("{capture_table_name}_state");
+        validate_identifier(
+            &capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
         Ok(Self {
             pool,
             migration_id,
             source_identity,
             capture_table_name,
+            capture_state_table_name,
+            max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
+            writer_generation: INITIAL_AUTHORITY_GENERATION,
             specs: Arc::new(spec_map(specs)?),
         })
+    }
+
+    pub(crate) fn with_max_capture_bytes(mut self, max_capture_bytes: u64) -> Result<Self> {
+        if max_capture_bytes == 0 {
+            bail!("SQLite migration capture capacity must be positive");
+        }
+        self.max_capture_bytes = max_capture_bytes;
+        Ok(self)
+    }
+
+    pub(crate) fn with_writer_generation(mut self, writer_generation: u64) -> Result<Self> {
+        if writer_generation == 0 {
+            bail!("SQLite migration writer generation must be non-zero");
+        }
+        self.writer_generation = writer_generation;
+        Ok(self)
     }
 
     pub(crate) fn from_catalog(
@@ -253,22 +305,110 @@ impl SqliteMigrationSource {
             .execute(&self.pool)
             .await
             .context("index SQLite migration capture table")?;
+        let capture_state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "CREATE TABLE IF NOT EXISTS {capture_state_table} (
+                migration_id TEXT NOT NULL,
+                source_identity TEXT NOT NULL,
+                capture_generation INTEGER NOT NULL,
+                next_version INTEGER NOT NULL,
+                captured_bytes INTEGER NOT NULL,
+                max_capture_bytes INTEGER NOT NULL,
+                continuity_lost INTEGER NOT NULL,
+                baseline_required INTEGER NOT NULL,
+                authority_generation INTEGER NOT NULL,
+                source_writes_fenced INTEGER NOT NULL,
+                PRIMARY KEY (migration_id, source_identity)
+            )"
+        );
+        sqlx::query(&query)
+            .execute(&self.pool)
+            .await
+            .context("create SQLite migration capture state table")?;
+        let query = format!(
+            "INSERT OR IGNORE INTO {capture_state_table}
+                (migration_id, source_identity, capture_generation, next_version,
+                 captured_bytes, max_capture_bytes, continuity_lost, baseline_required,
+                 authority_generation, source_writes_fenced)
+             SELECT ?, ?, ?, COALESCE(MAX(source_version), 0),
+                    COALESCE(SUM(COALESCE(length(payload), 0)), 0), ?,
+                    CASE
+                        WHEN COUNT(*) = 0 THEN 0
+                        WHEN COUNT(DISTINCT source_version) = MAX(source_version) - MIN(source_version) + 1 THEN 0
+                        ELSE 1
+                    END,
+                    CASE
+                        WHEN COUNT(*) = 0 THEN 0
+                        WHEN COUNT(DISTINCT source_version) = MAX(source_version) - MIN(source_version) + 1 THEN 0
+                        ELSE 1
+                    END,
+                    ?, ?
+               FROM {capture_table}
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        sqlx::query(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .bind(i64::try_from(INITIAL_CAPTURE_GENERATION).context("capture generation overflow")?)
+            .bind(i64::try_from(self.max_capture_bytes).context("capture capacity overflow")?)
+            .bind(
+                i64::try_from(INITIAL_AUTHORITY_GENERATION)
+                    .context("authority generation overflow")?,
+            )
+            .bind(0_i64)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .execute(&self.pool)
+            .await
+            .context("initialize SQLite migration capture state")?;
         Ok(())
     }
 
     pub(crate) async fn append_captured_change(&self, change: &CapturedChange) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
-        self.append_captured_change_tx(&mut transaction, change)
-            .await?;
-        transaction
-            .commit()
-            .await
-            .context("commit SQLite migration change capture")?;
-        Ok(())
+        let result = self
+            .append_captured_change_tx_for_generation(
+                &mut transaction,
+                self.writer_generation,
+                change,
+            )
+            .await;
+        match result {
+            Ok(()) => {
+                transaction
+                    .commit()
+                    .await
+                    .context("commit SQLite migration change capture")?;
+                Ok(())
+            }
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .context("rollback SQLite migration change capture")?;
+                if error.downcast_ref::<CaptureContinuityError>().is_some() {
+                    self.mark_continuity_lost().await?;
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) async fn append_change(
         &self,
+        source_version: i64,
+        input: ChangeInput,
+    ) -> Result<CapturedChange> {
+        self.append_change_for_generation(self.writer_generation, source_version, input)
+            .await
+    }
+
+    pub(crate) async fn append_change_for_generation(
+        &self,
+        expected_generation: u64,
         source_version: i64,
         input: ChangeInput,
     ) -> Result<CapturedChange> {
@@ -278,7 +418,32 @@ impl SqliteMigrationSource {
             source_version,
             input,
         )?;
-        self.append_captured_change(&change).await?;
+        let mut transaction = self.pool.begin().await?;
+        let result = self
+            .append_captured_change_tx_for_generation(
+                &mut transaction,
+                expected_generation,
+                &change,
+            )
+            .await;
+        match result {
+            Ok(()) => {
+                transaction
+                    .commit()
+                    .await
+                    .context("commit SQLite migration change capture")?;
+            }
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .context("rollback SQLite migration change capture")?;
+                if error.downcast_ref::<CaptureContinuityError>().is_some() {
+                    self.mark_continuity_lost().await?;
+                }
+                return Err(error);
+            }
+        }
         Ok(change)
     }
 
@@ -287,7 +452,53 @@ impl SqliteMigrationSource {
         transaction: &mut Transaction<'_, Sqlite>,
         change: &CapturedChange,
     ) -> Result<()> {
+        self.append_captured_change_tx_for_generation(transaction, self.writer_generation, change)
+            .await
+    }
+
+    pub(crate) async fn append_captured_change_tx_for_generation(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        expected_generation: u64,
+        change: &CapturedChange,
+    ) -> Result<()> {
+        if expected_generation == 0 {
+            bail!("SQLite migration writer generation must be non-zero");
+        }
         change.validate_for(&self.migration_id, &self.source_identity)?;
+        let state = self.load_capture_state_tx(transaction).await?;
+        if state.continuity_lost {
+            bail!("SQLite migration capture continuity has been lost");
+        }
+        if state.source_writes_fenced || state.authority_generation != expected_generation {
+            bail!("SQLite migration writer generation is stale or source writes are fenced");
+        }
+        let has_capture_rows = self.capture_has_rows_tx(transaction).await?;
+        let next_version = if !has_capture_rows {
+            change.source_version
+        } else {
+            state
+                .next_version
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("SQLite migration source version exhausted"))?
+        };
+        if has_capture_rows
+            && (change.source_version < state.next_version || change.source_version > next_version)
+        {
+            self.mark_continuity_lost_tx(transaction).await?;
+            return Err(anyhow!(CaptureContinuityError));
+        }
+        let payload_bytes = change
+            .payload
+            .as_ref()
+            .map_or(0, |payload| payload.len() as u64);
+        let captured_bytes = state
+            .captured_bytes
+            .checked_add(payload_bytes)
+            .ok_or_else(|| anyhow!("SQLite migration capture byte count overflowed"))?;
+        if captured_bytes > state.max_capture_bytes {
+            bail!("SQLite migration capture exceeds its bounded storage capacity");
+        }
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
         let query = format!(
@@ -309,6 +520,336 @@ impl SqliteMigrationSource {
             .execute(&mut **transaction)
             .await
             .context("append SQLite migration change capture")?;
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET next_version = ?, captured_bytes = ?
+              WHERE migration_id = ?
+                AND source_identity = ?
+                AND authority_generation = ?
+                AND source_writes_fenced = 0
+                AND continuity_lost = 0"
+        );
+        let result = sqlx::query(&query)
+            .bind(state.next_version.max(change.source_version))
+            .bind(
+                i64::try_from(captured_bytes)
+                    .context("SQLite migration capture bytes overflowed")?,
+            )
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .bind(i64::try_from(expected_generation).context("writer generation overflow")?)
+            .execute(&mut **transaction)
+            .await
+            .context("update SQLite migration capture checkpoint")?;
+        if result.rows_affected() != 1 {
+            bail!("SQLite migration writer generation changed during capture");
+        }
+        Ok(())
+    }
+
+    async fn capture_has_rows_tx(&self, transaction: &mut Transaction<'_, Sqlite>) -> Result<bool> {
+        let capture_table =
+            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
+        let query = format!(
+            "SELECT EXISTS(
+                    SELECT 1
+                      FROM {capture_table}
+                     WHERE migration_id = ? AND source_identity = ?
+                ) AS has_rows"
+        );
+        sqlx::query_scalar(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .fetch_one(&mut **transaction)
+            .await
+            .context("check SQLite migration capture continuity")
+    }
+
+    async fn load_capture_state_tx(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+    ) -> Result<SqliteCaptureState> {
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "SELECT capture_generation, next_version, captured_bytes, max_capture_bytes,
+                    continuity_lost, baseline_required, authority_generation,
+                    source_writes_fenced
+               FROM {state_table}
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        let row = sqlx::query(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .fetch_one(&mut **transaction)
+            .await
+            .context("load SQLite migration capture checkpoint")?;
+        let state = SqliteCaptureState {
+            capture_generation: u64::try_from(row.try_get::<i64, _>("capture_generation")?)
+                .context("SQLite migration capture generation is negative")?,
+            next_version: row.try_get("next_version")?,
+            captured_bytes: u64::try_from(row.try_get::<i64, _>("captured_bytes")?)
+                .context("SQLite migration capture bytes are negative")?,
+            max_capture_bytes: u64::try_from(row.try_get::<i64, _>("max_capture_bytes")?)
+                .context("SQLite migration capture capacity is negative")?,
+            continuity_lost: row.try_get::<i64, _>("continuity_lost")? != 0,
+            baseline_required: row.try_get::<i64, _>("baseline_required")? != 0,
+            authority_generation: u64::try_from(row.try_get::<i64, _>("authority_generation")?)
+                .context("SQLite migration authority generation is negative")?,
+            source_writes_fenced: row.try_get::<i64, _>("source_writes_fenced")? != 0,
+        };
+        if state.capture_generation == 0
+            || state.next_version < 0
+            || state.max_capture_bytes == 0
+            || state.captured_bytes > state.max_capture_bytes
+            || state.authority_generation == 0
+        {
+            bail!("SQLite migration capture checkpoint is invalid");
+        }
+        Ok(state)
+    }
+
+    pub(crate) async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint> {
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        let checkpoint = CaptureCheckpoint {
+            migration_id: self.migration_id.clone(),
+            source_identity: self.source_identity.clone(),
+            capture_generation: state.capture_generation,
+            next_version: state.next_version,
+            captured_bytes: state.captured_bytes,
+            max_capture_bytes: state.max_capture_bytes,
+            continuity_lost: state.continuity_lost,
+            baseline_required: state.baseline_required,
+        };
+        checkpoint.validate()?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration capture checkpoint read")?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) async fn mark_continuity_lost(&self) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        self.mark_continuity_lost_tx(&mut transaction).await?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration capture continuity loss")?;
+        Ok(())
+    }
+
+    async fn mark_continuity_lost_tx(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+    ) -> Result<()> {
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET continuity_lost = 1, baseline_required = 1
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        let result = sqlx::query(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .execute(&mut **transaction)
+            .await
+            .context("mark SQLite migration capture continuity lost")?;
+        if result.rows_affected() != 1 {
+            bail!("SQLite migration capture checkpoint is missing");
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn start_new_capture_generation(&self) -> Result<CaptureCheckpoint> {
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        if state.source_writes_fenced {
+            bail!("cannot start a capture generation after source authority was fenced");
+        }
+        let capture_generation = state
+            .capture_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("SQLite migration capture generation exhausted"))?;
+        let capture_table =
+            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
+        let query = format!(
+            "DELETE FROM {capture_table}
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        sqlx::query(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .execute(&mut *transaction)
+            .await
+            .context("reset SQLite migration capture generation")?;
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET capture_generation = ?, captured_bytes = 0,
+                    continuity_lost = 0, baseline_required = 1
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        sqlx::query(&query)
+            .bind(i64::try_from(capture_generation).context("capture generation overflow")?)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .execute(&mut *transaction)
+            .await
+            .context("persist SQLite migration capture generation")?;
+        let checkpoint = CaptureCheckpoint {
+            migration_id: self.migration_id.clone(),
+            source_identity: self.source_identity.clone(),
+            capture_generation,
+            next_version: state.next_version,
+            captured_bytes: 0,
+            max_capture_bytes: state.max_capture_bytes,
+            continuity_lost: false,
+            baseline_required: true,
+        };
+        checkpoint.validate()?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration capture generation")?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) async fn mark_baseline_complete(
+        &self,
+        capture_generation: u64,
+        through: i64,
+    ) -> Result<()> {
+        if capture_generation == 0 || through < 0 {
+            bail!("SQLite migration baseline checkpoint is invalid");
+        }
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        if state.capture_generation != capture_generation {
+            bail!("capture baseline belongs to another generation");
+        }
+        if state.continuity_lost || through > state.next_version {
+            bail!("capture baseline watermark is outside the current capture");
+        }
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET baseline_required = 0
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        sqlx::query(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .execute(&mut *transaction)
+            .await
+            .context("complete SQLite migration capture baseline")?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration capture baseline")?;
+        Ok(())
+    }
+
+    pub(crate) async fn source_write_authority(&self) -> Result<SourceWriteAuthority> {
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        let authority = SourceWriteAuthority {
+            generation: state.authority_generation,
+            fenced: state.source_writes_fenced,
+        };
+        authority.validate()?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite source authority read")?;
+        Ok(authority)
+    }
+
+    pub(crate) async fn fence_source_writes(
+        &self,
+        expected_generation: u64,
+        next_generation: u64,
+    ) -> Result<()> {
+        if expected_generation == 0 || next_generation <= expected_generation {
+            bail!("source authority generations must advance monotonically");
+        }
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        if state.source_writes_fenced {
+            bail!("source writes are already durably fenced");
+        }
+        if state.authority_generation != expected_generation {
+            bail!("source writer generation is stale");
+        }
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET authority_generation = ?, source_writes_fenced = 1
+              WHERE migration_id = ?
+                AND source_identity = ?
+                AND authority_generation = ?
+                AND source_writes_fenced = 0"
+        );
+        let result = sqlx::query(&query)
+            .bind(i64::try_from(next_generation).context("authority generation overflow")?)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .bind(i64::try_from(expected_generation).context("authority generation overflow")?)
+            .execute(&mut *transaction)
+            .await
+            .context("persist SQLite source write fence")?;
+        if result.rows_affected() != 1 {
+            bail!("SQLite source write authority changed during fencing");
+        }
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite source write fence")?;
+        Ok(())
+    }
+
+    pub(crate) async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()> {
+        if expected_generation == 0 {
+            bail!("source authority generation must be non-zero");
+        }
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET source_writes_fenced = 0
+              WHERE migration_id = ?
+                AND source_identity = ?
+                AND authority_generation = ?
+                AND source_writes_fenced = 1"
+        );
+        sqlx::query(&query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .bind(i64::try_from(expected_generation).context("authority generation overflow")?)
+            .execute(&self.pool)
+            .await
+            .context("reopen SQLite source writes")?;
         Ok(())
     }
 
@@ -340,6 +881,12 @@ impl SqliteMigrationSource {
               ORDER BY source_version ASC, capture_id ASC LIMIT ?"
         );
         let mut transaction = self.pool.begin().await?;
+        let capture_state = self.load_capture_state_tx(&mut transaction).await?;
+        if capture_state.continuity_lost {
+            bail!(
+                "SQLite migration capture continuity has been lost; a new capture generation and baseline are required"
+            );
+        }
         let rows = sqlx::query(&query)
             .bind(&self.migration_id)
             .bind(&self.source_identity)
@@ -486,19 +1033,23 @@ fn parse_change_kind(kind: &str) -> Result<ChangeKind> {
 #[async_trait]
 impl MigrationSource for SqliteMigrationSource {
     async fn capture_watermark(&self) -> Result<i64> {
-        let capture_table =
-            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
-        let query = format!(
-            "SELECT COALESCE(MAX(source_version), 0)
-               FROM {capture_table}
-              WHERE migration_id = ? AND source_identity = ?"
-        );
-        Ok(sqlx::query_scalar(&query)
-            .bind(&self.migration_id)
-            .bind(&self.source_identity)
-            .fetch_one(&self.pool)
-            .await
-            .context("read SQLite migration capture watermark")?)
+        Ok(self.capture_checkpoint().await?.next_version)
+    }
+
+    async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint> {
+        SqliteMigrationSource::capture_checkpoint(self).await
+    }
+
+    async fn fence_source_writes(
+        &self,
+        expected_generation: u64,
+        next_generation: u64,
+    ) -> Result<()> {
+        SqliteMigrationSource::fence_source_writes(self, expected_generation, next_generation).await
+    }
+
+    async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()> {
+        SqliteMigrationSource::reopen_source_writes(self, expected_generation).await
     }
 
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>> {

@@ -17,7 +17,7 @@ use crate::storage::{
         CapturedChange, ChangeInput, ChangeKind, ChunkRange, CopyLimits, DEFAULT_MAX_QUEUED_BYTES,
         EngineCheckpoint, FileMigrationStore, InMemoryMigrationSource, InMemoryMigrationTarget,
         MigrationEngine, MigrationLimits, MigrationSource, MigrationTarget, SourcePage,
-        SourceWriteFence, TableCopyPlan, TableCoverageProof, VersionedRow,
+        SourceWriteFence, TableCopyPlan, TableCoverageProof, VersionCapture, VersionedRow,
     },
     migration_sqlx::{MigrationTableSpec, PostgresMigrationTarget, SqliteMigrationSource},
 };
@@ -1096,6 +1096,44 @@ async fn in_memory_capture_returns_complete_same_version_boundary_within_budget(
 }
 
 #[tokio::test]
+async fn version_capture_is_bounded_and_requires_a_new_baseline_after_loss() -> Result<()> {
+    let capture =
+        VersionCapture::with_max_capture_bytes("migration-engine-test", "sqlite-test", 3)?;
+    assert_eq!(
+        capture
+            .capture_transaction(vec![change("events", "a", ChangeKind::Insert, b"one")])
+            .await?,
+        1
+    );
+    let error = capture
+        .capture_transaction(vec![change("events", "b", ChangeKind::Insert, b"two")])
+        .await
+        .expect_err("capture must reject writes beyond its durable capacity");
+    assert!(error.to_string().contains("bounded storage capacity"));
+    let checkpoint = capture.checkpoint().await?;
+    assert_eq!(checkpoint.captured_bytes, 3);
+    assert_eq!(checkpoint.next_version, 1);
+
+    capture.mark_continuity_lost().await;
+    let checkpoint = capture.checkpoint().await?;
+    assert!(checkpoint.continuity_lost);
+    assert!(checkpoint.baseline_required);
+    assert!(capture.changes_after(0, 1).await.is_err());
+
+    let new_generation = capture.start_new_capture_generation().await?;
+    assert_eq!(new_generation.capture_generation, 2);
+    assert_eq!(new_generation.next_version, 1);
+    assert_eq!(new_generation.captured_bytes, 0);
+    assert!(new_generation.baseline_required);
+    capture
+        .capture_transaction(vec![change("events", "b", ChangeKind::Insert, b"two")])
+        .await?;
+    capture.mark_baseline_complete(2, 2).await?;
+    assert!(!capture.checkpoint().await?.baseline_required);
+    Ok(())
+}
+
+#[tokio::test]
 async fn in_memory_capture_rejects_transaction_exceeding_row_budget() -> Result<()> {
     let source = InMemoryMigrationSource::new("migration-engine-test", "sqlite-test");
     let fence = SourceWriteFence::new(1);
@@ -1712,6 +1750,150 @@ async fn sqlite_capture_rejects_corrupt_digest_and_isolates_source_identity() ->
     .execute(&pool)
     .await?;
     assert_eq!(source.changes_after(0, 2).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_persists_continuity_loss_and_requires_a_new_generation() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?
+    .with_max_capture_bytes(3)?;
+    source.ensure_capture_schema().await?;
+    source
+        .append_change(1, change("events", "a", ChangeKind::Insert, b"one"))
+        .await?;
+    assert_eq!(source.capture_checkpoint().await?.captured_bytes, 3);
+
+    let error = source
+        .append_change(3, change("events", "gap", ChangeKind::Insert, b"gap"))
+        .await
+        .expect_err("a capture version gap must invalidate the attempt");
+    assert!(error.to_string().contains("continuity"));
+    let checkpoint = source.capture_checkpoint().await?;
+    assert!(checkpoint.continuity_lost);
+    assert!(checkpoint.baseline_required);
+
+    let restarted = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    restarted.ensure_capture_schema().await?;
+    assert!(restarted.capture_checkpoint().await?.continuity_lost);
+    assert!(restarted.changes_after(0, 1).await.is_err());
+
+    let new_generation = restarted.start_new_capture_generation().await?;
+    assert_eq!(new_generation.capture_generation, 2);
+    assert_eq!(new_generation.next_version, 1);
+    assert!(new_generation.baseline_required);
+    restarted
+        .append_change_for_generation(1, 2, change("events", "b", ChangeKind::Insert, b"two"))
+        .await?;
+    restarted.mark_baseline_complete(2, 2).await?;
+    let checkpoint = restarted.capture_checkpoint().await?;
+    assert!(!checkpoint.continuity_lost);
+    assert!(!checkpoint.baseline_required);
+    assert_eq!(checkpoint.captured_bytes, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_persists_source_fence_and_rejects_stale_generations() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+    source
+        .append_change(1, change("events", "a", ChangeKind::Insert, b"one"))
+        .await?;
+    source.fence_source_writes(1, 2).await?;
+    assert_eq!(
+        source.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: true,
+        }
+    );
+    assert!(
+        source
+            .append_change(2, change("events", "stale", ChangeKind::Insert, b"stale"))
+            .await
+            .is_err()
+    );
+
+    let restarted = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    restarted.ensure_capture_schema().await?;
+    assert_eq!(
+        restarted.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: true,
+        }
+    );
+    assert!(
+        restarted
+            .append_change_for_generation(
+                1,
+                2,
+                change("events", "stale-restarted", ChangeKind::Insert, b"stale")
+            )
+            .await
+            .is_err()
+    );
+
+    // A failed pre-commit switch may explicitly reopen the source at the current generation;
+    // the previous generation remains rejected even after that recovery path.
+    restarted.reopen_source_writes(2).await?;
+    assert!(
+        restarted
+            .append_change_for_generation(
+                1,
+                2,
+                change("events", "stale-reopened", ChangeKind::Insert, b"stale")
+            )
+            .await
+            .is_err()
+    );
+    restarted
+        .append_change_for_generation(2, 2, change("events", "b", ChangeKind::Insert, b"two"))
+        .await?;
     Ok(())
 }
 

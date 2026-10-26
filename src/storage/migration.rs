@@ -37,6 +37,8 @@ pub(crate) const DEFAULT_MAX_QUEUED_OPERATIONS: usize = 128;
 pub(crate) const DEFAULT_MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const DEFAULT_MIN_SOURCE_FREE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_CAPTURE_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const INITIAL_CAPTURE_GENERATION: u64 = 1;
+pub(crate) const INITIAL_AUTHORITY_GENERATION: u64 = 1;
 pub(crate) const DEFAULT_RETRY_INITIAL: Duration = Duration::from_secs(1);
 pub(crate) const DEFAULT_RETRY_MAX: Duration = Duration::from_secs(30);
 
@@ -160,27 +162,92 @@ fn encode_hex(bytes: &[u8]) -> String {
     output
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CaptureCheckpoint {
+    pub(crate) migration_id: String,
+    pub(crate) source_identity: String,
+    pub(crate) capture_generation: u64,
+    pub(crate) next_version: i64,
+    pub(crate) captured_bytes: u64,
+    pub(crate) max_capture_bytes: u64,
+    pub(crate) continuity_lost: bool,
+    pub(crate) baseline_required: bool,
+}
+
+impl CaptureCheckpoint {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.migration_id.trim().is_empty() || self.source_identity.trim().is_empty() {
+            bail!("capture checkpoint requires migration and source identities");
+        }
+        if self.capture_generation == 0 || self.next_version < 0 {
+            bail!("capture checkpoint has an invalid generation or version");
+        }
+        if self.max_capture_bytes == 0 || self.captured_bytes > self.max_capture_bytes {
+            bail!("capture checkpoint exceeds its bounded storage capacity");
+        }
+        if self.continuity_lost && !self.baseline_required {
+            bail!("a continuity-lost capture checkpoint requires a new baseline");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SourceWriteAuthority {
+    pub(crate) generation: u64,
+    pub(crate) fenced: bool,
+}
+
+impl SourceWriteAuthority {
+    pub(crate) fn validate(self) -> Result<()> {
+        if self.generation == 0 {
+            bail!("source write authority requires a non-zero generation");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct VersionCapture {
     state: Arc<Mutex<VersionCaptureState>>,
     migration_id: String,
     source_identity: String,
+    max_capture_bytes: u64,
 }
 
 #[derive(Debug, Default)]
 struct VersionCaptureState {
+    capture_generation: u64,
     next_version: i64,
+    captured_bytes: u64,
     changes: Vec<CapturedChange>,
     continuity_lost: bool,
+    baseline_required: bool,
 }
 
 impl VersionCapture {
     pub(crate) fn new(migration_id: impl Into<String>, source_identity: impl Into<String>) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(VersionCaptureState::default())),
+        Self::with_max_capture_bytes(migration_id, source_identity, DEFAULT_MAX_CAPTURE_BYTES)
+            .expect("default version capture limit must be valid")
+    }
+
+    pub(crate) fn with_max_capture_bytes(
+        migration_id: impl Into<String>,
+        source_identity: impl Into<String>,
+        max_capture_bytes: u64,
+    ) -> Result<Self> {
+        if max_capture_bytes == 0 {
+            bail!("version capture capacity must be positive");
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(VersionCaptureState {
+                capture_generation: INITIAL_CAPTURE_GENERATION,
+                ..VersionCaptureState::default()
+            })),
             migration_id: migration_id.into(),
             source_identity: source_identity.into(),
-        }
+            max_capture_bytes,
+        })
     }
 
     pub(crate) async fn capture_transaction(&self, changes: Vec<ChangeInput>) -> Result<i64> {
@@ -206,9 +273,86 @@ impl VersionCapture {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        let transaction_bytes = captured.iter().try_fold(0_u64, |total, change| {
+            total
+                .checked_add(
+                    change
+                        .payload
+                        .as_ref()
+                        .map_or(0, |payload| payload.len() as u64),
+                )
+                .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
+        })?;
+        let next_bytes = state
+            .captured_bytes
+            .checked_add(transaction_bytes)
+            .ok_or_else(|| anyhow!("source change capture byte count overflowed"))?;
+        if next_bytes > self.max_capture_bytes {
+            bail!("source change capture exceeds its bounded storage capacity");
+        }
         state.next_version = version;
+        state.captured_bytes = next_bytes;
         state.changes.extend(captured);
         Ok(version)
+    }
+
+    pub(crate) async fn checkpoint(&self) -> Result<CaptureCheckpoint> {
+        let state = self.state.lock().await;
+        let checkpoint = CaptureCheckpoint {
+            migration_id: self.migration_id.clone(),
+            source_identity: self.source_identity.clone(),
+            capture_generation: state.capture_generation,
+            next_version: state.next_version,
+            captured_bytes: state.captured_bytes,
+            max_capture_bytes: self.max_capture_bytes,
+            continuity_lost: state.continuity_lost,
+            baseline_required: state.baseline_required,
+        };
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) async fn start_new_capture_generation(&self) -> Result<CaptureCheckpoint> {
+        let mut state = self.state.lock().await;
+        state.capture_generation = state
+            .capture_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("source capture generation exhausted"))?;
+        state.changes.clear();
+        state.captured_bytes = 0;
+        state.continuity_lost = false;
+        state.baseline_required = true;
+        let checkpoint = CaptureCheckpoint {
+            migration_id: self.migration_id.clone(),
+            source_identity: self.source_identity.clone(),
+            capture_generation: state.capture_generation,
+            next_version: state.next_version,
+            captured_bytes: state.captured_bytes,
+            max_capture_bytes: self.max_capture_bytes,
+            continuity_lost: state.continuity_lost,
+            baseline_required: state.baseline_required,
+        };
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) async fn mark_baseline_complete(
+        &self,
+        capture_generation: u64,
+        through: i64,
+    ) -> Result<()> {
+        let mut state = self.state.lock().await;
+        if capture_generation != state.capture_generation {
+            bail!("capture baseline belongs to another generation");
+        }
+        if state.continuity_lost {
+            bail!("capture continuity has been lost; a new generation is required");
+        }
+        if through < 0 || through > state.next_version {
+            bail!("capture baseline watermark is outside the current capture");
+        }
+        state.baseline_required = false;
+        Ok(())
     }
 
     pub(crate) async fn watermark(&self) -> Result<i64> {
@@ -266,7 +410,9 @@ impl VersionCapture {
     }
 
     pub(crate) async fn mark_continuity_lost(&self) {
-        self.state.lock().await.continuity_lost = true;
+        let mut state = self.state.lock().await;
+        state.continuity_lost = true;
+        state.baseline_required = true;
     }
 
     pub(crate) fn migration_id(&self) -> &str {
@@ -632,6 +778,13 @@ pub(crate) struct MigrationProgress {
 #[async_trait]
 pub(crate) trait MigrationSource: Send + Sync {
     async fn capture_watermark(&self) -> Result<i64>;
+    async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint>;
+    async fn fence_source_writes(
+        &self,
+        expected_generation: u64,
+        next_generation: u64,
+    ) -> Result<()>;
+    async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()>;
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>>;
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)>;
     async fn scan_page(
@@ -924,13 +1077,35 @@ pub(crate) struct InMemoryMigrationSource {
     verification_started: Arc<Notify>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct InMemorySourceState {
     rows: BTreeMap<String, BTreeMap<String, VersionedRow>>,
     module_tables: BTreeMap<StorageModule, BTreeSet<String>>,
     changes: Vec<CapturedChange>,
     next_version: i64,
+    captured_bytes: u64,
+    capture_generation: u64,
     continuity_lost: bool,
+    baseline_required: bool,
+    authority_generation: u64,
+    source_writes_fenced: bool,
+}
+
+impl Default for InMemorySourceState {
+    fn default() -> Self {
+        Self {
+            rows: BTreeMap::new(),
+            module_tables: BTreeMap::new(),
+            changes: Vec::new(),
+            next_version: 0,
+            captured_bytes: 0,
+            capture_generation: INITIAL_CAPTURE_GENERATION,
+            continuity_lost: false,
+            baseline_required: false,
+            authority_generation: INITIAL_AUTHORITY_GENERATION,
+            source_writes_fenced: false,
+        }
+    }
 }
 
 impl InMemoryMigrationSource {
@@ -950,6 +1125,38 @@ impl InMemoryMigrationSource {
 
     pub(crate) async fn wait_for_verification_for_test(&self) {
         self.verification_started.notified().await;
+    }
+
+    pub(crate) async fn start_new_capture_generation(&self) -> Result<CaptureCheckpoint> {
+        let mut state = self.state.lock().await;
+        state.capture_generation = state
+            .capture_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("source capture generation exhausted"))?;
+        state.changes.clear();
+        state.captured_bytes = 0;
+        state.continuity_lost = false;
+        state.baseline_required = true;
+        self.capture_checkpoint_from_state(&state)
+    }
+
+    pub(crate) async fn mark_baseline_complete(
+        &self,
+        capture_generation: u64,
+        through: i64,
+    ) -> Result<()> {
+        let mut state = self.state.lock().await;
+        if capture_generation != state.capture_generation {
+            bail!("capture baseline belongs to another generation");
+        }
+        if state.continuity_lost {
+            bail!("capture continuity has been lost; a new generation is required");
+        }
+        if through < 0 || through > state.next_version {
+            bail!("capture baseline watermark is outside the current capture");
+        }
+        state.baseline_required = false;
+        Ok(())
     }
 
     async fn before_verification_read(&self) {
@@ -980,6 +1187,16 @@ impl InMemoryMigrationSource {
         fence: &SourceWriteFence,
         changes: Vec<ChangeInput>,
     ) -> Result<i64> {
+        self.write_for_generation(fence, INITIAL_AUTHORITY_GENERATION, changes)
+            .await
+    }
+
+    pub(crate) async fn write_for_generation(
+        &self,
+        fence: &SourceWriteFence,
+        expected_generation: u64,
+        changes: Vec<ChangeInput>,
+    ) -> Result<i64> {
         let lease = fence.begin_write().await?;
         if changes.is_empty() {
             bail!("a source transaction must capture at least one change");
@@ -987,6 +1204,9 @@ impl InMemoryMigrationSource {
         let mut state = self.state.lock().await;
         if state.continuity_lost {
             bail!("source change capture continuity has been lost");
+        }
+        if state.source_writes_fenced || state.authority_generation != expected_generation {
+            bail!("source writer generation is stale or source writes are fenced");
         }
         let version = state
             .next_version
@@ -1004,6 +1224,23 @@ impl InMemoryMigrationSource {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        let transaction_bytes = captured.iter().try_fold(0_u64, |total, change| {
+            total
+                .checked_add(
+                    change
+                        .payload
+                        .as_ref()
+                        .map_or(0, |payload| payload.len() as u64),
+                )
+                .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
+        })?;
+        let next_bytes = state
+            .captured_bytes
+            .checked_add(transaction_bytes)
+            .ok_or_else(|| anyhow!("source change capture byte count overflowed"))?;
+        if next_bytes > DEFAULT_MAX_CAPTURE_BYTES {
+            bail!("source change capture exceeds its bounded storage capacity");
+        }
         for change in &captured {
             state
                 .module_tables
@@ -1041,13 +1278,78 @@ impl InMemoryMigrationSource {
             }
         }
         state.next_version = version;
+        state.captured_bytes = next_bytes;
         state.changes.extend(captured);
         lease.complete();
         Ok(version)
     }
 
     pub(crate) async fn mark_continuity_lost(&self) {
-        self.state.lock().await.continuity_lost = true;
+        let mut state = self.state.lock().await;
+        state.continuity_lost = true;
+        state.baseline_required = true;
+    }
+
+    fn capture_checkpoint_from_state(
+        &self,
+        state: &InMemorySourceState,
+    ) -> Result<CaptureCheckpoint> {
+        let checkpoint = CaptureCheckpoint {
+            migration_id: self.migration_id.clone(),
+            source_identity: self.source_identity.clone(),
+            capture_generation: state.capture_generation,
+            next_version: state.next_version,
+            captured_bytes: state.captured_bytes,
+            max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
+            continuity_lost: state.continuity_lost,
+            baseline_required: state.baseline_required,
+        };
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint> {
+        let state = self.state.lock().await;
+        self.capture_checkpoint_from_state(&state)
+    }
+
+    pub(crate) async fn source_write_authority(&self) -> Result<SourceWriteAuthority> {
+        let state = self.state.lock().await;
+        let authority = SourceWriteAuthority {
+            generation: state.authority_generation,
+            fenced: state.source_writes_fenced,
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+
+    pub(crate) async fn fence_source_writes(
+        &self,
+        expected_generation: u64,
+        next_generation: u64,
+    ) -> Result<()> {
+        if expected_generation == 0 || next_generation <= expected_generation {
+            bail!("source authority generations must advance monotonically");
+        }
+        let mut state = self.state.lock().await;
+        if state.source_writes_fenced {
+            bail!("source writes are already durably fenced");
+        }
+        if state.authority_generation != expected_generation {
+            bail!("source writer generation is stale");
+        }
+        state.authority_generation = next_generation;
+        state.source_writes_fenced = true;
+        Ok(())
+    }
+
+    pub(crate) async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()> {
+        let mut state = self.state.lock().await;
+        if state.authority_generation != expected_generation {
+            bail!("source writer generation is stale");
+        }
+        state.source_writes_fenced = false;
+        Ok(())
     }
 
     pub(crate) async fn row(&self, table_name: &str, stable_key: &str) -> Option<VersionedRow> {
@@ -1122,6 +1424,23 @@ impl MigrationSource for InMemoryMigrationSource {
             bail!("source change capture continuity has been lost");
         }
         Ok(state.next_version)
+    }
+
+    async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint> {
+        InMemoryMigrationSource::capture_checkpoint(self).await
+    }
+
+    async fn fence_source_writes(
+        &self,
+        expected_generation: u64,
+        next_generation: u64,
+    ) -> Result<()> {
+        InMemoryMigrationSource::fence_source_writes(self, expected_generation, next_generation)
+            .await
+    }
+
+    async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()> {
+        InMemoryMigrationSource::reopen_source_writes(self, expected_generation).await
     }
 
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>> {
@@ -2424,6 +2743,12 @@ where
         if table_names.is_empty() {
             bail!("migration preparation requires at least one table");
         }
+        let capture_checkpoint = self.source.capture_checkpoint().await?;
+        if capture_checkpoint.continuity_lost {
+            bail!(
+                "migration capture continuity has been lost; start a new capture generation and baseline"
+            );
+        }
         let source_table_set = self
             .source
             .module_tables(self.module)
@@ -3071,6 +3396,11 @@ where
         }
 
         self.fence.close_and_drain(switch_budget).await?;
+        let next_authority_generation = self
+            .authority_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("migration authority generation exhausted"))?;
+        let mut source_fenced = false;
         let result = async {
             let watermark = self.source.capture_watermark().await?;
             if watermark < pre_fence_watermark {
@@ -3088,6 +3418,10 @@ where
             if final_watermark != watermark {
                 bail!("source capture advanced during the switch tail verification");
             }
+            self.source
+                .fence_source_writes(self.authority_generation, next_authority_generation)
+                .await?;
+            source_fenced = true;
             let final_expected = AuthorityRecoveryContext {
                 source_watermark: final_watermark,
                 ..expected.clone()
@@ -3100,7 +3434,7 @@ where
                 module: final_expected.module,
                 authority: ModuleAuthority {
                     backend: BackendKind::Postgres,
-                    generation: self.authority_generation.saturating_add(1),
+                    generation: next_authority_generation,
                 },
                 source_watermark: final_watermark,
                 target_identity: final_expected.target_identity.clone(),
@@ -3121,6 +3455,11 @@ where
             if authority.backend == BackendKind::Sqlite
                 && authority.generation == self.authority_generation
             {
+                if source_fenced {
+                    self.source
+                        .reopen_source_writes(next_authority_generation)
+                        .await?;
+                }
                 self.fence.reopen().await;
             }
         }
