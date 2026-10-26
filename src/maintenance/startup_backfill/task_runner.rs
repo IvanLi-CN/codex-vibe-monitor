@@ -399,7 +399,7 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
     let task_result = if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
         // Prompt-cache materialization checks priority only between committed micro-batches. The
         // enclosing maintenance pass still cancels the task during process shutdown.
-        let task_future = super::retention::retention_try_archive_locks_scope(
+        let mut task_future = Box::pin(super::retention::retention_try_archive_locks_scope(
             crate::maintenance::with_migration_hold_signal(
                 Arc::clone(&migration_hold_flag),
                 run_startup_backfill_task_with_pressure(
@@ -414,10 +414,9 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                         .map(|(control, generation)| (control, *generation)),
                 ),
             ),
-        );
+        ));
         let migration_hold_watcher =
             wait_for_startup_backfill_migration_hold(prompt_cache_store, task);
-        tokio::pin!(task_future);
         tokio::select! {
             result = &mut task_future => result,
             _ = migration_hold_watcher => {
@@ -426,7 +425,7 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             }
         }
     } else {
-        let task_future = super::retention::retention_try_archive_locks_scope(
+        let mut task_future = Box::pin(super::retention::retention_try_archive_locks_scope(
             crate::maintenance::with_migration_hold_signal(
                 Arc::clone(&migration_hold_flag),
                 run_startup_backfill_task_with_pressure(
@@ -439,8 +438,7 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                     None,
                 ),
             ),
-        );
-        tokio::pin!(task_future);
+        ));
         tokio::select! {
             biased;
             _ = coordinator.wait_for_p2_preemption() => {

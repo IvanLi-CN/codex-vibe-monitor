@@ -16398,14 +16398,13 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 .await;
             let migration_hold_flag = Arc::new(AtomicBool::new(false));
             let migration_hold_flag_for_refresh = Arc::clone(&migration_hold_flag);
-            let refresh_future = crate::maintenance::with_migration_hold_signal(
+            let mut refresh_future = Box::pin(crate::maintenance::with_migration_hold_signal(
                 Arc::clone(&migration_hold_flag),
                 crate::maintenance::with_managed_task_key(
                     "summary_snapshot",
                     refresh_summary_snapshots(state.as_ref()),
                 ),
-            );
-            tokio::pin!(refresh_future);
+            ));
             let refresh_result = crate::with_managed_task_observation(observation.clone(), async {
                 let migration_hold_watcher = async {
                     loop {

@@ -40,8 +40,11 @@ const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_
 const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
 const MIGRATION_TASK_ADMISSION_METADATA_KEY: &str = "migration_task_admission_v1";
+const MIGRATION_TASK_ADMISSION_GENERATION_METADATA_KEY: &str =
+    "migration_task_admission_generation_v1";
 pub(crate) const MIGRATION_HOLD_REASON: &str = "migration_hold";
 pub(crate) const MIGRATION_HOLD_RETRY_SECS: i64 = 60;
+pub(crate) const STARTUP_PERSISTENT_PREP_TASK_KEY: &str = "startup_persistent_prep";
 type LegacyTaskRunRow = (
     i64,
     String,
@@ -122,6 +125,12 @@ impl MigrationHoldState {
             preserved_task_keys: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MigrationHoldContext {
+    pub(crate) hold_generation: u64,
+    pub(crate) checkpoint: Option<String>,
 }
 
 const DEFAULT_PRESERVED_MIGRATION_TASK_KEYS: &[&str] = &[
@@ -219,6 +228,7 @@ fn migration_task_modules(task_key: &str) -> &'static [StorageModule] {
         | "forward_proxy_subscription_refresh.rollups"
         | "startup_backfill.account_activity_v2_coverage"
         | "startup_backfill.historical_rollups" => &[StorageModule::Analytics],
+        "startup_persistent_prep" => &[StorageModule::TrafficArchive, StorageModule::Analytics],
         "upstream_account_maintenance.secondary" => &[StorageModule::AccountRouting],
         "prepare_performance_indexes" => &[StorageModule::Performance],
         _ => &[],
@@ -1770,7 +1780,8 @@ pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
         | "upstream_account_maintenance"
         | "pool_orphan_recovery"
         | "invocation_timeline_snapshot"
-        | "raw_payload_metrics_inventory" => Some("maintenance_retention"),
+        | "raw_payload_metrics_inventory"
+        | "startup_persistent_prep" => Some("maintenance_retention"),
         "dashboard_runtime_projection_reconcile"
         | "forward_proxy_subscription_refresh"
         | "long_term_projection"
@@ -3160,6 +3171,22 @@ impl MaintenanceStore {
             .is_some_and(|state| migration_hold_matches_task(&state, task_key)))
     }
 
+    pub(crate) async fn migration_task_hold_context(
+        &self,
+        task_key: &str,
+    ) -> Result<Option<MigrationHoldContext>> {
+        let Some(state) = self.migration_hold_state().await? else {
+            return Ok(None);
+        };
+        if !migration_hold_matches_task(&state, task_key) {
+            return Ok(None);
+        }
+        Ok(Some(MigrationHoldContext {
+            hold_generation: state.hold_generation,
+            checkpoint: state.checkpoint,
+        }))
+    }
+
     pub(crate) async fn migration_task_hold_checkpoint(
         &self,
         task_key: &str,
@@ -3261,13 +3288,25 @@ impl MaintenanceStore {
                 existing_state.migration_id
             ));
         }
-        state.hold_generation = match existing_state.as_ref() {
-            Some(existing_state) => existing_state
-                .hold_generation
-                .checked_add(1)
-                .ok_or_else(|| anyhow!("migration hold generation overflow"))?,
-            None => 1,
-        };
+        let persisted_generation =
+            sqlx::query_scalar::<_, String>("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(MIGRATION_TASK_ADMISSION_GENERATION_METADATA_KEY)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|error| anyhow!("invalid migration hold generation: {error}"))
+                })
+                .transpose()?
+                .unwrap_or(0);
+        let previous_generation = existing_state
+            .as_ref()
+            .map_or(0, |existing_state| existing_state.hold_generation)
+            .max(persisted_generation);
+        state.hold_generation = previous_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("migration hold generation overflow"))?;
         let encoded = serde_json::to_string(&state)?;
         Self::clear_requested_run_migration_hold_markers(&mut transaction).await?;
         // A migration can move between modules without releasing its identity. Remove only the
@@ -3300,6 +3339,15 @@ impl MaintenanceStore {
         )
         .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
         .bind(encoded)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO maintenance_metadata(key,value,updated_at) VALUES(?,?,?)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+        )
+        .bind(MIGRATION_TASK_ADMISSION_GENERATION_METADATA_KEY)
+        .bind(state.hold_generation.to_string())
         .bind(&now)
         .execute(&mut *transaction)
         .await?;
@@ -3420,8 +3468,41 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn mark_task_migration_held(&self, task_key: &str) -> Result<()> {
+        let Some(context) = self.migration_task_hold_context(task_key).await? else {
+            return Ok(());
+        };
+        self.mark_task_migration_held_at_generation(task_key, context.hold_generation)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn mark_task_migration_held_at_generation(
+        &self,
+        task_key: &str,
+        hold_generation: u64,
+    ) -> Result<bool> {
         let now = format_utc_iso_millis(Utc::now());
         observe_store_write(StoreOperation::Progress, async {
+            let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let Some(existing_value) = sqlx::query_scalar::<_, String>(
+                "SELECT value FROM maintenance_metadata WHERE key=?",
+            )
+            .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+            .fetch_optional(&mut *transaction)
+            .await?
+            else {
+                transaction.commit().await?;
+                return Ok(false);
+            };
+            let state = serde_json::from_str::<MigrationHoldState>(&existing_value)
+                .map(normalize_migration_hold_state)
+                .map_err(|error| anyhow!("invalid existing migration hold state: {error}"))?;
+            if state.hold_generation != hold_generation
+                || !migration_hold_matches_task(&state, task_key)
+            {
+                transaction.commit().await?;
+                return Ok(false);
+            }
             sqlx::query(
                 "INSERT INTO managed_task_progress(
                          task_key,phase,updated_at,freshness,wait_reason
@@ -3435,9 +3516,10 @@ impl MaintenanceStore {
             .bind(task_key)
             .bind(&now)
             .bind(MIGRATION_HOLD_REASON)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
-            Ok(())
+            transaction.commit().await?;
+            Ok(true)
         })
         .await
     }
@@ -4302,12 +4384,13 @@ impl MaintenanceStore {
     pub(crate) async fn requeue_claimed_run_for_migration_hold(
         &self,
         run_id: i64,
+        hold_generation: u64,
         checkpoint: Option<&str>,
     ) -> Result<bool> {
         observe_store_write(StoreOperation::Run, async {
             let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-            let Some(existing_details) = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT details FROM managed_task_runs WHERE id=? AND status='running'",
+            let Some((task_key, existing_details)) = sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT task_key,details FROM managed_task_runs WHERE id=? AND status='running'",
             )
             .bind(run_id)
             .fetch_optional(&mut *transaction)
@@ -4316,6 +4399,25 @@ impl MaintenanceStore {
                 transaction.commit().await?;
                 return Ok(false);
             };
+            let Some(existing_value) = sqlx::query_scalar::<_, String>(
+                "SELECT value FROM maintenance_metadata WHERE key=?",
+            )
+            .bind(MIGRATION_TASK_ADMISSION_METADATA_KEY)
+            .fetch_optional(&mut *transaction)
+            .await?
+            else {
+                transaction.commit().await?;
+                return Ok(false);
+            };
+            let state = serde_json::from_str::<MigrationHoldState>(&existing_value)
+                .map(normalize_migration_hold_state)
+                .map_err(|error| anyhow!("invalid existing migration hold state: {error}"))?;
+            if state.hold_generation != hold_generation
+                || !migration_hold_matches_task(&state, &task_key)
+            {
+                transaction.commit().await?;
+                return Ok(false);
+            }
             let mut details = existing_details
                 .as_deref()
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
@@ -7034,7 +7136,11 @@ mod tests {
             .expect("claim managed run");
         assert!(
             store
-                .requeue_claimed_run_for_migration_hold(run_id, Some("archive:42"))
+                .requeue_claimed_run_for_migration_hold(
+                    run_id,
+                    hold_generation,
+                    Some("archive:42"),
+                )
                 .await
                 .expect("requeue held managed run")
         );
@@ -7217,6 +7323,140 @@ mod tests {
                 .await
                 .expect("check cleared migration hold")
         );
+    }
+
+    #[tokio::test]
+    async fn migration_hold_classifies_startup_persistent_prep_as_heavy_work() {
+        let store = super::ownership_test_store().await;
+        store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::TrafficArchive,
+                Some("archive:startup".to_string()),
+            ))
+            .await
+            .expect("set archive migration hold");
+        assert!(
+            store
+                .migration_task_is_held("startup_persistent_prep")
+                .await
+                .expect("check startup preparation hold")
+        );
+
+        store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::Analytics,
+                Some("analytics:startup".to_string()),
+            ))
+            .await
+            .expect("set analytics migration hold");
+        assert!(
+            store
+                .migration_task_is_held("startup_persistent_prep")
+                .await
+                .expect("check analytics startup preparation hold")
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_hold_release_fences_late_progress_snapshot() {
+        let store = super::ownership_test_store().await;
+        sqlx::query(
+            "INSERT INTO managed_task_progress(task_key,phase,wait_reason)
+             VALUES('retention_archive','idle',NULL)",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed managed progress");
+        let hold_generation = store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::TrafficArchive,
+                Some("archive:late-progress".to_string()),
+            ))
+            .await
+            .expect("set migration hold");
+        assert!(hold_generation > 0);
+        store
+            .clear_migration_hold("migration-1", hold_generation)
+            .await
+            .expect("clear migration hold");
+
+        let marked = store
+            .mark_task_migration_held_at_generation("retention_archive", hold_generation)
+            .await
+            .expect("fence late migration-held progress");
+        assert!(!marked);
+        let wait_reason: Option<String> = sqlx::query_scalar(
+            "SELECT wait_reason FROM managed_task_progress WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load fenced managed progress");
+        assert_eq!(wait_reason, None);
+    }
+
+    #[tokio::test]
+    async fn migration_hold_release_fences_late_requeue() {
+        let store = super::ownership_test_store().await;
+        let run_id: i64 = sqlx::query_scalar(
+            "INSERT INTO managed_task_runs(
+                 task_key,trigger_kind,started_at,status,details
+             ) VALUES('retention_archive','interval',?,'running',?)
+             RETURNING id",
+        )
+        .bind(format_utc_iso_millis(Utc::now()))
+        .bind(r#"{"marker":"before-release"}"#)
+        .fetch_one(&store.pool)
+        .await
+        .expect("seed running managed task");
+        let hold_generation = store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::TrafficArchive,
+                Some("archive:late-requeue".to_string()),
+            ))
+            .await
+            .expect("set migration hold");
+        store
+            .clear_migration_hold("migration-1", hold_generation)
+            .await
+            .expect("clear migration hold");
+
+        let restarted_store = super::MaintenanceStore::from_pool(store.pool.clone());
+        drop(store);
+        let current_generation = restarted_store
+            .set_migration_hold(MigrationHoldState::for_module(
+                "migration-1",
+                StorageModule::TrafficArchive,
+                Some("archive:current-generation".to_string()),
+            ))
+            .await
+            .expect("set current migration hold");
+        assert!(current_generation > hold_generation);
+
+        let requeued = restarted_store
+            .requeue_claimed_run_for_migration_hold(
+                run_id,
+                hold_generation,
+                Some("stale-checkpoint"),
+            )
+            .await
+            .expect("fence late migration-held requeue");
+        assert!(!requeued);
+        let run: (String, Option<String>) =
+            sqlx::query_as("SELECT status,details FROM managed_task_runs WHERE id=?")
+                .bind(run_id)
+                .fetch_one(&restarted_store.pool)
+                .await
+                .expect("load fenced managed run");
+        assert_eq!(run.0, "running");
+        assert_eq!(run.1.as_deref(), Some(r#"{"marker":"before-release"}"#));
+        restarted_store
+            .clear_migration_hold("migration-1", current_generation)
+            .await
+            .expect("clear current migration hold");
     }
 
     #[tokio::test]
