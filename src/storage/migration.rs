@@ -1510,6 +1510,17 @@ where
         Ok(proof)
     }
 
+    async fn verify_table_coverage_at_with_budget(
+        &self,
+        table_name: &str,
+        watermark: i64,
+        budget: Duration,
+    ) -> Result<TableCoverageProof> {
+        tokio::time::timeout(budget, self.verify_table_coverage_at(table_name, watermark))
+            .await
+            .map_err(|_| anyhow!("migration switch budget expired during final table coverage"))?
+    }
+
     pub(crate) async fn switch_authority(
         &self,
         gate: &ModuleGenerationGate,
@@ -1585,7 +1596,10 @@ where
                 if tokio::time::Instant::now() >= deadline {
                     bail!("migration switch budget expired while verifying final table coverage");
                 }
-                self.verify_table_coverage_at(&table_name, watermark)
+                let remaining = deadline
+                    .checked_duration_since(tokio::time::Instant::now())
+                    .unwrap_or_default();
+                self.verify_table_coverage_at_with_budget(&table_name, watermark, remaining)
                     .await?;
             }
             let manifest = ModuleAuthorityManifest {
