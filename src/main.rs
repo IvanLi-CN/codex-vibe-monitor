@@ -165,6 +165,7 @@ pub(crate) use share_links::*;
 use sqlite_batch_writer::*;
 use stats::*;
 pub(crate) use storage::config::*;
+pub(crate) use storage::migration_status::*;
 pub(crate) use summary_source_change::*;
 pub(crate) use system_storage::*;
 pub(crate) use task_runtime_observation::*;

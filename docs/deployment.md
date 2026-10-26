@@ -127,6 +127,7 @@ labels:
 - `OBSERVABILITY_ENABLED`：性能观测开关，默认 `true`；关闭不会影响代理、P1 terminal ACK 或 `/health`。
 - `METRICS_BIND`：默认 `127.0.0.1:9091`，容器私网用 `0.0.0.0:9091`；`METRICS_TOKEN_FILE` 为两个 exporter 的抓取 Token 文件，非 loopback 必须配置。
 - `OBSERVABILITY_READ_TOKEN_FILE`：三个 hotpath 报告的独立只读 Token 文件，与抓取 Token 分离。
+- `STORAGE_MIGRATION_ADMIN_TOKEN`：存储迁移控制 PATCH 使用的专用 Bearer Token；必须至少 16 个字符且不含空白，未配置时控制接口 fail-closed。该 Token 不会写入状态、日志或遥测。
 - `GRAFANA_PUBLIC_URL`：凭据、query 和 fragment 均为空的 HTTPS 基址；机器查询由 Grafana Viewer Token 鉴权。
 - 旧性能配置与 SQLite 已退役。升级前停旧 writer、验证归档并移出应用挂载；详细步骤见[观测部署与回滚](../ops/observability/README.md)。
 - `PUBLIC_ORIGIN`：用于生成 `og:image` / `twitter:image` 等对外绝对 URL 的公开入口基址；推荐显式配置为最终对外域名。

@@ -71,6 +71,11 @@ export const topLevelNavItems: AppNavigationGroup[] = [
         matchPrefixes: ["/system/status"],
       },
       {
+        to: "/system/storage-migration",
+        labelKey: "system.nav.storageMigration",
+        matchPrefixes: ["/system/storage-migration"],
+      },
+      {
         to: "/system/performance",
         labelKey: "system.nav.performance",
         matchPrefixes: ["/system/performance"],

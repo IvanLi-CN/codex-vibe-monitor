@@ -1740,6 +1740,7 @@ async fn optional_postgres_storage_transaction_smoke_test() {
     };
     let config = StorageConfig {
         postgres_database_url: Some(database_url),
+        migration_admin_token: None,
         postgres_max_connections: 1,
         migration_switch_budget: std::time::Duration::from_secs(3),
     };

@@ -10,12 +10,14 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Sqlite, SqlitePool, Transaction};
 use tokio::sync::{Mutex, Notify};
 
 use super::config::StorageConfig;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum StorageModule {
     TrafficArchive,
     Analytics,
@@ -24,7 +26,8 @@ pub(crate) enum StorageModule {
     Performance,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum BackendKind {
     Sqlite,
     Postgres,
@@ -796,7 +799,8 @@ fn validate_switch_manifest(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum MigrationState {
     Pending,
     Preparing,
@@ -879,7 +883,7 @@ impl MigrationState {
 ///
 /// pg01 validates identity, state, timestamp, and capacity invariants only. A later
 /// metadata-store and worker implementation must persist and recover this value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationStatus {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
