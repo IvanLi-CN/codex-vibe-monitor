@@ -2,10 +2,11 @@ use crate::authorize_control_request;
 use crate::storage::config::StorageConfig;
 use crate::storage::migration_status::{
     StorageMigrationBackend, StorageMigrationControlRequest, StorageMigrationProgress,
-    StorageMigrationRuntime, StorageMigrationState,
+    StorageMigrationResponse, StorageMigrationRuntime, StorageMigrationState,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use sqlx::sqlite::SqlitePoolOptions;
+use std::time::Duration;
 
 #[tokio::test]
 async fn default_status_exposes_safe_target_and_unknown_progress() {
@@ -152,6 +153,15 @@ async fn progress_events_keep_the_latest_full_snapshot_and_revision() {
         })
         .await
         .expect("first progress is accepted");
+    events
+        .changed()
+        .await
+        .expect("first progress event is retained");
+    assert_eq!(
+        events.borrow_and_update().status.progress.pending_keys,
+        Some(10)
+    );
+
     let latest = runtime
         .publish_progress(StorageMigrationProgress {
             phase: StorageMigrationState::CatchingUp,
@@ -161,17 +171,132 @@ async fn progress_events_keep_the_latest_full_snapshot_and_revision() {
         .await
         .expect("latest progress is accepted");
 
-    events
-        .changed()
-        .await
-        .expect("latest progress event is retained");
-    let event = events.borrow().clone();
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            events
+                .changed()
+                .await
+                .expect("latest progress event is retained");
+            let event = events.borrow_and_update().clone();
+            if event.kind == "progress" && event.status.progress.pending_keys == Some(2) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("latest progress should flush within the coalescing window");
     assert_eq!(event.kind, "progress");
     assert_eq!(event.revision, latest.revision);
     assert_eq!(event.status.revision, latest.revision);
     assert_eq!(event.status.progress.pending_keys, Some(2));
     assert!(first.revision < latest.revision);
     assert!(initial_revision < event.revision);
+}
+
+#[tokio::test]
+async fn progress_persistence_and_events_are_coalesced_to_one_hz() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = StorageMigrationRuntime::load(&config, pool.clone())
+        .await
+        .expect("migration runtime should load");
+    let mut events = runtime.subscribe();
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+    events.changed().await.expect("start event is retained");
+
+    let first = runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Copying,
+            pending_keys: Some(10),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("first progress is accepted");
+    assert_eq!(runtime.progress_publish_count_for_test(), 1);
+    events
+        .changed()
+        .await
+        .expect("first progress event is retained");
+    assert_eq!(events.borrow_and_update().status.revision, first.revision);
+
+    let latest = runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::CatchingUp,
+            pending_keys: Some(2),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("latest progress is accepted");
+    let newest = runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::CatchingUp,
+            pending_keys: Some(1),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("newest progress is accepted");
+    assert_eq!(runtime.progress_publish_count_for_test(), 1);
+    assert!(latest.revision < newest.revision);
+
+    let in_memory = runtime.snapshot().await;
+    assert_eq!(in_memory.progress.pending_keys, Some(1));
+    assert_eq!(in_memory.revision, newest.revision);
+    let persisted_before_flush: StorageMigrationResponse = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>(
+            "SELECT response_json FROM storage_migration_runtime WHERE migration_id = ?1",
+        )
+        .bind("storage-migration")
+        .fetch_one(&pool)
+        .await
+        .expect("first progress should be persisted"),
+    )
+    .expect("persisted response should decode");
+    assert_eq!(persisted_before_flush.progress.pending_keys, Some(10));
+
+    let flushed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            events
+                .changed()
+                .await
+                .expect("coalesced progress event is retained");
+            let event = events.borrow_and_update().clone();
+            if event.kind == "progress" && event.status.progress.pending_keys == Some(1) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("latest progress should eventually be published");
+    assert_eq!(runtime.progress_publish_count_for_test(), 2);
+    assert_eq!(flushed.revision, newest.revision);
+    assert_eq!(flushed.status.revision, newest.revision);
+
+    let persisted_after_flush: StorageMigrationResponse = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>(
+            "SELECT response_json FROM storage_migration_runtime WHERE migration_id = ?1",
+        )
+        .bind("storage-migration")
+        .fetch_one(&pool)
+        .await
+        .expect("coalesced progress should be persisted"),
+    )
+    .expect("persisted coalesced response should decode");
+    assert_eq!(persisted_after_flush.progress.pending_keys, Some(1));
+    assert_eq!(persisted_after_flush.revision, newest.revision);
 }
 
 #[tokio::test]

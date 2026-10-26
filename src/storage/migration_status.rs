@@ -4,7 +4,19 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
-use tokio::sync::{Mutex, watch};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::{
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{
+    sync::{Mutex, Notify, watch},
+    time::Instant,
+};
 
 const MIGRATION_ID: &str = "storage-migration";
 const INSTALLATION_ID: &str = "local";
@@ -12,6 +24,7 @@ const SOURCE_IDENTITY: &str = "sqlite:local";
 const TARGET_IDENTITY_CONFIGURED: &str = "postgres:configured";
 const TARGET_IDENTITY_UNCONFIGURED: &str = "postgres:unconfigured";
 const STORAGE_MIGRATION_RUNTIME_TABLE: &str = "storage_migration_runtime";
+const STORAGE_MIGRATION_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
 const MIGRATION_HELD_TASK_KEYS: &[&str] = &[
     "retention_archive",
@@ -324,14 +337,26 @@ struct StorageMigrationRuntimeState {
     target_configured: bool,
     last_action: Option<String>,
     last_action_at: Option<String>,
+    last_progress_published_at: Option<Instant>,
+    progress_flush_deadline: Option<Instant>,
+    progress_dirty: bool,
+}
+
+#[derive(Debug)]
+struct ProgressFlushCoordinator {
+    notify: Arc<Notify>,
+    worker_started: AtomicBool,
 }
 
 #[derive(Debug)]
 pub(crate) struct StorageMigrationRuntime {
-    state: Mutex<StorageMigrationRuntimeState>,
+    state: Arc<Mutex<StorageMigrationRuntimeState>>,
     events: watch::Sender<StorageMigrationEvent>,
     event_receiver: watch::Receiver<StorageMigrationEvent>,
     pool: Option<Pool<Sqlite>>,
+    progress_flush: Arc<ProgressFlushCoordinator>,
+    #[cfg(test)]
+    progress_publish_count: Arc<AtomicUsize>,
 }
 
 pub(crate) async fn ensure_persistence_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -410,7 +435,7 @@ impl StorageMigrationRuntime {
     }
 
     pub(crate) async fn load(config: &StorageConfig, pool: Pool<Sqlite>) -> Result<Self> {
-        let mut runtime = Self::from_parts(config, Some(pool.clone()));
+        let runtime = Self::from_parts(config, Some(pool.clone()));
         let row = sqlx::query(&format!(
             "SELECT status_json, response_json, last_action, last_action_at \
              FROM {STORAGE_MIGRATION_RUNTIME_TABLE} WHERE migration_id = ?1"
@@ -440,6 +465,9 @@ impl StorageMigrationRuntime {
                 target_configured: runtime.target_configured(config),
                 last_action,
                 last_action_at,
+                last_progress_published_at: None,
+                progress_flush_deadline: None,
+                progress_dirty: false,
             };
             refresh_response(&mut state);
             let event = StorageMigrationEvent {
@@ -448,9 +476,9 @@ impl StorageMigrationRuntime {
                 status: state.response.clone(),
             };
             runtime.events.send_replace(event);
-            *runtime.state.get_mut() = state;
+            *runtime.state.lock().await = state;
         } else {
-            let state = runtime.state.get_mut().clone();
+            let state = runtime.state.lock().await.clone();
             runtime.persist_state(&state).await?;
         }
         Ok(runtime)
@@ -496,16 +524,25 @@ impl StorageMigrationRuntime {
             status: response.clone(),
         });
         Self {
-            state: Mutex::new(StorageMigrationRuntimeState {
+            state: Arc::new(Mutex::new(StorageMigrationRuntimeState {
                 status,
                 response,
                 target_configured,
                 last_action: None,
                 last_action_at: None,
-            }),
+                last_progress_published_at: None,
+                progress_flush_deadline: None,
+                progress_dirty: false,
+            })),
             events,
             event_receiver,
             pool,
+            progress_flush: Arc::new(ProgressFlushCoordinator {
+                notify: Arc::new(Notify::new()),
+                worker_started: AtomicBool::new(false),
+            }),
+            #[cfg(test)]
+            progress_publish_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -517,35 +554,84 @@ impl StorageMigrationRuntime {
     }
 
     async fn persist_state(&self, state: &StorageMigrationRuntimeState) -> Result<()> {
-        let Some(pool) = self.pool.as_ref() else {
-            return Ok(());
-        };
-        let status_json = serde_json::to_string(&state.status).map_err(|error| {
-            anyhow::anyhow!("failed to encode storage migration status: {error}")
-        })?;
-        let response_json = serde_json::to_string(&state.response).map_err(|error| {
-            anyhow::anyhow!("failed to encode storage migration response: {error}")
-        })?;
-        sqlx::query(&format!(
-            "INSERT INTO {STORAGE_MIGRATION_RUNTIME_TABLE} \
-                (migration_id, status_json, response_json, last_action, last_action_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
-             ON CONFLICT(migration_id) DO UPDATE SET \
-                status_json = excluded.status_json, \
-                response_json = excluded.response_json, \
-                last_action = excluded.last_action, \
-                last_action_at = excluded.last_action_at, \
-                updated_at = excluded.updated_at"
-        ))
-        .bind(MIGRATION_ID)
-        .bind(status_json)
-        .bind(response_json)
-        .bind(&state.last_action)
-        .bind(&state.last_action_at)
-        .execute(pool)
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to persist storage migration status: {error}"))?;
-        Ok(())
+        persist_state_to_pool(self.pool.as_ref(), state).await
+    }
+
+    fn schedule_progress_flush(&self) {
+        let notify = self.progress_flush.notify.clone();
+        notify.notify_one();
+        if self
+            .progress_flush
+            .worker_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let weak_state: Weak<Mutex<StorageMigrationRuntimeState>> = Arc::downgrade(&self.state);
+        let events = self.events.clone();
+        let pool = self.pool.clone();
+        #[cfg(test)]
+        let progress_publish_count = self.progress_publish_count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(state) = weak_state.upgrade() else {
+                    break;
+                };
+                let deadline = state.lock().await.progress_flush_deadline;
+                let Some(deadline) = deadline else {
+                    tokio::select! {
+                        _ = notify.notified() => {}
+                        _ = tokio::time::sleep(STORAGE_MIGRATION_PROGRESS_INTERVAL) => {}
+                    }
+                    continue;
+                };
+
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => {}
+                    _ = notify.notified() => continue,
+                }
+
+                let Some(state) = weak_state.upgrade() else {
+                    break;
+                };
+                let mut state = state.lock().await;
+                if state.progress_flush_deadline != Some(deadline) {
+                    continue;
+                }
+                if !state.progress_dirty {
+                    state.progress_flush_deadline = None;
+                    continue;
+                }
+
+                let snapshot = state.clone();
+                if persist_state_to_pool(pool.as_ref(), &snapshot)
+                    .await
+                    .is_ok()
+                {
+                    state.progress_dirty = false;
+                    state.progress_flush_deadline = None;
+                    state.last_progress_published_at = Some(Instant::now());
+                    let response = state.response.clone();
+                    #[cfg(test)]
+                    progress_publish_count.fetch_add(1, Ordering::Relaxed);
+                    events.send_replace(StorageMigrationEvent {
+                        kind: "progress",
+                        revision: response.revision,
+                        status: response,
+                    });
+                } else {
+                    state.progress_flush_deadline =
+                        Some(Instant::now() + STORAGE_MIGRATION_PROGRESS_INTERVAL);
+                }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn progress_publish_count_for_test(&self) -> usize {
+        self.progress_publish_count.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn snapshot(&self) -> StorageMigrationResponse {
@@ -630,11 +716,19 @@ impl StorageMigrationRuntime {
         state.last_action_at = Some(now.to_rfc3339());
         advance_revision(&mut state.response)?;
         refresh_response(&mut state);
+        let had_pending_progress = state.progress_dirty;
+        state.progress_dirty = false;
+        state.progress_flush_deadline = None;
+        if had_pending_progress {
+            state.last_progress_published_at = Some(Instant::now());
+        }
         if let Err(error) = self.persist_state(&state).await {
             *state = previous;
+            self.progress_flush.notify.notify_one();
             return Err(error);
         }
         let response = state.response.clone();
+        self.progress_flush.notify.notify_one();
         self.events.send_replace(StorageMigrationEvent {
             kind: "status",
             revision: response.revision,
@@ -689,11 +783,32 @@ impl StorageMigrationRuntime {
             *state = previous;
             return Err(error);
         }
+
+        let monotonic_now = Instant::now();
+        let publish_now = state.last_progress_published_at.is_none_or(|last| {
+            monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
+        });
+        if !publish_now {
+            state.progress_dirty = true;
+            state.progress_flush_deadline = state
+                .last_progress_published_at
+                .map(|last| last + STORAGE_MIGRATION_PROGRESS_INTERVAL);
+            let response = state.response.clone();
+            drop(state);
+            self.schedule_progress_flush();
+            return Ok(response);
+        }
+
         if let Err(error) = self.persist_state(&state).await {
             *state = previous;
             return Err(error);
         }
+        state.last_progress_published_at = Some(monotonic_now);
+        state.progress_dirty = false;
+        state.progress_flush_deadline = None;
         let response = state.response.clone();
+        #[cfg(test)]
+        self.progress_publish_count.fetch_add(1, Ordering::Relaxed);
         self.events.send_replace(StorageMigrationEvent {
             kind: "progress",
             revision: response.revision,
@@ -701,6 +816,39 @@ impl StorageMigrationRuntime {
         });
         Ok(response)
     }
+}
+
+async fn persist_state_to_pool(
+    pool: Option<&Pool<Sqlite>>,
+    state: &StorageMigrationRuntimeState,
+) -> Result<()> {
+    let Some(pool) = pool else {
+        return Ok(());
+    };
+    let status_json = serde_json::to_string(&state.status)
+        .map_err(|error| anyhow::anyhow!("failed to encode storage migration status: {error}"))?;
+    let response_json = serde_json::to_string(&state.response)
+        .map_err(|error| anyhow::anyhow!("failed to encode storage migration response: {error}"))?;
+    sqlx::query(&format!(
+        "INSERT INTO {STORAGE_MIGRATION_RUNTIME_TABLE} \
+            (migration_id, status_json, response_json, last_action, last_action_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+         ON CONFLICT(migration_id) DO UPDATE SET \
+            status_json = excluded.status_json, \
+            response_json = excluded.response_json, \
+            last_action = excluded.last_action, \
+            last_action_at = excluded.last_action_at, \
+            updated_at = excluded.updated_at"
+    ))
+    .bind(MIGRATION_ID)
+    .bind(status_json)
+    .bind(response_json)
+    .bind(&state.last_action)
+    .bind(&state.last_action_at)
+    .execute(pool)
+    .await
+    .map_err(|error| anyhow::anyhow!("failed to persist storage migration status: {error}"))?;
+    Ok(())
 }
 
 fn build_response(
