@@ -1160,6 +1160,7 @@ struct InMemoryTargetState {
     chunk_proofs: BTreeMap<(String, String, String, String), ChunkProof>,
     coverage_proofs: BTreeMap<(String, String), TableCoverageProof>,
     fail_next_operation: bool,
+    fail_after_apply: bool,
 }
 
 impl InMemoryMigrationTarget {
@@ -1205,6 +1206,10 @@ impl InMemoryMigrationTarget {
         self.state.lock().await.fail_next_operation = true;
     }
 
+    pub(crate) async fn fail_after_apply_for_test(&self) {
+        self.state.lock().await.fail_after_apply = true;
+    }
+
     pub(crate) async fn remove_plan_for_test(&self, table_name: &str) {
         let mut state = self.state.lock().await;
         state.plans.retain(|(_, table), _| table != table_name);
@@ -1217,6 +1222,14 @@ impl InMemoryMigrationTarget {
         if state.fail_next_operation {
             state.fail_next_operation = false;
             bail!("in-memory migration target operation failed for retry test");
+        }
+        Ok(())
+    }
+
+    fn maybe_fail_after_apply(state: &mut InMemoryTargetState) -> Result<()> {
+        if state.fail_after_apply {
+            state.fail_after_apply = false;
+            bail!("in-memory migration target acknowledgement failed after apply");
         }
         Ok(())
     }
@@ -1372,6 +1385,7 @@ impl MigrationTarget for InMemoryMigrationTarget {
             }
         }
         state.checkpoints.insert(key, checkpoint.clone());
+        Self::maybe_fail_after_apply(&mut state)?;
         Ok(())
     }
 
@@ -2333,6 +2347,9 @@ where
                 .await?;
             self.persist_checkpoint(&checkpoint).await?;
         }
+        // A target can commit the replay and lose the metadata acknowledgement; rewrite the
+        // durable metadata checkpoint when a restart observes the committed target checkpoint.
+        self.persist_checkpoint(&checkpoint).await?;
         self.progress_for(&checkpoint).await
     }
 

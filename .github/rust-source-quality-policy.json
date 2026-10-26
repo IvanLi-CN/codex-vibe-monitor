@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 63,
-    "suppression_entries": 134
+    "suppression_entries": 136
   },
   "loc_targets": {
     "production": 2500,
@@ -1195,6 +1195,18 @@
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
       "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/support/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/storage/migration.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the migration engine constructor's explicit protocol boundary; remove it when migration setup is represented by a dedicated configuration value."
+    },
+    {
+      "path": "src/storage/migration_sqlx.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the SQLx table specification constructor's explicit source and target schema mapping boundary; remove it when the mapping is represented by a dedicated schema value."
     }
   ]
 }

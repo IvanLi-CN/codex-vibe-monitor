@@ -9,7 +9,8 @@ use sqlx::{postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 
 use crate::storage::{
     core::{
-        AuthorityRecoveryContext, BackendKind, ModuleAuthority, ModuleGenerationGate, StorageModule,
+        AuthorityRecoveryContext, BackendKind, MigrationMetadataStore, ModuleAuthority,
+        ModuleGenerationGate, StorageModule,
     },
     migration::{
         CapturedChange, ChangeInput, ChangeKind, ChunkRange, CopyLimits, EngineCheckpoint,
@@ -27,6 +28,21 @@ fn change(table_name: &str, stable_key: &str, kind: ChangeKind, payload: &[u8]) 
         previous_key: None,
         kind,
         payload: (kind != ChangeKind::Delete).then(|| payload.to_vec()),
+    }
+}
+
+fn replace_change(
+    table_name: &str,
+    previous_key: &str,
+    stable_key: &str,
+    payload: &[u8],
+) -> ChangeInput {
+    ChangeInput {
+        table_name: table_name.into(),
+        stable_key: stable_key.into(),
+        previous_key: Some(previous_key.into()),
+        kind: ChangeKind::Replace,
+        payload: Some(payload.to_vec()),
     }
 }
 
@@ -355,6 +371,411 @@ async fn switch_does_not_hold_source_writes_during_large_pre_fence_verification(
 }
 
 #[tokio::test]
+async fn migration_engine_replays_concurrent_change_kinds_and_same_version_boundary() -> Result<()>
+{
+    let (directory, path) = state_path("a2-change-boundaries");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "update", ChangeKind::Insert, b"old-update"),
+                change("events", "delete", ChangeKind::Insert, b"old-delete"),
+                change("events", "replace-old", ChangeKind::Insert, b"old-replace"),
+                change(
+                    "events",
+                    "boundary-update",
+                    ChangeKind::Insert,
+                    b"old-boundary-update",
+                ),
+                change(
+                    "events",
+                    "boundary-delete",
+                    ChangeKind::Insert,
+                    b"old-boundary-delete",
+                ),
+                change(
+                    "events",
+                    "boundary-replace-old",
+                    ChangeKind::Insert,
+                    b"old-boundary-replace",
+                ),
+            ],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let migration = MigrationEngine::new(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        StorageModule::TrafficArchive,
+        "installation-test",
+        "postgres-test",
+        1,
+        MigrationLimits {
+            max_queued_operations: 2,
+            copy: CopyLimits {
+                max_rows: 2,
+                max_bytes: 1024,
+                source_read_budget: Duration::from_secs(1),
+                batch_yield: Duration::ZERO,
+            },
+            ..MigrationLimits::default()
+        },
+        fence.clone(),
+    )?;
+    migration.prepare(&["events".into()]).await?;
+    while !migration.copy_next("events").await?.complete {}
+
+    let (inserted, updated, deleted, replaced) = tokio::join!(
+        source.write(
+            &fence,
+            vec![change(
+                "events",
+                "inserted",
+                ChangeKind::Insert,
+                b"new-insert"
+            )],
+        ),
+        source.write(
+            &fence,
+            vec![change(
+                "events",
+                "update",
+                ChangeKind::Update,
+                b"new-update"
+            )],
+        ),
+        source.write(
+            &fence,
+            vec![change("events", "delete", ChangeKind::Delete, b"")],
+        ),
+        source.write(
+            &fence,
+            vec![replace_change(
+                "events",
+                "replace-old",
+                "replace-new",
+                b"new-replace",
+            )],
+        ),
+    );
+    let concurrent_versions = [inserted?, updated?, deleted?, replaced?];
+    assert!(
+        concurrent_versions
+            .iter()
+            .all(|version| (2..=5).contains(version))
+    );
+    assert_eq!(source.capture_watermark().await?, 5);
+    migration.catch_up("events").await?;
+
+    let same_version = source
+        .write(
+            &fence,
+            vec![
+                change(
+                    "events",
+                    "boundary-insert",
+                    ChangeKind::Insert,
+                    b"new-boundary-insert",
+                ),
+                change(
+                    "events",
+                    "boundary-update",
+                    ChangeKind::Update,
+                    b"new-boundary-update",
+                ),
+                change("events", "boundary-delete", ChangeKind::Delete, b""),
+                replace_change(
+                    "events",
+                    "boundary-replace-old",
+                    "boundary-replace-new",
+                    b"new-boundary-replace",
+                ),
+            ],
+        )
+        .await?;
+    assert_eq!(same_version, 6);
+    assert_eq!(migration.catch_up("events").await?.applied_through, 6);
+
+    for (key, version, payload) in [
+        ("inserted", 2, b"new-insert".as_slice()),
+        ("update", 3, b"new-update".as_slice()),
+        ("replace-new", 5, b"new-replace".as_slice()),
+        ("boundary-insert", 6, b"new-boundary-insert".as_slice()),
+        ("boundary-update", 6, b"new-boundary-update".as_slice()),
+        (
+            "boundary-replace-new",
+            6,
+            b"new-boundary-replace".as_slice(),
+        ),
+    ] {
+        let row = target
+            .row("events", key)
+            .await
+            .expect("applied migration row");
+        assert_eq!(row.source_version, version);
+        assert_eq!(row.payload, payload);
+    }
+    for key in [
+        "delete",
+        "replace-old",
+        "boundary-delete",
+        "boundary-replace-old",
+    ] {
+        assert!(target.row("events", key).await.is_none(), "stale row {key}");
+    }
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_engine_restarts_after_apply_ack_failure_without_loss_or_resurrection()
+-> Result<()> {
+    let (directory, path) = state_path("a2-ack-restart");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "updated", ChangeKind::Insert, b"old"),
+                change("events", "deleted", ChangeKind::Insert, b"remove"),
+                change("events", "replace-old", ChangeKind::Insert, b"before"),
+            ],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let context = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let store = Arc::new(FileMigrationStore::new(&path, context.clone()));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    while !migration.copy_next("events").await?.complete {}
+
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "updated", ChangeKind::Update, b"after"),
+                change("events", "deleted", ChangeKind::Delete, b""),
+                replace_change("events", "replace-old", "replace-new", b"replaced"),
+            ],
+        )
+        .await?;
+    target.fail_after_apply_for_test().await;
+    assert!(migration.catch_up("events").await.is_err());
+    assert_eq!(
+        target
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .expect("target checkpoint after committed apply")
+            .applied_through,
+        2
+    );
+
+    let restart_store = Arc::new(FileMigrationStore::new(&path, context));
+    let restarted = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&restart_store),
+        fence,
+    );
+    assert_eq!(restarted.catch_up("events").await?.applied_through, 2);
+    assert_eq!(
+        restart_store
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .expect("restarted metadata checkpoint")
+            .applied_through,
+        Some(2)
+    );
+    let updated = target.row("events", "updated").await.expect("updated row");
+    assert_eq!(updated.source_version, 2);
+    assert_eq!(updated.payload, b"after");
+    assert!(target.row("events", "deleted").await.is_none());
+    assert!(target.row("events", "replace-old").await.is_none());
+    let replaced = target
+        .row("events", "replace-new")
+        .await
+        .expect("replacement row");
+    assert_eq!(replaced.source_version, 2);
+    assert_eq!(replaced.payload, b"replaced");
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn table_coverage_proof_rejects_extra_rows_empty_to_nonempty_and_bound_changes() -> Result<()>
+{
+    let (directory, path) = state_path("coverage-extra-row");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    source.register_module_table("events").await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    target
+        .seed_row_for_test("events", "orphan", 1, b"orphan")
+        .await;
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::new(FileMigrationStore::new(
+            &path,
+            AuthorityRecoveryContext {
+                migration_id: "migration-engine-test".into(),
+                installation_id: "installation-test".into(),
+                module: StorageModule::TrafficArchive,
+                source_identity: "sqlite-test".into(),
+                target_identity: "postgres-test".into(),
+                source_watermark: 0,
+            },
+        )),
+        SourceWriteFence::new(1),
+    );
+    assert!(
+        migration
+            .verify_table_coverage_at("events", 0)
+            .await
+            .is_err()
+    );
+    if directory.exists() {
+        fs::remove_dir_all(directory)?;
+    }
+
+    let (directory, path) = state_path("coverage-empty-transition");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    source.register_module_table("events").await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let fence = SourceWriteFence::new(1);
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::new(FileMigrationStore::new(
+            &path,
+            AuthorityRecoveryContext {
+                migration_id: "migration-engine-test".into(),
+                installation_id: "installation-test".into(),
+                module: StorageModule::TrafficArchive,
+                source_identity: "sqlite-test".into(),
+                target_identity: "postgres-test".into(),
+                source_watermark: 0,
+            },
+        )),
+        fence.clone(),
+    );
+    let empty_proof = migration.verify_table_coverage_at("events", 0).await?;
+    assert!(empty_proof.range.is_none());
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"now-present")],
+        )
+        .await?;
+    assert!(
+        migration
+            .verify_table_coverage_at("events", 1)
+            .await
+            .is_err()
+    );
+    if directory.exists() {
+        fs::remove_dir_all(directory)?;
+    }
+
+    let (directory, path) = state_path("coverage-boundary-change");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "b", ChangeKind::Insert, b"b"),
+                change("events", "c", ChangeKind::Insert, b"c"),
+            ],
+        )
+        .await?;
+    target.seed_row_for_test("events", "b", 1, b"b").await;
+    target.seed_row_for_test("events", "c", 1, b"c").await;
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::new(FileMigrationStore::new(
+            &path,
+            AuthorityRecoveryContext {
+                migration_id: "migration-engine-test".into(),
+                installation_id: "installation-test".into(),
+                module: StorageModule::TrafficArchive,
+                source_identity: "sqlite-test".into(),
+                target_identity: "postgres-test".into(),
+                source_watermark: 1,
+            },
+        )),
+        fence.clone(),
+    );
+    let initial_proof = migration.verify_table_coverage_at("events", 1).await?;
+    assert_eq!(initial_proof.source_lower_bound.as_deref(), Some("b"));
+    assert_eq!(initial_proof.source_upper_bound.as_deref(), Some("c"));
+    source
+        .write(
+            &fence,
+            vec![
+                change("events", "a", ChangeKind::Insert, b"a"),
+                change("events", "d", ChangeKind::Insert, b"d"),
+            ],
+        )
+        .await?;
+    assert!(
+        migration
+            .verify_table_coverage_at("events", 2)
+            .await
+            .is_err()
+    );
+    if directory.exists() {
+        fs::remove_dir_all(directory)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn sqlite_migration_source_uses_real_pool_capture_and_keyset_pages() -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -577,6 +998,227 @@ async fn sqlite_capture_rejects_corrupt_digest_and_source_identity() -> Result<(
         .execute(&pool)
         .await?;
     assert!(source.changes_after(0, 2).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture() -> Result<()> {
+    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping optional PostgreSQL migration engine test: POSTGRES_TEST_DATABASE_URL is unset"
+        );
+        return Ok(());
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await?;
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    let prefix = format!("pg02_migration_engine_{suffix}");
+    let target_table = format!("{prefix}_rows");
+    let target = Arc::new(PostgresMigrationTarget::new(
+        pool.clone(),
+        &prefix,
+        vec![MigrationTableSpec::new(
+            StorageModule::TrafficArchive,
+            "events",
+            "events",
+            target_table.clone(),
+            "stable_key",
+            "source_version",
+            "payload",
+            "stable_key",
+            "source_version",
+            "payload",
+        )?],
+    )?);
+    sqlx::query(&format!(
+        "CREATE TABLE \"{target_table}\" (
+            \"stable_key\" TEXT PRIMARY KEY,
+            \"source_version\" BIGINT NOT NULL,
+            \"payload\" BYTEA NOT NULL
+        )"
+    ))
+    .execute(&pool)
+    .await?;
+    target.ensure_schema().await?;
+
+    let source_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            stable_key TEXT PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&source_pool)
+    .await?;
+    let source = Arc::new(SqliteMigrationSource::new(
+        source_pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::new(
+            StorageModule::TrafficArchive,
+            "events",
+            "events",
+            target_table.clone(),
+            "stable_key",
+            "source_version",
+            "payload",
+            "stable_key",
+            "source_version",
+            "payload",
+        )?],
+    )?);
+    source.ensure_capture_schema().await?;
+    let mut source_transaction = source_pool.begin().await?;
+    for (key, payload) in [
+        ("delete-me", b"old-delete".as_slice()),
+        ("replace-old", b"old-replace".as_slice()),
+        ("update-me", b"old-update".as_slice()),
+    ] {
+        sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+            .bind(key)
+            .bind(1_i64)
+            .bind(payload)
+            .execute(&mut *source_transaction)
+            .await?;
+        source
+            .append_captured_change_tx(
+                &mut source_transaction,
+                &CapturedChange::from_input(
+                    "migration-engine-test",
+                    "sqlite-test",
+                    1,
+                    change("events", key, ChangeKind::Insert, payload),
+                )?,
+            )
+            .await?;
+    }
+    source_transaction.commit().await?;
+
+    let (directory, path) = state_path("postgres-real-engine");
+    let fence = SourceWriteFence::new(1);
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let migration = MigrationEngine::new(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        StorageModule::TrafficArchive,
+        "installation-test",
+        "postgres-test",
+        1,
+        MigrationLimits {
+            max_queued_operations: 2,
+            copy: CopyLimits {
+                max_rows: 2,
+                max_bytes: 1024,
+                source_read_budget: Duration::from_secs(1),
+                batch_yield: Duration::ZERO,
+            },
+            ..MigrationLimits::default()
+        },
+        fence.clone(),
+    )?;
+    migration.prepare(&["events".into()]).await?;
+    while !migration.copy_next("events").await?.complete {}
+
+    let mut source_transaction = source_pool.begin().await?;
+    sqlx::query("UPDATE events SET source_version = 2, payload = ? WHERE stable_key = ?")
+        .bind(b"new-update".as_slice())
+        .bind("update-me")
+        .execute(&mut *source_transaction)
+        .await?;
+    sqlx::query("DELETE FROM events WHERE stable_key = ?")
+        .bind("delete-me")
+        .execute(&mut *source_transaction)
+        .await?;
+    sqlx::query("DELETE FROM events WHERE stable_key = ?")
+        .bind("replace-old")
+        .execute(&mut *source_transaction)
+        .await?;
+    sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+        .bind("replace-new")
+        .bind(2_i64)
+        .bind(b"new-replace".as_slice())
+        .execute(&mut *source_transaction)
+        .await?;
+    sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+        .bind("inserted")
+        .bind(2_i64)
+        .bind(b"new-insert".as_slice())
+        .execute(&mut *source_transaction)
+        .await?;
+    for change in [
+        change("events", "update-me", ChangeKind::Update, b"new-update"),
+        change("events", "delete-me", ChangeKind::Delete, b""),
+        replace_change("events", "replace-old", "replace-new", b"new-replace"),
+        change("events", "inserted", ChangeKind::Insert, b"new-insert"),
+    ] {
+        source
+            .append_captured_change_tx(
+                &mut source_transaction,
+                &CapturedChange::from_input("migration-engine-test", "sqlite-test", 2, change)?,
+            )
+            .await?;
+    }
+    source_transaction.commit().await?;
+
+    assert_eq!(migration.catch_up("events").await?.applied_through, 2);
+    let rows = target
+        .rows_in_range("events", &ChunkRange::new("inserted", "update-me")?)
+        .await?;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["inserted", "replace-new", "update-me"]
+    );
+    assert_eq!(rows[0].source_version, 2);
+    assert_eq!(rows[1].payload, b"new-replace");
+    assert_eq!(rows[2].payload, b"new-update");
+    assert!(
+        target
+            .load_table_coverage_proof("migration-engine-test", "events")
+            .await?
+            .is_none()
+    );
+    let proof = migration.verify_table_coverage_at("events", 2).await?;
+    assert_eq!(proof.source_digest, proof.target_digest);
+    assert_eq!(proof.source_row_count, 3);
+    assert_eq!(proof.target_row_count, 3);
+
+    for table in [
+        target_table,
+        format!("{prefix}_plans"),
+        format!("{prefix}_checkpoints"),
+        format!("{prefix}_chunk_proofs"),
+        format!("{prefix}_coverage_proofs"),
+    ] {
+        sqlx::query(&format!("DROP TABLE IF EXISTS \"{table}\""))
+            .execute(&pool)
+            .await?;
+    }
+    if directory.exists() {
+        fs::remove_dir_all(directory)?;
+    }
     Ok(())
 }
 
