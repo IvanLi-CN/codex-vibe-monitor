@@ -1,6 +1,17 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+async fn migration_hold_should_stop() -> bool {
+    if !crate::maintenance::migration_hold_boundary_reached().await {
+        return false;
+    }
+    super::super::retention::retention_record_defer(
+        "quota_compaction",
+        crate::maintenance_store::MIGRATION_HOLD_REASON,
+    );
+    true
+}
+
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_QUOTA_ARCHIVE_PREPARE_BUDGET: Duration;
@@ -207,6 +218,9 @@ pub(crate) async fn compact_old_quota_snapshots(
         }
 
         for (month_key, group) in by_month {
+            if migration_hold_should_stop().await {
+                break;
+            }
             if super::super::retention::retention_run_budget_expired() {
                 super::super::retention::retention_record_defer(
                     "quota_compaction",
@@ -340,6 +354,9 @@ pub(crate) async fn compact_old_quota_snapshots(
                 .chunks(super::super::retention::RETENTION_WRITE_MAX_ROWS)
                 .zip(chunk_identities)
             {
+                if migration_hold_should_stop().await {
+                    break;
+                }
                 let ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
                 let Some((mut source_connection, admission)) =
                     super::super::retention::acquire_retention_write_connection(

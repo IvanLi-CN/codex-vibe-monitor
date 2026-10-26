@@ -688,6 +688,7 @@ fn task_table(name: &str) -> bool {
     matches!(
         name,
         "schema_refresh_migrations"
+            | "storage_migration_runtime"
             | "startup_backfill_progress"
             | "system_task_runs"
             | "maintenance_metadata"

@@ -2717,6 +2717,178 @@ export interface SystemStorageResponse {
   reason: string | null;
 }
 
+export type StorageMigrationBackend = "sqlite" | "postgres";
+export type StorageMigrationState =
+  | "pending"
+  | "preparing"
+  | "copying"
+  | "catching_up"
+  | "verifying"
+  | "ready"
+  | "switching"
+  | "postgres"
+  | "paused"
+  | "blocked"
+  | "recovering"
+  | "failed";
+export type StorageMigrationControlAction = "start" | "pause" | "resume";
+
+export interface StorageMigrationControlRequest {
+  paused: boolean;
+}
+
+export interface StorageMigrationEndpoint {
+  backend: StorageMigrationBackend;
+  configured: boolean;
+  identity: string;
+}
+
+export interface StorageMigrationAuthority {
+  backend: StorageMigrationBackend;
+  generation: number;
+}
+
+export type StorageMigrationDrainState = "not_started" | "draining" | "drained" | "unknown";
+
+export interface StorageMigrationHeartbeat {
+  at: string;
+  healthy: boolean;
+}
+
+export interface StorageMigrationIndexPreparation {
+  prepared: number | null;
+  total: number | null;
+  lastError: string | null;
+}
+
+export interface StorageMigrationProgress {
+  committedRows: number | null;
+  committedBytes: number | null;
+  sourceRows: number | null;
+  sourceBytes: number | null;
+  scanCursor: string | null;
+  capturedThrough: number | null;
+  appliedThrough: number | null;
+  pendingKeys: number | null;
+  oldestChangeAgeMs: number | null;
+  replayThroughputPerSec: number | null;
+  incomingRatePerSec: number | null;
+  converged: boolean | null;
+  etaMs: number | null;
+  phase: StorageMigrationState;
+}
+
+export interface StorageMigrationTableProgress {
+  tableName: string;
+  state: StorageMigrationState;
+  committedRows: number | null;
+  committedBytes: number | null;
+  sourceRows: number | null;
+  sourceBytes: number | null;
+  scanCursor: string | null;
+  scanBound: number | null;
+  indexPreparation: StorageMigrationIndexPreparation;
+  capturedThrough: number | null;
+  appliedThrough: number | null;
+  dirtyChunks: number | null;
+  verifiedChunks: number | null;
+}
+
+export interface StorageMigrationBacklog {
+  sourceP1: number | null;
+  pendingKeys: number | null;
+  oldestChangeAgeMs: number | null;
+}
+
+export interface StorageMigrationVerification {
+  dirtyChunks: number | null;
+  verifiedChunks: number | null;
+  lastError: string | null;
+}
+
+export interface StorageMigrationTaskHolds {
+  held: boolean;
+  preservedTaskKeys: string[];
+  reason: string | null;
+  drainState: StorageMigrationDrainState;
+  lastSafeCheckpoint: string | null;
+}
+
+export interface StorageMigrationPressure {
+  sourceBacklog: number | null;
+  lockWaitMs: number | null;
+  copyThroughputPerSec: number | null;
+  incomingChangeRatePerSec: number | null;
+  diskHeadroomBytes: number | null;
+  walHeadroomBytes: number | null;
+  freshnessAgeMs: number | null;
+  nonConvergent: boolean;
+}
+
+export interface StorageMigrationSwitch {
+  budgetMs: number;
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  durationMs: number | null;
+  result: string | null;
+  failureReason: string | null;
+}
+
+export interface StorageMigrationModuleProgress {
+  module: string;
+  state: StorageMigrationState;
+  dependencyReady: boolean | null;
+  unappliedChanges: number | null;
+  finalProofCoverage: number | null;
+  taskHold: string | null;
+  drainState: StorageMigrationDrainState;
+  switchAttemptCount: number;
+  switchDurationMs: number | null;
+  switchResult: string | null;
+  failureReason: string | null;
+}
+
+export interface StorageMigrationRecovery {
+  required: boolean;
+  reason: string | null;
+  authorityBackend: StorageMigrationBackend | null;
+  authorityGeneration: number | null;
+}
+
+export interface StorageMigrationControls {
+  permission: "admin" | string;
+  canStart: boolean;
+  canPause: boolean;
+  canResume: boolean;
+  lastAction: StorageMigrationControlAction | null;
+  lastActionAt: string | null;
+}
+
+export interface StorageMigrationResponse {
+  revision: number;
+  migrationId: string | null;
+  active: boolean;
+  module: string;
+  state: StorageMigrationState;
+  source: StorageMigrationEndpoint;
+  target: StorageMigrationEndpoint;
+  authority: StorageMigrationAuthority;
+  queuedModules: string[];
+  completedModules: string[];
+  heartbeat: StorageMigrationHeartbeat;
+  progress: StorageMigrationProgress;
+  tables: StorageMigrationTableProgress[];
+  modules: StorageMigrationModuleProgress[];
+  backlog: StorageMigrationBacklog;
+  verification: StorageMigrationVerification;
+  taskHolds: StorageMigrationTaskHolds;
+  pressure: StorageMigrationPressure;
+  switch: StorageMigrationSwitch;
+  recovery: StorageMigrationRecovery;
+  controls: StorageMigrationControls;
+  updatedAt: string;
+}
+
 export interface SystemTaskRun {
   id: number;
   taskKind: string;
@@ -2881,6 +3053,7 @@ export interface QueuedTaskRun {
   requestedAt: string;
   waitingMs: number;
   position: number;
+  waitReason?: string | null;
 }
 
 export interface TaskAdmissionWait {
@@ -5839,6 +6012,237 @@ function normalizeSystemStorageResponse(raw: unknown): SystemStorageResponse {
   };
 }
 
+function normalizeStorageMigrationState(value: unknown): StorageMigrationState {
+  const states = new Set<StorageMigrationState>([
+    "pending",
+    "preparing",
+    "copying",
+    "catching_up",
+    "verifying",
+    "ready",
+    "switching",
+    "postgres",
+    "paused",
+    "blocked",
+    "recovering",
+    "failed",
+  ]);
+  return typeof value === "string" && states.has(value as StorageMigrationState)
+    ? (value as StorageMigrationState)
+    : "pending";
+}
+
+function normalizeNullableMigrationNumber(value: unknown): number | null {
+  const normalized = normalizeFiniteNumber(value);
+  return normalized != null && normalized >= 0 ? normalized : null;
+}
+
+function normalizeNullableMigrationString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeStorageMigrationEndpoint(
+  raw: unknown,
+  fallbackBackend: StorageMigrationBackend,
+): StorageMigrationEndpoint {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const backend =
+    payload.backend === "postgres" || payload.backend === "sqlite"
+      ? payload.backend
+      : fallbackBackend;
+  return {
+    backend,
+    configured: payload.configured === true,
+    identity: typeof payload.identity === "string" ? payload.identity : "unknown",
+  };
+}
+
+function normalizeStorageMigrationDrainState(raw: unknown): StorageMigrationDrainState {
+  return raw === "not_started" || raw === "draining" || raw === "drained" || raw === "unknown"
+    ? raw
+    : "unknown";
+}
+
+function normalizeStorageMigrationIndexPreparation(raw: unknown): StorageMigrationIndexPreparation {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    prepared: normalizeNullableMigrationNumber(payload.prepared),
+    total: normalizeNullableMigrationNumber(payload.total),
+    lastError: normalizeNullableMigrationString(payload.lastError),
+  };
+}
+
+function normalizeStorageMigrationRevision(value: unknown): number {
+  const revision = normalizeFiniteNumber(value);
+  return revision != null && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+}
+
+export function normalizeStorageMigrationResponse(raw: unknown): StorageMigrationResponse {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("invalid storage migration response");
+  }
+  const payload = raw as Record<string, unknown>;
+  const progressPayload = (payload.progress ?? {}) as Record<string, unknown>;
+  const backlogPayload = (payload.backlog ?? {}) as Record<string, unknown>;
+  const verificationPayload = (payload.verification ?? {}) as Record<string, unknown>;
+  const taskHoldsPayload = (payload.taskHolds ?? {}) as Record<string, unknown>;
+  const pressurePayload = (payload.pressure ?? {}) as Record<string, unknown>;
+  const switchPayload = (payload.switch ?? {}) as Record<string, unknown>;
+  const recoveryPayload = (payload.recovery ?? {}) as Record<string, unknown>;
+  const controlsPayload = (payload.controls ?? {}) as Record<string, unknown>;
+  const heartbeatPayload = (payload.heartbeat ?? {}) as Record<string, unknown>;
+  const progress: StorageMigrationProgress = {
+    committedRows: normalizeNullableMigrationNumber(progressPayload.committedRows),
+    committedBytes: normalizeNullableMigrationNumber(progressPayload.committedBytes),
+    sourceRows: normalizeNullableMigrationNumber(progressPayload.sourceRows),
+    sourceBytes: normalizeNullableMigrationNumber(progressPayload.sourceBytes),
+    scanCursor: normalizeNullableMigrationString(progressPayload.scanCursor),
+    capturedThrough: normalizeNullableMigrationNumber(progressPayload.capturedThrough),
+    appliedThrough: normalizeNullableMigrationNumber(progressPayload.appliedThrough),
+    pendingKeys: normalizeNullableMigrationNumber(progressPayload.pendingKeys),
+    oldestChangeAgeMs: normalizeNullableMigrationNumber(progressPayload.oldestChangeAgeMs),
+    replayThroughputPerSec: normalizeNullableMigrationNumber(
+      progressPayload.replayThroughputPerSec,
+    ),
+    incomingRatePerSec: normalizeNullableMigrationNumber(progressPayload.incomingRatePerSec),
+    converged: typeof progressPayload.converged === "boolean" ? progressPayload.converged : null,
+    etaMs: normalizeNullableMigrationNumber(progressPayload.etaMs),
+    phase: normalizeStorageMigrationState(progressPayload.phase ?? payload.state),
+  };
+  const tables = Array.isArray(payload.tables)
+    ? payload.tables.map((rawTable) => {
+        const table = (rawTable ?? {}) as Record<string, unknown>;
+        return {
+          tableName: typeof table.tableName === "string" ? table.tableName : "unknown",
+          state: normalizeStorageMigrationState(table.state),
+          committedRows: normalizeNullableMigrationNumber(table.committedRows),
+          committedBytes: normalizeNullableMigrationNumber(table.committedBytes),
+          sourceRows: normalizeNullableMigrationNumber(table.sourceRows),
+          sourceBytes: normalizeNullableMigrationNumber(table.sourceBytes),
+          scanCursor: normalizeNullableMigrationString(table.scanCursor),
+          scanBound: normalizeNullableMigrationNumber(table.scanBound),
+          indexPreparation: normalizeStorageMigrationIndexPreparation(table.indexPreparation),
+          capturedThrough: normalizeNullableMigrationNumber(table.capturedThrough),
+          appliedThrough: normalizeNullableMigrationNumber(table.appliedThrough),
+          dirtyChunks: normalizeNullableMigrationNumber(table.dirtyChunks),
+          verifiedChunks: normalizeNullableMigrationNumber(table.verifiedChunks),
+        } satisfies StorageMigrationTableProgress;
+      })
+    : [];
+  const lastAction =
+    controlsPayload.lastAction === "start" ||
+    controlsPayload.lastAction === "pause" ||
+    controlsPayload.lastAction === "resume"
+      ? controlsPayload.lastAction
+      : null;
+  const authorityPayload =
+    payload.authority && typeof payload.authority === "object"
+      ? (payload.authority as Record<string, unknown>)
+      : {};
+  return {
+    revision: normalizeStorageMigrationRevision(payload.revision),
+    migrationId: typeof payload.migrationId === "string" ? payload.migrationId : null,
+    active: payload.active === true,
+    module: typeof payload.module === "string" ? payload.module : "unknown",
+    state: normalizeStorageMigrationState(payload.state),
+    source: normalizeStorageMigrationEndpoint(payload.source, "sqlite"),
+    target: normalizeStorageMigrationEndpoint(payload.target, "postgres"),
+    authority: {
+      backend: authorityPayload.backend === "postgres" ? "postgres" : "sqlite",
+      generation: normalizeNullableMigrationNumber(authorityPayload.generation) ?? 0,
+    },
+    progress,
+    tables,
+    backlog: {
+      sourceP1: normalizeNullableMigrationNumber(backlogPayload.sourceP1),
+      pendingKeys: normalizeNullableMigrationNumber(backlogPayload.pendingKeys),
+      oldestChangeAgeMs: normalizeNullableMigrationNumber(backlogPayload.oldestChangeAgeMs),
+    },
+    verification: {
+      dirtyChunks: normalizeNullableMigrationNumber(verificationPayload.dirtyChunks),
+      verifiedChunks: normalizeNullableMigrationNumber(verificationPayload.verifiedChunks),
+      lastError: normalizeNullableMigrationString(verificationPayload.lastError),
+    },
+    taskHolds: {
+      held: taskHoldsPayload.held === true,
+      preservedTaskKeys: normalizeStringArray(taskHoldsPayload.preservedTaskKeys),
+      reason: normalizeNullableMigrationString(taskHoldsPayload.reason),
+      drainState: normalizeStorageMigrationDrainState(taskHoldsPayload.drainState),
+      lastSafeCheckpoint: normalizeNullableMigrationString(taskHoldsPayload.lastSafeCheckpoint),
+    },
+    pressure: {
+      sourceBacklog: normalizeNullableMigrationNumber(pressurePayload.sourceBacklog),
+      lockWaitMs: normalizeNullableMigrationNumber(pressurePayload.lockWaitMs),
+      copyThroughputPerSec: normalizeNullableMigrationNumber(pressurePayload.copyThroughputPerSec),
+      incomingChangeRatePerSec: normalizeNullableMigrationNumber(
+        pressurePayload.incomingChangeRatePerSec,
+      ),
+      diskHeadroomBytes: normalizeNullableMigrationNumber(pressurePayload.diskHeadroomBytes),
+      walHeadroomBytes: normalizeNullableMigrationNumber(pressurePayload.walHeadroomBytes),
+      freshnessAgeMs: normalizeNullableMigrationNumber(pressurePayload.freshnessAgeMs),
+      nonConvergent: pressurePayload.nonConvergent === true,
+    },
+    switch: {
+      budgetMs: normalizeNullableMigrationNumber(switchPayload.budgetMs) ?? 0,
+      attemptCount: normalizeNullableMigrationNumber(switchPayload.attemptCount) ?? 0,
+      lastAttemptAt: normalizeNullableMigrationString(switchPayload.lastAttemptAt),
+      durationMs: normalizeNullableMigrationNumber(switchPayload.durationMs),
+      result: normalizeNullableMigrationString(switchPayload.result),
+      failureReason: normalizeNullableMigrationString(switchPayload.failureReason),
+    },
+    recovery: {
+      required: recoveryPayload.required === true,
+      reason: normalizeNullableMigrationString(recoveryPayload.reason),
+      authorityBackend:
+        recoveryPayload.authorityBackend === "postgres" ||
+        recoveryPayload.authorityBackend === "sqlite"
+          ? recoveryPayload.authorityBackend
+          : null,
+      authorityGeneration: normalizeNullableMigrationNumber(recoveryPayload.authorityGeneration),
+    },
+    controls: {
+      permission:
+        typeof controlsPayload.permission === "string" ? controlsPayload.permission : "admin",
+      canStart: controlsPayload.canStart === true,
+      canPause: controlsPayload.canPause === true,
+      canResume: controlsPayload.canResume === true,
+      lastAction,
+      lastActionAt: normalizeNullableMigrationString(controlsPayload.lastActionAt),
+    },
+    queuedModules: normalizeStringArray(payload.queuedModules),
+    completedModules: normalizeStringArray(payload.completedModules),
+    heartbeat: {
+      at:
+        typeof heartbeatPayload.at === "string"
+          ? heartbeatPayload.at
+          : typeof payload.updatedAt === "string"
+            ? payload.updatedAt
+            : "",
+      healthy: heartbeatPayload.healthy !== false,
+    },
+    modules: Array.isArray(payload.modules)
+      ? payload.modules.map((rawModule) => {
+          const module = (rawModule ?? {}) as Record<string, unknown>;
+          return {
+            module: typeof module.module === "string" ? module.module : "unknown",
+            state: normalizeStorageMigrationState(module.state),
+            dependencyReady:
+              typeof module.dependencyReady === "boolean" ? module.dependencyReady : null,
+            unappliedChanges: normalizeNullableMigrationNumber(module.unappliedChanges),
+            finalProofCoverage: normalizeNullableMigrationNumber(module.finalProofCoverage),
+            taskHold: normalizeNullableMigrationString(module.taskHold),
+            drainState: normalizeStorageMigrationDrainState(module.drainState),
+            switchAttemptCount: normalizeNullableMigrationNumber(module.switchAttemptCount) ?? 0,
+            switchDurationMs: normalizeNullableMigrationNumber(module.switchDurationMs),
+            switchResult: normalizeNullableMigrationString(module.switchResult),
+            failureReason: normalizeNullableMigrationString(module.failureReason),
+          } satisfies StorageMigrationModuleProgress;
+        })
+      : [],
+    updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : "",
+  };
+}
+
 function normalizeSystemTaskRun(raw: unknown): SystemTaskRun | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
@@ -6380,6 +6784,35 @@ export async function fetchSystemStatus(signal?: AbortSignal): Promise<SystemSta
 export async function fetchSystemStorage(signal?: AbortSignal): Promise<SystemStorageResponse> {
   const response = await fetchJson<unknown>("/api/system/storage", { signal });
   return normalizeSystemStorageResponse(response);
+}
+
+export async function fetchStorageMigrationStatus(
+  signal?: AbortSignal,
+): Promise<StorageMigrationResponse> {
+  const response = await fetchJson<unknown>("/api/system/storage-migration", { signal });
+  return normalizeStorageMigrationResponse(response);
+}
+
+export async function updateStorageMigrationControl(
+  paused: boolean,
+  options: { adminToken?: string; signal?: AbortSignal } = {},
+): Promise<StorageMigrationResponse> {
+  const request: StorageMigrationControlRequest = { paused };
+  const adminToken = options.adminToken?.trim();
+  const response = await fetchJson<unknown>("/api/system/storage-migration", {
+    method: "PATCH",
+    body: JSON.stringify(request),
+    signal: options.signal,
+    ...(adminToken
+      ? {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${adminToken}`,
+          },
+        }
+      : {}),
+  });
+  return normalizeStorageMigrationResponse(response);
 }
 
 export async function fetchPromptCacheMaterializationStatus(

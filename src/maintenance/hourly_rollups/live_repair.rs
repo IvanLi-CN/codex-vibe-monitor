@@ -98,10 +98,16 @@ async fn sync_hourly_rollups_from_live_tables_once(
     scope: HourlyRollupRefreshScope,
 ) -> Result<u64> {
     let mut work_count = 0_u64;
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(work_count);
+    }
     if scope == HourlyRollupRefreshScope::Full {
         repair_active_account_activity_v2_coverage(pool).await?;
     }
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         work_count = work_count.saturating_add(updated);
         if updated > 0 {
@@ -119,6 +125,9 @@ async fn sync_hourly_rollups_from_live_tables_once(
         }
     }
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         let updated = replay_live_forward_proxy_attempt_hourly_rollups(pool).await?;
         work_count = work_count.saturating_add(updated);
         if updated > 0 {
@@ -136,6 +145,9 @@ async fn sync_hourly_rollups_from_live_tables_once(
         }
     }
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_invocations(pool).await?;
         work_count = work_count.saturating_add(updated);
@@ -154,6 +166,9 @@ async fn sync_hourly_rollups_from_live_tables_once(
         }
     }
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_pool_attempts(pool).await?;
         work_count = work_count.saturating_add(updated);
@@ -170,6 +185,9 @@ async fn sync_hourly_rollups_from_live_tables_once(
         if updated == 0 {
             break;
         }
+    }
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(work_count);
     }
     let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
     work_count = work_count.saturating_add(repaired_activity_v2_rows);
@@ -189,6 +207,9 @@ async fn sync_hourly_rollups_from_live_tables_once(
     }
     wake_account_activity_v2_coverage_repair(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(work_count);
+        }
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
     }
@@ -343,6 +364,9 @@ pub(crate) async fn repair_materialized_upstream_account_archive_markers(
     let mut after_id = 0_i64;
     let mut repaired = 0_usize;
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         let mut tx = pool.begin().await?;
         let rows =
             load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(
@@ -1776,6 +1800,9 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
     // yield to later recoverable rows; a separately durable deferred queue keeps budget-exhausted
     // candidates retryable without blocking the rest of the ordered set.
     for _ in 0..USAGE_BREAKDOWN_REPAIR_WORK_BATCH_SIZE {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         if historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
             && (!allow_one_candidate_after_budget || budget_overrun_candidate_started)
         {

@@ -1,5 +1,16 @@
 use super::*;
 
+async fn migration_hold_should_stop() -> bool {
+    if !crate::maintenance::migration_hold_boundary_reached().await {
+        return false;
+    }
+    retention_record_defer(
+        "raw_compression",
+        crate::maintenance_store::MIGRATION_HOLD_REASON,
+    );
+    true
+}
+
 pub(crate) async fn compress_cold_proxy_raw_payloads(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -36,6 +47,9 @@ pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
     };
 
     loop {
+        if migration_hold_should_stop().await {
+            break;
+        }
         let (request_summary, request_hit_batch_limit) = compress_cold_proxy_raw_payload_lane(
             pool,
             config,
@@ -47,6 +61,9 @@ pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
         .await?;
         accumulate_raw_compression_summary(&mut summary, request_summary);
 
+        if migration_hold_should_stop().await {
+            break;
+        }
         let (response_summary, response_hit_batch_limit) = compress_cold_proxy_raw_payload_lane(
             pool,
             config,
@@ -58,6 +75,9 @@ pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
         .await?;
         accumulate_raw_compression_summary(&mut summary, response_summary);
 
+        if migration_hold_should_stop().await {
+            break;
+        }
         let (attempt_summary, attempt_hit_batch_limit) =
             compress_cold_pool_attempt_response_raw_lane(
                 pool,
@@ -101,6 +121,9 @@ pub(crate) async fn compress_cold_pool_attempt_response_raw_lane(
     let mut last_seen_id = 0_i64;
 
     while rows_processed < batch_limit {
+        if migration_hold_should_stop().await {
+            break;
+        }
         let candidates = sqlx::query_as::<_, InvocationRawCompressionFieldCandidate>(
             r#"
             SELECT id, occurred_at, response_raw_path AS raw_path
@@ -128,6 +151,9 @@ pub(crate) async fn compress_cold_pool_attempt_response_raw_lane(
         }
 
         for candidate in candidates {
+            if migration_hold_should_stop().await {
+                break;
+            }
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
@@ -286,6 +312,9 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
     let mut last_seen_id = 0_i64;
 
     while rows_processed < batch_limit {
+        if migration_hold_should_stop().await {
+            break;
+        }
         let remaining = (batch_limit - rows_processed) as i64;
         let candidates = sqlx::query_as::<_, InvocationRawCompressionFieldCandidate>(&sql)
             .bind(&cutoff)
@@ -304,6 +333,9 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
         }
 
         for candidate in candidates {
+            if migration_hold_should_stop().await {
+                break;
+            }
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
@@ -641,6 +673,9 @@ pub(crate) async fn replace_proxy_raw_path_references(
     next_codec: &str,
 ) -> Result<bool> {
     loop {
+        if migration_hold_should_stop().await {
+            return Ok(false);
+        }
         let candidate_limit = retention_candidate_limit(config, "raw_path_reference_update")
             .min(RETENTION_WRITE_MAX_ROWS);
         let mut candidates = sqlx::query_as::<_, RawPathReferenceCandidate>(
@@ -774,6 +809,9 @@ pub(crate) async fn reset_retention_raw_payload_metrics_inventory(
     state: &AppState,
 ) -> Result<bool> {
     loop {
+        if migration_hold_should_stop().await {
+            return Ok(false);
+        }
         let Some(complete) = reset_retention_raw_payload_metrics_inventory_batch(state).await?
         else {
             return Ok(false);

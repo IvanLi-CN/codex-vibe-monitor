@@ -110,6 +110,7 @@ export {
   fetchQuotaSnapshot,
   fetchSettings,
   fetchStats,
+  fetchStorageMigrationStatus,
   fetchSummary,
   fetchSystemStatus,
   fetchSystemStorage,
@@ -150,6 +151,7 @@ export {
   updatePromptCacheConversationBinding,
   updatePromptCacheMaterializationControl,
   updateProxySettings,
+  updateStorageMigrationControl,
   updateTag,
   updateUpstreamAccount,
   updateUpstreamAccountGroup,
@@ -158,4 +160,8 @@ export {
   validateImportedOauthAccounts,
 } from "./core";
 export type { BrowserObservation, ObservabilityCapabilities } from "./core-foundation";
-export { fetchObservabilityCapabilities, postBrowserObservations } from "./core-foundation";
+export {
+  fetchObservabilityCapabilities,
+  normalizeStorageMigrationResponse,
+  postBrowserObservations,
+} from "./core-foundation";

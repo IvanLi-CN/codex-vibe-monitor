@@ -1206,6 +1206,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     started_at: Instant,
     max_elapsed: Duration,
 ) -> Result<&'static str> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok("deferred:migration_hold");
+    }
     // A valid V2 page is already an exact authority and does not require reopening the raw
     // archive. Marking it complete here also upgrades V2 pages written by an older process into
     // the durable backfill outcome index.
@@ -1252,7 +1255,14 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     {
         // No incomplete V2 page may survive a source replacement. The manifest identity scopes
         // the outcome row, while this filesystem identity fences work that spans attempts.
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok("deferred:migration_hold");
+        }
         let mut tx = pool.begin().await?;
+        if crate::maintenance::migration_hold_signal_reached() {
+            tx.rollback().await?;
+            return Ok("deferred:migration_hold");
+        }
         sqlx::query(
             "DELETE FROM summary_archive_snapshot
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
@@ -1274,6 +1284,10 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             &hash_progress,
         )
         .await?;
+        if crate::maintenance::migration_hold_signal_reached() {
+            tx.rollback().await?;
+            return Ok("deferred:migration_hold");
+        }
         tx.commit().await?;
     }
     let actual_sha256 = if hash_progress.source_fingerprint.as_deref()
@@ -1290,7 +1304,14 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             max_elapsed,
         )? {
             SummaryArchiveHashAdvance::Complete { sha256, progress } => {
+                if crate::maintenance::migration_hold_signal_reached() {
+                    return Ok("deferred:migration_hold");
+                }
                 let mut tx = pool.begin().await?;
+                if crate::maintenance::migration_hold_signal_reached() {
+                    tx.rollback().await?;
+                    return Ok("deferred:migration_hold");
+                }
                 record_summary_archive_snapshot_backfill_outcome_tx(
                     tx.as_mut(),
                     candidate,
@@ -1299,6 +1320,10 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                     &progress,
                 )
                 .await?;
+                if crate::maintenance::migration_hold_signal_reached() {
+                    tx.rollback().await?;
+                    return Ok("deferred:migration_hold");
+                }
                 tx.commit().await?;
                 sha256
             }
@@ -1325,6 +1350,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         candidate.coverage_start_at.clone(),
         candidate.coverage_end_at.clone(),
     );
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok("deferred:migration_hold");
+    }
     let archive_source =
         crate::stats::open_invocation_archive_batch_pool(&archive_row, "summary-snapshot-backfill")
             .await;
@@ -1389,6 +1417,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         loop {
             if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
                 return Ok("deferred:budget");
+            }
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok("deferred:migration_hold");
             }
             let (rows, has_more) = load_invocation_archive_rows_time_chunk(
                 &archive_pool,
@@ -1463,7 +1494,14 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
                 bail!("Summary archive source identity changed before V2 page commit");
             }
+            if crate::maintenance::migration_hold_signal_reached() {
+                return Ok("deferred:migration_hold");
+            }
             let mut tx = pool.begin().await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                tx.rollback().await?;
+                return Ok("deferred:migration_hold");
+            }
             store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page).await?;
             record_summary_archive_snapshot_backfill_outcome_tx(
                 tx.as_mut(),
@@ -1484,6 +1522,10 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 },
             )
             .await?;
+            if crate::maintenance::migration_hold_signal_reached() {
+                tx.rollback().await?;
+                return Ok("deferred:migration_hold");
+            }
             tx.commit().await?;
             total_rows = total_rows.saturating_add(i64::try_from(rows.len())?);
             progress.next_row_id = rows.last().map(|row| row.id).ok_or_else(|| {
@@ -1509,6 +1551,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 ),
             ));
         }
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok("deferred:migration_hold");
+        }
         if !ensure_summary_archive_snapshot_v2_final_proof(pool, candidate.id, &candidate.sha256)
             .await?
         {
@@ -1532,6 +1577,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     pool: &Pool<Sqlite>,
     max_elapsed: Duration,
 ) -> Result<SummaryArchiveSnapshotBackfillWindowResult> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(SummaryArchiveSnapshotBackfillWindowResult {
+            hit_budget: true,
+            ..SummaryArchiveSnapshotBackfillWindowResult::default()
+        });
+    }
     let started_at = Instant::now();
     let (mut cursor_id, mut high_watermark_id, checkpoint_completed) =
         load_summary_archive_snapshot_backfill_checkpoint(pool).await?;
@@ -1543,6 +1594,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         max_elapsed,
     )
     .await?;
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(SummaryArchiveSnapshotBackfillWindowResult {
+            hit_budget: true,
+            ..SummaryArchiveSnapshotBackfillWindowResult::default()
+        });
+    }
     cursor_id = promotion_cursor_id;
     let observed_high_watermark = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(id), 0) FROM archive_batches \
@@ -1589,6 +1646,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         if wrapped {
             cursor_id = 0;
         }
+    }
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(SummaryArchiveSnapshotBackfillWindowResult {
+            hit_budget: true,
+            ..SummaryArchiveSnapshotBackfillWindowResult::default()
+        });
     }
     let candidate_count = candidates.len();
     let recent_candidate_count = candidates
@@ -1642,6 +1705,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         && !candidates_from_due_queue
         && let Some(next_cursor_id) = sweep_cursor_after_scan
     {
+        if crate::maintenance::migration_hold_signal_reached() {
+            result.hit_budget = true;
+            return Ok(result);
+        }
         result.next_cursor_id = next_cursor_id;
         let next_due_cursor_id = if due_cursor_after_scan == 0 && due_cursor_id > 0 {
             0
@@ -1659,6 +1726,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         return Ok(result);
     }
     for candidate in candidates {
+        if crate::maintenance::migration_hold_signal_reached() {
+            result.hit_budget = true;
+            break;
+        }
         if started_at.elapsed() >= max_elapsed {
             let progress =
                 load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
@@ -1681,6 +1752,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             Ok(outcome) => outcome,
             Err(error) => classify_summary_archive_snapshot_backfill_error(&error),
         };
+        if crate::maintenance::migration_hold_signal_reached() {
+            result.hit_budget = true;
+            break;
+        }
         if let Some((disposition, failure_kind)) = outcome.split_once(':') {
             if disposition == "deferred" {
                 let progress =
@@ -1727,6 +1802,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             result.verified_proof_count = result.verified_proof_count.saturating_add(1);
         }
         if !candidates_from_due_queue {
+            if crate::maintenance::migration_hold_signal_reached() {
+                result.hit_budget = true;
+                break;
+            }
             result.next_cursor_id = candidate.id;
             store_summary_archive_snapshot_backfill_checkpoint(
                 pool,
@@ -1736,6 +1815,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             )
             .await?;
         }
+    }
+    if crate::maintenance::migration_hold_signal_reached() {
+        result.hit_budget = true;
+        return Ok(result);
     }
     if !result.hit_budget {
         let next_due_cursor_id = if due_cursor_after_scan == 0 && due_cursor_id > 0 {
@@ -1748,6 +1831,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     if candidate_count == 0
         && !(checkpoint_completed && cursor_id == 0 && high_watermark_id == observed_high_watermark)
     {
+        if crate::maintenance::migration_hold_signal_reached() {
+            result.hit_budget = true;
+            return Ok(result);
+        }
         let checkpoint_cursor_id = if attempted_wrap { 0 } else { cursor_id };
         store_summary_archive_snapshot_backfill_checkpoint(
             pool,
@@ -1757,6 +1844,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         )
         .await?;
     } else if candidates_from_due_queue {
+        if crate::maintenance::migration_hold_signal_reached() {
+            result.hit_budget = true;
+            return Ok(result);
+        }
         store_summary_archive_snapshot_backfill_checkpoint(
             pool,
             cursor_id,

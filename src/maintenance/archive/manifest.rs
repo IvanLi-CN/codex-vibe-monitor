@@ -33,6 +33,9 @@ pub(crate) async fn refresh_archive_upstream_activity_manifest(
     };
 
     for batch in batches {
+        if crate::maintenance::migration_hold_signal_reached() {
+            break;
+        }
         let archive_path = PathBuf::from(&batch.file_path);
         if !archive_path.exists() {
             summary.missing_files += 1;
@@ -99,6 +102,9 @@ pub(crate) async fn replace_archive_batch_upstream_activity_in_micro_batches(
         super::super::retention::retention_micro_batch_limit(config, "archive_manifest_refresh");
 
     loop {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(None);
+        }
         let staged_rowids = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT rowid
@@ -153,6 +159,9 @@ pub(crate) async fn replace_archive_batch_upstream_activity_in_micro_batches(
 
     let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
     if deduped_values.is_empty() {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(None);
+        }
         return mark_archive_batch_upstream_activity_refreshed(
             pool,
             archive_batch_id,
@@ -164,6 +173,9 @@ pub(crate) async fn replace_archive_batch_upstream_activity_in_micro_batches(
 
     let chunk_count = deduped_values.chunks(write_batch_limit).len();
     for (index, chunk) in deduped_values.chunks(write_batch_limit).enumerate() {
+        if crate::maintenance::migration_hold_signal_reached() {
+            return Ok(None);
+        }
         let Some(admission) =
             super::super::retention::acquire_retention_write_admission("archive_manifest_refresh")
                 .await
@@ -218,6 +230,9 @@ async fn mark_archive_batch_upstream_activity_refreshed(
     archive_batch_id: i64,
     candidate_remaining_hint: usize,
 ) -> Result<bool> {
+    if crate::maintenance::migration_hold_signal_reached() {
+        return Ok(false);
+    }
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("archive_manifest_refresh")
             .await
