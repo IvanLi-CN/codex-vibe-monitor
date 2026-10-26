@@ -569,6 +569,11 @@ async fn summary_archive_snapshot_backfill_persists_deadline_defer() {
         SummaryArchiveSnapshotBackfillDisposition::InProgress,
         "a committed budget boundary must resume on the next supervisor turn"
     );
+    assert_eq!(
+        SummaryArchiveSnapshotBackfillDisposition::from_storage("deferred", "archive_file_phase",),
+        SummaryArchiveSnapshotBackfillDisposition::InProgress,
+        "file-phase contention must retry on the next supervisor turn"
+    );
 }
 
 #[tokio::test]

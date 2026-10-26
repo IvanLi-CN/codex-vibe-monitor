@@ -155,6 +155,16 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             traversal.pending_candidates.extend(candidate_entries);
             return Ok(result);
         }
+        Err(error) if is_retention_write_deferred(&error) => {
+            result.complete = false;
+            result.deferred = true;
+            if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                result.admission_stage = Some(stage.to_string());
+                result.admission_cause = Some(cause.to_string());
+            }
+            traversal.pending_candidates.extend(candidate_entries);
+            return Ok(result);
+        }
         Err(_) => {
             result.failures += 1;
             result.complete = false;
@@ -206,6 +216,18 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             }
             Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
                 result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(error) if is_retention_write_deferred(&error) => {
+                result.complete = false;
+                result.deferred = true;
+                if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                    result.admission_stage = Some(stage.to_string());
+                    result.admission_cause = Some(cause.to_string());
+                }
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
@@ -502,6 +524,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .await
             {
                 Ok(lock) => lock,
+                Err(error) if error.to_string() == "archive directory lock busy" => {
+                    result.complete = false;
+                    result.deferred = true;
+                    result.admission_stage = Some("archive_file_phase".to_string());
+                    result.admission_cause = Some("archive_directory_lock_busy".to_string());
+                    drop(inventory_admission);
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
                 Err(_) => {
                     drop(inventory_admission);
                     result.complete = false;
@@ -1351,7 +1384,12 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
                 || pass.reconciliation_rows_checked > 0
                 || pass.removed > 0;
             let retry = if pass.deferred {
-                RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS
+                match pass.admission_cause.as_deref() {
+                    Some("file_phase_busy" | "archive_directory_lock_busy") => {
+                        RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS
+                    }
+                    _ => RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
+                }
             } else {
                 raw_orphan_sweep_next_retry_secs(&pass, schedule.consecutive_failure_count)
             };

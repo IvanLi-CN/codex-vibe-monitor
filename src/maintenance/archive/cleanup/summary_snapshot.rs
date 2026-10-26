@@ -299,7 +299,9 @@ impl SummaryArchiveSnapshotBackfillDisposition {
             "in_progress" => Self::InProgress,
             // A bounded page has already committed its cursor or hash state. It must be
             // eligible on the next supervisor turn, not delayed like a source failure.
-            "deferred" if failure_kind == "budget" => Self::InProgress,
+            "deferred" if matches!(failure_kind, "budget" | "archive_file_phase") => {
+                Self::InProgress
+            }
             "deferred" => Self::Deferred,
             "unavailable"
                 if matches!(
@@ -1117,9 +1119,15 @@ impl SummaryArchivePoolDrain {
         }
     }
 
-    fn complete(&mut self) {
-        self.pool.take();
-        self.cleanup.take();
+    async fn complete(&mut self) {
+        let pool = self.pool.take();
+        let cleanup = self.cleanup.take();
+        let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+        crate::maintenance::with_file_phase_permit(file_phase, async move {
+            drop(pool);
+            drop(cleanup);
+        })
+        .await;
     }
 }
 
@@ -1145,57 +1153,13 @@ impl Drop for SummaryArchivePoolDrain {
     }
 }
 
-struct SummaryArchiveTempReadDrain {
-    pool: Option<Pool<Sqlite>>,
-    file_phase: Option<crate::maintenance::FilePhasePermit>,
-}
-
-impl SummaryArchiveTempReadDrain {
-    fn new(pool: &Pool<Sqlite>, file_phase: crate::maintenance::FilePhasePermit) -> Self {
-        Self {
-            pool: Some(pool.clone()),
-            file_phase: Some(file_phase),
-        }
-    }
-
-    fn complete(&mut self) {
-        self.pool.take();
-        self.file_phase.take();
-    }
-}
-
-impl Drop for SummaryArchiveTempReadDrain {
-    fn drop(&mut self) {
-        let (Some(pool), Some(file_phase)) = (self.pool.take(), self.file_phase.take()) else {
-            return;
-        };
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            drop(runtime.spawn(async move {
-                crate::maintenance::with_file_phase_permit(file_phase, async move {
-                    pool.close().await;
-                })
-                .await;
-            }));
-        } else {
-            // Runtime teardown cannot provide a native SQLite drain acknowledgement.
-            std::mem::forget(pool);
-            std::mem::forget(file_phase);
-        }
-    }
-}
-
-async fn run_summary_archive_temp_read_phase<F, T>(
-    archive_pool: &Pool<Sqlite>,
-    operation: F,
-) -> Result<T>
+async fn run_summary_archive_temp_read_phase<F, T>(operation: F) -> Result<T>
 where
-    F: Future<Output = Result<T>>,
+    F: Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
 {
     let file_phase = crate::acquire_file_phase_permit("summary_archive_snapshot_backfill").await?;
-    let mut drain = SummaryArchiveTempReadDrain::new(archive_pool, file_phase.clone());
-    let result = crate::with_file_phase_permit(file_phase, operation).await;
-    drain.complete();
-    result
+    crate::maintenance::spawn_file_phase_task(file_phase, operation).await
 }
 
 pub(super) enum SummaryArchiveHashAdvance {
@@ -1493,8 +1457,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     let mut pool_drain = SummaryArchivePoolDrain::new(&archive_pool, temp_cleanup);
 
     let result = async {
-        let archive_columns = run_summary_archive_temp_read_phase(&archive_pool, async {
-            load_archive_table_columns(&archive_pool, "codex_invocations").await
+        let archive_pool_for_columns = archive_pool.clone();
+        let archive_columns = run_summary_archive_temp_read_phase(async move {
+            load_archive_table_columns(&archive_pool_for_columns, "codex_invocations").await
         })
         .await?;
         let query_sql = build_invocation_archive_rows_time_chunk_query(&archive_columns);
@@ -1570,12 +1535,16 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
                 return Ok("deferred:budget");
             }
-            let (rows, has_more) = run_summary_archive_temp_read_phase(&archive_pool, async {
+            let archive_pool_for_rows = archive_pool.clone();
+            let query_sql_for_rows = query_sql.clone();
+            let next_occurred_at = progress.next_occurred_at.clone();
+            let next_row_id = progress.next_row_id;
+            let (rows, has_more) = run_summary_archive_temp_read_phase(async move {
                 load_invocation_archive_rows_time_chunk(
-                    &archive_pool,
-                    &query_sql,
-                    progress.next_occurred_at.as_deref(),
-                    progress.next_row_id,
+                    &archive_pool_for_rows,
+                    &query_sql_for_rows,
+                    next_occurred_at.as_deref(),
+                    next_row_id,
                 )
                 .await
             })
@@ -1616,10 +1585,11 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                     separated.push_bind(row.id);
                 }
                 separated.push_unseparated(")");
-                run_summary_archive_temp_read_phase(&archive_pool, async {
+                let archive_pool_for_ids = archive_pool.clone();
+                run_summary_archive_temp_read_phase(async move {
                     Ok(query
                         .build_query_as::<(i64, String)>()
-                        .fetch_all(&archive_pool)
+                        .fetch_all(&archive_pool_for_ids)
                         .await?
                         .into_iter()
                         .collect::<HashMap<_, _>>())
@@ -1764,13 +1734,14 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         Ok("complete")
     }
     .await;
-    let close_result = run_summary_archive_temp_read_phase(&archive_pool, async {
-        archive_pool.close().await;
+    let archive_pool_for_close = archive_pool.clone();
+    let close_result = run_summary_archive_temp_read_phase(async move {
+        archive_pool_for_close.close().await;
         Ok(())
     })
     .await;
     if close_result.is_ok() {
-        pool_drain.complete();
+        pool_drain.complete().await;
     }
     result?;
     close_result?;
@@ -1942,8 +1913,11 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
                     progress,
                 )
                 .await?;
-                result.hit_budget = true;
-                break;
+                if failure_kind == "budget" {
+                    result.hit_budget = true;
+                    break;
+                }
+                continue;
             }
             let progress =
                 load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;

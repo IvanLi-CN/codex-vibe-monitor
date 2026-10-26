@@ -1100,6 +1100,7 @@ struct ArchiveBatchPoolOpenDrain {
     pool: Option<Pool<Sqlite>>,
     cleanup: Option<TempSqliteCleanup>,
     file_phase: Option<crate::maintenance::FilePhasePermit>,
+    open_task: Option<tokio::task::JoinHandle<Result<i64>>>,
 }
 
 impl ArchiveBatchPoolOpenDrain {
@@ -1112,16 +1113,34 @@ impl ArchiveBatchPoolOpenDrain {
             pool: Some(pool.clone()),
             cleanup: Some(cleanup),
             file_phase: Some(file_phase),
+            open_task: None,
         }
     }
 
+    fn set_open_task(&mut self, task: tokio::task::JoinHandle<Result<i64>>) {
+        debug_assert!(self.open_task.is_none());
+        self.open_task = Some(task);
+    }
+
+    async fn wait_for_open_task(&mut self) -> Result<i64> {
+        let task = self
+            .open_task
+            .as_mut()
+            .context("archive pool opener task is missing")?;
+        let result = task.await.context("archive pool opener task failed")?;
+        self.open_task.take();
+        result
+    }
+
     fn complete(&mut self) {
+        debug_assert!(self.open_task.is_none());
         self.pool.take();
         self.cleanup.take();
         self.file_phase.take();
     }
 
     fn disarm(mut self) -> TempSqliteCleanup {
+        debug_assert!(self.open_task.is_none());
         self.pool.take();
         self.file_phase.take();
         self.cleanup
@@ -1139,8 +1158,12 @@ impl Drop for ArchiveBatchPoolOpenDrain {
         ) else {
             return;
         };
+        let open_task = self.open_task.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             drop(runtime.spawn(async move {
+                if let Some(open_task) = open_task {
+                    let _ = open_task.await;
+                }
                 crate::maintenance::with_file_phase_permit(file_phase, async move {
                     pool.close().await;
                     drop(cleanup);
@@ -1149,6 +1172,9 @@ impl Drop for ArchiveBatchPoolOpenDrain {
             }));
         } else {
             // Runtime teardown cannot provide a native SQLite drain acknowledgement.
+            if let Some(open_task) = open_task {
+                std::mem::forget(open_task);
+            }
             std::mem::forget(pool);
             std::mem::forget(cleanup);
             std::mem::forget(file_phase);
@@ -1206,14 +1232,22 @@ async fn open_archive_batch_pool(
             .context("failed to configure archive batch")?;
         let mut pool_drain =
             ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
-        let has_expected_table = match sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        )
-        .bind(expected_table)
-        .fetch_one(&archive_pool)
-        .await
-        .context("failed to open archive batch")
-        {
+        let expected_table_for_open = expected_table.to_owned();
+        let open_pool = archive_pool.clone();
+        let open_task = tokio::spawn(crate::maintenance::with_file_phase_permit(
+            file_phase.clone(),
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                )
+                .bind(expected_table_for_open)
+                .fetch_one(&open_pool)
+                .await
+                .context("failed to open archive batch")
+            },
+        ));
+        pool_drain.set_open_task(open_task);
+        let has_expected_table = match pool_drain.wait_for_open_task().await {
             Ok(value) => value != 0,
             Err(err) => {
                 archive_pool.close().await;
