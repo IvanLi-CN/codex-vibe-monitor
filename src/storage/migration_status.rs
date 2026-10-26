@@ -330,7 +330,6 @@ struct StorageMigrationRuntimeState {
 pub(crate) struct StorageMigrationRuntime {
     state: Mutex<StorageMigrationRuntimeState>,
     events: watch::Sender<StorageMigrationEvent>,
-    #[allow(dead_code)]
     event_receiver: watch::Receiver<StorageMigrationEvent>,
     pool: Option<Pool<Sqlite>>,
 }
@@ -554,7 +553,7 @@ impl StorageMigrationRuntime {
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<StorageMigrationEvent> {
-        self.events.subscribe()
+        self.event_receiver.clone()
     }
 
     pub(crate) async fn migration_hold_reason(&self, task_key: &str) -> Option<&'static str> {
