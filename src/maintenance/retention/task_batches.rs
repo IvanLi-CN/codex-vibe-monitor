@@ -294,6 +294,113 @@ async fn persist_invocation_segment_summary_pages(
     Ok(true)
 }
 
+async fn repair_partial_invocation_archive(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    selected_group: &[InvocationArchiveCandidate],
+    committed_rows: usize,
+) -> Result<()> {
+    if committed_rows == 0 || committed_rows >= selected_group.len() {
+        return Ok(());
+    }
+
+    let remove_ids = selected_group
+        .iter()
+        .skip(committed_rows)
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    let old_sha256 = outcome.sha256.clone();
+    let batch_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM archive_batches
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3 AND sha256 = ?4
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(outcome.dataset)
+    .bind(&outcome.month_key)
+    .bind(&outcome.file_path)
+    .bind(&old_sha256)
+    .fetch_optional(pool)
+    .await?
+    .context("partial invocation archive manifest is missing")?;
+
+    let (temporary_file_path, row_count, sha256) =
+        crate::maintenance::trim_archive_batch_file_by_ids(outcome, &remove_ids).await?;
+    let mut repaired_outcome = outcome.clone();
+    repaired_outcome.row_count = row_count;
+    repaired_outcome.sha256 = sha256;
+
+    if let Err(error) = crate::maintenance::replace_archive_batch_file_with_cleanup_serialization(
+        pool,
+        &repaired_outcome,
+        &temporary_file_path,
+        &old_sha256,
+    )
+    .await
+    {
+        remove_temp_sqlite_artifacts(&temporary_file_path);
+        return Err(error.context("publish partial invocation archive repair"));
+    }
+
+    // The file replacement changes the manifest identity. Remove the old page/proof set before
+    // rebuilding it from the repaired artifact, so a stale proof can never authorize the new
+    // source boundary.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("DELETE FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id = ?1")
+        .bind(batch_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM summary_archive_snapshot WHERE archive_batch_id = ?1")
+        .bind(batch_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM summary_coverage_obligation WHERE archive_batch_id = ?1")
+        .bind(batch_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "UPDATE archive_batches
+         SET coverage_start_at = NULL, coverage_end_at = NULL
+         WHERE id = ?1 AND sha256 = ?2",
+    )
+    .bind(batch_id)
+    .bind(&repaired_outcome.sha256)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    let pages = crate::maintenance::rebuild_task_month_snapshot_pages_for_archive(
+        pool,
+        &repaired_outcome,
+        batch_id,
+    )
+    .await?;
+    let first_page = pages
+        .first()
+        .context("partial archive repair produced no Summary pages")?;
+    let last_page = pages
+        .last()
+        .context("partial archive repair produced no Summary pages")?;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query(
+        "UPDATE archive_batches
+         SET coverage_start_at = ?1, coverage_end_at = ?2
+         WHERE id = ?3 AND sha256 = ?4",
+    )
+    .bind(&first_page.coverage_start)
+    .bind(&last_page.coverage_end)
+    .bind(batch_id)
+    .bind(&repaired_outcome.sha256)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    let proof =
+        crate::prepare_verified_summary_archive_snapshot(pool, batch_id, &repaired_outcome.sha256)
+            .await?;
+    crate::publish_verified_summary_archive_snapshot(pool, &proof).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) async fn invocation_archive_candidate_selection_for_test(
     pool: &Pool<Sqlite>,
@@ -1866,12 +1973,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prepare_elapsed,
                     )
                 };
+            let selected_group = group;
+            let mut committed_rows = 0;
             let proof_result: Result<InvocationArchiveProofResult> = async {
                 #[cfg(test)]
                 batch_admission::pause_after_archive_artifact_verified().await;
-                let mut committed_rows = 0;
                 let mut chunk_index = 0usize;
-                let mut pending_group = group;
+                let mut pending_group = selected_group.clone();
                 while !pending_group.is_empty() {
                 let group = take_retention_batch(
                     &mut pending_group,
@@ -2200,8 +2308,37 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 Ok((false, committed_rows))
             }
             .await;
-            let (early_return, committed_rows) =
-                finish_archive_identity_proof(archive_identity_proof, proof_result).await?;
+            let proof_close_result = archive_identity_proof.close().await;
+            let repair_result = if committed_rows > 0 && committed_rows < selected_group.len() {
+                repair_partial_invocation_archive(
+                    pool,
+                    &archive_outcome,
+                    &selected_group,
+                    committed_rows,
+                )
+                .await
+                .context("repair partially committed invocation archive")
+            } else {
+                Ok(())
+            };
+            let proof_result = match (proof_result, proof_close_result) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(_), Err(close_error)) => {
+                    Err(close_error.context("close archive source identity proof"))
+                }
+                (Err(error), Err(close_error)) => Err(error.context(format!(
+                    "close archive source identity proof after operation failure: {close_error}"
+                ))),
+            };
+            if let Err(repair_error) = repair_result {
+                return Err(match proof_result {
+                    Ok(_) => repair_error,
+                    Err(error) => repair_error
+                        .context(format!("partial archive operation also failed: {error}")),
+                });
+            }
+            let (early_return, committed_rows) = proof_result?;
             if early_return {
                 return Ok((
                     rows_archived,

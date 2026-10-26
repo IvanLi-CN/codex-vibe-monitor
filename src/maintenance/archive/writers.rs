@@ -1788,6 +1788,121 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     })
 }
 
+/// Rebuild a prepared archive after a source transaction committed only a prefix of its
+/// selected rows. The caller supplies IDs that must be removed from the already published
+/// artifact; predecessor rows in a legacy monthly archive therefore remain intact.
+pub(crate) async fn trim_archive_batch_file_by_ids(
+    outcome: &ArchiveBatchOutcome,
+    remove_ids: &[i64],
+) -> Result<(PathBuf, i64, String)> {
+    if remove_ids.is_empty() {
+        bail!("partial archive repair requires rows to remove");
+    }
+
+    let final_path = Path::new(&outcome.file_path);
+    let suffix = retention_temp_suffix();
+    let work_path = PathBuf::from(format!(
+        "{}.partial-repair-{}.sqlite",
+        final_path.display(),
+        suffix
+    ));
+    let temp_gzip_path = PathBuf::from(format!(
+        "{}.partial-repair-{}.tmp",
+        final_path.display(),
+        suffix
+    ));
+    let cleanup_work_path = work_path.clone();
+    let cleanup_temp_gzip_path = temp_gzip_path.clone();
+
+    let result = async {
+        inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
+        let ids_json = serde_json::to_string(remove_ids)
+            .context("encode partial archive repair source ids")?;
+        let row_count = {
+            let file_phase =
+                super::super::acquire_file_phase_permit("archive_partial_repair").await?;
+            let mut connection = open_archive_sqlite_connection(&work_path).await?;
+            let result: Result<i64> = async {
+                sqlx::query(
+                    "DELETE FROM codex_invocations
+                     WHERE id IN (SELECT value FROM json_each(?1))",
+                )
+                .bind(&ids_json)
+                .execute(&mut connection)
+                .await
+                .context("remove uncommitted rows from partial archive repair")?;
+                sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+                    .fetch_one(&mut connection)
+                    .await
+                    .context("count rows after partial archive repair")
+            }
+            .await;
+            let close_result = connection.close().await;
+            drop(file_phase);
+            if let Err(error) = close_result {
+                return Err(
+                    anyhow::Error::new(error).context("close partial archive repair SQLite file")
+                );
+            }
+            result
+        }?;
+        finalize_archive_sqlite_file(&work_path).await?;
+        deflate_sqlite_file_to_gzip_with_operation_budget(&work_path, &temp_gzip_path).await?;
+        let sha256 = sha256_hex_file_with_operation_budget(&temp_gzip_path).await?;
+        Ok::<_, anyhow::Error>((temp_gzip_path, row_count, sha256))
+    }
+    .await;
+
+    if result.is_err() {
+        remove_temp_sqlite_artifacts(&cleanup_work_path);
+        remove_temp_sqlite_artifacts(&cleanup_temp_gzip_path);
+    }
+    result
+}
+
+pub(crate) async fn replace_archive_batch_file_with_cleanup_serialization(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    temporary_file_path: &Path,
+    expected_existing_sha256: &str,
+) -> Result<()> {
+    replace_legacy_archive_file_with_cleanup_serialization(
+        pool,
+        outcome.dataset,
+        &outcome.month_key,
+        temporary_file_path,
+        Path::new(&outcome.file_path),
+        Some(expected_existing_sha256),
+        ArchiveReplacement {
+            row_count: Some(outcome.row_count),
+            sha256: &outcome.sha256,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn rebuild_task_month_snapshot_pages_for_archive(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    batch_id: i64,
+) -> Result<Vec<super::super::retention::TaskArchiveSnapshotPage>> {
+    let final_path = Path::new(&outcome.file_path);
+    let work_path = PathBuf::from(format!(
+        "{}.partial-repair-pages-{}.sqlite",
+        final_path.display(),
+        retention_temp_suffix()
+    ));
+    let cleanup_work_path = work_path.clone();
+    let result = async {
+        inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
+        let pages = prepare_task_month_snapshot_pages(pool, &work_path, outcome, batch_id).await?;
+        Ok::<_, anyhow::Error>(pages)
+    }
+    .await;
+    remove_temp_sqlite_artifacts(&cleanup_work_path);
+    result
+}
+
 pub(crate) async fn upsert_archived_upstream_last_activity(
     tx: &mut sqlx::SqliteConnection,
     values: &[(i64, String)],

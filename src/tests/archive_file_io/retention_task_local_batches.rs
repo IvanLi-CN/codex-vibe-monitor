@@ -2793,6 +2793,49 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
             .expect("uncommitted sources"),
         936
     );
+    let day_key = shanghai_day_key_from_local_naive(&occurred_at).expect("archive day");
+    let full_batch_ids = (1..=1_000).collect::<Vec<_>>();
+    let part_key = archive_segment_part_key_for_ids(&full_batch_ids).expect("archive part");
+    let archive_path = archive_segment_file_path(
+        &config,
+        "codex_invocations",
+        &day_key,
+        &part_key,
+        config.invocation_archive_codec,
+    )
+    .expect("archive path");
+    assert!(
+        archive_path.is_file(),
+        "partial archive artifact must remain recoverable"
+    );
+    let inflated_path = temp_dir.join("partial-source-archive.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate repaired partial archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open repaired partial archive");
+    let archive_row_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&mut archive_connection)
+        .await
+        .expect("count repaired partial archive rows");
+    archive_connection
+        .close()
+        .await
+        .expect("close repaired partial archive");
+    assert_eq!(archive_row_count, 64);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM archive_batches
+             WHERE dataset='codex_invocations' AND file_path=?1
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("load repaired partial archive manifest row count"),
+        64
+    );
     let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("exact totals after partial source conversion");
