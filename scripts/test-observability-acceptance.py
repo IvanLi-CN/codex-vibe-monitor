@@ -1347,8 +1347,10 @@ class WorkflowGateTests(unittest.TestCase):
     def test_manual_dispatch_is_the_only_scheduler_and_candidate_ref_is_required(self):
         on_section = contract.mapping_get(self.workflow, "on")
         self.assertEqual(set(on_section), {"workflow_dispatch"})
-        self.assertEqual(set(on_section["workflow_dispatch"]["inputs"]), {"candidate_ref"})
+        self.assertEqual(set(on_section["workflow_dispatch"]["inputs"]), {"candidate_ref", "build_only", "build_path"})
         self.assertTrue(on_section["workflow_dispatch"]["inputs"]["candidate_ref"]["required"])
+        self.assertFalse(on_section["workflow_dispatch"]["inputs"]["build_only"]["default"])
+        self.assertEqual(on_section["workflow_dispatch"]["inputs"]["build_path"]["options"], ["auto", "canonical"])
         self.assertNotIn("observability-diagnostics", self.workflow["jobs"])
         workflow = copy.deepcopy(self.workflow)
         contract.mapping_get(workflow, "on")["pull_request_target"] = {"types": ["labeled"]}
@@ -1356,18 +1358,18 @@ class WorkflowGateTests(unittest.TestCase):
 
     def test_candidate_branch_resolution_and_identity_pin_are_required(self):
         workflow = copy.deepcopy(self.workflow)
-        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+        resolver = next(step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
                         if step["name"] == "Resolve performance sources")
         resolver["run"] = resolver["run"].replace("git check-ref-format --branch", "git check-ref-format")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
-        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+        resolver = next(step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
                         if step["name"] == "Resolve performance sources")
         resolver["run"] = resolver["run"].replace('candidate_ref="refs/heads/$candidate_input"', 'candidate_ref="$candidate_input"')
         with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
-        identity = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
-                        if step["name"] == "Bind candidate identity")
+        identity = next(step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
+                        if step["name"] == "Bind candidate and build identity")
         identity["run"] = "echo candidate=unbound >> \"$GITHUB_OUTPUT\""
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
@@ -1379,17 +1381,17 @@ class WorkflowGateTests(unittest.TestCase):
             checkout["with"]["ref"] = "${{ inputs.candidate_ref }}"
             with self.assertRaises(contract.ContractError): self.verify(workflow)
         workflow = copy.deepcopy(self.workflow)
-        resolver = next(step for step in workflow["jobs"]["observability-performance-image"]["steps"]
+        resolver = next(step for step in workflow["jobs"]["observability-performance-resolve"]["steps"]
                         if step["name"] == "Resolve performance sources")
         resolver["run"] = resolver["run"].replace('trusted_ref="$WORKFLOW_SHA"', 'trusted_ref="$candidate_input"')
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
-    def test_read_only_cache_export_is_rejected(self):
+    def test_cache_export_requires_bounded_best_effort_contract(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(x for x in workflow["jobs"]["observability-performance-image"]["steps"]
-                    if x["name"] == "Build exact production image")
-        self.assertEqual(step["with"]["cache-from"], "type=gha,scope=observability-performance-amd64")
-        step["with"]["cache-to"] = "type=gha,mode=max,scope=observability-performance-amd64"
+                    if x["name"] == "Assemble production image from verified contexts")
+        self.assertIn("ignore-error=true", step["with"]["cache-to"])
+        step["with"]["cache-to"] = step["with"]["cache-to"].replace(",ignore-error=true", "")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_self_hosted_measurement_is_rejected(self):
