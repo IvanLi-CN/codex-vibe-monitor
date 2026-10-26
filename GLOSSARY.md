@@ -152,6 +152,14 @@ _Avoid_: workflow ref when referring to the measured source.
 The trusted repository revision whose workflow and acceptance scripts orchestrate and validate a Performance Acceptance independently from the candidate runtime source.
 _Avoid_: candidate runtime source, measured code.
 
+**Performance Candidate Build Identity**:
+The complete identity of the measured candidate's build inputs, distinguishing its source revision, production build recipe, toolchain, platform, runtime environment, and effective build configuration.
+_Avoid_: candidate SHA alone when claiming that a built artifact is reusable.
+
+**Reusable Performance Candidate Image**:
+An immutable candidate runtime image verified against a matching Performance Candidate Build Identity; reusing it does not reuse or certify a Performance Acceptance result.
+_Avoid_: cached acceptance, reusable pass.
+
 ## Account Import Language
 
 **Upstream Account**:

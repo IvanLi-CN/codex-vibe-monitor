@@ -1,5 +1,62 @@
 # 独立性能遥测历史
 
+- 2026-10-26：收紧构建信任与复用边界：performance workflow 的第三方 action 固定到完整
+  commit SHA，并授予仅用于隔离 cache save 的最小 `actions: write`；Rust producer 新增按
+  固定基础镜像和系统包配方隔离的 APT archives/lists cache，报告记录其恢复与保存结果。
+  trusted archive extractor 在 resolve 前拒绝目标路径及父路径 symlink，并补齐路径安全回归。
+
+- 2026-10-26：进一步隔离候选可写 cache：Rust target 编译产物 key 绑定完整 candidate SHA；
+  Cargo/Bun 下载 cache 由 lockfile/integrity 校验，APT 包 cache 由仓库签名校验后按兼容输入复用。
+  Web 构建的 PostCSS、Tailwind 和版本写入脚本纳入 recipe/build identity，避免配置单独变化时
+  错误命中完整镜像。
+
+- 2026-10-26：Bun cache 只复用 lockfile 兼容的下载目录；不再跨 candidate 保存或恢复
+  `web/node_modules`，外部 producer 每次清理后执行 `bun install --frozen-lockfile`，避免候选
+  构建产生的依赖树污染后续 trusted candidate。
+
+- 2026-10-26：修正 canonical Docker stage 的重复 Web 依赖安装：外部 producer 仍清理候选
+  `node_modules` 后按 lockfile 安装，Docker 内已验证的依赖层通过显式模式复用，避免冷构建
+  重复下载而不放宽 producer cache 的隔离边界。
+
+- 2026-10-26：为 build report 补齐 `checks: read` 只读权限，使 `gh api` 获取同一 trusted
+  workflow SHA 的 check-run 时间戳与既有 `contents: read`、`actions: read` 权限合同一致；不改变
+  cache、artifact、测量或性能预算语义。
+
+- 2026-10-26：build report 仅把 GitHub Actions check-run 提供的 `created_at` 用于排队时间；当前 API
+  可能返回空值时保留 `queueSeconds=null` 与 `queueTimingComplete=false`，不以 run 起始时间或零值
+  替代。producer/image 的执行、阶段、传输、缓存和镜像 ready 时间仍必须真实且完整。
+
+- 2026-10-26：明确 build-only 的 pre-merge 报告来源隔离：实现分支可验证自身构建产物，
+  并仅在资格模式使用 candidate-compatible 的 build report 生成器描述该运行；该报告不是
+  预算或正式性能证据。build-only 不启动 workload、预算汇总或性能通过卡，正式性能模式仍
+  使用 trusted `main` 生成器。
+
+- 2026-10-26：修复完整镜像 cache restore/save 的路径规范差异，避免相同 build identity 因
+  cache version 不一致产生假 miss；质量合同现在严格要求两处路径相同。build report 通过只读
+  `gh run view --json jobs` 绑定 Actions job ID、状态和真实 job 时间戳，保留 producer 卡的
+  编译时间并额外报告 job 排队/执行时间。
+
+- 2026-10-26：收紧并行构建交接边界：`build_only` 遇到未知或不一致 recipe 也必须回退候选
+  canonical Dockerfile；producer archive 由 trusted revision 的安全解包器校验并拒绝路径穿越、
+  链接和特殊文件；Rust symbols 与 binary 一起交接，并由 named-context 装入 production image
+  的 `/usr/local/share/codex-vibe-monitor/symbols`，保持 canonical 与 auto 的运行镜像布局一致。
+
+- 2026-10-26：补齐构建证据边界：报告 job 获得只读 `actions` 权限并对 Actions 失败状态、
+  candidate/build identity 不匹配和缺失 producer card fail-closed；Rust 下载与 target、Bun
+  依赖缓存拆分为兼容输入层，producer card 记录 restore/save phase timing；runtime-base
+  记录 BuildKit 日志可观测的 hit/miss，无法分解的 phase 保留 unknown。auto 路径比较候选与
+  trusted recipe 合同，基础镜像 manifest digest 纳入 build identity，避免静默忽略 Dockerfile
+  配方变化或复用可变 tag 的旧缓存。
+
+- 2026-10-25：完成 Observability Performance 构建并行与复用改造。新增 `build_only` 与
+  `build_path=auto|canonical` 手动输入；auto 在独立 runner 并行生产 Rust、Web、runtime-base，
+  通过 `observability-performance-v2` 缓存和 named contexts 装配 production runtime，命中
+  完整身份时跳过 producer，未知配方回退候选 canonical Dockerfile。`cvm-performance-build-v1`
+  固定 candidate、配方、平台、工具链、flags、锁文件和版本输入，镜像与 producer 归档在交接
+  前校验 SHA、image ID 和 revision；新增保留 14 天的 `cvm-performance-build-report-v1`，只记录
+  实际队列、执行、恢复/保存、传输、装配与 ready 时间。正式性能验收仍 main-only/manual-only，
+  四路测量与预算阈值未改变，build-only 结果不产生性能通过卡。
+
 - 2026-10-25：将 Observability Performance workflow 收敛为 trusted `main` 上唯一的 `workflow_dispatch` 入口，移除 `pull_request_target`/label 调度、前端 dispatcher 和历史 diagnostics job。`candidate_ref` 接受同仓库分支名或完整 40 字符 SHA；分支先验证并规范为 `refs/heads/<name>`，image job 用 `git rev-parse HEAD` 固定 candidate SHA，后续 workload 与汇总只消费该 SHA，trusted harness 始终绑定 `github.sha`。诊断源码及 `ci-pr` 回归保留，当前测量阈值、并行 lane、时钟、artifact 白名单、权限和 required-check 配置不变。该决定由 ADR 0049 记录。
 
 - 2026-10-25：将显式 Observability Acceptance 从单 runner serial bundle 改为四个 workload lane 的独立 hosted jobs。不可变镜像发布后只记录一次共享 60 分钟起始时刻；runtime 与三个 pair workload 各自拥有 runner 临时目录、Compose project、SQLite/fixture 和 sampler，pair 内 off/metrics/full 仍串行。汇总保留 candidate、image、contract、harness、run/attempt、共享时钟、失败证据和五项硬件字段校验，要求三组 pair identity 各不相同且硬件完全一致；阈值、准入、窗口覆盖和失败分类不变。该 successor decision 由 ADR 0048 记录，当前候选需在合并后的 `main` 上重新 dispatch 才能取得经验性卡。

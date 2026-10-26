@@ -15,7 +15,7 @@ description: 先给自部署用户，再给开发者的 Codex Vibe Monitor 上�
 ## 前置依赖
 
 - Docker（如果走路径 A，自部署单实例）
-- Rust 工具链（仓库当前 CI 使用 `1.96.0`）
+- Rust 工具链（仓库当前 CI 使用 `1.99.1`）
 - Bun
 - SQLite 开发库（Linux 上通常需要 `pkg-config` 与 `libsqlite3-dev`）
 

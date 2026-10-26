@@ -7,6 +7,19 @@ on:
         description: Same-repository branch name or full 40-character commit SHA to measure
         required: true
         type: string
+      build_only:
+        description: Build and report the image without running the performance budget
+        required: true
+        default: false
+        type: boolean
+      build_path:
+        description: Build path; canonical is allowed only for build_only validation
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - canonical
 
 concurrency:
   group: observability-performance-${{ inputs.candidate_ref || github.run_id }}
@@ -14,18 +27,39 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
+  checks: read
 
 jobs:
-  observability-performance-image:
-    name: Observability Performance Image
-    # Build once; test jobs consume this immutable image without compiling.
+  observability-performance-resolve:
+    name: Observability Performance Resolve
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     outputs:
       candidate: ${{ steps.identity.outputs.candidate }}
       candidate_repository: ${{ steps.refs.outputs.candidate_repository }}
+      candidate_ref: ${{ steps.refs.outputs.candidate_ref }}
       trusted_ref: ${{ steps.refs.outputs.trusted_ref }}
-      acceptance_started: ${{ steps.acceptance_clock.outputs.started }}
+      build_only: ${{ steps.refs.outputs.build_only }}
+      requested_build_path: ${{ steps.refs.outputs.requested_build_path }}
+      effective_build_path: ${{ steps.identity.outputs.effective_build_path }}
+      fallback_reason: ${{ steps.identity.outputs.fallback_reason }}
+      recipe_digest: ${{ steps.identity.outputs.recipe_digest }}
+      build_identity: ${{ steps.identity.outputs.build_identity }}
+      rust_cache_key: ${{ steps.identity.outputs.rust_cache_key }}
+      rust_image: ${{ steps.identity.outputs.rust_image }}
+      rust_deps_cache_key: ${{ steps.identity.outputs.rust_deps_cache_key }}
+      rust_target_cache_key: ${{ steps.identity.outputs.rust_target_cache_key }}
+      rust_system_cache_key: ${{ steps.identity.outputs.rust_system_cache_key }}
+      web_cache_key: ${{ steps.identity.outputs.web_cache_key }}
+      web_image: ${{ steps.identity.outputs.web_image }}
+      web_deps_cache_key: ${{ steps.identity.outputs.web_deps_cache_key }}
+      runtime_cache_key: ${{ steps.identity.outputs.runtime_cache_key }}
+      runtime_image: ${{ steps.identity.outputs.runtime_image }}
+      app_effective_version: ${{ steps.identity.outputs.app_effective_version }}
+      controller_started: ${{ steps.refs.outputs.controller_started }}
+      complete_image_cache_hit: ${{ steps.complete-image-cache-check.outputs.valid }}
+      complete_image_cache_restore_seconds: ${{ steps.complete-image-cache-timing.outputs.restore_seconds }}
     steps:
       - name: Resolve performance sources
         id: refs
@@ -35,79 +69,964 @@ jobs:
           WORKFLOW_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
           INPUT_CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          INPUT_BUILD_ONLY: ${{ inputs.build_only }}
+          INPUT_BUILD_PATH: ${{ inputs.build_path }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$EVENT_NAME" = "workflow_dispatch"
-          test "$WORKFLOW_REF" = "refs/heads/main"
-          candidate_repository="$REPOSITORY"
           candidate_input="$INPUT_CANDIDATE_REF"
-          trusted_ref="$WORKFLOW_SHA"
           test -n "$candidate_input"
+          case "$INPUT_BUILD_ONLY" in
+            true|false) ;;
+            *) echo "build_only must be a boolean" >&2; exit 1 ;;
+          esac
+          case "$INPUT_BUILD_PATH" in
+            auto|canonical) ;;
+            *) echo "build_path must be auto or canonical" >&2; exit 1 ;;
+          esac
+          controller_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          candidate_repository="$REPOSITORY"
+          if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then
+            echo "workflow must be dispatched from trusted main" >&2
+            exit 1
+          fi
+          trusted_ref="$WORKFLOW_SHA"
           if [[ "$candidate_input" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            candidate_ref="$candidate_input"
+            candidate_ref="$(printf '%s' "$candidate_input" | tr '[:upper:]' '[:lower:]')"
           else
             git check-ref-format --branch "$candidate_input"
             candidate_ref="refs/heads/$candidate_input"
+          fi
+          if [ "$INPUT_BUILD_ONLY" != "true" ]; then
+            test "$WORKFLOW_REF" = "refs/heads/main"
+            test "$INPUT_BUILD_PATH" = "auto"
           fi
           [[ "$trusted_ref" =~ ^[0-9a-fA-F]{40}$ ]]
           {
             printf 'candidate_repository=%s\n' "$candidate_repository"
             printf 'candidate_ref=%s\n' "$candidate_ref"
             printf 'trusted_ref=%s\n' "$trusted_ref"
+            printf 'build_only=%s\n' "$INPUT_BUILD_ONLY"
+            printf 'requested_build_path=%s\n' "$INPUT_BUILD_PATH"
+            printf 'controller_started=%s\n' "$controller_started"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout performance candidate
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ steps.refs.outputs.candidate_repository }}
-          ref: ${{ steps.refs.outputs.candidate_ref }}
+          ref: refs/heads/main
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
 
-      - name: Bind candidate identity
+      - name: Pin candidate checkout
+        env:
+          CANDIDATE_REF: ${{ steps.refs.outputs.candidate_ref }}
+        run: |
+          set -euo pipefail
+          git -C candidate fetch --no-tags --force origin "$CANDIDATE_REF"
+          git -C candidate checkout --detach FETCH_HEAD
+          git -C candidate rev-parse HEAD
+
+      - name: Checkout trusted production recipe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.refs.outputs.trusted_ref }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Set up Docker Buildx for base identity
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Resolve production base image digests
+        id: base-images
+        run: |
+          set -euo pipefail
+          resolve_digest() {
+            local image="$1"
+            local digest
+            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            test "$digest" != "" && [[ "$digest" == sha256:* ]]
+            printf '%s' "$digest"
+          }
+          rust_digest="$(resolve_digest rust:1.99.1-bookworm)"
+          web_digest="$(resolve_digest oven/bun:1.3.14-alpine)"
+          runtime_digest="$(resolve_digest debian:bookworm-slim)"
+          BASE_IMAGES="rust=$rust_digest web=$web_digest runtime=$runtime_digest" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          values = dict(item.split("=", 1) for item in os.environ["BASE_IMAGES"].split())
+          print(f"base_image_digests={json.dumps(values, sort_keys=True)}")
+          PY
+
+      - name: Bind candidate and build identity
         id: identity
+        env:
+          CANDIDATE_BUILD_ONLY: ${{ steps.refs.outputs.build_only }}
+          REQUESTED_BUILD_PATH: ${{ steps.refs.outputs.requested_build_path }}
+          BASE_IMAGE_DIGESTS: ${{ steps.base-images.outputs.base_image_digests }}
         run: |
           set -euo pipefail
           candidate="$(git -C candidate rev-parse HEAD)"
           [[ "$candidate" =~ ^[0-9a-f]{40}$ ]]
-          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          CANDIDATE="$candidate" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("candidate")
+          trusted_root = Path("trusted")
+          candidate = os.environ["CANDIDATE"]
+          requested = os.environ["REQUESTED_BUILD_PATH"]
+          build_only = os.environ["CANDIDATE_BUILD_ONLY"]
+          base_image_digests = json.loads(os.environ["BASE_IMAGE_DIGESTS"])
+
+          def pinned(image, digest):
+              return f"{image}@{digest}"
+
+          def cache_digest(value):
+              return value.replace(":", "-")
+
+          rust_image = pinned("rust", base_image_digests["rust"])
+          web_image = pinned("oven/bun", base_image_digests["web"])
+          runtime_image = pinned("debian", base_image_digests["runtime"])
+
+          def digest(base, paths):
+              hasher = hashlib.sha256()
+              for relative in sorted(paths):
+                  path = base / relative
+                  if path.is_dir():
+                      files = sorted(item for item in path.rglob("*") if item.is_file())
+                  elif path.is_file():
+                      files = [path]
+                  else:
+                      continue
+                  for file_path in files:
+                      name = file_path.relative_to(base).as_posix().encode()
+                      hasher.update(len(name).to_bytes(4, "big"))
+                      hasher.update(name)
+                      hasher.update(file_path.read_bytes())
+              return hasher.hexdigest()
+
+          common = ["Dockerfile", ".dockerignore", "scripts/production-build.sh", "rust-toolchain.toml"]
+          rust_inputs = common + ["Cargo.toml", "Cargo.lock", "vendor/hotpath", "src", "build.rs", ".cargo"]
+          web_inputs = common + ["web/package.json", "web/bun.lock", "web/src", "web/public", "web/index.html", "web/vite.config.ts", "web/vite.config.js", "web/postcss.config.js", "web/tailwind.config.js", "web/scripts/write-version.mjs", "web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json"]
+          runtime_inputs = ["Dockerfile", ".dockerignore", "vendor/hotpath/LICENSE.txt", "scripts/search-raw"]
+          recipe_inputs = common + ["Cargo.toml", "Cargo.lock", "vendor/hotpath", "src", "build.rs", ".cargo", "web/package.json", "web/bun.lock", "web/src", "web/public", "web/index.html", "web/vite.config.ts", "web/vite.config.js", "web/postcss.config.js", "web/tailwind.config.js", "web/scripts/write-version.mjs", "web/tsconfig.json", "web/tsconfig.app.json", "web/tsconfig.node.json", "scripts/export-observability-symbols.py", "scripts/search-raw"]
+
+          recipe_digest = digest(root, recipe_inputs)
+          rust_digest = digest(root, rust_inputs)
+          web_digest = digest(root, web_inputs)
+          runtime_digest = digest(root, runtime_inputs)
+          dockerfile = (root / "Dockerfile").read_text()
+          shared_recipe = (root / "scripts/production-build.sh").is_file()
+          known_layout = all(marker in dockerfile for marker in ("AS web-builder-canonical", "AS rust-builder-canonical", "AS runtime-base-builder", "AS production-runtime", "ARG RUNTIME_CONTEXT"))
+          recipe_contract = ["Dockerfile", ".dockerignore", "scripts/production-build.sh", "rust-toolchain.toml"]
+          trusted_recipe_digest = digest(trusted_root, recipe_contract)
+          candidate_recipe_contract_digest = digest(root, recipe_contract)
+          effective = requested
+          fallback_reason = ""
+          if requested == "auto" and not (
+              shared_recipe
+              and known_layout
+              and candidate_recipe_contract_digest == trusted_recipe_digest
+          ):
+              effective = "canonical"
+              fallback_reason = "candidate recipe is not identical to the trusted producer contract"
+          build_descriptor = {
+              "schema": "cvm-performance-build-v1",
+              "candidate": candidate,
+              "recipeDigest": recipe_digest,
+              "platform": "linux/amd64",
+              "rust": {"image": rust_image, "digest": base_image_digests["rust"], "flags": ["--release", "--locked"]},
+              "web": {"image": web_image, "digest": base_image_digests["web"], "flags": ["install --frozen-lockfile", "run build"]},
+              "runtime": {"target": "runtime", "image": runtime_image, "digest": base_image_digests["runtime"]},
+              "buildPath": effective,
+              "versionInput": f"3.0.0-ci.{candidate[:12]}.{recipe_digest[:12]}",
+              "buildOnly": build_only == "true",
+          }
+          build_identity = hashlib.sha256(json.dumps(build_descriptor, sort_keys=True).encode()).hexdigest()
+          print(f"candidate={candidate}")
+          print(f"recipe_digest={recipe_digest}")
+          print(f"build_identity={build_identity}")
+          print(f"effective_build_path={effective}")
+          print(f"fallback_reason={fallback_reason}")
+          print(f"rust_cache_key=observability-performance-v2-rust-{rust_digest}-{cache_digest(base_image_digests['rust'])}")
+          print(f"rust_image={rust_image}")
+          print(f"web_cache_key=observability-performance-v2-web-{web_digest}-{cache_digest(base_image_digests['web'])}")
+          print(f"web_image={web_image}")
+          print(f"runtime_cache_key=observability-performance-v2-runtime-{runtime_digest}-{cache_digest(base_image_digests['runtime'])}")
+          print(f"runtime_image={runtime_image}")
+          print(f"rust_deps_cache_key=observability-performance-v2-rust-deps-{digest(root, ['Cargo.toml', 'Cargo.lock', 'vendor/hotpath', 'rust-toolchain.toml', '.cargo'])}")
+          print(f"rust_target_cache_key=observability-performance-v2-rust-target-{rust_digest}-{cache_digest(base_image_digests['rust'])}-{candidate}")
+          print(f"rust_system_cache_key=observability-performance-v2-rust-system-ubuntu-24.04-{cache_digest(base_image_digests['rust'])}-pkg-config-libsqlite3-dev-binutils-python3")
+          print(f"web_deps_cache_key=observability-performance-v2-web-deps-bun-1.3.14-{digest(root, ['web/package.json', 'web/bun.lock'])}-{cache_digest(base_image_digests['web'])}")
+          print(f"base_image_digests={json.dumps(base_image_digests, sort_keys=True)}")
+          print(f"app_effective_version={build_descriptor['versionInput']}")
+          PY
+
+      - name: Start complete image cache restore timing
+        id: complete-image-cache-timing-start
+        run: echo "started=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore complete candidate image cache
+        id: complete-image-cache
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/observability-image
+          key: observability-performance-v2-image-${{ steps.identity.outputs.build_identity }}
+
+      - name: Finalize complete image cache restore timing
+        id: complete-image-cache-timing
+        if: always()
+        env:
+          RESTORE_STARTED: ${{ steps.complete-image-cache-timing-start.outputs.started }}
+        run: |
+          set -euo pipefail
+          RESTORE_STARTED="$RESTORE_STARTED" python3 - <<'PY'
+          import os
+          import pathlib
+          import time
+
+          seconds = time.time() - float(os.environ["RESTORE_STARTED"])
+          with pathlib.Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"restore_seconds={seconds:.3f}\n")
+          PY
+
+      - name: Verify complete candidate image cache identity
+        id: complete-image-cache-check
+        env:
+          CACHE_HIT: ${{ steps.complete-image-cache.outputs.cache-hit || 'false' }}
+          CANDIDATE: ${{ steps.identity.outputs.candidate }}
+          BUILD_IDENTITY: ${{ steps.identity.outputs.build_identity }}
+        run: |
+          set -euo pipefail
+          valid=false
+          if [ "$CACHE_HIT" = "true" ] && test -s "$RUNNER_TEMP/observability-image/candidate.json" && test -s "$RUNNER_TEMP/observability-image/candidate.tar.gz"; then
+            if CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" ROOT="$RUNNER_TEMP/observability-image" python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path(os.environ['ROOT'])
+          metadata=json.loads((root/'candidate.json').read_text())
+          assert metadata['candidate']==os.environ['CANDIDATE']
+          assert metadata['buildIdentity']==os.environ['BUILD_IDENTITY']
+          assert hashlib.sha256((root/'candidate.tar.gz').read_bytes()).hexdigest()==metadata['archiveSha256']
+          PY
+            then valid=true
+            fi
+          fi
+          echo "valid=$valid" >> "$GITHUB_OUTPUT"
+
+      - name: Upload cached candidate image for assembly
+        if: steps.complete-image-cache-check.outputs.valid == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: observability-cached-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/observability-image/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  observability-performance-producer:
+    name: Observability Performance Producer (${{ matrix.component }})
+    needs: observability-performance-resolve
+    if: needs.observability-performance-resolve.outputs.effective_build_path == 'auto' && needs.observability-performance-resolve.outputs.complete_image_cache_hit != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [rust, web, runtime-base]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CANDIDATE: ${{ needs.observability-performance-resolve.outputs.candidate }}
+      BUILD_IDENTITY: ${{ needs.observability-performance-resolve.outputs.build_identity }}
+      APP_EFFECTIVE_VERSION: ${{ needs.observability-performance-resolve.outputs.app_effective_version }}
+      WORKFLOW_STARTED_AT: ${{ needs.observability-performance-resolve.outputs.controller_started }}
+      RUST_IMAGE: ${{ needs.observability-performance-resolve.outputs.rust_image }}
+      WEB_IMAGE: ${{ needs.observability-performance-resolve.outputs.web_image }}
+      RUNTIME_IMAGE: ${{ needs.observability-performance-resolve.outputs.runtime_image }}
+    steps:
+      - name: Checkout candidate build sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ needs.observability-performance-resolve.outputs.candidate_repository }}
+          ref: refs/heads/main
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+
+      - name: Pin candidate build sources
+        env:
+          CANDIDATE: ${{ needs.observability-performance-resolve.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          git -C candidate fetch --no-tags --force origin "$CANDIDATE"
+          git -C candidate checkout --detach FETCH_HEAD
+
+      - name: Verify candidate identity
+        run: test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
 
-      - name: Build exact production image
-        uses: docker/build-push-action@v7
+      - name: Start dependency cache timing
+        if: matrix.component == 'rust' || matrix.component == 'web'
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/observability-build/$COMPONENT"
+          python3 - "$RUNNER_TEMP/observability-build/$COMPONENT/cache-timing.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import time
+
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({"restoreStarted": time.time()}))
+          PY
+
+      - name: Restore Rust dependency cache
+        id: rust-deps-cache
+        if: matrix.component == 'rust'
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-cargo
+          key: ${{ needs.observability-performance-resolve.outputs.rust_deps_cache_key }}
+
+      - name: Restore Rust target cache
+        id: rust-target-cache
+        if: matrix.component == 'rust'
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-rust-target
+          key: ${{ needs.observability-performance-resolve.outputs.rust_target_cache_key }}
+
+      - name: Restore Rust system package cache
+        id: rust-system-cache
+        if: matrix.component == 'rust'
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-rust-system
+          key: ${{ needs.observability-performance-resolve.outputs.rust_system_cache_key }}
+
+      - name: Restore Bun dependency cache
+        id: web-cache
+        if: matrix.component == 'web'
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-bun
+          key: ${{ needs.observability-performance-resolve.outputs.web_deps_cache_key }}
+
+      - name: Clean failed Rust dependency cache restore
+        if: matrix.component == 'rust' && steps.rust-deps-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-cargo"
+          mkdir -p "$RUNNER_TEMP/cvm-cargo"
+
+      - name: Clean failed Rust target cache restore
+        if: matrix.component == 'rust' && steps.rust-target-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-rust-target"
+          mkdir -p "$RUNNER_TEMP/cvm-rust-target"
+
+      - name: Clean failed Rust system package cache restore
+        if: matrix.component == 'rust' && steps.rust-system-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-rust-system"
+          mkdir -p "$RUNNER_TEMP/cvm-rust-system/archives/partial" "$RUNNER_TEMP/cvm-rust-system/lists/partial"
+
+      - name: Clean failed Bun dependency cache restore
+        if: matrix.component == 'web' && steps.web-cache.outcome != 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/cvm-bun"
+          mkdir -p "$RUNNER_TEMP/cvm-bun"
+
+      - name: Record dependency cache restore timing
+        if: matrix.component == 'rust' || matrix.component == 'web'
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          python3 - "$RUNNER_TEMP/observability-build/$COMPONENT/cache-timing.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import time
+
+          path = pathlib.Path(sys.argv[1])
+          value = json.loads(path.read_text())
+          value["restoreSeconds"] = round(time.time() - value["restoreStarted"], 3)
+          path.write_text(json.dumps(value))
+          PY
+
+      - name: Build Rust production artifact
+        if: matrix.component == 'rust'
+        env:
+          DEPS_CACHE_HIT: ${{ steps.rust-deps-cache.outputs.cache-hit || 'false' }}
+          TARGET_CACHE_HIT: ${{ steps.rust-target-cache.outputs.cache-hit || 'false' }}
+          SYSTEM_CACHE_HIT: ${{ steps.rust-system-cache.outputs.cache-hit || 'false' }}
+          DEPS_CACHE_KEY: ${{ needs.observability-performance-resolve.outputs.rust_deps_cache_key }}
+          TARGET_CACHE_KEY: ${{ needs.observability-performance-resolve.outputs.rust_target_cache_key }}
+          SYSTEM_CACHE_KEY: ${{ needs.observability-performance-resolve.outputs.rust_system_cache_key }}
+        run: |
+          set -euo pipefail
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          root="$RUNNER_TEMP/observability-build/rust"
+          mkdir -p "$RUNNER_TEMP/cvm-cargo" "$RUNNER_TEMP/cvm-rust-target" "$RUNNER_TEMP/cvm-rust-system/archives/partial" "$RUNNER_TEMP/cvm-rust-system/lists/partial" "$root/context/app/target/release"
+          docker run --rm \
+            --platform linux/amd64 \
+            -v "$PWD/candidate:/workspace" \
+            -v "$RUNNER_TEMP/cvm-cargo:/cargo" \
+            -v "$RUNNER_TEMP/cvm-rust-target:/target" \
+            -v "$RUNNER_TEMP/cvm-rust-system/archives:/var/cache/apt/archives" \
+            -v "$RUNNER_TEMP/cvm-rust-system/lists:/var/lib/apt/lists" \
+            -v "$RUNNER_TEMP/observability-build/rust:/out" \
+            -e APP_EFFECTIVE_VERSION="$APP_EFFECTIVE_VERSION" \
+            -e APP_GIT_REVISION="$CANDIDATE" \
+            -e CARGO_HOME=/cargo \
+            -e CARGO_TARGET_DIR=/target \
+            "$RUST_IMAGE" sh -ec '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends pkg-config libsqlite3-dev binutils python3
+              cd /workspace
+              PRODUCTION_BUILD_FORCE_REBUILD=1 sh scripts/production-build.sh rust
+              cp /target/release/codex-vibe-monitor /out/codex-vibe-monitor
+              python3 scripts/export-observability-symbols.py --binary /target/release/codex-vibe-monitor --output /out/symbols --revision "$APP_GIT_REVISION"
+            '
+          cp "$root/codex-vibe-monitor" "$root/context/app/target/release/codex-vibe-monitor"
+          cp -R "$root/symbols" "$root/context/symbols"
+          tar -C "$root/context" -czf "$root/component.tar.gz" .
+          finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" DEPS_CACHE_HIT="$DEPS_CACHE_HIT" TARGET_CACHE_HIT="$TARGET_CACHE_HIT" SYSTEM_CACHE_HIT="$SYSTEM_CACHE_HIT" DEPS_CACHE_KEY="$DEPS_CACHE_KEY" TARGET_CACHE_KEY="$TARGET_CACHE_KEY" SYSTEM_CACHE_KEY="$SYSTEM_CACHE_KEY" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          from datetime import datetime
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'rust'
+          timing=json.loads((root/'cache-timing.json').read_text())
+          archive=root/'component.tar.gz'
+          elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
+          archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          deps=os.environ['DEPS_CACHE_HIT']=='true'
+          target=os.environ['TARGET_CACHE_HIT']=='true'
+          system=os.environ['SYSTEM_CACHE_HIT']=='true'
+          card={'schema':'cvm-performance-build-component-v1','component':'rust','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'hit' if deps and target and system else 'partial' if deps or target or system else 'miss','restoreDetails':{'dependencies':'hit' if deps else 'miss','target':'hit' if target else 'miss','system':'hit' if system else 'miss'},'keys':{'dependencies':os.environ['DEPS_CACHE_KEY'],'target':os.environ['TARGET_CACHE_KEY'],'system':os.environ['SYSTEM_CACHE_KEY']},'restoreSeconds':timing['restoreSeconds'],'save':'pending','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'transfer':{'archiveBytes':archive.stat().st_size},'contextType':'local','contextPath':'context'}
+          (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
+          PY
+
+      - name: Build Web production artifact
+        if: matrix.component == 'web'
+        env:
+          CACHE_HIT: ${{ steps.web-cache.outputs.cache-hit || 'false' }}
+          CACHE_KEY: ${{ needs.observability-performance-resolve.outputs.web_deps_cache_key }}
+        run: |
+          set -euo pipefail
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          root="$RUNNER_TEMP/observability-build/web"
+          mkdir -p "$RUNNER_TEMP/cvm-bun" "$root/context/app/web"
+          docker run --rm \
+            --platform linux/amd64 \
+            -v "$PWD/candidate:/workspace" \
+            -v "$RUNNER_TEMP/cvm-bun:/bun-cache" \
+            -v "$RUNNER_TEMP/observability-build/web:/out" \
+            -e VITE_APP_VERSION="$APP_EFFECTIVE_VERSION" \
+            -e BUN_INSTALL_CACHE_DIR=/bun-cache \
+            "$WEB_IMAGE" sh -ec '
+              cd /workspace/web
+              sh ../scripts/production-build.sh web
+              cp -R dist /out/dist
+            '
+          cp -R "$root/dist" "$root/context/app/web/dist"
+          tar -C "$root/context" -czf "$root/component.tar.gz" .
+          finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" CACHE_HIT="$CACHE_HIT" CACHE_KEY="$CACHE_KEY" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          from datetime import datetime
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'web'
+          timing=json.loads((root/'cache-timing.json').read_text())
+          archive=root/'component.tar.gz'
+          elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
+          archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          card={'schema':'cvm-performance-build-component-v1','component':'web','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':'hit' if os.environ['CACHE_HIT']=='true' else 'miss','restoreDetails':{'dependencies':'hit' if os.environ['CACHE_HIT']=='true' else 'miss'},'key':os.environ['CACHE_KEY'],'restoreSeconds':timing['restoreSeconds'],'save':'pending','namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'transfer':{'archiveBytes':archive.stat().st_size},'contextType':'local','contextPath':'context'}
+          (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
+          PY
+
+      - name: Build runtime-base production artifact
+        if: matrix.component == 'runtime-base'
+        run: |
+          set -euo pipefail
+          # Assemble the production runtime-base context.
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          root="$RUNNER_TEMP/observability-build/runtime-base"
+          mkdir -p "$root"
+          build_log="$RUNNER_TEMP/observability-runtime-base-build.log"
+          set +e
+          docker buildx build \
+            --platform linux/amd64 \
+            --target runtime-base-builder \
+            --progress=rawjson \
+            --output "type=oci,dest=$root/component.tar" \
+            --cache-from "type=gha,scope=observability-performance-v2-runtime-base-${{ needs.observability-performance-resolve.outputs.runtime_cache_key }}" \
+            --cache-to "type=gha,scope=observability-performance-v2-runtime-base-${{ needs.observability-performance-resolve.outputs.runtime_cache_key }},mode=max,ignore-error=true,timeout=60s" \
+            --build-arg "RUNTIME_BASE=$RUNTIME_IMAGE" \
+            candidate 2>&1 | tee "$build_log"
+          build_status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$build_status" -ne 0 ]; then
+            exit "$build_status"
+          fi
+          python3 - "$build_log" "$root/cache-observation.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          from datetime import datetime
+
+          log_path = pathlib.Path(sys.argv[1])
+          output_path = pathlib.Path(sys.argv[2])
+          events = []
+          for line in log_path.read_text(errors="replace").splitlines():
+              try:
+                  value = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              vertex = value.get("vertex")
+              if not isinstance(vertex, dict):
+                  continue
+              name = str(vertex.get("name", ""))
+              lowered = name.lower()
+              events.append({
+                  "name": name,
+                  "lowered": lowered,
+                  "cached": vertex.get("cached"),
+                  "started": vertex.get("started"),
+                  "completed": vertex.get("completed"),
+              })
+
+          def elapsed(item):
+              started = item.get("started")
+              completed = item.get("completed")
+              if not started or not completed:
+                  return None
+              try:
+                  first = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                  last = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+              except ValueError:
+                  return None
+              return round((last - first).total_seconds(), 3)
+
+          restore_events = [
+              item for item in events
+              if "import cache" in item["lowered"] or "cache import" in item["lowered"]
+          ]
+          save_events = [
+              item for item in events
+              if "export cache" in item["lowered"] or "cache export" in item["lowered"]
+          ]
+          restore_seconds = next((elapsed(item) for item in restore_events if elapsed(item) is not None), None)
+          save_seconds = next((elapsed(item) for item in save_events if elapsed(item) is not None), None)
+          cached_vertices = [item for item in events if item.get("cached") is True]
+          restore = "hit" if cached_vertices else "miss"
+          log_text = log_path.read_text(errors="replace").lower()
+          if any(token in log_text for token in ("failed to export cache", "error exporting cache", "failed to push")):
+              save = "failed"
+          elif save_events and save_seconds is not None:
+              save = "saved"
+          else:
+              save = "unknown"
+          output_path.write_text(json.dumps({
+              "restore": restore,
+              "restoreSeconds": restore_seconds,
+              "save": save,
+              "saveSeconds": save_seconds,
+              "eventCount": len(events),
+          }) + "\n")
+          PY
+          gzip -1 "$root/component.tar"
+          finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" CACHE_KEY="${{ needs.observability-performance-resolve.outputs.runtime_cache_key }}" STARTED="$started" FINISHED="$finished" RUNNER_NAME="$RUNNER_NAME" python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          from datetime import datetime
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-build'/'runtime-base'
+          observation=json.loads((root/'cache-observation.json').read_text())
+          archive=root/'component.tar.gz'
+          elapsed=(datetime.fromisoformat(os.environ['FINISHED'].replace('Z','+00:00'))-datetime.fromisoformat(os.environ['STARTED'].replace('Z','+00:00'))).total_seconds()
+          archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+          card={'schema':'cvm-performance-build-component-v1','component':'runtime-base','candidate':os.environ['CANDIDATE'],'buildIdentity':os.environ['BUILD_IDENTITY'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['STARTED'],'finishedAt':os.environ['FINISHED'],'elapsedSeconds':elapsed,'cache':{'restore':observation['restore'],'restoreDetails':{'buildkitLog':'hit' if observation['restore']=='hit' else 'miss','eventCount':observation['eventCount']},'restoreSeconds':observation['restoreSeconds'],'key':os.environ['CACHE_KEY'],'save':observation['save'],'saveSeconds':observation['saveSeconds'],'namespace':'observability-performance-v2'},'artifact':'component.tar.gz','archiveSha256':archive_sha,'imageId':'sha256:'+archive_sha,'transfer':{'archiveBytes':archive.stat().st_size},'contextType':'oci-layout','contextPath':'oci'}
+          (root/'component.json').write_text(json.dumps(card,indent=2)+'\n')
+          PY
+
+      - name: Start dependency cache save timing
+        if: matrix.component == 'rust' || matrix.component == 'web'
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          python3 - "$RUNNER_TEMP/observability-build/$COMPONENT/cache-timing.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import time
+
+          path = pathlib.Path(sys.argv[1])
+          value = json.loads(path.read_text())
+          value["saveStarted"] = time.time()
+          path.write_text(json.dumps(value))
+          PY
+
+      - name: Save Rust dependency cache
+        id: rust-cache-save
+        if: matrix.component == 'rust' && steps.rust-deps-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-cargo
+          key: ${{ needs.observability-performance-resolve.outputs.rust_deps_cache_key }}
+
+      - name: Save Rust target cache
+        id: rust-target-cache-save
+        if: matrix.component == 'rust' && steps.rust-target-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-rust-target
+          key: ${{ needs.observability-performance-resolve.outputs.rust_target_cache_key }}
+
+      - name: Save Rust system package cache
+        id: rust-system-cache-save
+        if: matrix.component == 'rust' && steps.rust-system-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-rust-system
+          key: ${{ needs.observability-performance-resolve.outputs.rust_system_cache_key }}
+
+      - name: Finalize Rust cache report
+        if: always() && matrix.component == 'rust'
+        env:
+          CACHE_SAVE_OUTCOME: ${{ steps.rust-cache-save.outcome }}
+          TARGET_CACHE_SAVE_OUTCOME: ${{ steps.rust-target-cache-save.outcome }}
+          SYSTEM_CACHE_SAVE_OUTCOME: ${{ steps.rust-system-cache-save.outcome }}
+        run: |
+          python3 - "$RUNNER_TEMP/observability-build/rust/component.json" "$CACHE_SAVE_OUTCOME" "$TARGET_CACHE_SAVE_OUTCOME" "$SYSTEM_CACHE_SAVE_OUTCOME" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          value = json.loads(path.read_text())
+          outcomes = sys.argv[2:]
+          if outcomes and all(outcome == "skipped" for outcome in outcomes):
+              result = "skipped"
+          elif outcomes and all(outcome == "success" for outcome in outcomes):
+              result = "saved"
+          elif any(outcome in {"failure", "cancelled", "timed_out"} for outcome in outcomes):
+              result = "partial" if "success" in outcomes else "failed"
+          elif "success" in outcomes:
+              result = "partial"
+          else:
+              result = "unknown"
+          value["cache"]["save"] = result
+          timing = json.loads((path.parent / "cache-timing.json").read_text())
+          timing["saveSeconds"] = 0.0 if all(outcome == "skipped" for outcome in outcomes) else round(__import__("time").time() - timing["saveStarted"], 3)
+          (path.parent / "cache-timing.json").write_text(json.dumps(timing))
+          value["cache"]["saveSeconds"] = timing["saveSeconds"]
+          path.write_text(json.dumps(value, indent=2) + "\n")
+          PY
+
+      - name: Save Bun dependency cache
+        id: web-cache-save
+        if: matrix.component == 'web' && steps.web-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/cvm-bun
+          key: ${{ needs.observability-performance-resolve.outputs.web_deps_cache_key }}
+
+      - name: Finalize Web cache report
+        if: always() && matrix.component == 'web'
+        env:
+          CACHE_SAVE_OUTCOME: ${{ steps.web-cache-save.outcome }}
+        run: |
+          python3 - "$RUNNER_TEMP/observability-build/web/component.json" "$CACHE_SAVE_OUTCOME" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          value = json.loads(path.read_text())
+          value["cache"]["save"] = {
+              "success": "saved",
+              "failure": "failed",
+              "skipped": "skipped",
+          }.get(sys.argv[2], "unknown")
+          timing = json.loads((path.parent / "cache-timing.json").read_text())
+          timing["saveSeconds"] = 0.0 if sys.argv[2] == "skipped" else round(__import__("time").time() - timing["saveStarted"], 3)
+          (path.parent / "cache-timing.json").write_text(json.dumps(timing))
+          value["cache"]["saveSeconds"] = timing["saveSeconds"]
+          path.write_text(json.dumps(value, indent=2) + "\n")
+          PY
+
+      - name: Upload verified producer artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: observability-build-${{ github.run_id }}-${{ matrix.component }}
+          path: ${{ runner.temp }}/observability-build/${{ matrix.component }}/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  observability-performance-image:
+    name: Observability Performance Image
+    needs: [observability-performance-resolve, observability-performance-producer]
+    if: >-
+      always() && needs.observability-performance-resolve.result == 'success' &&
+      (needs.observability-performance-resolve.outputs.effective_build_path == 'canonical' ||
+      needs.observability-performance-resolve.outputs.complete_image_cache_hit == 'true' ||
+      needs.observability-performance-producer.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      candidate: ${{ needs.observability-performance-resolve.outputs.candidate }}
+      candidate_repository: ${{ needs.observability-performance-resolve.outputs.candidate_repository }}
+      trusted_ref: ${{ needs.observability-performance-resolve.outputs.trusted_ref }}
+      build_identity: ${{ needs.observability-performance-resolve.outputs.build_identity }}
+      build_path: ${{ needs.observability-performance-resolve.outputs.effective_build_path }}
+      acceptance_started: ${{ steps.acceptance_clock.outputs.started }}
+    env:
+      CANDIDATE: ${{ needs.observability-performance-resolve.outputs.candidate }}
+      BUILD_IDENTITY: ${{ needs.observability-performance-resolve.outputs.build_identity }}
+      APP_EFFECTIVE_VERSION: ${{ needs.observability-performance-resolve.outputs.app_effective_version }}
+      BUILD_PATH: ${{ needs.observability-performance-resolve.outputs.effective_build_path }}
+      COMPLETE_IMAGE_CACHE_HIT: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_hit }}
+      COMPLETE_IMAGE_CACHE_RESTORE_SECONDS: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_restore_seconds }}
+    steps:
+      - name: Checkout candidate assembly sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ needs.observability-performance-resolve.outputs.candidate_repository }}
+          ref: refs/heads/main
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+
+      - name: Pin candidate assembly sources
+        env:
+          CANDIDATE: ${{ needs.observability-performance-resolve.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          git -C candidate fetch --no-tags --force origin "$CANDIDATE"
+          git -C candidate checkout --detach FETCH_HEAD
+
+      - name: Checkout trusted archive validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.observability-performance-resolve.outputs.trusted_ref }}
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Download verified complete image cache
+        if: env.COMPLETE_IMAGE_CACHE_HIT == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: observability-cached-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/observability-image
+
+      - name: Load and verify complete image cache
+        if: env.COMPLETE_IMAGE_CACHE_HIT == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
+          metadata=json.loads((root/'candidate.json').read_text())
+          assert metadata['candidate']==os.environ['CANDIDATE']
+          assert metadata['buildIdentity']==os.environ['BUILD_IDENTITY']
+          assert hashlib.sha256((root/'candidate.tar.gz').read_bytes()).hexdigest()==metadata['archiveSha256']
+          subprocess.run(['docker','load','--input',str(root/'candidate.tar.gz')],check=True)
+          image=json.loads(subprocess.check_output(['docker','image','inspect',metadata['imageId']],text=True))[0]
+          assert image['Config']['Labels']['org.opencontainers.image.revision']==metadata['candidate']
+          PY
+
+      - name: Download verified producer artifacts
+        if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          pattern: observability-build-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/observability-build
+
+      - name: Load and verify producer artifacts
+        if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true'
+        run: |
+          set -euo pipefail
+          for component in rust web runtime-base; do
+            root="$RUNNER_TEMP/observability-build/observability-build-${GITHUB_RUN_ID}-${component}"
+            test -s "$root/component.tar.gz"
+            COMPONENT="$component" ROOT="$root" CANDIDATE="$CANDIDATE" BUILD_IDENTITY="$BUILD_IDENTITY" python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path(os.environ['ROOT'])
+          card=json.loads((root/'component.json').read_text())
+          assert card['schema']=='cvm-performance-build-component-v1'
+          assert card['component']==os.environ['COMPONENT']
+          assert card['candidate']==os.environ['CANDIDATE']
+          assert card['buildIdentity']==os.environ['BUILD_IDENTITY']
+          assert hashlib.sha256((root/'component.tar.gz').read_bytes()).hexdigest()==card['archiveSha256']
+          PY
+            case "$component" in
+              rust|web)
+                test "$(jq -r .contextType "$root/component.json")" = local
+                mkdir -p "$root/context"
+                python3 trusted/scripts/safe-extract-tar.py "$root/component.tar.gz" "$root/context"
+                test -f "$root/context/app/target/release/codex-vibe-monitor" || test -d "$root/context/app/web/dist"
+                ;;
+              runtime-base)
+                test "$(jq -r .contextType "$root/component.json")" = oci-layout
+                mkdir -p "$root/oci"
+                python3 trusted/scripts/safe-extract-tar.py "$root/component.tar.gz" "$root/oci"
+                test -f "$root/oci/index.json" -a -f "$root/oci/oci-layout"
+                ;;
+            esac
+          done
+
+      - name: Start image build clock
+        id: image_clock
+        run: echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble production image from verified contexts
+        if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
           context: candidate
           target: runtime
           platforms: linux/amd64
           load: true
           push: false
-          tags: cvm-observability:${{ steps.identity.outputs.candidate }}
+          tags: cvm-observability:${{ needs.observability-performance-resolve.outputs.candidate }}
           build-args: |
-            APP_GIT_REVISION=${{ steps.identity.outputs.candidate }}
-            APP_EFFECTIVE_VERSION=3.0.0-ci.${{ github.run_id }}.${{ github.run_attempt }}
-          cache-from: type=gha,scope=observability-performance-amd64
+            BUN_BASE=${{ needs.observability-performance-resolve.outputs.web_image }}
+            RUST_BASE=${{ needs.observability-performance-resolve.outputs.rust_image }}
+            RUNTIME_BASE=${{ needs.observability-performance-resolve.outputs.runtime_image }}
+            RUST_CONTEXT=rust-builder
+            RUST_SYMBOLS_CONTEXT=rust-symbols
+            WEB_CONTEXT=web-builder
+            RUNTIME_CONTEXT=runtime-base
+            APP_GIT_REVISION=${{ needs.observability-performance-resolve.outputs.candidate }}
+            APP_EFFECTIVE_VERSION=${{ needs.observability-performance-resolve.outputs.app_effective_version }}
+          build-contexts: |
+            rust-builder=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
+            rust-symbols=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-rust/context
+            web-builder=${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-web/context
+            runtime-base=oci-layout://${{ runner.temp }}/observability-build/observability-build-${{ github.run_id }}-runtime-base/oci
+          cache-from: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }}
+          cache-to: type=gha,scope=observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }},mode=max,ignore-error=true,timeout=60s
+
+      - name: Build canonical production image
+        if: env.BUILD_PATH == 'canonical'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: candidate
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cvm-observability:${{ needs.observability-performance-resolve.outputs.candidate }}
+          build-args: |
+            BUN_BASE=${{ needs.observability-performance-resolve.outputs.web_image }}
+            RUST_BASE=${{ needs.observability-performance-resolve.outputs.rust_image }}
+            RUNTIME_BASE=${{ needs.observability-performance-resolve.outputs.runtime_image }}
+            APP_GIT_REVISION=${{ needs.observability-performance-resolve.outputs.candidate }}
+            APP_EFFECTIVE_VERSION=${{ needs.observability-performance-resolve.outputs.app_effective_version }}
+          cache-from: type=gha,scope=observability-performance-v2-canonical-${{ needs.observability-performance-resolve.outputs.build_identity }}
+          cache-to: type=gha,scope=observability-performance-v2-canonical-${{ needs.observability-performance-resolve.outputs.build_identity }},mode=max,ignore-error=true,timeout=60s
 
       - name: Export immutable candidate image
         env:
-          CANDIDATE: ${{ steps.identity.outputs.candidate }}
+          IMAGE_STARTED_AT: ${{ steps.image_clock.outputs.started }}
+          FALLBACK_REASON: ${{ needs.observability-performance-resolve.outputs.fallback_reason }}
+          COMPLETE_IMAGE_CACHE_HIT: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_hit }}
+          COMPLETE_IMAGE_CACHE_RESTORE_SECONDS: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_restore_seconds }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/observability-image"
           docker save "cvm-observability:$CANDIDATE" | gzip -1 > "$RUNNER_TEMP/observability-image/candidate.tar.gz"
+          export CANDIDATE BUILD_IDENTITY BUILD_PATH APP_EFFECTIVE_VERSION IMAGE_STARTED_AT FALLBACK_REASON COMPLETE_IMAGE_CACHE_HIT RUNNER_NAME
+          export COMPLETE_IMAGE_CACHE_RESTORE_SECONDS
+          export CACHE_KEY="observability-performance-v2-image-$BUILD_IDENTITY"
           python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
+          from datetime import datetime,timezone
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
           sha=os.environ['CANDIDATE']
           image=json.loads(subprocess.check_output(['docker','image','inspect','cvm-observability:'+sha],text=True))[0]
           assert image['Config']['Labels']['org.opencontainers.image.revision']==sha
-          digest=hashlib.file_digest((root/'candidate.tar.gz').open('rb'),'sha256').hexdigest()
-          (root/'candidate.json').write_text(json.dumps({'candidate':sha,'imageId':image['Id'],'archiveSha256':digest},indent=2)+'\n')
+          archive=root/'candidate.tar.gz'
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          finished=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z')
+          elapsed=(datetime.fromisoformat(finished.replace('Z','+00:00'))-datetime.fromisoformat(os.environ['IMAGE_STARTED_AT'].replace('Z','+00:00'))).total_seconds()
+          restore_seconds=os.environ.get('COMPLETE_IMAGE_CACHE_RESTORE_SECONDS')
+          card={'schema':'cvm-performance-build-image-v1','candidate':sha,'buildIdentity':os.environ['BUILD_IDENTITY'],'buildPath':os.environ['BUILD_PATH'],'version':os.environ['APP_EFFECTIVE_VERSION'],'imageId':image['Id'],'archiveSha256':digest,'revision':image['Config']['Labels']['org.opencontainers.image.revision'],'status':'ready','runner':os.environ['RUNNER_NAME'],'startedAt':os.environ['IMAGE_STARTED_AT'],'finishedAt':finished,'elapsedSeconds':elapsed,'cache':{'namespace':'observability-performance-v2','status':'hit' if os.environ['COMPLETE_IMAGE_CACHE_HIT']=='true' else 'assembled','restore':'hit' if os.environ['COMPLETE_IMAGE_CACHE_HIT']=='true' else 'miss','restoreSeconds':float(restore_seconds) if restore_seconds else None,'save':'pending','saveSeconds':None,'key':os.environ['CACHE_KEY']},'transfer':{'archiveBytes':archive.stat().st_size},'fallbackReason':os.environ['FALLBACK_REASON']}
+          (root/'candidate.json').write_text(json.dumps({'schema':'cvm-performance-candidate-v1','candidate':sha,'buildIdentity':os.environ['BUILD_IDENTITY'],'buildPath':os.environ['BUILD_PATH'],'imageId':image['Id'],'archiveSha256':digest,'revision':sha,'version':os.environ['APP_EFFECTIVE_VERSION']},indent=2)+'\n')
+          (root/'image.json').write_text(json.dumps(card,indent=2)+'\n')
+          PY
+
+      - name: Start image cache save timing
+        id: image-cache-timing
+        run: echo "started=$(date +%s.%N)" >> "$GITHUB_OUTPUT"
+
+      - name: Save complete candidate image cache
+        id: image-cache-save
+        if: env.COMPLETE_IMAGE_CACHE_HIT != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/observability-image
+          key: observability-performance-v2-image-${{ needs.observability-performance-resolve.outputs.build_identity }}
+
+      - name: Finalize image cache report
+        if: always()
+        env:
+          IMAGE_CACHE_SAVE_OUTCOME: ${{ steps.image-cache-save.outcome }}
+          IMAGE_CACHE_HIT: ${{ env.COMPLETE_IMAGE_CACHE_HIT }}
+          IMAGE_CACHE_STARTED: ${{ steps.image-cache-timing.outputs.started }}
+        run: |
+          IMAGE_CACHE_SAVE_OUTCOME="$IMAGE_CACHE_SAVE_OUTCOME" IMAGE_CACHE_HIT="$IMAGE_CACHE_HIT" IMAGE_CACHE_STARTED="$IMAGE_CACHE_STARTED" python3 - "$RUNNER_TEMP/observability-image/image.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import time
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          if not path.is_file():
+              raise SystemExit(0)
+          value = json.loads(path.read_text())
+          if os.environ["IMAGE_CACHE_HIT"] == "true":
+              result = "skipped"
+              elapsed = 0.0
+          else:
+              outcome = os.environ["IMAGE_CACHE_SAVE_OUTCOME"]
+              result = {"success": "saved", "failure": "failed", "skipped": "skipped"}.get(outcome, "unknown")
+              elapsed = round(time.time() - float(os.environ["IMAGE_CACHE_STARTED"]), 3)
+          value["cache"]["save"] = result
+          value["cache"]["saveSeconds"] = elapsed
+          path.write_text(json.dumps(value, indent=2) + "\n")
           PY
 
       - name: Upload performance candidate image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: observability-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-image/
@@ -117,22 +1036,22 @@ jobs:
 
       - name: Start shared acceptance wall clock
         id: acceptance_clock
+        if: ${{ inputs.build_only != true }}
         timeout-minutes: 1
-        run: |
-          set -euo pipefail
-          started="$(date +%s)"
-          echo "started=$started" >> "$GITHUB_OUTPUT"
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
 
   observability-performance:
     name: Observability Acceptance (parallel workload lanes)
-    needs: observability-performance-image
+    needs: [observability-performance-resolve, observability-performance-image]
+    if: >-
+      always() && needs.observability-performance-resolve.result == 'success' &&
+      needs.observability-performance-image.result == 'success' &&
+      needs.observability-performance-resolve.outputs.build_only != 'true'
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
         lane: [runtime, pair-0, pair-1, pair-2]
-    # Each lane gets a fresh VM and owns its complete fixture, database,
-    # Compose project, sampler, and CPU admission. Pair modes stay serial.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -142,7 +1061,7 @@ jobs:
     steps:
       - name: Checkout trusted acceptance harness
         timeout-minutes: 1
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.observability-performance-image.outputs.trusted_ref }}
@@ -151,12 +1070,22 @@ jobs:
 
       - name: Checkout candidate identity
         timeout-minutes: 1
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ needs.observability-performance-image.outputs.candidate_repository }}
-          ref: ${{ needs.observability-performance-image.outputs.candidate }}
+          ref: refs/heads/main
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
+
+      - name: Pin candidate identity
+        timeout-minutes: 1
+        env:
+          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          git -C candidate fetch --no-tags --force origin "$CANDIDATE"
+          git -C candidate checkout --detach FETCH_HEAD
 
       - name: Verify acceptance source identities
         env:
@@ -170,7 +1099,7 @@ jobs:
 
       - name: Download performance candidate image
         timeout-minutes: 1
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: observability-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-image
@@ -185,7 +1114,7 @@ jobs:
           metadata=json.loads((root/'candidate.json').read_text())
           assert metadata['candidate']==os.environ['CANDIDATE']==subprocess.check_output(['git','-C','candidate','rev-parse','HEAD'],text=True).strip()
           archive=root/'candidate.tar.gz'
-          assert hashlib.file_digest(archive.open('rb'),'sha256').hexdigest()==metadata['archiveSha256']
+          assert hashlib.sha256(archive.read_bytes()).hexdigest()==metadata['archiveSha256']
           subprocess.run(['docker','load','--input',str(archive)],check=True)
           image=json.loads(subprocess.check_output(['docker','image','inspect',metadata['imageId']],text=True))[0]
           assert image['Config']['Labels']['org.opencontainers.image.revision']==metadata['candidate']
@@ -223,10 +1152,9 @@ jobs:
 
       - name: Upload workload acceptance evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane }}
-          # Whitelist synthetic evidence; exclude token files, Compose secrets and databases.
           path: |
             ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/runtime-card.json
             ${{ runner.temp }}/observability-acceptance/${{ matrix.lane }}/part-outcome.json
@@ -248,13 +1176,16 @@ jobs:
 
   observability-performance-result:
     name: Observability Performance Budget
-    needs: [observability-performance-image, observability-performance]
-    if: always() && needs.observability-performance-image.result == 'success'
+    needs: [observability-performance-resolve, observability-performance-image, observability-performance]
+    if: >-
+      always() && needs.observability-performance-resolve.result == 'success' &&
+      needs.observability-performance-image.result == 'success' &&
+      needs.observability-performance-resolve.outputs.build_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Checkout trusted acceptance harness
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.observability-performance-image.outputs.trusted_ref }}
@@ -262,15 +1193,24 @@ jobs:
           persist-credentials: false
 
       - name: Checkout candidate identity
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ needs.observability-performance-image.outputs.candidate_repository }}
-          ref: ${{ needs.observability-performance-image.outputs.candidate }}
+          ref: refs/heads/main
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
 
+      - name: Pin candidate identity
+        env:
+          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          git -C candidate fetch --no-tags --force origin "$CANDIDATE"
+          git -C candidate checkout --detach FETCH_HEAD
+
       - name: Download isolated acceptance parts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           pattern: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: ${{ runner.temp }}/observability-parts
@@ -297,7 +1237,7 @@ jobs:
 
       - name: Upload aggregated acceptance evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: observability-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -306,4 +1246,127 @@ jobs:
             ${{ runner.temp }}/observability-acceptance/ab-samples.json
             ${{ runner.temp }}/observability-acceptance/ab-summary.json
           if-no-files-found: error
+          retention-days: 14
+
+  observability-performance-build-report:
+    name: Observability Performance Build Report
+    needs: [observability-performance-resolve, observability-performance-producer, observability-performance-image]
+    if: always() && needs.observability-performance-resolve.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CANDIDATE: ${{ needs.observability-performance-resolve.outputs.candidate }}
+      BUILD_IDENTITY: ${{ needs.observability-performance-resolve.outputs.build_identity }}
+      BUILD_PATH: ${{ needs.observability-performance-resolve.outputs.effective_build_path }}
+      BUILD_ONLY: ${{ needs.observability-performance-resolve.outputs.build_only }}
+      COMPLETE_IMAGE_CACHE_HIT: ${{ needs.observability-performance-resolve.outputs.complete_image_cache_hit }}
+    steps:
+      - name: Checkout report generator from trusted workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.observability-performance-resolve.outputs.trusted_ref }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Download producer reports
+        if: env.BUILD_PATH == 'auto' && env.COMPLETE_IMAGE_CACHE_HIT != 'true' && needs.observability-performance-producer.result == 'success'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          pattern: observability-build-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/observability-build
+
+      - name: Download image report
+        if: needs.observability-performance-image.result == 'success'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: observability-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/observability-build/image
+
+      - name: Collect Actions job timestamps
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh run view "$RUN_ID" --repo "$REPOSITORY" --json jobs > "$RUNNER_TEMP/actions-jobs.json"
+          gh api "repos/$REPOSITORY/commits/$WORKFLOW_SHA/check-runs?per_page=100" > "$RUNNER_TEMP/actions-check-runs.json"
+          REPOSITORY="$REPOSITORY" WORKFLOW_SHA="$WORKFLOW_SHA" python3 - "$RUNNER_TEMP/actions-jobs.json" "$RUNNER_TEMP/actions-check-runs.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          jobs_path = pathlib.Path(sys.argv[1])
+          checks_path = pathlib.Path(sys.argv[2])
+          payload = json.loads(jobs_path.read_text())
+          checks_payload = json.loads(checks_path.read_text())
+          checks = checks_payload.get("check_runs")
+          if not isinstance(checks, list):
+              raise SystemExit("Actions check-runs payload did not contain check_runs")
+
+          tracked_names = {
+              "Observability Performance Producer (rust)",
+              "Observability Performance Producer (web)",
+              "Observability Performance Producer (runtime-base)",
+              "Observability Performance Image",
+          }
+          for job in payload.get("jobs", []):
+              name = job.get("name")
+              if name not in tracked_names:
+                  continue
+              matches = [
+                  check for check in checks
+                  if check.get("name") == name
+                  and check.get("started_at") == job.get("startedAt")
+                  and check.get("completed_at") == job.get("completedAt")
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"unable to match one check-run for {name!r} on workflow {os.environ['WORKFLOW_SHA']}: "
+                      f"matches={len(matches)}"
+                  )
+              job["createdAt"] = matches[0].get("created_at")
+          jobs_path.write_text(json.dumps(payload))
+          PY
+
+      - name: Generate build report
+        env:
+          RUN_STARTED_AT: ${{ needs.observability-performance-resolve.outputs.controller_started }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          PRODUCER_RESULT: ${{ needs.observability-performance-producer.result }}
+          IMAGE_RESULT: ${{ needs.observability-performance-image.result }}
+        run: |
+          set -euo pipefail
+          args=(
+            --input "$RUNNER_TEMP/observability-build"
+            --output "$RUNNER_TEMP/observability-build/build-report.json"
+            --candidate "$CANDIDATE"
+            --build-identity "$BUILD_IDENTITY"
+            --build-path "$BUILD_PATH"
+            --run-started "$RUN_STARTED_AT"
+            --jobs-json "$RUNNER_TEMP/actions-jobs.json"
+            --repository "$REPOSITORY"
+            --run-id "$RUN_ID"
+          )
+          if [ "$BUILD_ONLY" = "true" ]; then args+=(--build-only); fi
+          if [ "$IMAGE_RESULT" != "success" ]; then
+            args+=(--workflow-failure)
+          elif [ "$BUILD_PATH" = "auto" ] && [ "$PRODUCER_RESULT" != "success" ] && [ "$COMPLETE_IMAGE_CACHE_HIT" != "true" ]; then
+            args+=(--workflow-failure)
+          fi
+          test -f "$PWD/trusted/scripts/observability-build-report.py"
+          python3 "$PWD/trusted/scripts/observability-build-report.py" "${args[@]}"
+
+      - name: Upload build report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: observability-build-report-${{ github.run_id }}
+          path: ${{ runner.temp }}/observability-build/build-report.json
+          if-no-files-found: error
+          overwrite: true
           retention-days: 14

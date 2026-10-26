@@ -6,6 +6,13 @@
 
 ## 本地 Grafana 预览
 
+Observability Performance 的构建报告是独立的运维证据，不是性能预算卡：它记录实际 candidate、
+build identity、Actions job 排队/执行、runner 使用量、分层缓存 restore/save、artifact transfer
+和 image ready 时间。报告生成器使用只读 Actions job 查询，并在 job 失败、身份不一致或 auto
+装配缺少 producer card 时拒绝生成 `passed`；完整镜像命中时 producer job 按预期 skip。缓存
+namespace 与 release/Clippy/nextest 隔离，cache 写入失败只允许降级为 miss，不能掩盖必需构建、
+交接或校验失败。
+
 需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus、Tempo 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
 
 维护竞争的上线前后固定 UTC 窗口、查询集、处理量与采集质量要求见[维护竞争前后比较](contention-comparison.md)。观测版本上线后，修复开发与自然基线采集并行；基线充分性只约束修复上线。
@@ -181,8 +188,9 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
 完整性能验收只由 trusted `main` 上的 `workflow_dispatch` 手动启动，输入
-`candidate_ref` 可指定任意同仓库分支名或完整 40 字符提交 SHA；未显式启动时不阻塞普通
-PR Ready，且不得把未运行写成预算已验证。分支在 image job 中验证并规范为
+`candidate_ref` 可指定任意同仓库分支名或完整 40 字符提交 SHA；`build_only` 默认关闭，
+`build_path` 默认 `auto`，只有 build-only 验证允许选择 `canonical`。未显式启动时不阻塞普通
+PR Ready，且不得把未运行写成预算已验证。分支在 resolver job 中验证并规范为
 `refs/heads/<name>`，再由 `git rev-parse HEAD` 固定 candidate SHA；所有 workload、
 汇总和证据只绑定该 SHA。label、PR 事件和自动重试不会启动长测。
 任何测试环境通过都不能代替 101 公网验收。
@@ -193,15 +201,30 @@ PR Ready，且不得把未运行写成预算已验证。分支在 image job 中�
 共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
-`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用
-`candidate_ref` 解析出的同仓库候选提交构建生产镜像，并传输镜像 ID、revision 与 archive
-checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像：runtime lane 负责
+`.github/workflows/ci-observability-performance.yml` 先由 resolver 生成
+`cvm-performance-build-v1` identity；auto 路径在三个独立 `ubuntu-24.04` producer runner
+上并行生成 Rust、Web 和 runtime-base，再由 `Observability Performance Image` 使用
+verified named contexts 装配生产镜像，并从同一 Rust context 装入精确的
+`/usr/local/share/codex-vibe-monitor/symbols` 树。兼容缓存位于独立的 `observability-performance-v2`
+namespace，Rust target 编译产物 cache 绑定 candidate SHA；Cargo/Bun 下载和 APT 包 cache 按锁文件、基础镜像与包配方复用并由包管理器校验；缓存写入为 60 秒 best-effort；命中完整镜像时跳过 producer，未知配方回退到
+候选自己的 canonical Dockerfile。每个 build run 上传保留 14 天的
+`cvm-performance-build-report-v1`，报告实际恢复/保存、队列/执行、传输、装配和镜像 ready
+时间；workflow 使用 `contents: read`、`actions: write` 和 `checks: read`：`actions: write` 仅用于保存隔离的性能构建 cache，
+Actions job/check-run 仍按只读方式读取；第三方 action 均固定到完整 commit SHA，
+队列时间只在 Actions check-run 提供 `created_at` 时计算，否则记录为 unavailable，
+不以 run 起始时间或零值替代。报告 job 用只读 `gh run view --json jobs` 和同一 candidate
+check-runs 记录构建 job ID、状态和实际时间戳。
+完整镜像 cache 的 restore/save 使用完全相同的路径，避免 cache version 漂移造成假 miss。
+镜像仍传输 image ID、revision 与 archive checksum；四个独立 `ubuntu-24.04` workload lane 并行加载同一镜像：runtime lane 负责
 功能场景（含 original-process CPU attach），pair-0、pair-1、pair-2 各自完成一轮 paired
 suite；`Observability Performance Budget` 只校验和汇总证据。
 workflow 必须从 `main` 的 trusted revision 执行，以 `github.sha` 作为 trusted harness；
 候选 checkout 只用于构建隔离镜像和记录身份，测量、分类、汇总脚本都从 trusted checkout
 执行。每个分支记录 trusted harness SHA、candidate SHA、trusted/candidate harness digest，
 汇总器拒绝 harness 漂移并要求合并后用新的 `main` harness 显式复测。
+仅 build-only 资格运行允许候选参与构建，并从 candidate checkout 使用兼容的 build-report
+生成器描述资格运行；该报告不是预算或正式性能证据。它不启动测量、预算汇总或性能通过卡，
+不能作为 trusted harness 或预算证据。正式模式仍从 trusted checkout 读取生成器。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
 默认 5 req/s、3 次独立 runner 配对、每窗口 60 秒与 60 秒预热，三轮轮换模式顺序，每窗口须完成 300/300 请求；保留原始窗口及配对比值 CV ≤5%、CPU 非饱和、无尾部积压以及 CPU/完成请求与成功请求 p95 增幅 ≤5% 的门槛。三轮必须记录不同的 `runnerIdentity`、对应的 `runnerScope=parallel-pair-*` 和五项硬件字段，不能筛掉失败分支。
 资源准入不满足时标记 unavailable；窗口不稳定时不输出已接受的增幅结论。

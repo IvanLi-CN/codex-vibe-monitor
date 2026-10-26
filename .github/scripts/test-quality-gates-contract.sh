@@ -300,7 +300,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 needle = """      - name: Upload performance candidate image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: observability-image-${{ github.run_id }}
 """
@@ -320,7 +320,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   exit 1
 fi
 
-grep -q "observability performance image artifact must be run-scoped and replace the prior attempt" "$tmp_dir/observability-artifact.log"
+grep -q "ci-observability-performance.yml image artifact must be run scoped and required" "$tmp_dir/observability-artifact.log"
 
 smoke_artifact_repo="$tmp_dir/smoke-artifact-repo"
 copy_repo_snapshot "$repo_root" "$smoke_artifact_repo"

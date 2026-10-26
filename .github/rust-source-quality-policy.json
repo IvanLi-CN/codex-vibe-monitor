@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 47,
-    "suppression_entries": 126
+    "inventory_entries": 63,
+    "suppression_entries": 134
   },
   "loc_targets": {
     "production": 2500,
@@ -99,7 +99,7 @@
     {
       "path": "src/tests/lightweight/lightweight_test_support.rs",
       "role": "test_helper",
-      "line_budget": 457,
+      "line_budget": 458,
       "next_module_workstream": "Split lightweight test support by configuration, filesystem fixtures, and retention database builders."
     },
     {
@@ -205,10 +205,106 @@
       "next_module_workstream": "Maintain the completed sticky-key query, activity-window, recent-invocation, limit, and prompt-cache view fixtures below the test-helper target."
     },
     {
-      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_account_activity_v2_repairs.rs",
       "role": "test_helper",
-      "line_budget": 23992,
-      "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
+      "line_budget": 1385,
+      "next_module_workstream": "Maintain account-activity v2 exact-boundary, coverage, priority-repair, late-live-row, and rollup-attribution fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_dashboard_archive_fallback_and_recents.rs",
+      "role": "test_helper",
+      "line_budget": 1844,
+      "next_module_workstream": "Maintain dashboard archive fallback, recent preview hydration, progressive summary, attribution, and bounded-memory fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_dashboard_subscriptions_and_live_slices.rs",
+      "role": "test_helper",
+      "line_budget": 598,
+      "next_module_workstream": "Maintain dashboard subscription descriptors, snapshot payloads, terminal/live slices, TTL selection, and archive filtering fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_dashboard_summary_and_cache.rs",
+      "role": "test_helper",
+      "line_budget": 2792,
+      "next_module_workstream": "Maintain dashboard summary, natural-day aggregation, live accounts, cached snapshot overlay, and refresh fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_exact_archive_admission.rs",
+      "role": "test_helper",
+      "line_budget": 1233,
+      "next_module_workstream": "Maintain exact archive admission, rolling-window hydration, boundary paging, replacement, missing-key, and unavailable-state fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_failure_archive_fallback.rs",
+      "role": "test_helper",
+      "line_budget": 1289,
+      "next_module_workstream": "Maintain historical failure fallback, missing categories, partial archives, unreadable pending archives, and double-count protection fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_failure_classification_and_runtime_overlays.rs",
+      "role": "test_helper",
+      "line_budget": 729,
+      "next_module_workstream": "Maintain runtime timing overlays, legacy null and HTTP-200 failure classification, duration, and model-performance fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_fixture_support_and_archive_seeding.rs",
+      "role": "test_helper",
+      "line_budget": 434,
+      "next_module_workstream": "Maintain shared parallel-work locks, fixtures, archive seeding, time helpers, and public assertions."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_historical_stats_and_timeseries.rs",
+      "role": "test_helper",
+      "line_budget": 1647,
+      "next_module_workstream": "Maintain historical performance and timeseries reads across unmaterialized, legacy, unreadable, and pending archive paths."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_minute_projection_and_startup_recovery.rs",
+      "role": "test_helper",
+      "line_budget": 1381,
+      "next_module_workstream": "Maintain minute projection flush and acknowledgement ordering, fallback warming, startup recovery, schema refresh, fences, and cancellation fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_retention_and_minute_rollups.rs",
+      "role": "test_helper",
+      "line_budget": 876,
+      "next_module_workstream": "Maintain prompt-cache bucket, minute-rollup, retention maintenance, coverage, and pruning fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_rollup_repair_and_projection_fences.rs",
+      "role": "test_helper",
+      "line_budget": 1964,
+      "next_module_workstream": "Maintain stale rollup and summary repair, shared cursor, failure marker, archive readability, and projection-fence fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_stats_windows_and_etags.rs",
+      "role": "test_helper",
+      "line_budget": 563,
+      "next_module_workstream": "Maintain ETag, reporting-timezone, historical-window, current-page, day-bucket, and hour-bucket statistics fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_summary_archive_replay.rs",
+      "role": "test_helper",
+      "line_budget": 2635,
+      "next_module_workstream": "Maintain all-time summary, archive range, materialized replay, rolling boundary, and readable/unreadable sibling de-duplication fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_summary_usage_and_account_scopes.rs",
+      "role": "test_helper",
+      "line_budget": 1423,
+      "next_module_workstream": "Maintain account-scoped summary and timeseries, model usage, cost, reasoning effort, partial archive breakdown, and boundary-admission fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_timeseries_success_failure_metrics.rs",
+      "role": "test_helper",
+      "line_budget": 752,
+      "next_module_workstream": "Maintain TTFB, success-like and failure-like rows, snapshots, running rows, and base timeseries and summary metrics fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries/parallel_work_timeseries_windows_and_rollups.rs",
+      "role": "test_helper",
+      "line_budget": 2066,
+      "next_module_workstream": "Maintain TTFB and TTFT metrics, daily and hourly windows, archive boundaries, rollup status, and combined-total fixtures."
     },
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
@@ -237,7 +333,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6480,
+      "line_budget": 6489,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {
@@ -681,6 +777,12 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
+      "path": "src/tests/archive_file_io/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
       "path": "src/tests/archive_file_io/pool_invocation_orphan_recovery.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
@@ -711,6 +813,12 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
+      "path": "src/tests/lightweight/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
       "path": "src/tests/mod.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Test compatibility adapter mirrors the production resolver signature.\" )]",
@@ -724,9 +832,21 @@
     },
     {
       "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::type_complexity, reason = \"Test fixture tuples mirror statistics row shapes.\" )]",
       "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this facade allow for conditional shared imports used by descendant parallel-work test modules; remove it when facade ownership is narrowed further."
     },
     {
       "path": "src/tests/stateful_sqlite/mod.rs",
@@ -969,6 +1089,18 @@
       "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
+      "path": "src/upstream_accounts/tests.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for the upstream account test facade import; remove it when the test module narrows its crate-root compatibility imports."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
       "path": "src/upstream_accounts/tests/archive_file_io/mod.rs",
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
@@ -985,6 +1117,12 @@
       "kind": "allow",
       "declaration": "#[allow(unused_imports)]",
       "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
@@ -1045,6 +1183,12 @@
       "kind": "expect",
       "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
       "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/support/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/support/mod.rs; remove it when the listed test helper split stabilizes module ownership."
     },
     {
       "path": "src/upstream_accounts/tests/support/mod.rs",

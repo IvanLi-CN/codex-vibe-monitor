@@ -14,6 +14,15 @@ tokio::task_local! {
 }
 
 #[cfg(test)]
+tokio::task_local! {
+    static SUMMARY_PROJECTION_TEST_SETUP_DEADLINE: (
+        SummaryProjectionTestInterleave,
+        Duration,
+        std::sync::Arc<tokio::sync::Notify>,
+    );
+}
+
+#[cfg(test)]
 pub(super) async fn observe_bootstrap_timeout<T>(
     future: impl std::future::Future<Output = T>,
 ) -> (T, bool) {
@@ -4990,6 +4999,22 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     refresh_summary_snapshots_with_deadline(state, mode, Some(deadline), true).await
 }
 
+#[cfg(test)]
+pub(crate) async fn refresh_summary_snapshots_with_test_setup_deadline(
+    state: &AppState,
+    mode: SummaryProjectionBuildMode,
+    setup_deadline: Duration,
+    interleave: SummaryProjectionTestInterleave,
+    stage_reached: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<()> {
+    SUMMARY_PROJECTION_TEST_SETUP_DEADLINE
+        .scope(
+            (interleave, setup_deadline, stage_reached),
+            refresh_summary_snapshots_with_deadline(state, mode, Some(setup_deadline), true),
+        )
+        .await
+}
+
 async fn refresh_summary_snapshots_with_deadline(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
@@ -5075,24 +5100,7 @@ async fn refresh_summary_snapshots_with_deadline(
         previous_all_time,
         durable_terminal_sequence_watermark,
     );
-    let build_result = match (mode, deadline) {
-        (
-            SummaryProjectionBuildMode::HistoricalLiveCoverage
-            | SummaryProjectionBuildMode::AllTime,
-            Some(deadline),
-        ) => await_summary_projection_all_time_build(state, build, deadline).await,
-        (_, Some(deadline)) => tokio::time::timeout(deadline, build)
-            .await
-            .map_err(|_| {
-                #[cfg(test)]
-                if matches!(mode, SummaryProjectionBuildMode::Bootstrap) {
-                    let _ = BOOTSTRAP_TIMEOUT_ELAPSED.try_with(|elapsed| elapsed.set(true));
-                }
-                anyhow!("summary projection build exceeded {deadline:?}")
-            })
-            .and_then(|result| result),
-        (_, None) => build.await,
-    };
+    let build_result = await_summary_projection_build(state, mode, deadline, build).await;
     let (projection, used_bootstrap_fallback) = match build_result {
         Ok(projection) => (projection, false),
         Err(error)
@@ -5235,6 +5243,84 @@ async fn refresh_summary_snapshots_with_deadline(
         "summary projection build published"
     );
     Ok(())
+}
+
+async fn await_summary_projection_build(
+    state: &AppState,
+    mode: SummaryProjectionBuildMode,
+    deadline: Option<Duration>,
+    build: impl std::future::Future<Output = Result<SummaryProjection>>,
+) -> Result<SummaryProjection> {
+    #[cfg(test)]
+    if matches!(mode, SummaryProjectionBuildMode::Rolling)
+        && let Some((interleave, setup_deadline, stage_reached)) =
+            SUMMARY_PROJECTION_TEST_SETUP_DEADLINE
+                .try_with(|(interleave, setup_deadline, stage_reached)| {
+                    (interleave.clone(), *setup_deadline, stage_reached.clone())
+                })
+                .ok()
+    {
+        return await_summary_projection_with_test_setup_deadline(
+            build,
+            setup_deadline,
+            interleave,
+            stage_reached,
+        )
+        .await;
+    }
+    match (mode, deadline) {
+        (
+            SummaryProjectionBuildMode::HistoricalLiveCoverage
+            | SummaryProjectionBuildMode::AllTime,
+            Some(deadline),
+        ) => await_summary_projection_all_time_build(state, build, deadline).await,
+        (_, Some(deadline)) => tokio::time::timeout(deadline, build)
+            .await
+            .map_err(|_| {
+                #[cfg(test)]
+                if matches!(mode, SummaryProjectionBuildMode::Bootstrap) {
+                    let _ = BOOTSTRAP_TIMEOUT_ELAPSED.try_with(|elapsed| elapsed.set(true));
+                }
+                anyhow!("summary projection build exceeded {deadline:?}")
+            })
+            .and_then(|result| result),
+        (_, None) => build.await,
+    }
+}
+
+#[cfg(test)]
+async fn await_summary_projection_with_test_setup_deadline(
+    build: impl std::future::Future<Output = Result<SummaryProjection>>,
+    setup_deadline: Duration,
+    interleave: SummaryProjectionTestInterleave,
+    stage_reached: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<SummaryProjection> {
+    let mut build = Box::pin(build);
+    let stage = interleave.wait_for_writer();
+    let setup_timeout = tokio::time::sleep(setup_deadline);
+    tokio::pin!(stage);
+    tokio::pin!(setup_timeout);
+    tokio::select! {
+        result = &mut build => {
+            stage_reached.notify_one();
+            result
+        }
+        _ = &mut stage => {
+            stage_reached.notify_one();
+            tokio::time::timeout(SUMMARY_PROJECTION_BUILD_DEADLINE, &mut build)
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "summary projection build exceeded {SUMMARY_PROJECTION_BUILD_DEADLINE:?}"
+                    )
+                })
+                .and_then(|result| result)
+        }
+        _ = &mut setup_timeout => {
+            stage_reached.notify_one();
+            Err(anyhow!("summary projection setup exceeded {setup_deadline:?}"))
+        }
+    }
 }
 
 async fn await_summary_projection_all_time_build(

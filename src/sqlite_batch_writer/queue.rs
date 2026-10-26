@@ -137,7 +137,7 @@ pub(super) fn is_attempt_progress_write(write: &SqliteBatchWrite) -> bool {
 }
 
 pub(super) fn decrement_queued_p1_count(queued_p1_count: &AtomicUsize) {
-    let _ = queued_p1_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+    let _ = queued_p1_count.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
         count.checked_sub(1)
     });
 }
