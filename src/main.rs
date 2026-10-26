@@ -130,9 +130,6 @@ mod storage;
 mod summary_source_change;
 mod system_storage;
 pub(crate) use dashboard_network_speed::*;
-#[cfg(test)]
-#[path = "tests/postgres/mod.rs"]
-mod postgres_tests;
 mod sqlite_batch_writer;
 #[expect(
     clippy::type_complexity,

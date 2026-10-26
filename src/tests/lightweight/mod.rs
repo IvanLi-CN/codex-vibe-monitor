@@ -14,6 +14,7 @@ mod lightweight_test_support;
 mod models_dev_http_client;
 mod observability_lifecycles;
 mod performance_index_cli;
+mod postgres_tests;
 mod prompt_cache_attribution;
 mod raw_capture_overflow_and_projection;
 mod raw_payload_file_storage;
