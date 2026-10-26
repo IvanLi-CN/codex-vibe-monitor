@@ -1236,31 +1236,39 @@ async fn open_archive_batch_pool(
             }
             return Err(err);
         }
-        // Lazy pool construction is synchronous. The first connection is opened separately
-        // below so its native lifetime is owned by the drain task rather than by a cancellable
-        // SQLx pool-acquire future.
+        // Keep pool construction lazy for the caller, but prewarm its only connection inside the
+        // owner task below so native initialization is never owned by the caller's future.
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
+            // The owner task below is the only path allowed to open this pool. The long watchdog
+            // is not a retention budget; it prevents SQLx's default short acquire timeout from
+            // cancelling native SQLite initialization before the drain owner can close it.
+            .acquire_timeout(Duration::from_secs(365 * 24 * 60 * 60))
+            // The owner task prewarms the sole connection. Without a pre-acquire ping, later
+            // cancellation cannot drop an already-idle native connection between acquire and
+            // handing it to the archive query.
+            .test_before_acquire(false)
             .connect_lazy(&sqlite_url_for_path(&temp_path))
             .context("failed to configure archive batch")?;
         let mut pool_drain =
             ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
         let expected_table_for_open = expected_table.to_owned();
-        let archive_url = sqlite_url_for_path(&temp_path);
+        let open_pool = archive_pool.clone();
         let open_task =
             tokio::spawn(crate::maintenance::with_file_phase_permit(
                 file_phase.clone(),
                 async move {
-                    let mut connection = SqliteConnection::connect(&archive_url)
+                    let mut connection = open_pool
+                        .acquire()
                         .await
-                        .context("failed to connect archive batch")?;
+                        .context("failed to open archive batch")?;
                     let is_invocation_archive = expected_table_for_open == "codex_invocations";
                     let result: Result<i64> = async {
                         let has_expected_table = sqlx::query_scalar::<_, i64>(
                             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
                         )
                         .bind(expected_table_for_open)
-                        .fetch_one(&mut connection)
+                        .fetch_one(&mut *connection)
                         .await
                         .context("failed to open archive batch")?;
                         if is_invocation_archive && has_expected_table != 0 {
@@ -1272,15 +1280,8 @@ async fn open_archive_batch_pool(
                         Ok(has_expected_table)
                     }
                     .await;
-                    let close_result = connection
-                        .close()
-                        .await
-                        .context("failed to close archive batch opener");
-                    match (result, close_result) {
-                        (Err(error), _) => Err(error),
-                        (Ok(_), Err(error)) => Err(error),
-                        (Ok(value), Ok(())) => Ok(value),
-                    }
+                    drop(connection);
+                    result
                 },
             ));
         pool_drain.set_open_task(open_task);
@@ -1305,9 +1306,6 @@ async fn open_archive_batch_pool(
             drop(archive_pool);
             pool_drain.complete().await;
             return Ok(None);
-        }
-        if expected_table == "codex_invocations" {
-            ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
         }
 
         let temp_cleanup = pool_drain.disarm();
