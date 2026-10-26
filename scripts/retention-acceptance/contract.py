@@ -200,6 +200,36 @@ def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
     )
 
 
+def task_run_is_accepted_zero_contribution_competitor_defer(row: dict[str, Any]) -> bool:
+    """Accept a legal file-admission defer without counting work that did not run."""
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    if row.get("committed_work") is not None or row.get("committed_bytes") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    if details.get("admissionStage") not in ("file_phase", "archive_file_phase"):
+        return False
+    if details.get("waitReason") not in ("file_phase_busy", "archive_directory_lock_busy"):
+        return False
+    return all(
+        details.get(field) is None
+        for field in (
+            "filesChecked",
+            "directoryEntriesChecked",
+            "reconciliationRowsChecked",
+            "filesReleased",
+            "bytesReleased",
+            "referencedSkipped",
+            "quarantined",
+            "failures",
+        )
+    )
+
+
 def task_run_is_recoverable_competitor_chunk(row: dict[str, Any]) -> bool:
     """Recognize a progressed chunk whose transient failure was retried later."""
     if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
@@ -356,8 +386,13 @@ def _validate_task_runs(
         finished = parse_time(row.get("actual_finished_at"))
         _require(finished >= started, "task run has an inverted execution interval")
         _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
+        zero_contribution_defer = (
+            key == COMPETITOR_TASK
+            and task_run_is_accepted_zero_contribution_competitor_defer(row)
+        )
         accepted = (
-            task_run_is_accepted_competitor_chunk(row)
+            zero_contribution_defer
+            or task_run_is_accepted_competitor_chunk(row)
             if key == COMPETITOR_TASK
             else task_run_is_accepted_terminal(row)
         )
@@ -374,7 +409,10 @@ def _validate_task_runs(
             recoverable_competitor_rows.append(row)
         _require(accepted, f"background task {key} did not finish successfully or commit valid work")
         work = row.get("committed_work")
-        _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
+        if zero_contribution_defer:
+            _require(work is None, f"task {key} zero-contribution defer reported committed work")
+        else:
+            _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
 
     for row in recoverable_competitor_rows:
@@ -403,16 +441,21 @@ def _validate_task_runs(
 
     competitor = by_key.get(COMPETITOR_TASK, [])
     _require(competitor, "real background competitor evidence is missing")
-    competitor_work = sum(row["committed_work"] for row in competitor)
+    counted_competitor = [
+        row
+        for row in competitor
+        if not task_run_is_accepted_zero_contribution_competitor_defer(row)
+    ]
+    competitor_work = sum(row["committed_work"] for row in counted_competitor)
     _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
     competitor_bytes = [
         row.get("committed_bytes")
-        for row in competitor
+        for row in counted_competitor
         if row.get("committed_bytes") is not None
     ]
     if competitor_bytes:
         _require(
-            len(competitor_bytes) == len(competitor)
+            len(competitor_bytes) == len(counted_competitor)
             and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in competitor_bytes)
             and sum(competitor_bytes) == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
             "background competitor released an unexpected byte count",

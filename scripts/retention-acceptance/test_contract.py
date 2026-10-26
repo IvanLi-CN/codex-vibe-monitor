@@ -22,6 +22,7 @@ from contract import (
     AcceptanceError,
     sha256_json,
     task_run_is_accepted_competitor_chunk,
+    task_run_is_accepted_zero_contribution_competitor_defer,
     task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
@@ -358,6 +359,33 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(task_run_is_accepted_competitor_chunk(row))
         self.assertFalse(task_run_is_recoverable_competitor_chunk(row))
 
+    def test_zero_contribution_file_phase_defer_does_not_claim_work(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "deferred",
+            "error_detail": None,
+            "committed_work": None,
+            "committed_bytes": None,
+            "details": {
+                "filesChecked": None,
+                "directoryEntriesChecked": None,
+                "reconciliationRowsChecked": None,
+                "filesReleased": None,
+                "bytesReleased": None,
+                "referencedSkipped": None,
+                "quarantined": None,
+                "failures": None,
+                "waitReason": "file_phase_busy",
+                "admissionStage": "file_phase",
+            },
+        }
+        self.assertTrue(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["waitReason"] = "sqlite_pressure"
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["waitReason"] = "file_phase_busy"
+        row["committed_work"] = 0
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+
     def test_evidence_validator_accepts_retried_competitor_chunk_after_oracle_completion(self) -> None:
         evidence = valid_evidence()
         row = next(
@@ -387,6 +415,50 @@ class ContractTests(unittest.TestCase):
             }
         )
         validate_evidence(evidence)
+
+    def test_evidence_validator_accepts_zero_contribution_file_phase_defer(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "deferred",
+                "error_detail": None,
+                "committed_work": None,
+                "committed_bytes": None,
+                "details": {
+                    "filesChecked": None,
+                    "directoryEntriesChecked": None,
+                    "reconciliationRowsChecked": None,
+                    "filesReleased": None,
+                    "bytesReleased": None,
+                    "referencedSkipped": None,
+                    "quarantined": None,
+                    "failures": None,
+                    "waitReason": "file_phase_busy",
+                    "admissionStage": "file_phase",
+                },
+            }
+        )
+        evidence["versions"]["baseline"]["trials"][0]["task_runs"].append(
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(datetime(2026, 10, 24, 0, 0, 11, tzinfo=timezone.utc)),
+                "actual_finished_at": timestamp(datetime(2026, 10, 24, 0, 0, 12, tzinfo=timezone.utc)),
+                "status": "success",
+                "committed_work": COMPETITOR_FILE_COUNT,
+                "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+                "details": {},
+                "error_detail": None,
+                "completion": "complete",
+            }
+        )
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
 
     def test_evidence_validator_rejects_recoverable_competitor_without_retry(self) -> None:
         evidence = valid_evidence()

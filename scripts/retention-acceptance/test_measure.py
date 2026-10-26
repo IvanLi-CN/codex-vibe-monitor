@@ -175,6 +175,73 @@ class MeasurementBudgetTests(unittest.TestCase):
 
         validate_task_snapshot(rows)
 
+    def test_zero_contribution_file_phase_defer_is_ignored_for_fixed_workload(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "deferred",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": None,
+                "committed_bytes": None,
+                "details": {
+                    "filesChecked": None,
+                    "directoryEntriesChecked": None,
+                    "reconciliationRowsChecked": None,
+                    "filesReleased": None,
+                    "bytesReleased": None,
+                    "referencedSkipped": None,
+                    "quarantined": None,
+                    "failures": None,
+                    "waitReason": "file_phase_busy",
+                    "admissionStage": "file_phase",
+                },
+                "error_detail": None,
+            },
+            *[
+                {
+                    "task_key": COMPETITOR_TASK,
+                    "trigger_kind": "schedule",
+                    "status": "skipped",
+                    "completion": "partial",
+                    "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                    "committed_work": 32,
+                    "committed_bytes": 32 * 256,
+                    "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+                    "error_detail": None,
+                }
+                for index in range(1, 17)
+            ],
+            *[
+                {
+                    "task_key": task_key,
+                    "trigger_kind": trigger_kind,
+                    "status": "success",
+                    "completion": "complete",
+                    "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                    "committed_work": 1000,
+                    "committed_bytes": 0,
+                    "details": {},
+                    "error_detail": None,
+                }
+                for index, (task_key, trigger_kind) in enumerate(
+                    [
+                        ("retention_archive", "schedule"),
+                        ("retention_archive", "catchup"),
+                        ("pool_upstream_attempt_archive", "schedule"),
+                        ("pool_upstream_attempt_archive", "catchup"),
+                    ],
+                    start=1,
+                )
+            ],
+        ]
+
+        validate_task_snapshot(rows)
+
     def test_recoverable_competitor_failure_counts_after_file_oracle_completion(self) -> None:
         rows = [
             {

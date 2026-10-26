@@ -1402,18 +1402,21 @@ async fn load_task_month_snapshot_pages(
                 valid: false,
             });
         }
-        let archive_rows = if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
-            sqlx::query_as::<_, InvocationHourlySourceRecord>(next_page_query)
-                .bind(occurred_at)
-                .bind(*row_id)
-                .bind(row_count)
-                .fetch_all(archive_pool)
-                .await?
-        } else {
-            sqlx::query_as::<_, InvocationHourlySourceRecord>(first_page_query)
-                .bind(row_count)
-                .fetch_all(archive_pool)
-                .await?
+        let archive_rows = {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
+                sqlx::query_as::<_, InvocationHourlySourceRecord>(next_page_query)
+                    .bind(occurred_at)
+                    .bind(*row_id)
+                    .bind(row_count)
+                    .fetch_all(archive_pool)
+                    .await?
+            } else {
+                sqlx::query_as::<_, InvocationHourlySourceRecord>(first_page_query)
+                    .bind(row_count)
+                    .fetch_all(archive_pool)
+                    .await?
+            }
         };
         let record_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
         let archive_ids = archive_rows.iter().map(|row| row.id).collect::<Vec<_>>();
@@ -1433,14 +1436,17 @@ async fn load_task_month_snapshot_pages(
         }
         let ids = archive_ids;
         let ids_json = serde_json::to_string(&ids)?;
-        let invoke_ids = sqlx::query_as::<_, (i64, String)>(
-            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
-        )
-        .bind(&ids_json)
-        .fetch_all(archive_pool)
-        .await?
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+        let invoke_ids = {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            sqlx::query_as::<_, (i64, String)>(
+                "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(&ids_json)
+            .fetch_all(archive_pool)
+            .await?
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+        };
         if invoke_ids.len() != archive_rows.len()
             || super::super::retention::encode_summary_archive_snapshot_v2_payload(
                 &archive_rows,
@@ -1482,7 +1488,10 @@ async fn prepare_task_month_snapshot_pages(
         .connect_with(options)
         .await?;
     let result = async {
-        let columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let columns = {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            load_archive_table_columns(&archive_pool, "codex_invocations").await?
+        };
         // Tuple keyset pagination must seek rather than sort/scan the month once per 400-row
         // page. The index was installed before the artifact was compressed.
         let base = build_invocation_archive_rows_chunk_query(&columns);
@@ -1537,34 +1546,42 @@ async fn prepare_task_month_snapshot_pages(
             (None, 0)
         };
         loop {
-            let rows = if let Some(cursor) = occurred_at.as_deref() {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
-                    .bind(cursor).bind(row_id).bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                    .fetch_all(&archive_pool).await?
-            } else {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
-                    .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                    .fetch_all(&archive_pool).await?
+            let next_page = {
+                let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+                let rows = if let Some(cursor) = occurred_at.as_deref() {
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
+                        .bind(cursor).bind(row_id).bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                        .fetch_all(&archive_pool).await?
+                } else {
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
+                        .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                        .fetch_all(&archive_pool).await?
+                };
+                if rows.is_empty() {
+                    None
+                } else {
+                    let mut identities = QueryBuilder::<Sqlite>::new(
+                        "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
+                    );
+                    let mut ids = identities.separated(", ");
+                    for row in &rows { ids.push_bind(row.id); }
+                    ids.push_unseparated(")");
+                    let invoke_ids = identities.build_query_as::<(i64, String)>()
+                        .fetch_all(&archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
+                    let first = rows.first().expect("nonempty snapshot page");
+                    let last = rows.last().expect("nonempty snapshot page");
+                    let page = TaskArchiveSnapshotPage {
+                        coverage_start: first.occurred_at.clone(),
+                        coverage_end: last.occurred_at.clone(),
+                        row_count: u32::try_from(rows.len())?,
+                        payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
+                            &rows, &invoke_ids,
+                        )?,
+                    };
+                    Some((rows, page))
+                }
             };
-            if rows.is_empty() { break; }
-            let mut identities = QueryBuilder::<Sqlite>::new(
-                "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
-            );
-            let mut ids = identities.separated(", ");
-            for row in &rows { ids.push_bind(row.id); }
-            ids.push_unseparated(")");
-            let invoke_ids = identities.build_query_as::<(i64, String)>()
-                .fetch_all(&archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
-            let first = rows.first().expect("nonempty snapshot page");
-            let last = rows.last().expect("nonempty snapshot page");
-            let page = TaskArchiveSnapshotPage {
-                coverage_start: first.occurred_at.clone(),
-                coverage_end: last.occurred_at.clone(),
-                row_count: u32::try_from(rows.len())?,
-                payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
-                    &rows, &invoke_ids,
-                )?,
-            };
+            let Some((rows, page)) = next_page else { break; };
             let page_index = u32::try_from(pages.len())?;
             let stored = super::super::retention::store_task_summary_snapshot_page(
                 pool,
@@ -1599,6 +1616,7 @@ async fn prepare_task_month_snapshot_pages(
                     tokio::time::sleep(delay).await;
                 }
             }
+            let last = rows.last().expect("nonempty snapshot page");
             occurred_at = Some(last.occurred_at.clone());
             row_id = last.id;
             if super::super::retention::retention_run_remaining_budget()
@@ -1617,6 +1635,7 @@ async fn prepare_task_month_snapshot_pages(
         }
         Ok::<_, anyhow::Error>(pages)
     }.await;
+    let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
     archive_pool.close().await;
     result
 }
@@ -1799,7 +1818,37 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
         bail!("partial archive repair requires rows to remove");
     }
 
-    let final_path = Path::new(&outcome.file_path);
+    let final_path = PathBuf::from(&outcome.file_path);
+    let archive_table = match outcome.dataset {
+        "codex_invocations" | "forward_proxy_attempts" | "pool_upstream_request_attempts" => {
+            outcome.dataset
+        }
+        dataset => bail!("partial archive repair does not support dataset {dataset}"),
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let remove_ids = remove_ids.to_vec();
+    tokio::spawn(async move {
+        let result =
+            trim_archive_batch_file_by_ids_owned(final_path, remove_ids, archive_table).await;
+        if let Err(result) = sender.send(result)
+            && let Ok((temporary_file_path, _, _)) = result
+        {
+            // The caller no longer owns the result after cancellation. The worker has drained
+            // all native file operations, so it can safely remove the unpublished output.
+            remove_temp_sqlite_artifacts_unchecked(&temporary_file_path);
+        }
+    });
+    receiver
+        .await
+        .context("partial archive repair worker exited before reporting its result")?
+}
+
+async fn trim_archive_batch_file_by_ids_owned(
+    final_path: PathBuf,
+    remove_ids: Vec<i64>,
+    archive_table: &'static str,
+) -> Result<(PathBuf, i64, String)> {
+    let final_path = final_path.as_path();
     let suffix = retention_temp_suffix();
     let work_path = PathBuf::from(format!(
         "{}.partial-repair-{}.sqlite",
@@ -1813,16 +1862,10 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     ));
     let cleanup_work_path = work_path.clone();
     let cleanup_temp_gzip_path = temp_gzip_path.clone();
-    let archive_table = match outcome.dataset {
-        "codex_invocations" | "forward_proxy_attempts" | "pool_upstream_request_attempts" => {
-            outcome.dataset
-        }
-        dataset => bail!("partial archive repair does not support dataset {dataset}"),
-    };
 
     let result = async {
         inflate_gzip_sqlite_file_with_operation_budget_for_cleanup(final_path, &work_path).await?;
-        let ids_json = serde_json::to_string(remove_ids)
+        let ids_json = serde_json::to_string(&remove_ids)
             .context("encode partial archive repair source ids")?;
         let row_count = {
             let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
@@ -1910,7 +1953,6 @@ pub(crate) async fn rebuild_task_month_snapshot_pages_for_archive(
     let cleanup_work_path = work_path.clone();
     let result = async {
         inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
-        let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
         let pages = prepare_task_month_snapshot_pages(pool, &work_path, outcome, batch_id).await?;
         Ok::<_, anyhow::Error>(pages)
     }

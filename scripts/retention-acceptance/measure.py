@@ -44,6 +44,7 @@ from contract import (
     parse_time,
     sha256_bytes,
     task_run_is_accepted_competitor_chunk,
+    task_run_is_accepted_zero_contribution_competitor_defer,
     task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
@@ -1300,6 +1301,7 @@ def validate_task_snapshot(
     for row in rows:
         if row.get("actual_finished_at") is not None and (
             task_run_is_accepted_competitor_chunk(row)
+            or task_run_is_accepted_zero_contribution_competitor_defer(row)
             or (
                 allow_recoverable_competitor_failures
                 and task_run_is_recoverable_competitor_chunk(row)
@@ -1335,7 +1337,7 @@ def validate_task_snapshot(
         ):
             raise AcceptanceError(f"production catch-up did not follow a scheduled run for {key}")
     competitors = by_key.get("raw_orphan_sweep", [])
-    released = sum(row.get("committed_work", 0) for row in competitors)
+    released = sum(row.get("committed_work") or 0 for row in competitors)
     if released < COMPETITOR_FILE_COUNT:
         raise AcceptanceError("production raw-orphan competitor has not completed the fixed workload")
     if released > COMPETITOR_FILE_COUNT:
