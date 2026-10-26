@@ -2943,9 +2943,10 @@ async fn retention_task_local_partial_timestamped_archive_reselects_without_dupl
             .try_begin_background("partial-timestamped-competitor")
             .expect("claim pressure slot after first committed chunk");
         probe.resume.notify_one();
-        owner
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        drop(owner);
     };
-    let (first, owner) = tokio::join!(work, competitor);
+    let (first, ()) = tokio::join!(work, competitor);
     let first = first.expect("timestamped archive should defer after a committed prefix");
     assert_eq!(first.0, 64);
     assert_eq!(
@@ -2986,7 +2987,6 @@ async fn retention_task_local_partial_timestamped_archive_reselects_without_dupl
         .expect("close repaired timestamped archive");
     assert_eq!(archive_row_count, 64);
 
-    drop(owner);
     let second = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(60),
         archive_timestamped_dataset(
