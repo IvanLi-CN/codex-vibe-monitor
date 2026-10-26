@@ -5,7 +5,7 @@ use std::sync::{
 
 use anyhow::Result;
 use sqlx::SqlitePool;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, Semaphore};
 
 use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId};
 use crate::storage::core::{
@@ -22,7 +22,7 @@ struct TestAuthorityStore {
     hold_publication: AtomicBool,
     publication_count: AtomicUsize,
     publication_started: Notify,
-    publication_release: Notify,
+    publication_release: Semaphore,
 }
 
 impl Default for TestAuthorityStore {
@@ -34,7 +34,7 @@ impl Default for TestAuthorityStore {
             hold_publication: AtomicBool::new(false),
             publication_count: AtomicUsize::new(0),
             publication_started: Notify::new(),
-            publication_release: Notify::new(),
+            publication_release: Semaphore::new(0),
         }
     }
 }
@@ -67,7 +67,7 @@ impl AuthorityManifestStore for TestAuthorityStore {
         self.publication_count.fetch_add(1, Ordering::AcqRel);
         if self.hold_publication.load(Ordering::Acquire) {
             self.publication_started.notify_one();
-            self.publication_release.notified().await;
+            self.publication_release.acquire().await.unwrap().forget();
         }
         let publication = *self.publication.lock().await;
         if publication != AuthorityPublication::Committed {
@@ -531,18 +531,39 @@ async fn recovery_rejects_manifest_for_another_module() {
 #[tokio::test]
 async fn durable_publication_compare_and_replace_fences_concurrent_attempts() {
     let store = Arc::new(TestAuthorityStore::default());
+    store.hold_publication.store(true, Ordering::Release);
     let first_context = recovery_context_for_migration("migration-01");
     let second_context = recovery_context_for_migration("migration-02");
     let first_manifest = authority_manifest_for_migration(2, BackendKind::Postgres, "migration-01");
     let second_manifest =
         authority_manifest_for_migration(3, BackendKind::Postgres, "migration-02");
 
-    let (first, second) = tokio::join!(
-        store.publish_authority_manifest(&first_manifest, &first_context),
-        store.publish_authority_manifest(&second_manifest, &second_context),
-    );
+    let first_store = Arc::clone(&store);
+    let first = tokio::spawn(async move {
+        first_store
+            .publish_authority_manifest(&first_manifest, &first_context)
+            .await
+    });
+    let second_store = Arc::clone(&store);
+    let second = tokio::spawn(async move {
+        second_store
+            .publish_authority_manifest(&second_manifest, &second_context)
+            .await
+    });
+    for _ in 0..2 {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            store.publication_started.notified(),
+        )
+        .await
+        .unwrap();
+    }
+    store.publication_release.add_permits(2);
 
-    let outcomes = [first.unwrap(), second.unwrap()];
+    let outcomes = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
     assert_eq!(
         outcomes
             .iter()
@@ -586,7 +607,7 @@ async fn publication_rejects_a_stale_durable_recovery_context() {
 }
 
 #[tokio::test]
-async fn publication_conflict_does_not_reopen_sqlite_after_manifest_is_committed() {
+async fn publication_conflict_keeps_gate_closed_after_foreign_manifest() {
     let gate = ModuleGenerationGate::new(
         StorageModule::TrafficArchive,
         ModuleAuthority {
@@ -709,7 +730,7 @@ async fn publication_deadline_keeps_admission_closed_until_durable_recovery() {
             .is_err()
     );
 
-    store.publication_release.notify_one();
+    store.publication_release.add_permits(1);
     recovery.await.unwrap().unwrap();
     let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     assert_eq!(current.lease.authority.backend, BackendKind::Postgres);
@@ -790,7 +811,7 @@ async fn generation_gate_serializes_concurrent_authority_switches() {
     });
     gate.wait_for_switch_attempts_for_test(second_attempt).await;
     assert_eq!(store.publication_count.load(Ordering::Acquire), 1);
-    store.publication_release.notify_one();
+    store.publication_release.add_permits(1);
     first.await.unwrap().unwrap();
     assert!(second.await.unwrap().is_err());
 
