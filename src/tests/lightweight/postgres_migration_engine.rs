@@ -1,11 +1,12 @@
 use std::{
     fs,
+    future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
-use sqlx::{postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
+use sqlx::{PgPool, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 
 use crate::storage::{
     core::{
@@ -53,6 +54,41 @@ fn state_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         .as_nanos();
     let directory = std::env::temp_dir().join(format!("codex-pg02-native-{label}-{suffix}"));
     (directory.clone(), directory.join("migration-state.json"))
+}
+
+async fn cleanup_postgres_migration_fixture(
+    pool: &PgPool,
+    prefix: &str,
+    target_table: &str,
+) -> Result<()> {
+    for table in [
+        target_table.to_owned(),
+        format!("{prefix}_plans"),
+        format!("{prefix}_checkpoints"),
+        format!("{prefix}_chunk_proofs"),
+        format!("{prefix}_coverage_checkpoints"),
+        format!("{prefix}_coverage_proofs"),
+    ] {
+        sqlx::query(&format!("DROP TABLE IF EXISTS \"{table}\""))
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn with_postgres_migration_fixture_cleanup<F>(
+    pool: &PgPool,
+    prefix: &str,
+    target_table: &str,
+    operation: F,
+) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    let result = operation.await;
+    let cleanup = cleanup_postgres_migration_fixture(pool, prefix, target_table).await;
+    result?;
+    cleanup
 }
 
 fn engine(
@@ -751,7 +787,7 @@ async fn migration_prepare_reuses_durable_plans_after_partial_restart() -> Resul
 }
 
 #[tokio::test]
-async fn switch_does_not_hold_source_writes_during_large_pre_fence_verification() -> Result<()> {
+async fn switch_catches_up_source_writes_during_large_pre_fence_verification() -> Result<()> {
     let (directory, path) = state_path("pre-fence-verification");
     let source = Arc::new(InMemoryMigrationSource::new(
         "migration-engine-test",
@@ -831,8 +867,25 @@ async fn switch_does_not_hold_source_writes_during_large_pre_fence_verification(
             .await
             .is_ok()
     );
-    assert!(switching.await.expect("authority switch task").is_err());
-    assert!(!fence.is_fenced().await);
+    switching
+        .await
+        .expect("authority switch task")
+        .expect("authority switch should include the bounded tail delta");
+    assert!(fence.is_fenced().await);
+    assert_eq!(
+        gate.current_authority().await.backend,
+        BackendKind::Postgres
+    );
+    assert_eq!(
+        target.row("events", "z").await.expect("tail row").payload,
+        b"late"
+    );
+    let checkpoint = target
+        .load_coverage_checkpoint("migration-engine-test", "events")
+        .await?
+        .expect("coverage checkpoint");
+    assert!(checkpoint.complete);
+    assert_eq!(checkpoint.source_row_count, 8);
 
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -1507,207 +1560,214 @@ async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture(
         .as_nanos();
     let prefix = format!("pg02_migration_engine_{suffix}");
     let target_table = format!("{prefix}_rows");
-    let target = Arc::new(PostgresMigrationTarget::new(
-        pool.clone(),
-        &prefix,
-        vec![MigrationTableSpec::new(
-            StorageModule::TrafficArchive,
-            "events",
-            "events",
-            target_table.clone(),
-            "stable_key",
-            "source_version",
-            "payload",
-            "stable_key",
-            "source_version",
-            "payload",
-        )?],
-    )?);
-    sqlx::query(&format!(
-        "CREATE TABLE \"{target_table}\" (
+    let (directory, path) = state_path("postgres-real-engine");
+    let result = with_postgres_migration_fixture_cleanup(&pool, &prefix, &target_table, async {
+        let target = Arc::new(PostgresMigrationTarget::new(
+            pool.clone(),
+            &prefix,
+            vec![MigrationTableSpec::new(
+                StorageModule::TrafficArchive,
+                "events",
+                "events",
+                target_table.clone(),
+                "stable_key",
+                "source_version",
+                "payload",
+                "stable_key",
+                "source_version",
+                "payload",
+            )?],
+        )?);
+        sqlx::query(&format!(
+            "CREATE TABLE \"{target_table}\" (
             \"stable_key\" TEXT PRIMARY KEY,
             \"source_version\" BIGINT NOT NULL,
             \"payload\" BYTEA NOT NULL
         )"
-    ))
-    .execute(&pool)
-    .await?;
-    target.ensure_schema().await?;
-
-    let source_pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
+        ))
+        .execute(&pool)
         .await?;
-    sqlx::query(
-        "CREATE TABLE events (
+        target.ensure_schema().await?;
+
+        let source_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::query(
+            "CREATE TABLE events (
             stable_key TEXT PRIMARY KEY,
             source_version INTEGER NOT NULL,
             payload BLOB NOT NULL
         )",
-    )
-    .execute(&source_pool)
-    .await?;
-    let source = Arc::new(SqliteMigrationSource::new(
-        source_pool.clone(),
-        "migration-engine-test",
-        "sqlite-test",
-        "migration_change_log",
-        vec![MigrationTableSpec::new(
-            StorageModule::TrafficArchive,
-            "events",
-            "events",
-            target_table.clone(),
-            "stable_key",
-            "source_version",
-            "payload",
-            "stable_key",
-            "source_version",
-            "payload",
-        )?],
-    )?);
-    source.ensure_capture_schema().await?;
-    let mut source_transaction = source_pool.begin().await?;
-    for (key, payload) in [
-        ("delete-me", b"old-delete".as_slice()),
-        ("replace-old", b"old-replace".as_slice()),
-        ("update-me", b"old-update".as_slice()),
-    ] {
-        sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+        )
+        .execute(&source_pool)
+        .await?;
+        let source = Arc::new(SqliteMigrationSource::new(
+            source_pool.clone(),
+            "migration-engine-test",
+            "sqlite-test",
+            "migration_change_log",
+            vec![MigrationTableSpec::new(
+                StorageModule::TrafficArchive,
+                "events",
+                "events",
+                target_table.clone(),
+                "stable_key",
+                "source_version",
+                "payload",
+                "stable_key",
+                "source_version",
+                "payload",
+            )?],
+        )?);
+        source.ensure_capture_schema().await?;
+        let mut source_transaction = source_pool.begin().await?;
+        for (key, payload) in [
+            ("delete-me", b"old-delete".as_slice()),
+            ("replace-old", b"old-replace".as_slice()),
+            ("update-me", b"old-update".as_slice()),
+        ] {
+            sqlx::query(
+                "INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)",
+            )
             .bind(key)
             .bind(1_i64)
             .bind(payload)
             .execute(&mut *source_transaction)
             .await?;
-        source
-            .append_captured_change_tx(
-                &mut source_transaction,
-                &CapturedChange::from_input(
-                    "migration-engine-test",
-                    "sqlite-test",
-                    1,
-                    change("events", key, ChangeKind::Insert, payload),
-                )?,
-            )
-            .await?;
-    }
-    source_transaction.commit().await?;
+            source
+                .append_captured_change_tx(
+                    &mut source_transaction,
+                    &CapturedChange::from_input(
+                        "migration-engine-test",
+                        "sqlite-test",
+                        1,
+                        change("events", key, ChangeKind::Insert, payload),
+                    )?,
+                )
+                .await?;
+        }
+        source_transaction.commit().await?;
 
-    let (directory, path) = state_path("postgres-real-engine");
-    let fence = SourceWriteFence::new(1);
-    let store = Arc::new(FileMigrationStore::new(
-        &path,
-        AuthorityRecoveryContext {
-            migration_id: "migration-engine-test".into(),
-            installation_id: "installation-test".into(),
-            module: StorageModule::TrafficArchive,
-            source_identity: "sqlite-test".into(),
-            target_identity: "postgres-test".into(),
-            source_watermark: 1,
-        },
-    ));
-    let migration = MigrationEngine::new(
-        Arc::clone(&source),
-        Arc::clone(&target),
-        Arc::clone(&store),
-        StorageModule::TrafficArchive,
-        "installation-test",
-        "postgres-test",
-        1,
-        MigrationLimits {
-            max_queued_operations: 2,
-            copy: CopyLimits {
-                max_rows: 2,
-                max_bytes: 1024,
-                source_read_budget: Duration::from_secs(1),
-                batch_yield: Duration::ZERO,
+        let fence = SourceWriteFence::new(1);
+        let store = Arc::new(FileMigrationStore::new(
+            &path,
+            AuthorityRecoveryContext {
+                migration_id: "migration-engine-test".into(),
+                installation_id: "installation-test".into(),
+                module: StorageModule::TrafficArchive,
+                source_identity: "sqlite-test".into(),
+                target_identity: "postgres-test".into(),
+                source_watermark: 1,
             },
-            ..MigrationLimits::default()
-        },
-        fence.clone(),
-    )?;
-    migration.prepare(&["events".into()]).await?;
-    while !migration.copy_next("events").await?.complete {}
+        ));
+        let migration = MigrationEngine::new(
+            Arc::clone(&source),
+            Arc::clone(&target),
+            Arc::clone(&store),
+            StorageModule::TrafficArchive,
+            "installation-test",
+            "postgres-test",
+            1,
+            MigrationLimits {
+                max_queued_operations: 2,
+                copy: CopyLimits {
+                    max_rows: 2,
+                    max_bytes: 1024,
+                    source_read_budget: Duration::from_secs(1),
+                    batch_yield: Duration::ZERO,
+                },
+                ..MigrationLimits::default()
+            },
+            fence.clone(),
+        )?;
+        migration.prepare(&["events".into()]).await?;
+        while !migration.copy_next("events").await?.complete {}
 
-    let mut source_transaction = source_pool.begin().await?;
-    sqlx::query("UPDATE events SET source_version = 2, payload = ? WHERE stable_key = ?")
-        .bind(b"new-update".as_slice())
-        .bind("update-me")
-        .execute(&mut *source_transaction)
-        .await?;
-    sqlx::query("DELETE FROM events WHERE stable_key = ?")
-        .bind("delete-me")
-        .execute(&mut *source_transaction)
-        .await?;
-    sqlx::query("DELETE FROM events WHERE stable_key = ?")
-        .bind("replace-old")
-        .execute(&mut *source_transaction)
-        .await?;
-    sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
-        .bind("replace-new")
-        .bind(2_i64)
-        .bind(b"new-replace".as_slice())
-        .execute(&mut *source_transaction)
-        .await?;
-    sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
-        .bind("inserted")
-        .bind(2_i64)
-        .bind(b"new-insert".as_slice())
-        .execute(&mut *source_transaction)
-        .await?;
-    for change in [
-        change("events", "update-me", ChangeKind::Update, b"new-update"),
-        change("events", "delete-me", ChangeKind::Delete, b""),
-        replace_change("events", "replace-old", "replace-new", b"new-replace"),
-        change("events", "inserted", ChangeKind::Insert, b"new-insert"),
-    ] {
-        source
-            .append_captured_change_tx(
-                &mut source_transaction,
-                &CapturedChange::from_input("migration-engine-test", "sqlite-test", 2, change)?,
-            )
+        let mut source_transaction = source_pool.begin().await?;
+        sqlx::query("UPDATE events SET source_version = 2, payload = ? WHERE stable_key = ?")
+            .bind(b"new-update".as_slice())
+            .bind("update-me")
+            .execute(&mut *source_transaction)
             .await?;
-    }
-    source_transaction.commit().await?;
+        sqlx::query("DELETE FROM events WHERE stable_key = ?")
+            .bind("delete-me")
+            .execute(&mut *source_transaction)
+            .await?;
+        sqlx::query("DELETE FROM events WHERE stable_key = ?")
+            .bind("replace-old")
+            .execute(&mut *source_transaction)
+            .await?;
+        sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+            .bind("replace-new")
+            .bind(2_i64)
+            .bind(b"new-replace".as_slice())
+            .execute(&mut *source_transaction)
+            .await?;
+        sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+            .bind("inserted")
+            .bind(2_i64)
+            .bind(b"new-insert".as_slice())
+            .execute(&mut *source_transaction)
+            .await?;
+        for change in [
+            change("events", "update-me", ChangeKind::Update, b"new-update"),
+            change("events", "delete-me", ChangeKind::Delete, b""),
+            replace_change("events", "replace-old", "replace-new", b"new-replace"),
+            change("events", "inserted", ChangeKind::Insert, b"new-insert"),
+        ] {
+            source
+                .append_captured_change_tx(
+                    &mut source_transaction,
+                    &CapturedChange::from_input("migration-engine-test", "sqlite-test", 2, change)?,
+                )
+                .await?;
+        }
+        source_transaction.commit().await?;
 
-    assert_eq!(migration.catch_up("events").await?.applied_through, 2);
-    let rows = target
-        .rows_in_range("events", &ChunkRange::new("inserted", "update-me")?)
-        .await?;
-    assert_eq!(
-        rows.iter()
-            .map(|row| row.stable_key.as_str())
-            .collect::<Vec<_>>(),
-        vec!["inserted", "replace-new", "update-me"]
-    );
-    assert_eq!(rows[0].source_version, 2);
-    assert_eq!(rows[1].payload, b"new-replace");
-    assert_eq!(rows[2].payload, b"new-update");
-    assert!(
-        target
-            .load_table_coverage_proof("migration-engine-test", "events")
+        assert_eq!(migration.catch_up("events").await?.applied_through, 2);
+        let rows = target
+            .rows_in_range("events", &ChunkRange::new("inserted", "update-me")?)
+            .await?;
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.stable_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["inserted", "replace-new", "update-me"]
+        );
+        assert_eq!(rows[0].source_version, 2);
+        assert_eq!(rows[1].payload, b"new-replace");
+        assert_eq!(rows[2].payload, b"new-update");
+        assert!(
+            target
+                .load_table_coverage_proof("migration-engine-test", "events")
+                .await?
+                .is_none()
+        );
+        let proof = migration.verify_table_coverage_at("events", 2).await?;
+        assert_eq!(proof.source_digest, proof.target_digest);
+        assert_eq!(proof.source_row_count, 3);
+        assert_eq!(proof.target_row_count, 3);
+        let coverage_checkpoint = target
+            .load_coverage_checkpoint("migration-engine-test", "events")
             .await?
-            .is_none()
-    );
-    let proof = migration.verify_table_coverage_at("events", 2).await?;
-    assert_eq!(proof.source_digest, proof.target_digest);
-    assert_eq!(proof.source_row_count, 3);
-    assert_eq!(proof.target_row_count, 3);
+            .expect("PostgreSQL coverage checkpoint");
+        assert!(coverage_checkpoint.complete);
+        assert_eq!(coverage_checkpoint.source_row_count, 3);
 
-    for table in [
-        target_table,
-        format!("{prefix}_plans"),
-        format!("{prefix}_checkpoints"),
-        format!("{prefix}_chunk_proofs"),
-        format!("{prefix}_coverage_proofs"),
-    ] {
-        sqlx::query(&format!("DROP TABLE IF EXISTS \"{table}\""))
-            .execute(&pool)
-            .await?;
+        Ok(())
+    })
+    .await;
+    let directory_cleanup = if directory.exists() {
+        fs::remove_dir_all(&directory).map_err(Into::into)
+    } else {
+        Ok(())
+    };
+    match (result, directory_cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
-    if directory.exists() {
-        fs::remove_dir_all(directory)?;
-    }
-    Ok(())
 }
 
 #[tokio::test]
@@ -1729,126 +1789,118 @@ async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Res
         .as_nanos();
     let prefix = format!("pg02_migration_smoke_{suffix}");
     let target_table = format!("{prefix}_rows");
-    let target = PostgresMigrationTarget::new(
-        pool.clone(),
-        &prefix,
-        vec![MigrationTableSpec::new(
-            StorageModule::TrafficArchive,
-            "events",
-            target_table.clone(),
-            target_table.clone(),
-            "stable_key",
-            "source_version",
-            "payload",
-            "stable_key",
-            "source_version",
-            "payload",
-        )?],
-    )?;
-    sqlx::query(&format!(
-        "CREATE TABLE \"{target_table}\" (
+    with_postgres_migration_fixture_cleanup(&pool, &prefix, &target_table, async {
+        let target = PostgresMigrationTarget::new(
+            pool.clone(),
+            &prefix,
+            vec![MigrationTableSpec::new(
+                StorageModule::TrafficArchive,
+                "events",
+                target_table.clone(),
+                target_table.clone(),
+                "stable_key",
+                "source_version",
+                "payload",
+                "stable_key",
+                "source_version",
+                "payload",
+            )?],
+        )?;
+        sqlx::query(&format!(
+            "CREATE TABLE \"{target_table}\" (
             \"stable_key\" TEXT PRIMARY KEY,
             \"source_version\" BIGINT NOT NULL,
             \"payload\" BYTEA NOT NULL
         )"
-    ))
-    .execute(&pool)
-    .await?;
-    target.ensure_schema().await?;
-
-    let plan = TableCopyPlan {
-        migration_id: "migration-engine-test".into(),
-        table_name: "events".into(),
-        scan_lower_bound: Some("a".into()),
-        scan_upper_bound: Some("a".into()),
-        capture_start: 0,
-    };
-    target.save_plan(&plan).await?;
-    let baseline_checkpoint = EngineCheckpoint {
-        migration_id: plan.migration_id.clone(),
-        table_name: plan.table_name.clone(),
-        cursor: Some("a".into()),
-        scan_upper_bound: plan.scan_upper_bound.clone(),
-        capture_start: 0,
-        captured_through: 0,
-        applied_through: 0,
-        copied_rows: 1,
-        copied_bytes: 3,
-        complete: true,
-    };
-    target
-        .apply_baseline_page(
-            &plan,
-            &SourcePage {
-                rows: vec![VersionedRow {
-                    stable_key: "a".into(),
-                    source_version: 0,
-                    payload: b"one".to_vec(),
-                }],
-                next_cursor: Some("a".into()),
-                complete: true,
-            },
-            &baseline_checkpoint,
-        )
+        ))
+        .execute(&pool)
         .await?;
-    let replay = CapturedChange::from_input(
-        &plan.migration_id,
-        "sqlite-test",
-        1,
-        change("events", "a", ChangeKind::Update, b"two"),
-    )?;
-    target
-        .apply_change_batch(
+        target.ensure_schema().await?;
+
+        let plan = TableCopyPlan {
+            migration_id: "migration-engine-test".into(),
+            table_name: "events".into(),
+            scan_lower_bound: Some("a".into()),
+            scan_upper_bound: Some("a".into()),
+            capture_start: 0,
+        };
+        target.save_plan(&plan).await?;
+        let baseline_checkpoint = EngineCheckpoint {
+            migration_id: plan.migration_id.clone(),
+            table_name: plan.table_name.clone(),
+            cursor: Some("a".into()),
+            scan_upper_bound: plan.scan_upper_bound.clone(),
+            capture_start: 0,
+            captured_through: 0,
+            applied_through: 0,
+            copied_rows: 1,
+            copied_bytes: 3,
+            complete: true,
+        };
+        target
+            .apply_baseline_page(
+                &plan,
+                &SourcePage {
+                    rows: vec![VersionedRow {
+                        stable_key: "a".into(),
+                        source_version: 0,
+                        payload: b"one".to_vec(),
+                    }],
+                    next_cursor: Some("a".into()),
+                    complete: true,
+                },
+                &baseline_checkpoint,
+            )
+            .await?;
+        let replay = CapturedChange::from_input(
             &plan.migration_id,
             "sqlite-test",
-            &[replay],
-            &EngineCheckpoint {
-                captured_through: 1,
-                applied_through: 1,
-                ..baseline_checkpoint.clone()
-            },
-        )
-        .await?;
-    let rows = target
-        .rows_in_range("events", &ChunkRange::new("a", "a")?)
-        .await?;
-    assert_eq!(rows[0].source_version, 1);
-    assert_eq!(rows[0].payload, b"two");
-
-    let proof = TableCoverageProof {
-        migration_id: plan.migration_id.clone(),
-        table_name: plan.table_name.clone(),
-        source_watermark: 1,
-        range: Some(ChunkRange::new("a", "a")?),
-        source_lower_bound: Some("a".into()),
-        source_upper_bound: Some("a".into()),
-        target_lower_bound: Some("a".into()),
-        target_upper_bound: Some("a".into()),
-        source_row_count: 1,
-        target_row_count: 1,
-        source_byte_count: 3,
-        target_byte_count: 3,
-        source_digest: "digest".into(),
-        target_digest: "digest".into(),
-    };
-    target.save_table_coverage_proof(&proof).await?;
-    assert_eq!(
+            1,
+            change("events", "a", ChangeKind::Update, b"two"),
+        )?;
         target
-            .load_table_coverage_proof(&plan.migration_id, &plan.table_name)
-            .await?,
-        Some(proof)
-    );
-
-    for table in [
-        target_table,
-        format!("{prefix}_plans"),
-        format!("{prefix}_checkpoints"),
-        format!("{prefix}_chunk_proofs"),
-        format!("{prefix}_coverage_proofs"),
-    ] {
-        sqlx::query(&format!("DROP TABLE IF EXISTS \"{table}\""))
-            .execute(&pool)
+            .apply_change_batch(
+                &plan.migration_id,
+                "sqlite-test",
+                &[replay],
+                &EngineCheckpoint {
+                    captured_through: 1,
+                    applied_through: 1,
+                    ..baseline_checkpoint.clone()
+                },
+            )
             .await?;
-    }
-    Ok(())
+        let rows = target
+            .rows_in_range("events", &ChunkRange::new("a", "a")?)
+            .await?;
+        assert_eq!(rows[0].source_version, 1);
+        assert_eq!(rows[0].payload, b"two");
+
+        let proof = TableCoverageProof {
+            migration_id: plan.migration_id.clone(),
+            table_name: plan.table_name.clone(),
+            source_watermark: 1,
+            range: Some(ChunkRange::new("a", "a")?),
+            source_lower_bound: Some("a".into()),
+            source_upper_bound: Some("a".into()),
+            target_lower_bound: Some("a".into()),
+            target_upper_bound: Some("a".into()),
+            source_row_count: 1,
+            target_row_count: 1,
+            source_byte_count: 3,
+            target_byte_count: 3,
+            source_digest: "digest".into(),
+            target_digest: "digest".into(),
+        };
+        target.save_table_coverage_proof(&proof).await?;
+        assert_eq!(
+            target
+                .load_table_coverage_proof(&plan.migration_id, &plan.table_name)
+                .await?,
+            Some(proof)
+        );
+
+        Ok(())
+    })
+    .await
 }

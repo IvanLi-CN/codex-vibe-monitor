@@ -297,11 +297,28 @@ pub(crate) struct SourceRangeSnapshot {
     pub(crate) rows: Vec<VersionedRow>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceRangePage {
+    pub(crate) source_watermark: i64,
+    pub(crate) page: SourcePage,
+}
+
 impl SourcePage {
     fn validate(
         &self,
         table_name: &str,
         cursor: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<()> {
+        self.validate_range(table_name, cursor, None, upper_bound, limits)
+    }
+
+    fn validate_range(
+        &self,
+        table_name: &str,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
         upper_bound: Option<&str>,
         limits: CopyLimits,
     ) -> Result<()> {
@@ -330,6 +347,9 @@ impl SourcePage {
             }
             if previous.is_some_and(|key| row.stable_key.as_str() <= key) {
                 bail!("source page rows are not strictly key ordered");
+            }
+            if cursor.is_none() && lower_bound.is_some_and(|key| row.stable_key.as_str() < key) {
+                bail!("source page row precedes its range lower bound");
             }
             if upper_bound.is_some_and(|key| row.stable_key.as_str() > key) {
                 bail!("source page row exceeds its scan upper bound");
@@ -380,7 +400,7 @@ impl Default for CopyLimits {
 }
 
 impl CopyLimits {
-    fn validate(self) -> Result<()> {
+    pub(crate) fn validate(self) -> Result<()> {
         if self.max_rows == 0 || self.max_bytes == 0 || self.source_read_budget.is_zero() {
             bail!("migration copy limits must be positive");
         }
@@ -497,6 +517,58 @@ impl TableCoverageProof {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CoverageCheckpoint {
+    pub(crate) migration_id: String,
+    pub(crate) table_name: String,
+    pub(crate) lower_bound: Option<String>,
+    pub(crate) upper_bound: Option<String>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) source_watermark: i64,
+    pub(crate) source_row_count: u64,
+    pub(crate) target_row_count: u64,
+    pub(crate) source_byte_count: u64,
+    pub(crate) target_byte_count: u64,
+    pub(crate) source_digest: String,
+    pub(crate) target_digest: String,
+    pub(crate) complete: bool,
+}
+
+impl CoverageCheckpoint {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.migration_id.trim().is_empty() || self.table_name.trim().is_empty() {
+            bail!("coverage checkpoint requires migration and table identities");
+        }
+        if self.source_watermark < 0 {
+            bail!("coverage checkpoint watermark must not be negative");
+        }
+        validate_table_bounds("coverage checkpoint", &self.lower_bound, &self.upper_bound)?;
+        if self
+            .cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.trim().is_empty())
+        {
+            bail!("coverage checkpoint cursor must not be empty");
+        }
+        if !self.complete && self.cursor.is_none() {
+            bail!("an incomplete coverage checkpoint requires a cursor");
+        }
+        if let Some(cursor) = &self.cursor
+            && (self
+                .lower_bound
+                .as_ref()
+                .is_some_and(|lower| cursor < lower)
+                || self
+                    .upper_bound
+                    .as_ref()
+                    .is_some_and(|upper| cursor > upper))
+        {
+            bail!("coverage checkpoint cursor is outside its table bounds");
+        }
+        Ok(())
+    }
+}
+
 fn validate_table_bounds(
     label: &str,
     lower: &Option<String>,
@@ -568,6 +640,14 @@ pub(crate) trait MigrationSource: Send + Sync {
         upper_bound: Option<&str>,
         limits: CopyLimits,
     ) -> Result<SourcePage>;
+    async fn scan_range_page(
+        &self,
+        table_name: &str,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourceRangePage>;
     async fn rows_in_range_snapshot(
         &self,
         table_name: &str,
@@ -616,6 +696,14 @@ pub(crate) trait MigrationTarget: Send + Sync {
         table_name: &str,
         range: &ChunkRange,
     ) -> Result<Vec<VersionedRow>>;
+    async fn scan_range_page(
+        &self,
+        table_name: &str,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourcePage>;
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)>;
     async fn save_chunk_proof(&self, proof: &ChunkProof) -> Result<()>;
     async fn verified_chunks(
@@ -623,6 +711,12 @@ pub(crate) trait MigrationTarget: Send + Sync {
         migration_id: &str,
         table_name: &str,
     ) -> Result<Vec<ChunkProof>>;
+    async fn save_coverage_checkpoint(&self, checkpoint: &CoverageCheckpoint) -> Result<()>;
+    async fn load_coverage_checkpoint(
+        &self,
+        migration_id: &str,
+        table_name: &str,
+    ) -> Result<Option<CoverageCheckpoint>>;
     async fn save_table_coverage_proof(&self, proof: &TableCoverageProof) -> Result<()>;
     async fn load_table_coverage_proof(
         &self,
@@ -1089,6 +1183,57 @@ impl MigrationSource for InMemoryMigrationSource {
         })
     }
 
+    async fn scan_range_page(
+        &self,
+        table_name: &str,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourceRangePage> {
+        limits.validate()?;
+        self.before_verification_read().await;
+        let state = self.state.lock().await;
+        if state.continuity_lost {
+            bail!("source change capture continuity has been lost");
+        }
+        let mut rows = Vec::new();
+        let mut bytes = 0_usize;
+        let mut complete = true;
+        if let Some(source_rows) = state.rows.get(table_name) {
+            for row in source_rows.values().filter(|row| {
+                cursor.is_none_or(|cursor| row.stable_key.as_str() > cursor)
+                    && lower_bound.is_none_or(|lower| row.stable_key.as_str() >= lower)
+                    && upper_bound.is_none_or(|upper| row.stable_key.as_str() <= upper)
+            }) {
+                if rows.len() >= limits.max_rows {
+                    complete = false;
+                    break;
+                }
+                if rows.is_empty() && row.payload.len() > limits.max_bytes {
+                    bail!("in-memory migration row exceeds the coverage byte budget");
+                }
+                let next_bytes = bytes
+                    .checked_add(row.payload.len())
+                    .ok_or_else(|| anyhow!("coverage page byte count overflowed"))?;
+                if next_bytes > limits.max_bytes {
+                    complete = false;
+                    break;
+                }
+                bytes = next_bytes;
+                rows.push(row.clone());
+            }
+        }
+        Ok(SourceRangePage {
+            source_watermark: state.next_version,
+            page: SourcePage {
+                next_cursor: rows.last().map(|row| row.stable_key.clone()),
+                rows,
+                complete,
+            },
+        })
+    }
+
     async fn rows_in_range_snapshot(
         &self,
         table_name: &str,
@@ -1146,6 +1291,7 @@ struct InMemoryTargetState {
     checkpoints: BTreeMap<(String, String), EngineCheckpoint>,
     rows: BTreeMap<String, BTreeMap<String, VersionedRow>>,
     chunk_proofs: BTreeMap<(String, String, String, String), ChunkProof>,
+    coverage_checkpoints: BTreeMap<(String, String), CoverageCheckpoint>,
     coverage_proofs: BTreeMap<(String, String), TableCoverageProof>,
     fail_next_operation: bool,
     fail_after_apply: bool,
@@ -1396,6 +1542,50 @@ impl MigrationTarget for InMemoryMigrationTarget {
             .unwrap_or_default())
     }
 
+    async fn scan_range_page(
+        &self,
+        table_name: &str,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourcePage> {
+        limits.validate()?;
+        let state = self.state.lock().await;
+        let mut rows = Vec::new();
+        let mut bytes = 0_usize;
+        let mut complete = true;
+        if let Some(target_rows) = state.rows.get(table_name) {
+            for row in target_rows.values().filter(|row| {
+                cursor.is_none_or(|cursor| row.stable_key.as_str() > cursor)
+                    && lower_bound.is_none_or(|lower| row.stable_key.as_str() >= lower)
+                    && upper_bound.is_none_or(|upper| row.stable_key.as_str() <= upper)
+            }) {
+                if rows.len() >= limits.max_rows {
+                    complete = false;
+                    break;
+                }
+                if rows.is_empty() && row.payload.len() > limits.max_bytes {
+                    bail!("in-memory migration row exceeds the coverage byte budget");
+                }
+                let next_bytes = bytes
+                    .checked_add(row.payload.len())
+                    .ok_or_else(|| anyhow!("coverage page byte count overflowed"))?;
+                if next_bytes > limits.max_bytes {
+                    complete = false;
+                    break;
+                }
+                bytes = next_bytes;
+                rows.push(row.clone());
+            }
+        }
+        Ok(SourcePage {
+            next_cursor: rows.last().map(|row| row.stable_key.clone()),
+            rows,
+            complete,
+        })
+    }
+
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
         let state = self.state.lock().await;
         let Some(rows) = state.rows.get(table_name) else {
@@ -1441,6 +1631,34 @@ impl MigrationTarget for InMemoryMigrationTarget {
             .filter(|((id, table, _, _), _)| id == migration_id && table == table_name)
             .map(|(_, proof)| proof.clone())
             .collect())
+    }
+
+    async fn save_coverage_checkpoint(&self, checkpoint: &CoverageCheckpoint) -> Result<()> {
+        checkpoint.validate()?;
+        let mut state = self.state.lock().await;
+        Self::maybe_fail(&mut state)?;
+        state.coverage_checkpoints.insert(
+            (
+                checkpoint.migration_id.clone(),
+                checkpoint.table_name.clone(),
+            ),
+            checkpoint.clone(),
+        );
+        Ok(())
+    }
+
+    async fn load_coverage_checkpoint(
+        &self,
+        migration_id: &str,
+        table_name: &str,
+    ) -> Result<Option<CoverageCheckpoint>> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .coverage_checkpoints
+            .get(&(migration_id.to_owned(), table_name.to_owned()))
+            .cloned())
     }
 
     async fn save_table_coverage_proof(&self, proof: &TableCoverageProof) -> Result<()> {
@@ -2459,57 +2677,311 @@ where
         }
         let source_bounds = self.source.table_bounds(table_name).await?;
         let target_bounds = self.target.table_bounds(table_name).await?;
-        let (first, last) = union_table_bounds(
+        let (lower_bound, upper_bound) = union_table_bounds(
             &source_bounds.0,
             &source_bounds.1,
             &target_bounds.0,
             &target_bounds.1,
         )?;
-        let range = first
-            .zip(last)
+        let range = lower_bound
+            .clone()
+            .zip(upper_bound.clone())
             .map(|(first, last)| ChunkRange::new(first, last))
             .transpose()?;
-        let source_snapshot = match &range {
-            Some(range) => {
-                self.source
-                    .rows_in_range_snapshot(table_name, range)
-                    .await?
+        let checkpoint = self
+            .target
+            .load_coverage_checkpoint(self.source.migration_id(), table_name)
+            .await?;
+        let resume = checkpoint.filter(|checkpoint| {
+            !checkpoint.complete
+                && checkpoint.lower_bound == lower_bound
+                && checkpoint.upper_bound == upper_bound
+                && checkpoint.source_watermark == source_watermark
+        });
+        let mut cursor = resume
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.cursor.clone());
+        let mut source_row_count = resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.source_row_count)
+            .unwrap_or_default();
+        let mut target_row_count = resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.target_row_count)
+            .unwrap_or_default();
+        let mut source_byte_count = resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.source_byte_count)
+            .unwrap_or_default();
+        let mut target_byte_count = resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.target_byte_count)
+            .unwrap_or_default();
+        let mut source_digest = resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.source_digest.clone())
+            .unwrap_or_else(|| rows_digest(&[]));
+        let mut target_digest = resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.target_digest.clone())
+            .unwrap_or_else(|| rows_digest(&[]));
+        let mut fixed_watermark = source_watermark;
+        let mut watermark_restarts = 0_usize;
+        loop {
+            let source_range_page = tokio::time::timeout(
+                self.limits.copy.source_read_budget,
+                self.source.scan_range_page(
+                    table_name,
+                    cursor.as_deref(),
+                    lower_bound.as_deref(),
+                    upper_bound.as_deref(),
+                    self.limits.copy,
+                ),
+            )
+            .await
+            .context("SQLite migration coverage page exceeded its read budget")??;
+            source_range_page.page.validate_range(
+                table_name,
+                cursor.as_deref(),
+                lower_bound.as_deref(),
+                upper_bound.as_deref(),
+                self.limits.copy,
+            )?;
+            if source_range_page.source_watermark != fixed_watermark {
+                if source_range_page.source_watermark < fixed_watermark {
+                    bail!("source coverage watermark regressed between bounded pages");
+                }
+                watermark_restarts = watermark_restarts
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("source coverage restart count overflowed"))?;
+                if watermark_restarts > self.limits.max_queued_operations {
+                    bail!("source changed too often during bounded coverage verification");
+                }
+                fixed_watermark = source_range_page.source_watermark;
+                cursor = None;
+                source_row_count = 0;
+                target_row_count = 0;
+                source_byte_count = 0;
+                target_byte_count = 0;
+                source_digest = rows_digest(&[]);
+                target_digest = rows_digest(&[]);
+                continue;
             }
-            None => SourceRangeSnapshot {
-                source_watermark: self.source.capture_watermark().await?,
-                rows: Vec::new(),
-            },
-        };
-        if source_snapshot.source_watermark != source_watermark {
-            bail!("source changed while migration coverage was being verified");
+            if let Some(checkpoint) = self
+                .target
+                .load_checkpoint(self.source.migration_id(), table_name)
+                .await?
+                && checkpoint.applied_through < fixed_watermark
+            {
+                self.catch_up_through(table_name, fixed_watermark).await?;
+            }
+            let target_page = self
+                .target
+                .scan_range_page(
+                    table_name,
+                    cursor.as_deref(),
+                    lower_bound.as_deref(),
+                    upper_bound.as_deref(),
+                    self.limits.copy,
+                )
+                .await?;
+            target_page.validate_range(
+                table_name,
+                cursor.as_deref(),
+                lower_bound.as_deref(),
+                upper_bound.as_deref(),
+                self.limits.copy,
+            )?;
+            if source_range_page.page.rows != target_page.rows
+                || source_range_page.page.next_cursor != target_page.next_cursor
+                || source_range_page.page.complete != target_page.complete
+            {
+                bail!("migration table coverage differs between source and target");
+            }
+            source_row_count = source_row_count
+                .checked_add(source_range_page.page.rows.len() as u64)
+                .ok_or_else(|| anyhow!("source coverage row count overflowed"))?;
+            target_row_count = target_row_count
+                .checked_add(target_page.rows.len() as u64)
+                .ok_or_else(|| anyhow!("target coverage row count overflowed"))?;
+            let source_page_bytes = source_range_page
+                .page
+                .rows
+                .iter()
+                .map(|row| row.payload.len() as u64)
+                .sum::<u64>();
+            let target_page_bytes = target_page
+                .rows
+                .iter()
+                .map(|row| row.payload.len() as u64)
+                .sum::<u64>();
+            source_byte_count = source_byte_count
+                .checked_add(source_page_bytes)
+                .ok_or_else(|| anyhow!("source coverage byte count overflowed"))?;
+            target_byte_count = target_byte_count
+                .checked_add(target_page_bytes)
+                .ok_or_else(|| anyhow!("target coverage byte count overflowed"))?;
+            source_digest = chain_digest(&source_digest, &source_range_page.page.rows);
+            target_digest = chain_digest(&target_digest, &target_page.rows);
+            let next_cursor = source_range_page.page.next_cursor.clone();
+            self.target
+                .save_coverage_checkpoint(&CoverageCheckpoint {
+                    migration_id: self.source.migration_id().to_owned(),
+                    table_name: table_name.to_owned(),
+                    lower_bound: lower_bound.clone(),
+                    upper_bound: upper_bound.clone(),
+                    cursor: next_cursor.clone(),
+                    source_watermark: fixed_watermark,
+                    source_row_count,
+                    target_row_count,
+                    source_byte_count,
+                    target_byte_count,
+                    source_digest: source_digest.clone(),
+                    target_digest: target_digest.clone(),
+                    complete: source_range_page.page.complete,
+                })
+                .await?;
+            if source_range_page.page.complete {
+                break;
+            }
+            if next_cursor.as_deref() == cursor.as_deref() {
+                bail!("migration coverage page did not advance");
+            }
+            cursor = next_cursor;
         }
-        let source_rows = source_snapshot.rows;
-        let target_rows = match &range {
-            Some(range) => self.target.rows_in_range(table_name, range).await?,
-            None => Vec::new(),
-        };
         let proof = TableCoverageProof {
             migration_id: self.source.migration_id().to_owned(),
             table_name: table_name.to_owned(),
-            source_watermark,
+            source_watermark: fixed_watermark,
             range,
             source_lower_bound: source_bounds.0,
             source_upper_bound: source_bounds.1,
             target_lower_bound: target_bounds.0,
             target_upper_bound: target_bounds.1,
-            source_row_count: source_rows.len() as u64,
-            target_row_count: target_rows.len() as u64,
-            source_byte_count: source_rows.iter().map(|row| row.payload.len() as u64).sum(),
-            target_byte_count: target_rows.iter().map(|row| row.payload.len() as u64).sum(),
-            source_digest: rows_digest(&source_rows),
-            target_digest: rows_digest(&target_rows),
+            source_row_count,
+            target_row_count,
+            source_byte_count,
+            target_byte_count,
+            source_digest,
+            target_digest,
         };
         proof.validate()?;
-        if source_rows != target_rows {
-            bail!("migration table coverage differs between source and target");
-        }
         self.target.save_table_coverage_proof(&proof).await?;
         Ok(proof)
+    }
+
+    async fn verify_tail_delta(
+        &self,
+        tables: &BTreeSet<String>,
+        after: i64,
+        through: i64,
+    ) -> Result<()> {
+        if after < 0 || through < after {
+            bail!("migration tail delta watermark is invalid");
+        }
+        if after == through {
+            return Ok(());
+        }
+        let changes = self
+            .source
+            .changes_through(after, through, self.limits.max_queued_operations)
+            .await?;
+        let last_change = changes
+            .iter()
+            .map(|change| change.source_version)
+            .max()
+            .ok_or_else(|| anyhow!("source capture skipped the migration tail delta"))?;
+        if last_change != through {
+            bail!("migration tail delta exceeds the bounded replay budget");
+        }
+        for table_name in tables {
+            if let Some(checkpoint) = self
+                .target
+                .load_checkpoint(self.source.migration_id(), table_name)
+                .await?
+                && checkpoint.applied_through < through
+            {
+                self.catch_up_through(table_name, through).await?;
+            }
+            let mut keys = BTreeSet::new();
+            for change in changes
+                .iter()
+                .filter(|change| &change.table_name == table_name)
+            {
+                keys.insert(change.stable_key.clone());
+                if let Some(previous_key) = &change.previous_key {
+                    keys.insert(previous_key.clone());
+                }
+            }
+            for stable_key in keys {
+                self.verify_key_delta(table_name, &stable_key, through)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn verify_key_delta(
+        &self,
+        table_name: &str,
+        stable_key: &str,
+        through: i64,
+    ) -> Result<()> {
+        let source_range_page = tokio::time::timeout(
+            self.limits.copy.source_read_budget,
+            self.source.scan_range_page(
+                table_name,
+                None,
+                Some(stable_key),
+                Some(stable_key),
+                self.limits.copy,
+            ),
+        )
+        .await
+        .context("SQLite migration tail verification exceeded its read budget")??;
+        source_range_page.page.validate_range(
+            table_name,
+            None,
+            Some(stable_key),
+            Some(stable_key),
+            self.limits.copy,
+        )?;
+        if source_range_page.source_watermark < through {
+            bail!("source tail verification page precedes its watermark");
+        }
+        if let Some(checkpoint) = self
+            .target
+            .load_checkpoint(self.source.migration_id(), table_name)
+            .await?
+            && checkpoint.applied_through < source_range_page.source_watermark
+        {
+            self.catch_up_through(table_name, source_range_page.source_watermark)
+                .await?;
+        }
+        let target_page = self
+            .target
+            .scan_range_page(
+                table_name,
+                None,
+                Some(stable_key),
+                Some(stable_key),
+                self.limits.copy,
+            )
+            .await?;
+        target_page.validate_range(
+            table_name,
+            None,
+            Some(stable_key),
+            Some(stable_key),
+            self.limits.copy,
+        )?;
+        if source_range_page.page.rows != target_page.rows
+            || source_range_page.page.next_cursor != target_page.next_cursor
+            || source_range_page.page.complete != target_page.complete
+        {
+            bail!("migration tail delta differs between source and target");
+        }
+        Ok(())
     }
 
     pub(crate) async fn switch_authority(
@@ -2584,23 +3056,27 @@ where
             self.verify_table_coverage_at(table_name, pre_fence_watermark)
                 .await?;
         }
-        if self.source.capture_watermark().await? != pre_fence_watermark {
-            bail!("source writes continued during pre-fence migration verification");
-        }
 
         self.fence.close_and_drain(switch_budget).await?;
         let result = async {
             let watermark = self.source.capture_watermark().await?;
-            // The fence window deliberately contains no full replay or verification. If an
-            // in-flight source transaction advanced H while the fence drained, leave the source
-            // authoritative and retry the pre-fence preparation instead of holding writes.
-            if watermark != pre_fence_watermark {
-                bail!(
-                    "source capture advanced during the switch fence; retry pre-fence preparation"
-                );
+            if watermark < pre_fence_watermark {
+                bail!("source capture watermark regressed during the switch fence");
+            }
+            if watermark > pre_fence_watermark {
+                tokio::time::timeout(
+                    switch_budget,
+                    self.verify_tail_delta(&target_tables, pre_fence_watermark, watermark),
+                )
+                .await
+                .context("migration switch tail delta exceeded its budget")??;
+            }
+            let final_watermark = self.source.capture_watermark().await?;
+            if final_watermark != watermark {
+                bail!("source capture advanced during the switch tail verification");
             }
             let final_expected = AuthorityRecoveryContext {
-                source_watermark: watermark,
+                source_watermark: final_watermark,
                 ..expected.clone()
             };
             self.store.set_recovery_context(&final_expected).await?;
@@ -2613,7 +3089,7 @@ where
                     backend: BackendKind::Postgres,
                     generation: self.authority_generation.saturating_add(1),
                 },
-                source_watermark: watermark,
+                source_watermark: final_watermark,
                 target_identity: final_expected.target_identity.clone(),
             };
             let metadata: Arc<dyn AuthorityManifestStore> = self.store.clone();
@@ -2679,5 +3155,20 @@ fn rows_digest(rows: &[VersionedRow]) -> String {
         digest.update((row.payload.len() as u64).to_be_bytes());
         digest.update(&row.payload);
     }
+    encode_hex(&digest.finalize())
+}
+
+fn chain_digest(previous: &str, rows: &[VersionedRow]) -> String {
+    let mut digest = Sha256::new();
+    digest.update((previous.len() as u64).to_be_bytes());
+    digest.update(previous.as_bytes());
+    digest.update((rows.len() as u64).to_be_bytes());
+    digest.update(
+        rows.iter()
+            .map(|row| row.payload.len() as u64)
+            .sum::<u64>()
+            .to_be_bytes(),
+    );
+    digest.update(rows_digest(rows).as_bytes());
     encode_hex(&digest.finalize())
 }

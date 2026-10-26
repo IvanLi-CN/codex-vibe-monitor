@@ -16,8 +16,9 @@ use super::{
     core::StorageModule,
     migration::{
         CapturedChange, ChangeInput, ChangeKind, ChunkProof, ChunkRange, CopyLimits,
-        EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage, SourceRangeSnapshot,
-        TableCopyPlan, TableCoverageProof, VersionedRow, validate_checkpoint_progress,
+        CoverageCheckpoint, EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage,
+        SourceRangePage, SourceRangeSnapshot, TableCopyPlan, TableCoverageProof, VersionedRow,
+        validate_checkpoint_progress,
     },
 };
 
@@ -473,79 +474,23 @@ impl MigrationSource for SqliteMigrationSource {
         upper_bound: Option<&str>,
         limits: CopyLimits,
     ) -> Result<SourcePage> {
+        Ok(self
+            .scan_range_page(table_name, cursor, None, upper_bound, limits)
+            .await?
+            .page)
+    }
+
+    async fn scan_range_page(
+        &self,
+        table_name: &str,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourceRangePage> {
         if limits.max_rows == 0 || limits.max_bytes == 0 {
             bail!("SQLite migration page limits must be positive");
         }
-        let Some(upper_bound) = upper_bound else {
-            return Ok(SourcePage {
-                rows: Vec::new(),
-                next_cursor: None,
-                complete: true,
-            });
-        };
-        let spec = self.spec(table_name)?;
-        let table = quote_identifier(&spec.source_table_name, "source migration table")?;
-        let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
-        let version = quote_identifier(&spec.source_version_column, "source version column")?;
-        let payload = quote_identifier(&spec.source_payload_column, "source payload column")?;
-        let query = format!(
-            "SELECT {key} AS stable_key, {version} AS source_version, {payload} AS payload
-               FROM {table}
-              WHERE {key} > ? AND {key} <= ?
-              ORDER BY {key} ASC LIMIT ?"
-        );
-        let raw_rows = sqlx::query(&query)
-            .bind(cursor.unwrap_or_default())
-            .bind(upper_bound)
-            .bind(i64::try_from(limits.max_rows).context("SQLite page row limit overflowed")?)
-            .fetch_all(&self.pool)
-            .await
-            .context("read SQLite migration baseline page")?;
-        let fetched_rows = raw_rows
-            .into_iter()
-            .map(|row| {
-                Ok(VersionedRow {
-                    stable_key: row.try_get("stable_key")?,
-                    source_version: row.try_get("source_version")?,
-                    payload: row
-                        .try_get::<Option<Vec<u8>>, _>("payload")?
-                        .unwrap_or_default(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let fetched_count = fetched_rows.len();
-        let mut bytes = 0_usize;
-        let mut rows = Vec::with_capacity(fetched_count);
-        for row in fetched_rows {
-            if rows.is_empty() && row.payload.len() > limits.max_bytes {
-                bail!("SQLite migration row exceeds the copy byte budget");
-            }
-            let next_bytes = bytes
-                .checked_add(row.payload.len())
-                .ok_or_else(|| anyhow!("SQLite migration page byte count overflowed"))?;
-            if next_bytes > limits.max_bytes {
-                break;
-            }
-            bytes = next_bytes;
-            rows.push(row);
-        }
-        let byte_limited = rows.len() < fetched_count;
-        let next_cursor = rows.last().map(|row| row.stable_key.clone());
-        Ok(SourcePage {
-            complete: rows.is_empty()
-                || (!byte_limited
-                    && (fetched_count < limits.max_rows
-                        || next_cursor.as_deref() == Some(upper_bound))),
-            rows,
-            next_cursor,
-        })
-    }
-
-    async fn rows_in_range_snapshot(
-        &self,
-        table_name: &str,
-        range: &ChunkRange,
-    ) -> Result<SourceRangeSnapshot> {
         let spec = self.spec(table_name)?;
         let table = quote_identifier(&spec.source_table_name, "source migration table")?;
         let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
@@ -553,31 +498,75 @@ impl MigrationSource for SqliteMigrationSource {
         let payload = quote_identifier(&spec.source_payload_column, "source payload column")?;
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
-        let query = format!(
-            "SELECT {key} AS stable_key, {version} AS source_version, {payload} AS payload
-               FROM {table}
-              WHERE {key} >= ? AND {key} <= ?
-              ORDER BY {key} ASC"
-        );
         let mut transaction = self.pool.begin().await?;
-        let rows = sqlx::query(&query)
-            .bind(&range.first_key)
-            .bind(&range.last_key)
-            .fetch_all(&mut *transaction)
-            .await
-            .context("read SQLite migration verification range")?;
-        let rows = rows
-            .into_iter()
-            .map(|row| {
-                Ok(VersionedRow {
-                    stable_key: row.try_get("stable_key")?,
-                    source_version: row.try_get("source_version")?,
-                    payload: row
-                        .try_get::<Option<Vec<u8>>, _>("payload")?
-                        .unwrap_or_default(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut rows = Vec::new();
+        let mut bytes = 0_usize;
+        let mut complete = true;
+        if let Some(upper_bound) = upper_bound {
+            let start = cursor.or(lower_bound).unwrap_or_default();
+            let comparison = if cursor.is_some() { ">" } else { ">=" };
+            let query = format!(
+                "SELECT {key} AS stable_key, {version} AS source_version,
+                        COALESCE(length({payload}), 0) AS payload_bytes
+                   FROM {table}
+                  WHERE {key} {comparison} ? AND {key} <= ?
+                  ORDER BY {key} ASC LIMIT ?"
+            );
+            let raw_rows = sqlx::query(&query)
+                .bind(start)
+                .bind(upper_bound)
+                .bind(
+                    i64::try_from(
+                        limits
+                            .max_rows
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow!("SQLite page row limit overflowed"))?,
+                    )
+                    .context("SQLite page row limit overflowed")?,
+                )
+                .fetch_all(&mut *transaction)
+                .await
+                .context("read SQLite migration page metadata")?;
+            for row in raw_rows {
+                if rows.len() >= limits.max_rows {
+                    complete = false;
+                    break;
+                }
+                let stable_key: String = row.try_get("stable_key")?;
+                let source_version: i64 = row.try_get("source_version")?;
+                let payload_bytes = usize::try_from(row.try_get::<i64, _>("payload_bytes")?)
+                    .context("SQLite migration payload length overflowed")?;
+                if rows.is_empty() && payload_bytes > limits.max_bytes {
+                    bail!("SQLite migration row exceeds the copy byte budget");
+                }
+                let next_bytes = bytes
+                    .checked_add(payload_bytes)
+                    .ok_or_else(|| anyhow!("SQLite migration page byte count overflowed"))?;
+                if next_bytes > limits.max_bytes {
+                    complete = false;
+                    break;
+                }
+                let payload_query =
+                    format!("SELECT {payload} AS payload FROM {table} WHERE {key} = ?");
+                let payload_row = sqlx::query(&payload_query)
+                    .bind(&stable_key)
+                    .fetch_one(&mut *transaction)
+                    .await
+                    .context("read SQLite migration page payload")?;
+                let payload = payload_row
+                    .try_get::<Option<Vec<u8>>, _>("payload")?
+                    .unwrap_or_default();
+                if payload.len() != payload_bytes {
+                    bail!("SQLite migration page payload changed within its read transaction");
+                }
+                bytes = next_bytes;
+                rows.push(VersionedRow {
+                    stable_key,
+                    source_version,
+                    payload,
+                });
+            }
+        }
         let watermark_query = format!(
             "SELECT COALESCE(MAX(source_version), 0)
                FROM {capture_table}
@@ -588,13 +577,57 @@ impl MigrationSource for SqliteMigrationSource {
             .bind(&self.source_identity)
             .fetch_one(&mut *transaction)
             .await
-            .context("read SQLite verification snapshot watermark")?;
+            .context("read SQLite migration page watermark")?;
         transaction
             .commit()
             .await
-            .context("commit SQLite migration verification snapshot")?;
-        Ok(SourceRangeSnapshot {
+            .context("commit SQLite migration page")?;
+        Ok(SourceRangePage {
             source_watermark,
+            page: SourcePage {
+                complete,
+                next_cursor: rows.last().map(|row| row.stable_key.clone()),
+                rows,
+            },
+        })
+    }
+
+    async fn rows_in_range_snapshot(
+        &self,
+        table_name: &str,
+        range: &ChunkRange,
+    ) -> Result<SourceRangeSnapshot> {
+        let mut cursor = None;
+        let mut rows = Vec::new();
+        let mut source_watermark = None;
+        loop {
+            let range_page = self
+                .scan_range_page(
+                    table_name,
+                    cursor.as_deref(),
+                    Some(&range.first_key),
+                    Some(&range.last_key),
+                    CopyLimits::default(),
+                )
+                .await?;
+            if let Some(previous_watermark) = source_watermark
+                && previous_watermark != range_page.source_watermark
+            {
+                bail!("SQLite verification range changed between bounded pages");
+            }
+            source_watermark = Some(range_page.source_watermark);
+            let next_cursor = range_page.page.next_cursor.clone();
+            rows.extend(range_page.page.rows);
+            if range_page.page.complete {
+                break;
+            }
+            if next_cursor.as_deref() == cursor.as_deref() {
+                bail!("SQLite verification page did not advance");
+            }
+            cursor = next_cursor;
+        }
+        Ok(SourceRangeSnapshot {
+            source_watermark: source_watermark.unwrap_or_default(),
             rows,
         })
     }
@@ -633,6 +666,7 @@ struct PostgresMigrationMetadataTables {
     plans: String,
     checkpoints: String,
     chunk_proofs: String,
+    coverage_checkpoints: String,
     coverage_proofs: String,
 }
 
@@ -643,6 +677,7 @@ impl PostgresMigrationMetadataTables {
             plans: format!("{prefix}_plans"),
             checkpoints: format!("{prefix}_checkpoints"),
             chunk_proofs: format!("{prefix}_chunk_proofs"),
+            coverage_checkpoints: format!("{prefix}_coverage_checkpoints"),
             coverage_proofs: format!("{prefix}_coverage_proofs"),
         })
     }
@@ -670,6 +705,10 @@ impl PostgresMigrationTarget {
         let chunk_proofs = quote_identifier(
             &self.metadata.chunk_proofs,
             "PostgreSQL migration chunk proofs table",
+        )?;
+        let coverage_checkpoints = quote_identifier(
+            &self.metadata.coverage_checkpoints,
+            "PostgreSQL migration coverage checkpoints table",
         )?;
         let coverage_proofs = quote_identifier(
             &self.metadata.coverage_proofs,
@@ -712,6 +751,24 @@ impl PostgresMigrationTarget {
                     byte_count BIGINT NOT NULL,
                     digest TEXT NOT NULL,
                     PRIMARY KEY (migration_id, table_name, first_key, last_key)
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {coverage_checkpoints} (
+                    migration_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    lower_bound TEXT,
+                    upper_bound TEXT,
+                    cursor TEXT,
+                    source_watermark BIGINT NOT NULL,
+                    source_row_count BIGINT NOT NULL,
+                    target_row_count BIGINT NOT NULL,
+                    source_byte_count BIGINT NOT NULL,
+                    target_byte_count BIGINT NOT NULL,
+                    source_digest TEXT NOT NULL,
+                    target_digest TEXT NOT NULL,
+                    complete BOOLEAN NOT NULL,
+                    PRIMARY KEY (migration_id, table_name)
                 )"
             ),
             format!(
@@ -1100,39 +1157,128 @@ impl MigrationTarget for PostgresMigrationTarget {
         Ok(())
     }
 
-    async fn rows_in_range(
+    async fn scan_range_page(
         &self,
         table_name: &str,
-        range: &ChunkRange,
-    ) -> Result<Vec<VersionedRow>> {
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourcePage> {
+        limits.validate()?;
         let spec = self.spec(table_name)?;
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
         let version = quote_identifier(&spec.target_version_column, "target version column")?;
         let payload = quote_identifier(&spec.target_payload_column, "target payload column")?;
-        let query = format!(
-            "SELECT {key} AS stable_key, {version} AS source_version, {payload} AS payload
-               FROM {table}
-              WHERE {key} >= $1 AND {key} <= $2
-              ORDER BY {key} ASC"
-        );
-        let rows = sqlx::query(&query)
-            .bind(&range.first_key)
-            .bind(&range.last_key)
-            .fetch_all(&self.pool)
+        let mut transaction = self.pool.begin().await?;
+        let mut rows = Vec::new();
+        let mut bytes = 0_usize;
+        let mut complete = true;
+        if let Some(upper_bound) = upper_bound {
+            let start = cursor.or(lower_bound).unwrap_or_default();
+            let comparison = if cursor.is_some() { ">" } else { ">=" };
+            let query = format!(
+                "SELECT {key} AS stable_key, {version} AS source_version,
+                        COALESCE(octet_length({payload}), 0)::BIGINT AS payload_bytes
+                   FROM {table}
+                  WHERE {key} {comparison} $1 AND {key} <= $2
+                  ORDER BY {key} ASC LIMIT $3"
+            );
+            let raw_rows = sqlx::query(&query)
+                .bind(start)
+                .bind(upper_bound)
+                .bind(
+                    i64::try_from(
+                        limits
+                            .max_rows
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow!("PostgreSQL page row limit overflowed"))?,
+                    )
+                    .context("PostgreSQL page row limit overflowed")?,
+                )
+                .fetch_all(&mut *transaction)
+                .await
+                .context("read PostgreSQL migration page metadata")?;
+            for row in raw_rows {
+                if rows.len() >= limits.max_rows {
+                    complete = false;
+                    break;
+                }
+                let stable_key: String = row.try_get("stable_key")?;
+                let source_version: i64 = row.try_get("source_version")?;
+                let payload_bytes = usize::try_from(row.try_get::<i64, _>("payload_bytes")?)
+                    .context("PostgreSQL migration payload length overflowed")?;
+                if rows.is_empty() && payload_bytes > limits.max_bytes {
+                    bail!("PostgreSQL migration row exceeds the coverage byte budget");
+                }
+                let next_bytes = bytes
+                    .checked_add(payload_bytes)
+                    .ok_or_else(|| anyhow!("PostgreSQL migration page byte count overflowed"))?;
+                if next_bytes > limits.max_bytes {
+                    complete = false;
+                    break;
+                }
+                let payload_query =
+                    format!("SELECT {payload} AS payload FROM {table} WHERE {key} = $1");
+                let payload_row = sqlx::query(&payload_query)
+                    .bind(&stable_key)
+                    .fetch_one(&mut *transaction)
+                    .await
+                    .context("read PostgreSQL migration page payload")?;
+                let payload = payload_row
+                    .try_get::<Option<Vec<u8>>, _>("payload")?
+                    .unwrap_or_default();
+                if payload.len() != payload_bytes {
+                    bail!("PostgreSQL migration page payload changed within its read transaction");
+                }
+                bytes = next_bytes;
+                rows.push(VersionedRow {
+                    stable_key,
+                    source_version,
+                    payload,
+                });
+            }
+        }
+        transaction
+            .commit()
             .await
-            .context("read PostgreSQL migration verification range")?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(VersionedRow {
-                    stable_key: row.try_get("stable_key")?,
-                    source_version: row.try_get("source_version")?,
-                    payload: row
-                        .try_get::<Option<Vec<u8>>, _>("payload")?
-                        .unwrap_or_default(),
-                })
-            })
-            .collect()
+            .context("commit PostgreSQL migration page")?;
+        Ok(SourcePage {
+            complete,
+            next_cursor: rows.last().map(|row| row.stable_key.clone()),
+            rows,
+        })
+    }
+
+    async fn rows_in_range(
+        &self,
+        table_name: &str,
+        range: &ChunkRange,
+    ) -> Result<Vec<VersionedRow>> {
+        let mut cursor = None;
+        let mut rows = Vec::new();
+        loop {
+            let page = self
+                .scan_range_page(
+                    table_name,
+                    cursor.as_deref(),
+                    Some(&range.first_key),
+                    Some(&range.last_key),
+                    CopyLimits::default(),
+                )
+                .await?;
+            let next_cursor = page.next_cursor.clone();
+            rows.extend(page.rows);
+            if page.complete {
+                break;
+            }
+            if next_cursor.as_deref() == cursor.as_deref() {
+                bail!("PostgreSQL migration verification page did not advance");
+            }
+            cursor = next_cursor;
+        }
+        Ok(rows)
     }
 
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
@@ -1222,6 +1368,91 @@ impl MigrationTarget for PostgresMigrationTarget {
                 })
             })
             .collect()
+    }
+
+    async fn save_coverage_checkpoint(&self, checkpoint: &CoverageCheckpoint) -> Result<()> {
+        checkpoint.validate()?;
+        let coverage_checkpoints = quote_identifier(
+            &self.metadata.coverage_checkpoints,
+            "PostgreSQL migration coverage checkpoints table",
+        )?;
+        let query = format!(
+            "INSERT INTO {coverage_checkpoints}
+             (migration_id, table_name, lower_bound, upper_bound, cursor, source_watermark,
+              source_row_count, target_row_count, source_byte_count, target_byte_count,
+              source_digest, target_digest, complete)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             ON CONFLICT (migration_id, table_name) DO UPDATE SET
+                lower_bound = EXCLUDED.lower_bound, upper_bound = EXCLUDED.upper_bound,
+                cursor = EXCLUDED.cursor, source_watermark = EXCLUDED.source_watermark,
+                source_row_count = EXCLUDED.source_row_count,
+                target_row_count = EXCLUDED.target_row_count,
+                source_byte_count = EXCLUDED.source_byte_count,
+                target_byte_count = EXCLUDED.target_byte_count,
+                source_digest = EXCLUDED.source_digest, target_digest = EXCLUDED.target_digest,
+                complete = EXCLUDED.complete"
+        );
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(&query)
+            .bind(&checkpoint.migration_id)
+            .bind(&checkpoint.table_name)
+            .bind(&checkpoint.lower_bound)
+            .bind(&checkpoint.upper_bound)
+            .bind(&checkpoint.cursor)
+            .bind(checkpoint.source_watermark)
+            .bind(i64_from_u64(
+                checkpoint.source_row_count,
+                "coverage checkpoint source row count",
+            )?)
+            .bind(i64_from_u64(
+                checkpoint.target_row_count,
+                "coverage checkpoint target row count",
+            )?)
+            .bind(i64_from_u64(
+                checkpoint.source_byte_count,
+                "coverage checkpoint source byte count",
+            )?)
+            .bind(i64_from_u64(
+                checkpoint.target_byte_count,
+                "coverage checkpoint target byte count",
+            )?)
+            .bind(&checkpoint.source_digest)
+            .bind(&checkpoint.target_digest)
+            .bind(checkpoint.complete)
+            .execute(&mut *transaction)
+            .await
+            .context("persist PostgreSQL migration coverage checkpoint")?;
+        transaction
+            .commit()
+            .await
+            .context("commit PostgreSQL migration coverage checkpoint")?;
+        Ok(())
+    }
+
+    async fn load_coverage_checkpoint(
+        &self,
+        migration_id: &str,
+        table_name: &str,
+    ) -> Result<Option<CoverageCheckpoint>> {
+        let coverage_checkpoints = quote_identifier(
+            &self.metadata.coverage_checkpoints,
+            "PostgreSQL migration coverage checkpoints table",
+        )?;
+        let query = format!(
+            "SELECT migration_id, table_name, lower_bound, upper_bound, cursor,
+                    source_watermark, source_row_count, target_row_count,
+                    source_byte_count, target_byte_count, source_digest, target_digest, complete
+               FROM {coverage_checkpoints}
+              WHERE migration_id = $1 AND table_name = $2"
+        );
+        sqlx::query(&query)
+            .bind(migration_id)
+            .bind(table_name)
+            .fetch_optional(&self.pool)
+            .await
+            .context("load PostgreSQL migration coverage checkpoint")?
+            .map(decode_coverage_checkpoint)
+            .transpose()
     }
 
     async fn save_table_coverage_proof(&self, proof: &TableCoverageProof) -> Result<()> {
@@ -1391,6 +1622,38 @@ fn decode_checkpoint(row: sqlx::postgres::PgRow) -> Result<EngineCheckpoint> {
         copied_bytes: u64_from_i64(row.try_get("copied_bytes")?, "copied bytes")?,
         complete: row.try_get("complete")?,
     })
+}
+
+fn decode_coverage_checkpoint(row: sqlx::postgres::PgRow) -> Result<CoverageCheckpoint> {
+    let checkpoint = CoverageCheckpoint {
+        migration_id: row.try_get("migration_id")?,
+        table_name: row.try_get("table_name")?,
+        lower_bound: row.try_get("lower_bound")?,
+        upper_bound: row.try_get("upper_bound")?,
+        cursor: row.try_get("cursor")?,
+        source_watermark: row.try_get("source_watermark")?,
+        source_row_count: u64_from_i64(
+            row.try_get("source_row_count")?,
+            "coverage checkpoint source row count",
+        )?,
+        target_row_count: u64_from_i64(
+            row.try_get("target_row_count")?,
+            "coverage checkpoint target row count",
+        )?,
+        source_byte_count: u64_from_i64(
+            row.try_get("source_byte_count")?,
+            "coverage checkpoint source byte count",
+        )?,
+        target_byte_count: u64_from_i64(
+            row.try_get("target_byte_count")?,
+            "coverage checkpoint target byte count",
+        )?,
+        source_digest: row.try_get("source_digest")?,
+        target_digest: row.try_get("target_digest")?,
+        complete: row.try_get("complete")?,
+    };
+    checkpoint.validate()?;
+    Ok(checkpoint)
 }
 
 fn i64_from_u64(value: u64, label: &str) -> Result<i64> {
