@@ -5,7 +5,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -752,13 +752,20 @@ impl SourceWriteFence {
 
     pub(crate) async fn close_and_drain(&self, budget: Duration) -> Result<SourceFenceLease> {
         let deadline = tokio::time::Instant::now() + budget;
-        {
+        let previous_generation = {
             let mut state = self.state.lock().await;
             if state.fenced {
                 bail!("source writes are already fenced");
             }
             state.accepting = false;
-        }
+            state.generation
+        };
+        let lease = SourceFenceLease {
+            fence: self.clone(),
+            previous_generation,
+            prepared_generation: None,
+            completed: false,
+        };
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
@@ -770,17 +777,11 @@ impl SourceWriteFence {
                 .await
                 .is_err()
             {
-                self.reopen().await;
+                lease.reopen().await;
                 bail!("timed out draining source writes before authority publication");
             }
         }
-        let previous_generation = self.state.lock().await.generation;
-        Ok(SourceFenceLease {
-            fence: self.clone(),
-            previous_generation,
-            prepared_generation: None,
-            completed: false,
-        })
+        Ok(lease)
     }
 
     pub(crate) async fn reopen(&self) {
@@ -2189,6 +2190,20 @@ struct FileMigrationState {
 
 const FILE_STATE_SCHEMA_VERSION: u32 = 1;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static FILE_STORE_LOCKS: OnceLock<StdMutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+
+fn file_store_lock(path: &Path) -> Arc<Mutex<()>> {
+    let locks = FILE_STORE_LOCKS.get_or_init(|| StdMutex::new(BTreeMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.to_owned(), Arc::downgrade(&lock));
+    lock
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct FileMigrationStore {
@@ -2199,10 +2214,11 @@ pub(crate) struct FileMigrationStore {
 
 impl FileMigrationStore {
     pub(crate) fn new(path: impl Into<PathBuf>, initial_context: AuthorityRecoveryContext) -> Self {
+        let path = path.into();
         Self {
-            path: Arc::new(path.into()),
+            lock: file_store_lock(&path),
+            path: Arc::new(path),
             initial_context,
-            lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -2211,6 +2227,11 @@ impl FileMigrationStore {
     }
 
     async fn read_state(&self) -> Result<FileMigrationState> {
+        let _lock = self.lock.lock().await;
+        self.read_state_unlocked().await
+    }
+
+    async fn read_state_unlocked(&self) -> Result<FileMigrationState> {
         if !self.path.exists() {
             return Ok(self.default_state());
         }
@@ -2222,12 +2243,19 @@ impl FileMigrationStore {
         Ok(state)
     }
 
-    async fn write_state(&self, state: &FileMigrationState) -> Result<()> {
+    async fn update_state<Value, F>(&self, update: F) -> Result<Value>
+    where
+        F: FnOnce(&mut FileMigrationState) -> Result<Value>,
+    {
+        let lock = Arc::clone(&self.lock).lock_owned().await;
+        let mut state = self.read_state_unlocked().await?;
+        let value = update(&mut state)?;
+        let bytes = serde_json::to_vec_pretty(&state).context("serialize migration state")?;
         let path = self.path.clone();
-        let bytes = serde_json::to_vec_pretty(state).context("serialize migration state")?;
         tokio::task::spawn_blocking(move || atomic_write(&path, &bytes))
             .await
-            .context("file migration state task panicked")?
+            .context("file migration state task panicked")??;
+        Ok(value)
     }
 
     fn default_state(&self) -> FileMigrationState {
@@ -2450,25 +2478,25 @@ impl AuthorityManifestStore for FileMigrationStore {
         manifest: &ModuleAuthorityManifest,
         expected: &AuthorityRecoveryContext,
     ) -> Result<AuthorityPublication> {
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        if !context_matches_manifest(expected, manifest) {
-            return Ok(AuthorityPublication::Conflict);
-        }
-        if let Some(current) = state.authority.as_ref() {
-            return Ok(if current == manifest {
-                AuthorityPublication::Committed
-            } else {
-                AuthorityPublication::Conflict
-            });
-        }
-        if state.no_cutover.as_ref() != Some(expected) {
-            return Ok(AuthorityPublication::Conflict);
-        }
-        state.authority = Some(manifest.clone());
-        state.no_cutover = None;
-        self.write_state(&state).await?;
-        Ok(AuthorityPublication::Committed)
+        self.update_state(|state| {
+            if !context_matches_manifest(expected, manifest) {
+                return Ok(AuthorityPublication::Conflict);
+            }
+            if let Some(current) = state.authority.as_ref() {
+                return Ok(if current == manifest {
+                    AuthorityPublication::Committed
+                } else {
+                    AuthorityPublication::Conflict
+                });
+            }
+            if state.no_cutover.as_ref() != Some(expected) {
+                return Ok(AuthorityPublication::Conflict);
+            }
+            state.authority = Some(manifest.clone());
+            state.no_cutover = None;
+            Ok(AuthorityPublication::Committed)
+        })
+        .await
     }
 }
 
@@ -2486,13 +2514,14 @@ impl MigrationMetadataStore for FileMigrationStore {
     async fn save_status(&self, status: &MigrationStatus) -> Result<()> {
         status.validate()?;
         self.validate_status_context(status)?;
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        state
-            .statuses
-            .retain(|existing| existing.module != status.module);
-        state.statuses.push(status.clone());
-        self.write_state(&state).await
+        self.update_state(|state| {
+            state
+                .statuses
+                .retain(|existing| existing.module != status.module);
+            state.statuses.push(status.clone());
+            Ok(())
+        })
+        .await
     }
 
     async fn load_checkpoint(
@@ -2513,72 +2542,86 @@ impl MigrationMetadataStore for FileMigrationStore {
     async fn save_checkpoint(&self, checkpoint: &MigrationCheckpoint) -> Result<()> {
         checkpoint.validate()?;
         self.validate_checkpoint_context(checkpoint)?;
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        state.checkpoints.retain(|existing| {
-            existing.migration_id != checkpoint.migration_id
-                || existing.table_name != checkpoint.table_name
-        });
-        state.checkpoints.push(checkpoint.clone());
-        self.write_state(&state).await
+        self.update_state(|state| {
+            if let Some(existing) = state.checkpoints.iter().find(|existing| {
+                existing.migration_id == checkpoint.migration_id
+                    && existing.table_name == checkpoint.table_name
+            }) {
+                if checkpoint.captured_through < existing.captured_through
+                    || checkpoint.applied_through < existing.applied_through
+                    || (existing.complete && !checkpoint.complete)
+                {
+                    bail!("migration checkpoint regresses durable progress");
+                }
+            }
+            state.checkpoints.retain(|existing| {
+                existing.migration_id != checkpoint.migration_id
+                    || existing.table_name != checkpoint.table_name
+            });
+            state.checkpoints.push(checkpoint.clone());
+            Ok(())
+        })
+        .await
     }
 
     async fn enqueue_outbox(&self, item: &MigrationOutboxItem) -> Result<bool> {
         item.validate()?;
         self.validate_outbox_context(item)?;
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        if state
-            .outbox
-            .iter()
-            .any(|existing| existing.outbox_id == item.outbox_id)
-        {
-            return Ok(false);
-        }
-        state.outbox.push(item.clone());
-        self.write_state(&state).await?;
-        Ok(true)
+        self.update_state(|state| {
+            if state
+                .outbox
+                .iter()
+                .any(|existing| existing.outbox_id == item.outbox_id)
+            {
+                return Ok(false);
+            }
+            state.outbox.push(item.clone());
+            Ok(true)
+        })
+        .await
     }
 
     async fn acknowledge_outbox(&self, outbox_id: &str, applied_through: i64) -> Result<()> {
         if applied_through < 0 {
             bail!("outbox acknowledgement watermark must not be negative");
         }
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        if let Some(item) = state.outbox.iter().find(|item| item.outbox_id == outbox_id) {
-            if item.source_version > applied_through {
-                bail!("outbox acknowledgement is below the item source version");
+        self.update_state(|state| {
+            if let Some(item) = state.outbox.iter().find(|item| item.outbox_id == outbox_id) {
+                if item.source_version > applied_through {
+                    bail!("outbox acknowledgement is below the item source version");
+                }
             }
-        }
-        state.outbox.retain(|item| item.outbox_id != outbox_id);
-        self.write_state(&state).await
+            state.outbox.retain(|item| item.outbox_id != outbox_id);
+            Ok(())
+        })
+        .await
     }
 
     async fn reserve_capacity(&self, reservation: &MigrationReservation) -> Result<bool> {
         reservation.validate()?;
         self.validate_reservation_context(reservation)?;
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        if state
-            .reservations
-            .iter()
-            .any(|existing| existing.reservation_id == reservation.reservation_id)
-        {
-            return Ok(false);
-        }
-        state.reservations.push(reservation.clone());
-        self.write_state(&state).await?;
-        Ok(true)
+        self.update_state(|state| {
+            if state
+                .reservations
+                .iter()
+                .any(|existing| existing.reservation_id == reservation.reservation_id)
+            {
+                return Ok(false);
+            }
+            state.reservations.push(reservation.clone());
+            Ok(true)
+        })
+        .await
     }
 
     async fn release_capacity(&self, reservation_id: &str) -> Result<()> {
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        state
-            .reservations
-            .retain(|item| item.reservation_id != reservation_id);
-        self.write_state(&state).await
+        self.update_state(|state| {
+            state
+                .reservations
+                .retain(|item| item.reservation_id != reservation_id);
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -2598,10 +2641,11 @@ impl MigrationFenceStore for FileMigrationStore {
 
     async fn save_source_fence(&self, fence: &SourceFenceRecord) -> Result<()> {
         self.validate_fence_context(fence)?;
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        state.source_fence = Some(fence.clone());
-        self.write_state(&state).await
+        self.update_state(|state| {
+            state.source_fence = Some(fence.clone());
+            Ok(())
+        })
+        .await
     }
 
     async fn prepare_authority_context(&self, expected: &AuthorityRecoveryContext) -> Result<()> {
@@ -2610,21 +2654,22 @@ impl MigrationFenceStore for FileMigrationStore {
         {
             bail!("authority context belongs to another migration context");
         }
-        let _lock = self.lock.lock().await;
-        let mut state = self.read_state().await?;
-        if state.authority.is_some() {
-            bail!("module authority has already been published");
-        }
-        let current = state
-            .no_cutover
-            .as_ref()
-            .ok_or_else(|| anyhow!("migration authority context is indeterminate"))?;
-        if !context_identity_matches(current, expected)
-            || expected.source_watermark < current.source_watermark
-        {
-            bail!("authority context does not advance the durable no-cutover marker");
-        }
-        state.no_cutover = Some(expected.clone());
-        self.write_state(&state).await
+        self.update_state(|state| {
+            if state.authority.is_some() {
+                bail!("module authority has already been published");
+            }
+            let current = state
+                .no_cutover
+                .as_ref()
+                .ok_or_else(|| anyhow!("migration authority context is indeterminate"))?;
+            if !context_identity_matches(current, expected)
+                || expected.source_watermark < current.source_watermark
+            {
+                bail!("authority context does not advance the durable no-cutover marker");
+            }
+            state.no_cutover = Some(expected.clone());
+            Ok(())
+        })
+        .await
     }
 }

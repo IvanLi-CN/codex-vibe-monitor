@@ -269,7 +269,7 @@ async fn failed_target_page_does_not_advance_checkpoint_and_can_retry() -> Resul
     assert!(engine.copy_next("events").await.is_err());
     assert!(target.row("events", "a").await.is_none());
     assert!(
-        !store
+        !target
             .load_checkpoint("migration-engine-test", "events")
             .await?
             .unwrap()
@@ -377,6 +377,10 @@ async fn uncommitted_authority_switch_reopens_prepared_source_fence() -> Result<
     engine
         .verify_chunk("events", ChunkRange::new("a", "a")?)
         .await?;
+    let switch_context = AuthorityRecoveryContext {
+        target_identity: "wrong-target".into(),
+        ..context.clone()
+    };
 
     assert!(
         engine
@@ -384,11 +388,11 @@ async fn uncommitted_authority_switch_reopens_prepared_source_fence() -> Result<
                 &ModuleGenerationGate::new(
                     StorageModule::TrafficArchive,
                     ModuleAuthority {
-                        backend: BackendKind::Postgres,
-                        generation: 2,
+                        backend: BackendKind::Sqlite,
+                        generation: 1,
                     },
                 ),
-                context,
+                switch_context,
                 Duration::from_secs(1)
             )
             .await
