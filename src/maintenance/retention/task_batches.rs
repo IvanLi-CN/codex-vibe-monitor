@@ -520,83 +520,67 @@ async fn recover_partial_archive_source_ids(
     expected_sha256: &str,
 ) -> Result<Vec<i64>> {
     let archive_lock = retention_archive_file_lock_async(archive_path).await?;
-    let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_verify").await?;
-    let actual_sha256 =
-        sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())?;
-    drop(file_phase);
-    if actual_sha256 != expected_sha256 {
-        bail!("pending partial archive repair artifact identity changed");
-    }
-
-    let temporary_file_path = PathBuf::from(format!(
-        "{}.partial-repair-recovery-{}.sqlite",
-        archive_path.display(),
-        retention_temp_suffix()
-    ));
-    let _temporary_file_cleanup = TempSqliteCleanup::new(temporary_file_path.clone());
-    inflate_gzip_sqlite_file_with_operation_budget(archive_path, &temporary_file_path).await?;
-
     let spec = archive_table_spec(match dataset {
         HOURLY_ROLLUP_DATASET_INVOCATIONS => HOURLY_ROLLUP_DATASET_INVOCATIONS,
         "forward_proxy_attempts" => "forward_proxy_attempts",
         "pool_upstream_request_attempts" => "pool_upstream_request_attempts",
         _ => bail!("unsupported partial archive repair dataset: {dataset}"),
     });
-    let archive_ids = {
-        let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_read").await?;
-        let mut connection = open_archive_sqlite_connection(&temporary_file_path).await?;
-        let query = format!("SELECT id FROM {} ORDER BY id ASC", spec.dataset);
-        let ids = sqlx::query_scalar::<_, i64>(&query)
-            .fetch_all(&mut connection)
-            .await?;
-        connection.close().await?;
-        drop(file_phase);
-        ids
-    };
-    drop(archive_lock);
-    if archive_ids.is_empty() {
-        bail!("pending partial archive repair artifact contains no rows");
-    }
-    let ids_json = serde_json::to_string(&archive_ids).context("encode pending repair ids")?;
-    let Some(mut source_connection) =
-        acquire_retention_pool_connection(pool, "archive_partial_repair_source_ids").await?
-    else {
-        return Err(retention_write_deferred(
-            "archive_partial_repair_source_ids",
-        ));
-    };
-    let source_ids = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT id FROM {} WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id ASC",
-        spec.dataset
-    ))
-    .bind(&ids_json)
-    .fetch_all(&mut *source_connection)
+    let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_verify").await?;
+    let actual_sha256 = with_file_phase_permit(file_phase, async {
+        sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())
+    })
     .await?;
-    if source_ids.is_empty() {
-        return Ok(source_ids);
+    if actual_sha256 != expected_sha256 {
+        drop(archive_lock);
+        bail!("pending partial archive repair artifact identity changed");
     }
-    let archive_identity = {
-        let file_phase =
-            acquire_file_phase_permit("archive_partial_repair_recovery_identity").await?;
-        let mut archive_connection = open_archive_sqlite_connection(&temporary_file_path).await?;
-        let identity = archive_table_source_identity_sha256(
-            &mut archive_connection,
-            spec,
-            "main",
-            &source_ids,
-        )
+
+    let archive_identity_proof = ArchiveSourceIdentityProof::load(archive_path, spec).await?;
+    let result = async {
+        let archive_ids = archive_identity_proof.row_ids().await?;
+        if archive_ids.is_empty() {
+            bail!("pending partial archive repair artifact contains no rows");
+        }
+        let ids_json = serde_json::to_string(&archive_ids).context("encode pending repair ids")?;
+        let Some(mut source_connection) =
+            acquire_retention_pool_connection(pool, "archive_partial_repair_source_ids").await?
+        else {
+            return Err(retention_write_deferred(
+                "archive_partial_repair_source_ids",
+            ));
+        };
+        let source_ids = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT id FROM {} WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id ASC",
+            spec.dataset
+        ))
+        .bind(&ids_json)
+        .fetch_all(&mut *source_connection)
         .await?;
-        archive_connection.close().await?;
-        drop(file_phase);
-        identity
-    };
-    let source_identity =
-        archive_table_source_identity_sha256(&mut source_connection, spec, "main", &source_ids)
-            .await?;
-    if archive_identity != source_identity {
-        bail!("pending partial archive repair source identity changed");
+        if source_ids.is_empty() {
+            return Ok(source_ids);
+        }
+        let archive_identity = archive_identity_proof.identity(&source_ids).await?;
+        let source_identity = if spec.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+            invocation_archive_source_identity_sha256(
+                &mut source_connection,
+                InvocationArchiveIdentityDatabase::Main,
+                &source_ids,
+            )
+            .await?
+        } else {
+            archive_table_source_identity_sha256(&mut source_connection, spec, "main", &source_ids)
+                .await?
+        };
+        if archive_identity != source_identity {
+            bail!("pending partial archive repair source identity changed");
+        }
+        Ok(source_ids)
     }
-    Ok(source_ids)
+    .await;
+    let result = finish_archive_identity_proof(archive_identity_proof, result).await;
+    drop(archive_lock);
+    result
 }
 
 fn is_archive_replacement_recovery_pending(error: &anyhow::Error) -> bool {
@@ -1483,6 +1467,59 @@ impl ArchiveSourceIdentityProof {
             drop(work_owner_file.take());
         }
         result
+    }
+
+    async fn row_ids(&self) -> Result<Vec<i64>> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let resources = std::sync::Arc::clone(&self.resources);
+        let dataset = self.spec.dataset;
+        spawn_file_phase_task(file_phase, async move {
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            let operation_deadline = retention_archive_file_operation_deadline();
+            if resources.connection.is_none() {
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(retention_archive_file_operation_budget_exhausted());
+                }
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
+                })
+                .await
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else {
+                    let query = format!("SELECT id FROM {dataset} ORDER BY id ASC");
+                    match tokio::time::timeout(
+                        remaining,
+                        sqlx::query_scalar::<_, i64>(&query).fetch_all(&mut *connection),
+                    )
+                    .await
+                    {
+                        Ok(result) => result.context("read archive source row ids"),
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                }
+            };
+            match result {
+                Ok(ids) => Ok(ids),
+                Err(error) => {
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
+            }
+        })
+        .await
     }
 
     async fn identity(&self, ids: &[i64]) -> Result<String> {
@@ -3393,6 +3430,15 @@ pub(crate) async fn archive_timestamped_dataset(
         if !archive_batch_can_start() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
+        }
+        if let Err(error) = reconcile_staged_archive_replacements_for_archive_root(
+            pool,
+            &resolved_archive_dir(config),
+        )
+        .await
+        {
+            return Err(error
+                .context("reconcile staged archive replacement before timestamped archive owner"));
         }
         let candidate_limit = archive_candidate_limit(config);
         let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)

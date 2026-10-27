@@ -700,19 +700,73 @@ pub(crate) async fn publish_verified_summary_archive_snapshot(
     pool: &Pool<Sqlite>,
     proof: &VerifiedSummaryArchiveSnapshot,
 ) -> Result<bool> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    if summary_archive_snapshot_final_proof_marker_exists_tx(
-        tx.as_mut(),
-        proof.archive_batch_id,
-        &proof.manifest_sha256,
+    let Some((connection, admission)) = crate::maintenance::acquire_retention_write_connection(
+        pool,
+        "summary_archive_snapshot_publish",
     )
     .await?
+    else {
+        return Err(crate::maintenance::retention_write_deferred(
+            "summary_archive_snapshot_publish",
+        ));
+    };
+    let mut resources = crate::maintenance::RetentionTransactionResources::without_archive_fence(
+        connection, admission,
+    );
+    resources.mark_transaction_started();
+    if let Err(error) = sqlx::query("BEGIN IMMEDIATE")
+        .execute(resources.connection_mut())
+        .await
     {
-        tx.commit().await?;
-        return Ok(true);
+        let cleanup_error = resources.rollback_and_close().await;
+        let mut error: anyhow::Error = error.into();
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "Summary Snapshot publication transaction rollback failed: {cleanup_error}"
+            ));
+        }
+        return Err(error);
     }
-    store_verified_summary_archive_snapshot_tx(tx.as_mut(), proof).await?;
-    tx.commit().await?;
+    let publish_result = async {
+        if summary_archive_snapshot_final_proof_marker_exists_tx(
+            resources.connection_mut(),
+            proof.archive_batch_id,
+            &proof.manifest_sha256,
+        )
+        .await?
+        {
+            return Ok::<(), anyhow::Error>(());
+        }
+        store_verified_summary_archive_snapshot_tx(resources.connection_mut(), proof).await
+    }
+    .await;
+    if let Err(error) = publish_result {
+        let cleanup_error = resources.rollback_and_close().await;
+        if let Err(cleanup_error) = cleanup_error {
+            return Err(error.context(format!(
+                "Summary Snapshot publication transaction rollback failed: {cleanup_error}"
+            )));
+        }
+        return Err(error);
+    }
+    if let Err(error) = sqlx::query("COMMIT")
+        .execute(resources.connection_mut())
+        .await
+    {
+        let cleanup_error = resources.rollback_and_close().await;
+        let mut error: anyhow::Error = error.into();
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "Summary Snapshot publication transaction commit failed: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    resources.mark_transaction_finished();
+    resources
+        .return_to_pool()
+        .await
+        .context("return Summary Snapshot publication connection to pool")?;
     Ok(true)
 }
 

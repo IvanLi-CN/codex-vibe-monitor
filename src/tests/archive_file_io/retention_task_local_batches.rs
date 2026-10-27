@@ -3060,6 +3060,9 @@ async fn retention_task_local_recovers_pending_partial_archive_after_restart() {
     )
     .await
     .expect("prepare interrupted timestamped archive artifact");
+    let staged_path = PathBuf::from(format!("{}.restore", outcome.file_path));
+    fs::copy(&outcome.file_path, &staged_path).expect("prepare verifiable replacement journal");
+    let staged_path_string = staged_path.to_string_lossy().to_string();
     sqlx::query("DELETE FROM pool_upstream_request_attempts WHERE id <= 36")
         .execute(&pool)
         .await
@@ -3067,8 +3070,8 @@ async fn retention_task_local_recovers_pending_partial_archive_after_restart() {
     sqlx::query(
         "INSERT INTO archive_batches
              (dataset, month_key, file_path, sha256, row_count, status, layout, codec,
-              writer_version, cleanup_state, summary_source_kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?7, ?8, ?9, ?10)",
+              writer_version, cleanup_state, replacement_staged_path, summary_source_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?7, ?8, ?9, ?10, ?11)",
     )
     .bind(outcome.dataset)
     .bind(&outcome.month_key)
@@ -3079,6 +3082,7 @@ async fn retention_task_local_recovers_pending_partial_archive_after_restart() {
     .bind(outcome.codec)
     .bind(outcome.writer_version)
     .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .bind(&staged_path_string)
     .bind(outcome.summary_source_kind)
     .execute(&pool)
     .await
@@ -3119,6 +3123,10 @@ async fn retention_task_local_recovers_pending_partial_archive_after_restart() {
     .await
     .expect("load recovered archive manifest");
     assert_eq!(manifest, (100, ARCHIVE_CLEANUP_STATE_ACTIVE.to_string()));
+    assert!(
+        !staged_path.exists(),
+        "timestamped owner must reconcile the replacement journal before recovery"
+    );
     let inflated_path = temp_dir.join("pending-partial-recovery.sqlite");
     inflate_gzip_sqlite_file_with_operation_budget(Path::new(&archive_path), &inflated_path)
         .await
