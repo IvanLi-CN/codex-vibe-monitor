@@ -1368,7 +1368,7 @@ pub(crate) fn raw_orphan_sweep_next_retry_secs(
     pass: &RawOrphanSweepPassResult,
     consecutive_failure_count: u32,
 ) -> i64 {
-    if pass.failures > 0 {
+    if pass.failures > 0 && pass.removed == 0 {
         raw_orphan_sweep_failure_retry_secs(consecutive_failure_count)
     } else if !pass.complete || pass.reconciliation_has_more || !pass.reached_end {
         RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS
@@ -1577,5 +1577,28 @@ mod tests {
         let error = anyhow::anyhow!("raw reconciliation ledger row was corrupted");
 
         assert!(!is_raw_orphan_sweep_deferred(&error));
+    }
+
+    #[test]
+    fn progressing_raw_sweep_failure_retries_before_safety_backoff() {
+        let pass = RawOrphanSweepPassResult {
+            complete: false,
+            failures: 1,
+            removed: 5,
+            ..Default::default()
+        };
+
+        assert_eq!(raw_orphan_sweep_next_retry_secs(&pass, 0), 1);
+    }
+
+    #[test]
+    fn non_progressing_raw_sweep_failure_keeps_safety_backoff() {
+        let pass = RawOrphanSweepPassResult {
+            complete: false,
+            failures: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(raw_orphan_sweep_next_retry_secs(&pass, 0), 300);
     }
 }
