@@ -38,6 +38,7 @@ MAX_TEST_PHASE_SECONDS = 900
 CLEANUP_RESERVE_SECONDS = 45
 MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
+WRITE_TIMING_TOLERANCE_MS = 0.01
 SEED = 20261024
 RETENTION_DAYS = 1
 SCHEMA_VERSION = 5
@@ -182,7 +183,10 @@ def _validate_samples(trial: dict[str, Any], input_start: datetime, input_end: d
     for kind in ("read", "write"):
         values = samples.get(kind)
         _require(isinstance(values, list) and len(values) >= 20, f"insufficient raw {kind} latency samples")
-        for sample in values:
+        if kind == "write":
+            _require(len(values) == len(trial["added_ids"]["invocations"]), "foreground write timing evidence does not cover every invocation")
+        previous_completion = 0.0
+        for sequence, sample in enumerate(values):
             _require(isinstance(sample, dict), f"malformed raw {kind} latency sample")
             observed = sample.get("observed_at")
             latency = sample.get("elapsed_ms")
@@ -197,6 +201,45 @@ def _validate_samples(trial: dict[str, Any], input_start: datetime, input_end: d
             )
             expected_path = "/api/pool/upstream-accounts" if kind == "read" else "/v1/responses"
             _require(sample.get("transport") == "http" and sample.get("path") == expected_path, f"{kind} latency was not measured at the production HTTP boundary")
+            if kind == "write":
+                _require(
+                    isinstance(sample.get("sequence"), int)
+                    and not isinstance(sample["sequence"], bool)
+                    and sample["sequence"] == sequence,
+                    "foreground write timing sequence is incomplete or reordered",
+                )
+                _require(sample.get("invoke_id") == trial["added_ids"]["invocations"][sequence], "foreground write timing identity does not match its measured invocation")
+                timing = {}
+                for field in ("scheduled_offset_ms", "dispatched_offset_ms", "completed_offset_ms", "dispatch_lag_ms", "request_elapsed_ms"):
+                    value = _number(sample.get(field), f"invalid raw write {field}")
+                    _require(value >= 0, f"invalid raw write {field}")
+                    timing[field] = value
+                scheduled = timing["scheduled_offset_ms"]
+                dispatched = timing["dispatched_offset_ms"]
+                completed = timing["completed_offset_ms"]
+                expected_arrival = sequence / DATASETS["invocations"]["arrival_rate"] * 1000
+                _require(abs(scheduled - expected_arrival) <= WRITE_TIMING_TOLERANCE_MS, "foreground write schedule drifted from its fixed arrival plan")
+                _require(
+                    scheduled <= dispatched <= completed
+                    and dispatched + WRITE_TIMING_TOLERANCE_MS >= previous_completion,
+                    "foreground write dispatch/completion order is invalid",
+                )
+                _require(
+                    abs(timing["dispatch_lag_ms"] - (dispatched - scheduled)) <= WRITE_TIMING_TOLERANCE_MS,
+                    "foreground write dispatch lag does not match its arrival and dispatch times",
+                )
+                _require(
+                    abs(timing["request_elapsed_ms"] - (completed - dispatched)) <= WRITE_TIMING_TOLERANCE_MS,
+                    "foreground write request latency does not match its dispatch and completion times",
+                )
+                _require(
+                    abs(latency - (completed - scheduled)) <= WRITE_TIMING_TOLERANCE_MS,
+                    "foreground write end-to-end latency omitted dispatch lag or completion time",
+                )
+                # Wall timestamps have millisecond precision; durations use the monotonic clock.
+                observed_offset_ms = (observed_at - input_start).total_seconds() * 1000
+                _require(abs(observed_offset_ms - completed) <= 2.0, "foreground write completion time is not bound to its observed timestamp")
+                previous_completion = completed
 
 
 def _validate_task_runs(
@@ -402,7 +445,6 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             _require(abs(_number(window.get("full_duration_seconds"), "trial duration is invalid") - full_elapsed) <= 1.0, "trial full window omitted setup or cleanup")
             trial_windows[(version, index)] = (setup_start, cleanup_end, window)
 
-            _validate_samples(trial, input_start, input_end)
             input_counts = trial.get("input_counts")
             added_ids = trial.get("added_ids")
             _require(isinstance(input_counts, dict) and isinstance(added_ids, dict), "foreground input count or identity evidence is missing")
@@ -417,6 +459,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     and len(set(identities)) == expected_count,
                     f"{name} foreground source identities are incomplete",
                 )
+            _validate_samples(trial, input_start, input_end)
             attempt_ids = added_ids["pool_upstream_attempts"]
             attempt_states = trial.get("attempt_states")
             _require(

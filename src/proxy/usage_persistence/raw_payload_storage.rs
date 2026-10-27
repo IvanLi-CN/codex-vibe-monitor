@@ -549,8 +549,19 @@ impl RawOverflowSpool {
             "raw capture overflow spool finished"
         );
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
-            remove_raw_overflow_spool_segments(&self.paths);
-            let _ = fs::remove_file(&completion_marker);
+            match remove_raw_overflow_spool_segments(&self.paths) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&completion_marker);
+                }
+                Err(error) => {
+                    warn!(
+                        error_kind = "spool_cleanup_deferred",
+                        error = %error,
+                        spool_segment_count = self.paths.len(),
+                        "raw overflow spool cleanup deferred; retaining completion marker"
+                    );
+                }
+            }
         } else if !completion_marker_written {
             warn!(
                 error_kind = "completion_marker_write_failed",
@@ -1021,22 +1032,38 @@ async fn replay_raw_overflow_spool_segments(
     meta
 }
 
-fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) {
-    let Some(_file_phase) = crate::maintenance::try_acquire_file_phase_permit() else {
-        return;
-    };
+#[cfg(test)]
+tokio::task_local! {
+    static RAW_OVERFLOW_SPOOL_TEST_CLEANUP_BUSY: ();
+}
+
+fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) -> io::Result<()> {
+    // Acquire a competing permit only at cleanup so tests can finish replay first.
+    #[cfg(test)]
+    let _competing_file_phase = RAW_OVERFLOW_SPOOL_TEST_CLEANUP_BUSY
+        .try_with(|()| crate::maintenance::try_acquire_file_phase_permit())
+        .ok()
+        .flatten();
+    let _file_phase = crate::maintenance::try_acquire_file_phase_permit()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "raw spool file phase is busy"))?;
     for path in paths {
-        if let Some(directory) = path.parent() {
-            let bytes = fs::metadata(path)
-                .map(|metadata| metadata.len())
-                .unwrap_or_default();
-            if fs::remove_file(path).is_ok() {
-                record_raw_overflow_spool_bytes(directory, -(bytes.min(i64::MAX as u64) as i64));
+        let bytes = fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        match fs::remove_file(path) {
+            Ok(()) => {
+                if let Some(directory) = path.parent() {
+                    record_raw_overflow_spool_bytes(
+                        directory,
+                        -(bytes.min(i64::MAX as u64) as i64),
+                    );
+                }
             }
-            continue;
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
-        let _ = fs::remove_file(path);
     }
+    Ok(())
 }
 
 pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
@@ -1182,7 +1209,16 @@ async fn recover_raw_overflow_spools_inner(
         )
         .await;
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
-            remove_raw_overflow_spool_segments(&paths);
+            if let Err(error) = remove_raw_overflow_spool_segments(&paths) {
+                warn!(
+                    error_kind = "spool_cleanup_deferred",
+                    error = %error,
+                    kind = %header.kind,
+                    spool_segment_count = paths.len(),
+                    "raw overflow spool recovery cleanup deferred; retaining completion marker"
+                );
+                continue;
+            }
             let _ = fs::remove_file(completion_marker);
             info!(
                 kind = %header.kind,
@@ -1263,6 +1299,126 @@ pub(crate) fn merge_response_capture_reason(
 #[cfg(test)]
 mod raw_overflow_spool_tests {
     use super::*;
+
+    async fn spool_cleanup_fixture(invoke_id: &str) -> (Arc<AppState>, RawOverflowSpool) {
+        let mut config = crate::tests::test_config();
+        config.proxy_raw_dir =
+            std::env::temp_dir().join(format!("cvm-raw-spool-cleanup-{}", nanoid::nanoid!()));
+        config.proxy_raw_compression = RawCompressionCodec::None;
+        config.proxy_raw_max_bytes = None;
+        let state = crate::tests::test_state_from_config(config, true).await;
+        let mut spool =
+            RawOverflowSpool::create(&state, invoke_id, "response", RawCompressionCodec::None)
+                .expect("create cleanup test spool");
+        spool.append(b"first-").expect("append first segment");
+        spool.rotate_segment().expect("rotate cleanup test spool");
+        spool.append(b"second").expect("append second segment");
+        (state, spool)
+    }
+
+    #[tokio::test]
+    async fn overflow_spool_cleanup_reports_file_phase_busy_without_removing_segments() {
+        let (state, spool) = spool_cleanup_fixture("cleanup-file-phase-busy").await;
+        let file_phase = crate::maintenance::acquire_file_phase_permit("raw_spool_cleanup_test")
+            .await
+            .expect("hold competing file phase permit");
+
+        let error = remove_raw_overflow_spool_segments(&spool.paths)
+            .expect_err("busy cleanup must report deferral");
+
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(spool.paths.iter().all(|path| path.is_file()));
+        crate::maintenance::with_file_phase_permit(file_phase, async {
+            remove_raw_overflow_spool_segments(&spool.paths).expect("cleanup with owned permit");
+            remove_raw_overflow_spool_segments(&spool.paths).expect("cleanup is idempotent");
+        })
+        .await;
+        assert!(spool.paths.iter().all(|path| !path.exists()));
+        drop(spool);
+        fs::remove_dir_all(state.config.resolved_proxy_raw_dir()).expect("remove cleanup fixture");
+    }
+
+    #[tokio::test]
+    async fn overflow_spool_finish_cleanup_deferred_retains_segments_and_marker_for_recovery() {
+        let (state, spool) = spool_cleanup_fixture("finish-cleanup-deferred").await;
+        let paths = spool.paths.clone();
+        let marker = raw_overflow_spool_completion_marker(&spool.directory, &spool.capture_id);
+        let original_segments = paths
+            .iter()
+            .map(|path| fs::read(path).expect("read original segment"))
+            .collect::<Vec<_>>();
+
+        let meta = RAW_OVERFLOW_SPOOL_TEST_CLEANUP_BUSY
+            .scope((), spool.finish(12))
+            .await;
+
+        assert!(!meta.truncated);
+        let payload_path = PathBuf::from(meta.path.expect("published payload path"));
+        assert_eq!(
+            fs::read(&payload_path).expect("read published payload"),
+            b"first-second"
+        );
+        for (path, original) in paths.iter().zip(&original_segments) {
+            assert_eq!(&fs::read(path).expect("retained segment"), original);
+        }
+        assert_eq!(
+            fs::read_to_string(&marker).expect("completion marker retained after deferred finish"),
+            "1"
+        );
+
+        fs::remove_file(&payload_path).expect("remove payload to prove recovery replays");
+        recover_raw_overflow_spools(&state.config).await;
+
+        assert_eq!(
+            fs::read(payload_path).expect("read recovered payload"),
+            b"first-second"
+        );
+        assert!(paths.iter().all(|path| !path.exists()));
+        assert!(!marker.exists());
+        fs::remove_dir_all(state.config.resolved_proxy_raw_dir()).expect("remove cleanup fixture");
+    }
+
+    #[tokio::test]
+    async fn overflow_spool_recovery_cleanup_deferred_retains_segments_and_marker_for_retry() {
+        let (state, mut spool) = spool_cleanup_fixture("recovery-cleanup-deferred").await;
+        spool.file.flush().expect("flush recovery spool");
+        let paths = spool.paths.clone();
+        let marker = raw_overflow_spool_completion_marker(&spool.directory, &spool.capture_id);
+        fs::write(&marker, spool.segment_index.to_string()).expect("write completion marker");
+        drop(spool);
+        let payload_path = raw_payload_path_for_kind(
+            &state.config.resolved_proxy_raw_dir(),
+            "recovery-cleanup-deferred",
+            "response",
+            false,
+        );
+
+        RAW_OVERFLOW_SPOOL_TEST_CLEANUP_BUSY
+            .scope((), recover_raw_overflow_spools(&state.config))
+            .await;
+
+        assert_eq!(
+            fs::read(&payload_path).expect("read first recovered payload"),
+            b"first-second"
+        );
+        assert!(paths.iter().all(|path| path.is_file()));
+        assert_eq!(
+            fs::read_to_string(&marker)
+                .expect("completion marker retained after deferred recovery"),
+            "1"
+        );
+
+        fs::remove_file(&payload_path).expect("remove payload to prove retry replays");
+        recover_raw_overflow_spools(&state.config).await;
+
+        assert_eq!(
+            fs::read(payload_path).expect("read retried payload"),
+            b"first-second"
+        );
+        assert!(paths.iter().all(|path| !path.exists()));
+        assert!(!marker.exists());
+        fs::remove_dir_all(state.config.resolved_proxy_raw_dir()).expect("remove cleanup fixture");
+    }
 
     #[test]
     fn overflow_spool_preserves_configured_max_bytes_reason() {

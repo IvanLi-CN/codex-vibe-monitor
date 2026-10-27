@@ -434,20 +434,24 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
-            let file_phase = super::super::acquire_file_phase_permit(
-                "archive_public_id_predecessor_verify",
-            )
-            .await?;
-            let _archive_lock = super::super::retention::retention_archive_file_lock_async(
-                &archive_path,
-            )
-            .await?;
-            let predecessor_matches = archive_path.is_file()
-                && sha256_hex_file_with_deadline(
+            let predecessor_matches = {
+                let file_phase = super::super::acquire_file_phase_permit(
+                    "archive_public_id_predecessor_verify",
+                )
+                .await?;
+                let archive_lock = super::super::retention::retention_archive_file_lock_async(
                     &archive_path,
-                    super::super::retention::retention_archive_file_operation_deadline(),
-                )? == expected_existing_sha256;
-            drop(file_phase);
+                )
+                .await?;
+                let matches = archive_path.is_file()
+                    && sha256_hex_file_with_deadline(
+                        &archive_path,
+                        super::super::retention::retention_archive_file_operation_deadline(),
+                    )? == expected_existing_sha256;
+                drop(archive_lock);
+                drop(file_phase);
+                matches
+            };
             if !predecessor_matches {
                 return Err(anyhow::anyhow!(
                     "pool archive identity verification failed before public-id backfill"
@@ -474,7 +478,15 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             )
             .await?;
             let worker_work_path = work_path.clone();
+            let Some(file_operation) =
+                super::super::try_acquire_archive_file_operation_lease(&worker_work_path)
+            else {
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_public_id_file_phase_sqlite",
+                ));
+            };
             let backfill_outcome = super::super::spawn_file_phase_task(file_phase, async move {
+                let _file_operation = file_operation;
                 let mut conn = open_archive_sqlite_connection(&worker_work_path).await?;
                 ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
                 let outcome = backfill_pool_upstream_request_attempt_public_ids_on_connection(
@@ -739,102 +751,113 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
         );
     }
     let file_phase = super::super::acquire_file_phase_permit("archive_month_batch_copy").await?;
-    let mut conn = open_archive_sqlite_connection(work_path).await?;
-    sqlx::query(&create_sql)
-        .execute(&mut conn)
-        .await
-        .context("failed to ensure direct pool_upstream_request_attempts archive schema")?;
-    ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
-
-    let existing = sqlx::query_as::<_, (i64, String, Option<String>)>(
-        "SELECT id, invoke_id, attempt_public_id FROM pool_upstream_request_attempts WHERE id IN (SELECT value FROM json_each(?1))",
-    ).bind(serde_json::to_string(ids)?).fetch_all(&mut conn).await?;
-    for (id, invoke_id, public_id) in existing {
-        let source = rows
-            .iter()
-            .find(|row| row.id == id)
-            .context("archive source row disappeared")?;
-        if source.invoke_id != invoke_id || source.attempt_public_id != public_id {
-            bail!("monthly attempt archive row identity collision");
-        }
-    }
-
-    for chunk in rows.chunks(16) {
-        let mut insert = QueryBuilder::<Sqlite>::new(format!(
-            "INSERT OR REPLACE INTO {} ({}) ",
-            spec.dataset, spec.columns
+    let work_path = work_path.to_path_buf();
+    let ids = ids.to_vec();
+    let Some(file_operation) = super::super::try_acquire_archive_file_operation_lease(&work_path)
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "archive_month_batch_copy",
         ));
-        insert.push_values(chunk, |mut builder, row| {
-            builder
-                .push_bind(row.id)
-                .push_bind(&row.attempt_public_id)
-                .push_bind(&row.invoke_id)
-                .push_bind(&row.occurred_at)
-                .push_bind(&row.endpoint)
-                .push_bind(&row.route_mode)
-                .push_bind(&row.sticky_key)
-                .push_bind(&row.routing_source)
-                .push_bind(&row.routing_selection_audit_json)
-                .push_bind(&row.upstream_base_url_host)
-                .push_bind(&row.group_name_snapshot)
-                .push_bind(&row.proxy_binding_key_snapshot)
-                .push_bind(&row.request_model)
-                .push_bind(&row.upstream_request_model)
-                .push_bind(&row.model_mapping_pattern)
-                .push_bind(row.upstream_account_id)
-                .push_bind(&row.upstream_route_key)
-                .push_bind(row.attempt_index)
-                .push_bind(row.distinct_account_index)
-                .push_bind(row.same_account_retry_index)
-                .push_bind(&row.requester_ip)
-                .push_bind(&row.started_at)
-                .push_bind(&row.finished_at)
-                .push_bind(&row.status)
-                .push_bind(&row.phase)
-                .push_bind(row.http_status)
-                .push_bind(row.downstream_http_status)
-                .push_bind(&row.failure_kind)
-                .push_bind(&row.error_message)
-                .push_bind(&row.downstream_error_message)
-                .push_bind(row.connect_latency_ms)
-                .push_bind(row.first_byte_latency_ms)
-                .push_bind(row.stream_latency_ms)
-                .push_bind(&row.upstream_request_id)
-                .push_bind(&row.upstream_request_compression_algorithm)
-                .push_bind(&row.upstream_request_compression_mode)
-                .push_bind(row.upstream_request_logical_body_bytes)
-                .push_bind(row.upstream_request_transmitted_body_bytes)
-                .push_bind(row.upstream_request_header_bytes_approx)
-                .push_bind(row.upstream_response_body_bytes)
-                .push_bind(row.upstream_response_header_bytes_approx)
-                .push_bind(&row.compact_support_status)
-                .push_bind(&row.compact_support_reason)
-                .push_bind(&row.request_summary_json)
-                .push_bind(&row.response_summary_json)
-                .push_bind(&row.response_raw_path)
-                .push_bind(&row.response_raw_codec)
-                .push_bind(row.response_raw_size)
-                .push_bind(row.response_raw_truncated)
-                .push_bind(&row.response_raw_truncated_reason)
-                .push_bind(&row.response_content_encoding)
-                .push_bind(&row.created_at);
-        });
-        insert.build().execute(&mut conn).await.with_context(|| {
-            format!(
-                "failed to copy rows into direct archive batch for {}",
-                spec.dataset
-            )
-        })?;
-    }
+    };
+    super::super::spawn_file_phase_task(file_phase, async move {
+        let _file_operation = file_operation;
+        let mut conn = open_archive_sqlite_connection(&work_path).await?;
+        sqlx::query(&create_sql)
+            .execute(&mut conn)
+            .await
+            .context("failed to ensure direct pool_upstream_request_attempts archive schema")?;
+        ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
 
-    let count_query = format!("SELECT COUNT(*) FROM {}", spec.dataset);
-    let row_count = sqlx::query_scalar::<_, i64>(&count_query)
-        .fetch_one(&mut conn)
-        .await
-        .with_context(|| format!("failed to count direct archive rows for {}", spec.dataset))?;
-    conn.close().await?;
-    drop(file_phase);
-    Ok((row_count, Vec::new()))
+        let existing = sqlx::query_as::<_, (i64, String, Option<String>)>(
+            "SELECT id, invoke_id, attempt_public_id FROM pool_upstream_request_attempts WHERE id IN (SELECT value FROM json_each(?1))",
+        ).bind(serde_json::to_string(&ids)?).fetch_all(&mut conn).await?;
+        for (id, invoke_id, public_id) in existing {
+            let source = rows
+                .iter()
+                .find(|row| row.id == id)
+                .context("archive source row disappeared")?;
+            if source.invoke_id != invoke_id || source.attempt_public_id != public_id {
+                bail!("monthly attempt archive row identity collision");
+            }
+        }
+
+        for chunk in rows.chunks(16) {
+            let mut insert = QueryBuilder::<Sqlite>::new(format!(
+                "INSERT OR REPLACE INTO {} ({}) ",
+                spec.dataset, spec.columns
+            ));
+            insert.push_values(chunk, |mut builder, row| {
+                builder
+                    .push_bind(row.id)
+                    .push_bind(&row.attempt_public_id)
+                    .push_bind(&row.invoke_id)
+                    .push_bind(&row.occurred_at)
+                    .push_bind(&row.endpoint)
+                    .push_bind(&row.route_mode)
+                    .push_bind(&row.sticky_key)
+                    .push_bind(&row.routing_source)
+                    .push_bind(&row.routing_selection_audit_json)
+                    .push_bind(&row.upstream_base_url_host)
+                    .push_bind(&row.group_name_snapshot)
+                    .push_bind(&row.proxy_binding_key_snapshot)
+                    .push_bind(&row.request_model)
+                    .push_bind(&row.upstream_request_model)
+                    .push_bind(&row.model_mapping_pattern)
+                    .push_bind(row.upstream_account_id)
+                    .push_bind(&row.upstream_route_key)
+                    .push_bind(row.attempt_index)
+                    .push_bind(row.distinct_account_index)
+                    .push_bind(row.same_account_retry_index)
+                    .push_bind(&row.requester_ip)
+                    .push_bind(&row.started_at)
+                    .push_bind(&row.finished_at)
+                    .push_bind(&row.status)
+                    .push_bind(&row.phase)
+                    .push_bind(row.http_status)
+                    .push_bind(row.downstream_http_status)
+                    .push_bind(&row.failure_kind)
+                    .push_bind(&row.error_message)
+                    .push_bind(&row.downstream_error_message)
+                    .push_bind(row.connect_latency_ms)
+                    .push_bind(row.first_byte_latency_ms)
+                    .push_bind(row.stream_latency_ms)
+                    .push_bind(&row.upstream_request_id)
+                    .push_bind(&row.upstream_request_compression_algorithm)
+                    .push_bind(&row.upstream_request_compression_mode)
+                    .push_bind(row.upstream_request_logical_body_bytes)
+                    .push_bind(row.upstream_request_transmitted_body_bytes)
+                    .push_bind(row.upstream_request_header_bytes_approx)
+                    .push_bind(row.upstream_response_body_bytes)
+                    .push_bind(row.upstream_response_header_bytes_approx)
+                    .push_bind(&row.compact_support_status)
+                    .push_bind(&row.compact_support_reason)
+                    .push_bind(&row.request_summary_json)
+                    .push_bind(&row.response_summary_json)
+                    .push_bind(&row.response_raw_path)
+                    .push_bind(&row.response_raw_codec)
+                    .push_bind(row.response_raw_size)
+                    .push_bind(row.response_raw_truncated)
+                    .push_bind(&row.response_raw_truncated_reason)
+                    .push_bind(&row.response_content_encoding)
+                    .push_bind(&row.created_at);
+            });
+            insert.build().execute(&mut conn).await.with_context(|| {
+                format!(
+                    "failed to copy rows into direct archive batch for {}",
+                    spec.dataset
+                )
+            })?;
+        }
+
+        let count_query = format!("SELECT COUNT(*) FROM {}", spec.dataset);
+        let row_count = sqlx::query_scalar::<_, i64>(&count_query)
+            .fetch_one(&mut conn)
+            .await
+            .with_context(|| format!("failed to count direct archive rows for {}", spec.dataset))?;
+        conn.close().await?;
+        Ok((row_count, Vec::new()))
+    })
+    .await
 }
 
 pub(crate) async fn archive_rows_into_month_batch(
@@ -988,183 +1011,266 @@ async fn archive_rows_into_month_batch_with_snapshots(
         }
         .await
     } else {
-        async {
-        // An ATTACH must not survive cancellation on a pooled connection. Open a dedicated connection with the pool options
-        // so the pooled handles (including an in-memory keeper) remain available; own it so every error/cancel closes it instead of returning an attached handle.
         let file_phase =
             super::super::acquire_file_phase_permit("archive_month_batch_copy").await?;
-        let mut conn = SqliteConnection::connect_with(pool.connect_options().as_ref()).await?;
-        sqlx::query("ATTACH DATABASE ?1 AS archive_db")
-            .bind(archive_disk_attach_uri(&work_path)?)
-            .execute(&mut conn)
-            .await
-            .with_context(|| {
-                format!("failed to attach archive database {}", work_path.display())
-            })?;
-        sqlx::query("PRAGMA archive_db.journal_mode=DELETE")
-            .execute(&mut conn)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to switch archive database {} to DELETE journal mode",
-                    work_path.display()
-                )
-            })?;
-        sqlx::query(spec.create_sql)
-            .execute(&mut conn)
-            .await
-            .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
-        if spec.dataset == "codex_invocations" {
-            ensure_codex_invocations_archive_schema(&mut conn).await?;
-        } else if spec.dataset == "pool_upstream_request_attempts" {
-            ensure_pool_upstream_request_attempts_archive_schema(&mut conn).await?;
-        }
-        let predecessor_row_count = if has_summary_pages && existing_final_sha256.is_some() {
-            Some(
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM archive_db.codex_invocations",
-                )
-                .fetch_one(&mut conn)
-                .await?,
-            )
-        } else {
-            None
-        };
-        #[cfg(test)]
-        if let Ok(delay) = RETENTION_TEST_TASK_ARCHIVE_PAUSE.try_with(|delay| *delay) {
-            tokio::time::sleep(delay).await;
-        }
-
-        let upstream_last_activity = if spec.dataset == "codex_invocations" {
-            let mut rows = Vec::new();
-            for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
-                let mut query = QueryBuilder::<Sqlite>::new(
-                    "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS account_id, occurred_at FROM main.codex_invocations WHERE id IN (",
-                );
-                {
-                    let mut separated = query.separated(", ");
-                    for id in chunk {
-                        separated.push_bind(id);
-                    }
-                }
-                query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
-                rows.extend(
-                    query
-                        .build_query_as::<ArchivedAccountLastActivityRow>()
-                        .fetch_all(&mut conn)
-                        .await.context("read task-local source account activity")?,
-                );
+        let worker_connect_options = pool.connect_options().clone();
+        let worker_spec = spec;
+        let worker_ids = ids.to_vec();
+        let worker_work_path = work_path.clone();
+        let worker_has_summary_pages = has_summary_pages;
+        let worker_has_existing_final_sha256 = existing_final_sha256.is_some();
+        let test_archive_pause: Option<(Duration, Option<Duration>)> = {
+            #[cfg(test)]
+            {
+                RETENTION_TEST_TASK_ARCHIVE_PAUSE
+                    .try_with(|delay| {
+                        let mut budget = super::super::retention::retention_run_remaining_budget();
+                        #[cfg(test)]
+                        if let Ok(quota_budget) = super::RETENTION_TEST_QUOTA_ARCHIVE_PREPARE_BUDGET
+                            .try_with(|budget| *budget)
+                        {
+                            budget = Some(
+                                budget
+                                    .map(|current| current.min(quota_budget))
+                                    .unwrap_or(quota_budget),
+                            );
+                        }
+                        (*delay, budget)
+                    })
+                    .ok()
             }
-            dedupe_archive_upstream_last_activity(
-                rows.into_iter()
-                    .map(|row| (row.account_id, row.last_activity_at)),
-            )
-        } else {
-            Vec::new()
+            #[cfg(not(test))]
+            {
+                None
+            }
         };
+        let Some(file_operation) =
+            super::super::try_acquire_archive_file_operation_lease(&worker_work_path)
+        else {
+            return Err(super::super::retention::retention_write_deferred(
+                "archive_month_batch_copy",
+            ));
+        };
+        super::super::spawn_file_phase_task(file_phase, async move {
+            // An ATTACH must not survive cancellation on a pooled connection. Open a dedicated
+            // connection with the pool options so pooled handles remain available; the native
+            // worker owns the connection and the file permit until it has drained.
+            let _file_operation = file_operation;
+            let mut conn = SqliteConnection::connect_with(&worker_connect_options).await?;
+            sqlx::query("ATTACH DATABASE ?1 AS archive_db")
+                .bind(archive_disk_attach_uri(&worker_work_path)?)
+                .execute(&mut conn)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to attach archive database {}",
+                        worker_work_path.display()
+                    )
+                })?;
+            sqlx::query("PRAGMA archive_db.journal_mode=DELETE")
+                .execute(&mut conn)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to switch archive database {} to DELETE journal mode",
+                        worker_work_path.display()
+                    )
+                })?;
+            sqlx::query(worker_spec.create_sql)
+                .execute(&mut conn)
+                .await
+                .with_context(|| {
+                    format!("failed to ensure archive schema for {}", worker_spec.dataset)
+                })?;
+            if worker_spec.dataset == "codex_invocations" {
+                ensure_codex_invocations_archive_schema(&mut conn).await?;
+            } else if worker_spec.dataset == "pool_upstream_request_attempts" {
+                ensure_pool_upstream_request_attempts_archive_schema(&mut conn).await?;
+            }
+            let predecessor_row_count = if worker_has_summary_pages
+                && worker_has_existing_final_sha256
+            {
+                Some(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM archive_db.codex_invocations",
+                    )
+                    .fetch_one(&mut conn)
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if let Some((delay, remaining_budget)) = test_archive_pause {
+                let pause = remaining_budget
+                    .map(|remaining| {
+                        delay.min(remaining.saturating_sub(Duration::from_millis(500)))
+                    })
+                    .unwrap_or(delay);
+                if !pause.is_zero() {
+                    tokio::time::sleep(pause).await;
+                }
+                if remaining_budget.is_some_and(|remaining| delay >= remaining) {
+                    return Err(super::super::retention::retention_write_deferred(
+                        "archive_month_batch_copy",
+                    ));
+                }
+            }
 
-        // A previously published copy may still have a live source after a failed run.
-        // Recopy that live row, but reject ID reuse across different immutable identities.
-        let identity_columns = match spec.dataset {
-            "codex_invocations" => &["invoke_id"][..],
-            "forward_proxy_attempts" => &["proxy_key", "occurred_at"][..],
-            "codex_quota_snapshots" => &["captured_at"][..],
-            _ => bail!("unsupported task-local monthly archive dataset"),
-        };
-        let identity_mismatch = identity_columns.iter().map(|column| format!("a.{column} IS NOT s.{column}")).collect::<Vec<_>>().join(" OR ");
-        let ids_json = serde_json::to_string(ids)?;
-        let collision: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM archive_db.{} a JOIN main.{} s ON a.id=s.id WHERE s.id IN (SELECT value FROM json_each(?1)) AND ({identity_mismatch}))", spec.dataset, spec.dataset,
-        )).bind(&ids_json).fetch_one(&mut conn).await?;
-        if collision { bail!("monthly archive row identity collision"); }
-        let should_copy = if spec.dataset == "codex_invocations" {
-            let source_identity = super::super::retention::invocation_archive_source_identity_sha256(
-                &mut conn,
-                super::super::retention::InvocationArchiveIdentityDatabase::Main,
-                ids,
-            )
-            .await?;
-            let archive_row_count = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM archive_db.codex_invocations
-                 WHERE id IN (SELECT value FROM json_each(?1))",
-            )
+            let upstream_last_activity = if worker_spec.dataset == "codex_invocations" {
+                let mut rows = Vec::new();
+                for chunk in worker_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+                    let mut query = QueryBuilder::<Sqlite>::new(
+                        "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS account_id, occurred_at FROM main.codex_invocations WHERE id IN (",
+                    );
+                    {
+                        let mut separated = query.separated(", ");
+                        for id in chunk {
+                            separated.push_bind(id);
+                        }
+                    }
+                    query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+                    rows.extend(
+                        query
+                            .build_query_as::<ArchivedAccountLastActivityRow>()
+                            .fetch_all(&mut conn)
+                            .await
+                            .context("read task-local source account activity")?,
+                    );
+                }
+                dedupe_archive_upstream_last_activity(
+                    rows.into_iter()
+                        .map(|row| (row.account_id, row.last_activity_at)),
+                )
+            } else {
+                Vec::new()
+            };
+
+            // A previously published copy may still have a live source after a failed run.
+            // Recopy that live row, but reject ID reuse across different immutable identities.
+            let identity_columns = match worker_spec.dataset {
+                "codex_invocations" => &["invoke_id"][..],
+                "forward_proxy_attempts" => &["proxy_key", "occurred_at"][..],
+                "codex_quota_snapshots" => &["captured_at"][..],
+                _ => bail!("unsupported task-local monthly archive dataset"),
+            };
+            let identity_mismatch = identity_columns
+                .iter()
+                .map(|column| format!("a.{column} IS NOT s.{column}"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let ids_json = serde_json::to_string(&worker_ids)?;
+            let collision: bool = sqlx::query_scalar(&format!(
+                "SELECT EXISTS(SELECT 1 FROM archive_db.{} a JOIN main.{} s ON a.id=s.id WHERE s.id IN (SELECT value FROM json_each(?1)) AND ({identity_mismatch}))",
+                worker_spec.dataset, worker_spec.dataset,
+            ))
             .bind(&ids_json)
             .fetch_one(&mut conn)
             .await?;
-            if archive_row_count != ids.len() as i64 {
-                true
-            } else {
-                let archive_identity = super::super::retention::invocation_archive_source_identity_sha256(
-                    &mut conn,
-                    super::super::retention::InvocationArchiveIdentityDatabase::Archive,
-                    ids,
+            if collision {
+                bail!("monthly archive row identity collision");
+            }
+            let should_copy = if worker_spec.dataset == "codex_invocations" {
+                let source_identity =
+                    super::super::retention::invocation_archive_source_identity_sha256(
+                        &mut conn,
+                        super::super::retention::InvocationArchiveIdentityDatabase::Main,
+                        &worker_ids,
+                    )
+                    .await?;
+                let archive_row_count = sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM archive_db.codex_invocations
+                     WHERE id IN (SELECT value FROM json_each(?1))",
                 )
+                .bind(&ids_json)
+                .fetch_one(&mut conn)
                 .await?;
-                archive_identity != source_identity
-            }
-        } else {
-            true
-        };
-        if should_copy {
-            let mut insert = QueryBuilder::<Sqlite>::new(format!(
-                "INSERT OR REPLACE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
-                spec.dataset, spec.columns, spec.columns, spec.dataset
-            ));
-            {
-                let mut separated = insert.separated(", ");
-                for id in ids {
-                    separated.push_bind(id);
+                if archive_row_count != worker_ids.len() as i64 {
+                    true
+                } else {
+                    let archive_identity =
+                        super::super::retention::invocation_archive_source_identity_sha256(
+                            &mut conn,
+                            super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+                            &worker_ids,
+                        )
+                        .await?;
+                    archive_identity != source_identity
                 }
+            } else {
+                true
+            };
+            if should_copy {
+                let mut insert = QueryBuilder::<Sqlite>::new(format!(
+                    "INSERT OR REPLACE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
+                    worker_spec.dataset,
+                    worker_spec.columns,
+                    worker_spec.columns,
+                    worker_spec.dataset
+                ));
+                {
+                    let mut separated = insert.separated(", ");
+                    for id in &worker_ids {
+                        separated.push_bind(id);
+                    }
+                }
+                insert.push(")");
+                insert.build().execute(&mut conn).await.with_context(|| {
+                    format!(
+                        "failed to copy rows into archive batch for {}",
+                        worker_spec.dataset
+                    )
+                })?;
             }
-            insert.push(")");
-            insert.build().execute(&mut conn).await.with_context(|| {
-                format!(
-                    "failed to copy rows into archive batch for {}",
-                    spec.dataset
-                )
-            })?;
-        }
 
-        let count_query = format!("SELECT COUNT(*) FROM archive_db.{}", spec.dataset);
-        let row_count = sqlx::query_scalar::<_, i64>(&count_query)
-            .fetch_one(&mut conn)
-            .await
-            .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
-        let source_identity_sha256 = if spec.dataset == "codex_invocations" {
-            Some(
-                super::super::retention::invocation_archive_source_identity_sha256(
-                    &mut conn,
-                    super::super::retention::InvocationArchiveIdentityDatabase::Archive,
-                    ids,
+            let count_query = format!("SELECT COUNT(*) FROM archive_db.{}", worker_spec.dataset);
+            let row_count = sqlx::query_scalar::<_, i64>(&count_query)
+                .fetch_one(&mut conn)
+                .await
+                .with_context(|| {
+                    format!("failed to count archive rows for {}", worker_spec.dataset)
+                })?;
+            let source_identity_sha256 = if worker_spec.dataset == "codex_invocations" {
+                Some(
+                    super::super::retention::invocation_archive_source_identity_sha256(
+                        &mut conn,
+                        super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+                        &worker_ids,
+                    )
+                    .await?,
                 )
-                .await?,
-            )
-        } else {
-            Some(archive_table_source_identity_sha256(&mut conn, spec, "archive_db", ids).await?)
-        };
-        sqlx::query("DETACH DATABASE archive_db")
-            .execute(&mut conn)
-            .await
-            .context("failed to detach archive database")?;
-        conn.close().await?;
-        drop(file_phase);
-        Ok::<
-            (
-                i64,
-                Vec<(i64, String)>,
-                Option<String>,
-                bool,
-                Option<i64>,
-            ),
-            anyhow::Error,
-        >((
-            row_count,
-            upstream_last_activity,
-            source_identity_sha256,
-            has_summary_pages && !should_copy && existing_final_sha256.is_some(),
-            predecessor_row_count,
-        ))
-    }
+            } else {
+                Some(
+                    archive_table_source_identity_sha256(
+                        &mut conn,
+                        worker_spec,
+                        "archive_db",
+                        &worker_ids,
+                    )
+                    .await?,
+                )
+            };
+            sqlx::query("DETACH DATABASE archive_db")
+                .execute(&mut conn)
+                .await
+                .context("failed to detach archive database")?;
+            conn.close().await?;
+            Ok::<
+                (
+                    i64,
+                    Vec<(i64, String)>,
+                    Option<String>,
+                    bool,
+                    Option<i64>,
+                ),
+                anyhow::Error,
+            >((
+                row_count,
+                upstream_last_activity,
+                source_identity_sha256,
+                worker_has_summary_pages && !should_copy && worker_has_existing_final_sha256,
+                predecessor_row_count,
+            ))
+        })
         .await
     };
 
@@ -1335,6 +1441,15 @@ async fn prepare_task_month_snapshot_index(work_path: &Path) -> Result<()> {
     .await
 }
 
+async fn run_archive_sqlite_file_phase<T, F>(operation: &'static str, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    let file_phase = super::super::acquire_file_phase_permit(operation).await?;
+    super::super::spawn_file_phase_task(file_phase, work).await
+}
+
 async fn load_task_month_snapshot_pages(
     pool: &Pool<Sqlite>,
     archive_pool: &Pool<Sqlite>,
@@ -1379,7 +1494,7 @@ async fn load_task_month_snapshot_pages(
         )
         .collect::<Vec<_>>();
     let mut pages = Vec::with_capacity(rows.len());
-    let mut previous_cursor = None;
+    let mut previous_cursor: Option<(String, i64)> = None;
     for (
         page_index,
         coverage_start,
@@ -1431,17 +1546,33 @@ async fn load_task_month_snapshot_pages(
             });
         }
         let archive_rows = if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
-            sqlx::query_as::<_, InvocationHourlySourceRecord>(next_page_query)
-                .bind(occurred_at)
-                .bind(*row_id)
-                .bind(row_count)
-                .fetch_all(archive_pool)
-                .await?
+            let query = next_page_query.to_owned();
+            let archive_pool = archive_pool.clone();
+            let occurred_at = occurred_at.clone();
+            let row_id = *row_id;
+            run_archive_sqlite_file_phase("archive_snapshot_page_read", async move {
+                Ok::<_, anyhow::Error>(
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+                        .bind(occurred_at)
+                        .bind(row_id)
+                        .bind(row_count)
+                        .fetch_all(&archive_pool)
+                        .await?,
+                )
+            })
+            .await?
         } else {
-            sqlx::query_as::<_, InvocationHourlySourceRecord>(first_page_query)
-                .bind(row_count)
-                .fetch_all(archive_pool)
-                .await?
+            let query = first_page_query.to_owned();
+            let archive_pool = archive_pool.clone();
+            run_archive_sqlite_file_phase("archive_snapshot_page_read", async move {
+                Ok::<_, anyhow::Error>(
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+                        .bind(row_count)
+                        .fetch_all(&archive_pool)
+                        .await?,
+                )
+            })
+            .await?
         };
         let record_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
         let archive_ids = archive_rows.iter().map(|row| row.id).collect::<Vec<_>>();
@@ -1461,14 +1592,20 @@ async fn load_task_month_snapshot_pages(
         }
         let ids = archive_ids;
         let ids_json = serde_json::to_string(&ids)?;
-        let invoke_ids = sqlx::query_as::<_, (i64, String)>(
-            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
-        )
-        .bind(&ids_json)
-        .fetch_all(archive_pool)
-        .await?
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+        let archive_pool = archive_pool.clone();
+        let invoke_ids = run_archive_sqlite_file_phase("archive_snapshot_page_read", async move {
+            Ok::<_, anyhow::Error>(
+                sqlx::query_as::<_, (i64, String)>(
+                    "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
+                )
+                .bind(ids_json)
+                .fetch_all(&archive_pool)
+                .await?
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+            )
+        })
+        .await?;
         if invoke_ids.len() != archive_rows.len()
             || super::super::retention::encode_summary_archive_snapshot_v2_payload(
                 &archive_rows,
@@ -1504,13 +1641,25 @@ async fn prepare_task_month_snapshot_pages(
     outcome: &ArchiveBatchOutcome,
     batch_id: i64,
 ) -> Result<Vec<TaskArchiveSnapshotPage>> {
-    let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
-    let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await?;
+    let work_path = work_path.to_path_buf();
+    let archive_pool = run_archive_sqlite_file_phase("archive_snapshot_open", async move {
+        let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(&work_path))?;
+        Ok::<_, anyhow::Error>(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await?,
+        )
+    })
+    .await?;
     let result = async {
-        let columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let columns = {
+            let archive_pool = archive_pool.clone();
+            run_archive_sqlite_file_phase("archive_snapshot_schema_read", async move {
+                load_archive_table_columns(&archive_pool, "codex_invocations").await
+            })
+            .await?
+        };
         // Tuple keyset pagination must seek rather than sort/scan the month once per 400-row
         // page. The index was installed before the artifact was compressed.
         let base = build_invocation_archive_rows_chunk_query(&columns);
@@ -1566,13 +1715,32 @@ async fn prepare_task_month_snapshot_pages(
         };
         loop {
             let rows = if let Some(cursor) = occurred_at.as_deref() {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
-                    .bind(cursor).bind(row_id).bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                    .fetch_all(&archive_pool).await?
+                let query = next_query.clone();
+                let archive_pool = archive_pool.clone();
+                let cursor = cursor.to_owned();
+                run_archive_sqlite_file_phase("archive_snapshot_page_read", async move {
+                    Ok::<_, anyhow::Error>(
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+                            .bind(cursor)
+                            .bind(row_id)
+                            .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                            .fetch_all(&archive_pool)
+                            .await?,
+                    )
+                })
+                .await?
             } else {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
-                    .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                    .fetch_all(&archive_pool).await?
+                let query = first_query.clone();
+                let archive_pool = archive_pool.clone();
+                run_archive_sqlite_file_phase("archive_snapshot_page_read", async move {
+                    Ok::<_, anyhow::Error>(
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+                            .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                            .fetch_all(&archive_pool)
+                            .await?,
+                    )
+                })
+                .await?
             };
             if rows.is_empty() { break; }
             let mut identities = QueryBuilder::<Sqlite>::new(
@@ -1581,8 +1749,18 @@ async fn prepare_task_month_snapshot_pages(
             let mut ids = identities.separated(", ");
             for row in &rows { ids.push_bind(row.id); }
             ids.push_unseparated(")");
-            let invoke_ids = identities.build_query_as::<(i64, String)>()
-                .fetch_all(&archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
+            let archive_pool = archive_pool.clone();
+            let invoke_ids = run_archive_sqlite_file_phase("archive_snapshot_page_read", async move {
+                Ok::<_, anyhow::Error>(
+                    identities
+                        .build_query_as::<(i64, String)>()
+                        .fetch_all(&archive_pool)
+                        .await?
+                        .into_iter()
+                        .collect::<HashMap<_, _>>(),
+                )
+            })
+            .await?;
             let first = rows.first().expect("nonempty snapshot page");
             let last = rows.last().expect("nonempty snapshot page");
             let page = TaskArchiveSnapshotPage {
@@ -1698,14 +1876,29 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     let _temp_cleanup = TempSqliteCleanup::new(work_path.clone());
     let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
     ensure_attachable_archive_sqlite_path(&work_path)?;
-    let row_count = async {
-        let mut conn = pool.acquire().await?;
+    let file_phase = super::super::acquire_file_phase_permit("archive_segment_copy").await?;
+    let worker_pool = pool.clone();
+    let worker_ids = ids.to_vec();
+    let worker_work_path = work_path.clone();
+    let Some(file_operation) =
+        super::super::try_acquire_archive_file_operation_lease(&worker_work_path)
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "archive_segment_copy",
+        ));
+    };
+    let row_count = super::super::spawn_file_phase_task(file_phase, async move {
+        let _file_operation = file_operation;
+        let mut conn = worker_pool.acquire().await?;
         sqlx::query("ATTACH DATABASE ?1 AS archive_db")
-            .bind(archive_disk_attach_uri(&work_path)?)
+            .bind(archive_disk_attach_uri(&worker_work_path)?)
             .execute(&mut *conn)
             .await
             .with_context(|| {
-                format!("failed to attach archive database {}", work_path.display())
+                format!(
+                    "failed to attach archive database {}",
+                    worker_work_path.display()
+                )
             })?;
         sqlx::query("PRAGMA archive_db.journal_mode=DELETE")
             .execute(&mut *conn)
@@ -1713,7 +1906,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
             .with_context(|| {
                 format!(
                     "failed to switch archive database {} to DELETE journal mode",
-                    work_path.display()
+                    worker_work_path.display()
                 )
             })?;
         sqlx::query(spec.create_sql)
@@ -1723,7 +1916,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
         ensure_codex_invocations_archive_schema(&mut conn).await?;
 
         let mut upstream_last_activity = Vec::new();
-        for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        for chunk in worker_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
             let mut query = QueryBuilder::<Sqlite>::new(
                 "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS account_id, occurred_at FROM main.codex_invocations WHERE id IN (",
             );
@@ -1753,7 +1946,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
         ));
         {
             let mut separated = insert.separated(", ");
-            for id in ids {
+            for id in &worker_ids {
                 separated.push_bind(id);
             }
         }
@@ -1773,7 +1966,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
         let source_identity_sha256 = super::super::retention::invocation_archive_source_identity_sha256(
             &mut conn,
             super::super::retention::InvocationArchiveIdentityDatabase::Archive,
-            ids,
+            &worker_ids,
         )
         .await?;
         sqlx::query("DETACH DATABASE archive_db")
@@ -1785,7 +1978,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
             upstream_last_activity,
             source_identity_sha256,
         ))
-    }
+    })
     .await?;
 
     finalize_archive_sqlite_file(&work_path).await?;

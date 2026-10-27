@@ -119,6 +119,25 @@ def sample_rows(start: datetime, finish: datetime, count: int, elapsed: float, p
     ]
 
 
+def write_sample_row(start: datetime, sequence: int, invoke_id: str, request_ms: float = 5.0, lag_ms: float = 0.0) -> dict:
+    scheduled = sequence / DATASETS["invocations"]["arrival_rate"] * 1000
+    dispatched = scheduled + lag_ms
+    completed = dispatched + request_ms
+    return {
+        "sequence": sequence,
+        "invoke_id": invoke_id,
+        "observed_at": timestamp(start + timedelta(milliseconds=completed)),
+        "elapsed_ms": completed - scheduled,
+        "scheduled_offset_ms": scheduled,
+        "dispatched_offset_ms": dispatched,
+        "completed_offset_ms": completed,
+        "dispatch_lag_ms": lag_ms,
+        "request_elapsed_ms": request_ms,
+        "transport": "http",
+        "path": "/v1/responses",
+    }
+
+
 def trial_evidence(version: str, index: int, start: datetime, previous_end: datetime | None) -> tuple[dict, datetime]:
     input_start = start + timedelta(seconds=1)
     input_end = input_start + timedelta(seconds=120)
@@ -132,7 +151,7 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
     }
     input_counts = {name: len(values) for name, values in identities.items()}
     reads = sample_rows(input_start, input_end, 24, 10.0, "/api/pool/upstream-accounts")
-    writes = sample_rows(input_start, input_end, input_counts["invocations"], 5.0, "/v1/responses")
+    writes = [write_sample_row(input_start, sequence, invoke_id) for sequence, invoke_id in enumerate(identities["invocations"])]
     retry_count = input_counts["pool_upstream_attempts"] - input_counts["invocations"]
     retry_sequences = {
         math.floor(retry * input_counts["invocations"] / retry_count)
@@ -461,6 +480,117 @@ class ContractTests(unittest.TestCase):
         sample["transport"] = "sqlite"
         with self.assertRaisesRegex(AcceptanceError, "production HTTP boundary"):
             validate_evidence(evidence)
+
+    def test_write_timing_fields_are_required_and_bound_to_each_invocation(self) -> None:
+        fields = (
+            "sequence", "invoke_id", "scheduled_offset_ms", "dispatched_offset_ms",
+            "completed_offset_ms", "dispatch_lag_ms", "request_elapsed_ms",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                evidence = valid_evidence()
+                del evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0][field]
+                with self.assertRaises(AcceptanceError):
+                    validate_evidence(evidence)
+        for field, value in (("sequence", True), ("sequence", 1), ("invoke_id", "unrelated-invocation")):
+            with self.subTest(field=field, value=value):
+                evidence = valid_evidence()
+                evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0][field] = value
+                with self.assertRaisesRegex(AcceptanceError, "timing sequence|timing identity"):
+                    validate_evidence(evidence)
+
+    def test_write_timing_values_must_be_finite_nonnegative_numbers(self) -> None:
+        for field in ("scheduled_offset_ms", "dispatched_offset_ms", "completed_offset_ms", "dispatch_lag_ms", "request_elapsed_ms"):
+            for value in (None, True, -1, math.nan, math.inf, "1"):
+                with self.subTest(field=field, value=value):
+                    evidence = valid_evidence()
+                    evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0][field] = value
+                    with self.assertRaisesRegex(AcceptanceError, f"invalid raw write {field}"):
+                        validate_evidence(evidence)
+
+    def test_write_timing_cannot_shift_the_arrival_plan_to_hide_queueing(self) -> None:
+        evidence = valid_evidence()
+        sample = evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0]
+        for field in ("scheduled_offset_ms", "dispatched_offset_ms", "completed_offset_ms"):
+            sample[field] += 100
+        sample["observed_at"] = timestamp(datetime.fromisoformat(sample["observed_at"]) + timedelta(milliseconds=100))
+        with self.assertRaisesRegex(AcceptanceError, "fixed arrival plan"):
+            validate_evidence(evidence)
+
+    def test_write_timing_rejects_omitted_or_reordered_requests(self) -> None:
+        for reorder in (False, True):
+            with self.subTest(reorder=reorder):
+                evidence = valid_evidence()
+                samples = evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"]
+                if reorder:
+                    samples[0], samples[1] = samples[1], samples[0]
+                else:
+                    samples.pop()
+                with self.assertRaisesRegex(AcceptanceError, "every invocation|incomplete or reordered"):
+                    validate_evidence(evidence)
+
+    def test_write_timing_rejects_inconsistent_latency_components(self) -> None:
+        for field, expected_error in (
+            ("dispatch_lag_ms", "dispatch lag does not match"),
+            ("request_elapsed_ms", "request latency does not match"),
+            ("elapsed_ms", "end-to-end latency omitted"),
+        ):
+            with self.subTest(field=field):
+                evidence = valid_evidence()
+                trial = evidence["versions"]["candidate"]["trials"][0]
+                start = datetime.fromisoformat(trial["window"]["input_started_at"])
+                sample = write_sample_row(start, 0, trial["added_ids"]["invocations"][0], request_ms=1.0, lag_ms=20.0)
+                sample[field] = 0.0 if field == "dispatch_lag_ms" else 1.0 if field == "elapsed_ms" else 2.0
+                trial["latency_samples_ms"]["write"][0] = sample
+                with self.assertRaisesRegex(AcceptanceError, expected_error):
+                    validate_evidence(evidence)
+
+    def test_write_completion_must_match_the_observed_wall_timestamp(self) -> None:
+        evidence = valid_evidence()
+        sample = evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0]
+        sample["observed_at"] = timestamp(datetime.fromisoformat(sample["observed_at"]) + timedelta(seconds=1))
+        with self.assertRaisesRegex(AcceptanceError, "completion time is not bound"):
+            validate_evidence(evidence)
+
+    def test_serial_writer_cannot_dispatch_before_arrival_or_previous_completion(self) -> None:
+        for overlap in (False, True):
+            with self.subTest(overlap=overlap):
+                evidence = valid_evidence()
+                trial = evidence["versions"]["candidate"]["trials"][0]
+                samples = trial["latency_samples_ms"]["write"]
+                if overlap:
+                    start = datetime.fromisoformat(trial["window"]["input_started_at"])
+                    samples[0] = write_sample_row(start, 0, trial["added_ids"]["invocations"][0], request_ms=2000.0)
+                else:
+                    samples[1]["dispatched_offset_ms"] -= 1.0
+                with self.assertRaisesRegex(AcceptanceError, "dispatch/completion order"):
+                    validate_evidence(evidence)
+
+    def test_write_percentiles_include_queueing_even_when_http_requests_are_faster(self) -> None:
+        for delayed_count, percentile_name in ((1, "p99_ms"), (5, "p95_ms")):
+            with self.subTest(percentile=percentile_name):
+                evidence = valid_evidence()
+                for trial in evidence["versions"]["candidate"]["trials"]:
+                    start = datetime.fromisoformat(trial["window"]["input_started_at"])
+                    samples = trial["latency_samples_ms"]["write"]
+                    for sequence in range(len(samples) - delayed_count, len(samples)):
+                        samples[sequence] = write_sample_row(start, sequence, trial["added_ids"]["invocations"][sequence], request_ms=1.0, lag_ms=20.0)
+                with self.assertRaisesRegex(AcceptanceError, f"write {percentile_name} median regressed"):
+                    validate_evidence(evidence)
+
+    def test_consistent_nonzero_dispatch_lag_is_included_in_both_percentiles(self) -> None:
+        evidence = valid_evidence()
+        for group in evidence["versions"].values():
+            for trial in group["trials"]:
+                start = datetime.fromisoformat(trial["window"]["input_started_at"])
+                trial["latency_samples_ms"]["write"] = [
+                    write_sample_row(start, sequence, invoke_id, request_ms=1.0, lag_ms=20.0)
+                    for sequence, invoke_id in enumerate(trial["added_ids"]["invocations"])
+                ]
+        result = validate_evidence(evidence)
+        for version in ("baseline", "candidate"):
+            for percentile in ("p95_ms", "p99_ms"):
+                self.assertAlmostEqual(result["latency_summary"][version]["write"][percentile], 21.0)
 
     def test_mock_retry_workload_is_bound_to_the_expected_attempt_count(self) -> None:
         evidence = valid_evidence()

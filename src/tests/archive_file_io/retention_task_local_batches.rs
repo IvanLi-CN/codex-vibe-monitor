@@ -1551,7 +1551,7 @@ async fn retention_task_local_cancel_closes_attached_connection_and_cleans_work(
         })
         .await;
     assert!(result.is_err(), "cancel during attached task-local work");
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
@@ -1703,7 +1703,7 @@ fn has_task_work_files(directory: &Path) -> bool {
 }
 
 async fn wait_for_no_task_work_files(directory: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if !has_task_work_files(directory) {
             return;

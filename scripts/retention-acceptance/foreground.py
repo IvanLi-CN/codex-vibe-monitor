@@ -147,7 +147,7 @@ def seed_pool() -> None:
         raise RuntimeError(f"pool read preflight failed: status={status} body={body[:300]!r}")
 
 
-def response_request(sequence: int) -> tuple[str, float]:
+def response_request(sequence: int) -> str:
     payload = {
         "model": "gpt-5-codex",
         "input": f"retention-acceptance-sequence-{sequence:05d}",
@@ -165,16 +165,36 @@ def response_request(sequence: int) -> tuple[str, float]:
             "Accept": "application/json",
         },
     )
-    started = time.perf_counter()
     with urllib.request.urlopen(request, timeout=30) as response:
         body = response.read()
-        elapsed_ms = (time.perf_counter() - started) * 1000
         if response.status != 200:
             raise RuntimeError(f"proxy returned status {response.status}: {body[:300]!r}")
         invoke_id = response.headers.get("x-cvm-invoke-id")
     if not invoke_id:
         raise RuntimeError("proxy response omitted x-cvm-invoke-id")
-    return invoke_id, elapsed_ms
+    return invoke_id
+
+
+def write_sample(sequence: int, start_mono: float) -> dict[str, Any]:
+    scheduled_offset_ms = sequence / INVOCATION_RATE * 1000
+    dispatched_offset_ms = (time.monotonic() - start_mono) * 1000
+    invoke_id = response_request(sequence)
+    completed_offset_ms = (time.monotonic() - start_mono) * 1000
+    return {
+        "sequence": sequence,
+        "invoke_id": invoke_id,
+        "observed_at": utc_now(),
+        "scheduled_offset_ms": scheduled_offset_ms,
+        "dispatched_offset_ms": dispatched_offset_ms,
+        "completed_offset_ms": completed_offset_ms,
+        "dispatch_lag_ms": dispatched_offset_ms - scheduled_offset_ms,
+        "request_elapsed_ms": completed_offset_ms - dispatched_offset_ms,
+        # Keep the arrival plan fixed when a previous request delays this dispatch.
+        "elapsed_ms": completed_offset_ms - scheduled_offset_ms,
+        "dataset": "codex_invocations",
+        "transport": "http",
+        "path": WRITE_PATH,
+    }
 
 
 def run_workload(run_seconds: int, retry_count: int) -> dict[str, Any]:
@@ -224,16 +244,9 @@ def run_workload(run_seconds: int, retry_count: int) -> dict[str, Any]:
             if stop.wait(max(0.0, scheduled - time.monotonic())):
                 return
             try:
-                invoke_id, elapsed_ms = response_request(sequence)
-                sample = {
-                    "observed_at": utc_now(),
-                    "elapsed_ms": elapsed_ms,
-                    "dataset": "codex_invocations",
-                    "transport": "http",
-                    "path": WRITE_PATH,
-                }
+                sample = write_sample(sequence, start_mono)
                 with lock:
-                    invocations.append({"sequence": sequence, "invoke_id": invoke_id})
+                    invocations.append({"sequence": sequence, "invoke_id": sample["invoke_id"]})
                     samples["write"].append(sample)
             except BaseException as error:
                 failures.append(error)

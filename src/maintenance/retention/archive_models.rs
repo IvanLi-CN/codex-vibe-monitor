@@ -429,7 +429,25 @@ pub(crate) fn remove_temp_archive_file_operation_artifacts_unchecked(path: &Path
 impl Drop for TempSqliteCleanup {
     fn drop(&mut self) {
         if !self.keep {
-            remove_temp_sqlite_artifacts(&self.path);
+            if crate::is_archive_file_operation_active(&self.path) {
+                let path = self.path.clone();
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    return;
+                };
+                drop(handle.spawn(async move {
+                    while crate::is_archive_file_operation_active(&path) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    let file_phase =
+                        crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
+                    crate::maintenance::with_file_phase_permit(file_phase, async move {
+                        remove_temp_sqlite_artifacts_unchecked(&path);
+                    })
+                    .await;
+                }));
+            } else {
+                remove_temp_sqlite_artifacts(&self.path);
+            }
         }
     }
 }

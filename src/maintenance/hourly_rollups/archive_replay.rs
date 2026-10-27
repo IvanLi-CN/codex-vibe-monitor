@@ -119,7 +119,8 @@ pub(crate) async fn open_historical_rollup_archive_pool(
     expected_sha256: &str,
 ) -> Result<Pool<Sqlite>> {
     let current_signature =
-        match historical_rollup_archive_source_signature(archive_path, expected_sha256) {
+        match historical_rollup_archive_source_signature_async(archive_path, expected_sha256).await
+        {
             Ok(signature) => signature,
             Err(error) => {
                 remove_temp_sqlite_artifacts(temp_path);
@@ -131,7 +132,7 @@ pub(crate) async fn open_historical_rollup_archive_pool(
             != Some(current_signature.as_str());
     if stale_temp {
         remove_temp_sqlite_artifacts(temp_path);
-        inflate_gzip_sqlite_file(archive_path, temp_path)?;
+        inflate_gzip_sqlite_file_with_operation_budget(archive_path, temp_path).await?;
         persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
     }
 
@@ -146,7 +147,7 @@ pub(crate) async fn open_historical_rollup_archive_pool(
         Ok(pool) => Ok(pool),
         Err(first_err) => {
             remove_temp_sqlite_artifacts(temp_path);
-            inflate_gzip_sqlite_file(archive_path, temp_path)?;
+            inflate_gzip_sqlite_file_with_operation_budget(archive_path, temp_path).await?;
             persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.with_context(|| {
                 format!(
@@ -574,7 +575,10 @@ pub(crate) async fn invocation_archive_file_is_readable_with_budget(
         return InvocationArchiveReadability::BudgetExhausted;
     }
     let temp_path = invocation_archive_replay_temp_path(archive_path);
-    if historical_rollup_archive_source_signature(archive_path, expected_sha256).is_err() {
+    if historical_rollup_archive_source_signature_async(archive_path, expected_sha256)
+        .await
+        .is_err()
+    {
         remove_temp_sqlite_artifacts(&temp_path);
         return InvocationArchiveReadability::Rejected;
     }
@@ -649,7 +653,8 @@ pub(crate) async fn open_historical_rollup_archive_pool_with_budget(
         return Ok(None);
     }
     let current_signature =
-        match historical_rollup_archive_source_signature(archive_path, expected_sha256) {
+        match historical_rollup_archive_source_signature_async(archive_path, expected_sha256).await
+        {
             Ok(signature) => signature,
             Err(error) => {
                 remove_temp_sqlite_artifacts(temp_path);
@@ -712,6 +717,19 @@ pub(crate) fn historical_rollup_archive_source_signature(
         path,
         crate::maintenance::retention::retention_archive_file_operation_deadline(),
     )?;
+    anyhow::ensure!(
+        actual_sha256 == expected_sha256,
+        "archive batch {} does not match manifest SHA-256",
+        path.display()
+    );
+    Ok(expected_sha256.to_string())
+}
+
+async fn historical_rollup_archive_source_signature_async(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<String> {
+    let actual_sha256 = sha256_hex_file_with_operation_budget(path).await?;
     anyhow::ensure!(
         actual_sha256 == expected_sha256,
         "archive batch {} does not match manifest SHA-256",

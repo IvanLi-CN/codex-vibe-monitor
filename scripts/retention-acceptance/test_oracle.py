@@ -4,12 +4,13 @@ import gzip
 import hashlib
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from contract import AcceptanceError, sha256_json
-from oracle import _verify_summary_proof, verify_dataset
+from contract import AcceptanceError, canonical_json, sha256_json
+from oracle import REPLAY_TARGETS, _verify_summary_proof, verify_dataset
 
 
 DATASET = "pool_upstream_request_attempts"
@@ -317,58 +318,254 @@ class OracleTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "escaped the configured archive root"):
             self.verify({"seed-archived", "seed-live"})
 
-    def test_missing_summary_final_proof_is_rejected(self) -> None:
-        connection = sqlite3.connect(self.database)
-        connection.executescript(
+
+class SummaryProofTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.connection = sqlite3.connect(":memory:")
+        self.archive = sqlite3.connect(":memory:")
+        self.addCleanup(self.connection.close)
+        self.addCleanup(self.archive.close)
+        self.connection.executescript(
             "CREATE TABLE summary_archive_snapshot_v2_proof(archive_batch_id INTEGER,manifest_sha256 TEXT,page_count INTEGER,row_count INTEGER,coverage_start TEXT,coverage_end TEXT,semantic_sha256 TEXT);"
             "CREATE TABLE summary_archive_snapshot(archive_batch_id INTEGER,manifest_sha256 TEXT,page_index INTEGER,coverage_start TEXT,coverage_end TEXT,row_count INTEGER,payload BLOB,payload_bytes INTEGER,snapshot_sha256 TEXT,format_version INTEGER);"
             "CREATE TABLE hourly_rollup_archive_replay(target TEXT,dataset TEXT,file_path TEXT,archive_sha256 TEXT);"
         )
-        connection.commit()
+        self.archive.execute("CREATE TABLE codex_invocations(id INTEGER,invoke_id TEXT,occurred_at TEXT)")
+        self.records = [
+            {
+                "id": index,
+                "invokeId": f"seed-{index}",
+                "occurredAt": "2026-08-01 00:00:00" if index == 10 else "2026-08-01T01:00:00Z",
+                "source": "xy",
+                "model": "gpt-5-codex",
+                "responseModel": None,
+                "inputTokens": 12,
+                "outputTokens": 4,
+                "cacheInputTokens": 0,
+                "reasoningTokens": 0,
+                "reasoningEffort": None,
+                "totalTokens": 16,
+                "cost": None,
+                "costInput": None,
+                "costCacheWrite": None,
+                "costCacheRead": None,
+                "costOutput": None,
+                "costReasoning": None,
+                "status": "success",
+                "errorMessage": None,
+                "failureKind": None,
+                "failureClass": None,
+                "isActionable": False,
+                "upstreamAccountId": None,
+            }
+            for index in (10, 20, 30)
+        ]
+        self.archive.executemany(
+            "INSERT INTO codex_invocations VALUES(?,?,?)",
+            [(record["id"], record["invokeId"], record["occurredAt"]) for record in reversed(self.records)],
+        )
+        self.archive.commit()
+        self.manifest_sha = "a" * 64
+        self.file_path = "/archives/codex_invocations/2026/codex_invocations-2026-08.sqlite.gz"
+        self.connection.executemany(
+            "INSERT INTO hourly_rollup_archive_replay VALUES(?, 'codex_invocations', ?, ?)",
+            [(target, self.file_path, self.manifest_sha) for target in REPLAY_TARGETS],
+        )
+        self.store_pages()
+
+    def compress(self, raw: bytes) -> bytes:
+        return subprocess.run(
+            ["zstd", "-q", "-c"], input=raw, capture_output=True, check=True, timeout=5,
+        ).stdout
+
+    def store_pages(
+        self,
+        pages: list[list] | None = None,
+        *,
+        payloads: dict[int, bytes] | None = None,
+        overrides: dict[int, dict] | None = None,
+    ) -> None:
+        pages = pages if pages is not None else [self.records[:1], self.records[1:]]
+        self.connection.execute("DELETE FROM summary_archive_snapshot")
+        self.connection.execute("DELETE FROM summary_archive_snapshot_v2_proof")
+        semantic = hashlib.sha256()
+        total = 0
+        bounds = []
+        for index, records in enumerate(pages):
+            payload = (payloads or {}).get(index)
+            if payload is None:
+                payload = self.compress(canonical_json(records))
+            start = records[0].get("occurredAt") if records and isinstance(records[0], dict) else self.records[0]["occurredAt"]
+            end = records[-1].get("occurredAt") if records and isinstance(records[-1], dict) else self.records[-1]["occurredAt"]
+            metadata = {"row_count": len(records), "coverage_start": start, "coverage_end": end}
+            metadata.update((overrides or {}).get(index, {}))
+            count, start, end = metadata["row_count"], metadata["coverage_start"], metadata["coverage_end"]
+            page_sha = hashlib.sha256(payload).hexdigest()
+            self.connection.execute(
+                "INSERT INTO summary_archive_snapshot VALUES(1,?,?,?,?,?,?,?,?,2)",
+                (self.manifest_sha, index, start, end, count, payload, len(payload), page_sha),
+            )
+            semantic.update(index.to_bytes(8, "little", signed=True))
+            semantic.update(page_sha.encode())
+            semantic.update(count.to_bytes(8, "little", signed=True))
+            semantic.update((start or "").encode())
+            semantic.update((end or "").encode())
+            total += count
+            bounds.append((start, end))
+        self.connection.execute(
+            "INSERT INTO summary_archive_snapshot_v2_proof VALUES(1,?,?,?,?,?,?)",
+            (self.manifest_sha, len(pages), total, bounds[0][0], bounds[-1][1], semantic.hexdigest()),
+        )
+        self.connection.commit()
+
+    def verify(self, manifest_row_count: int = 3) -> None:
+        _verify_summary_proof(
+            self.connection, 1, self.manifest_sha, self.file_path,
+            archive=self.archive, manifest_row_count=manifest_row_count,
+        )
+
+    def test_real_zstd_json_pages_cover_actual_archive_rows(self) -> None:
+        self.verify()
+
+    def test_missing_summary_final_proof_is_rejected(self) -> None:
+        self.connection.execute("DELETE FROM summary_archive_snapshot_v2_proof")
         with self.assertRaisesRegex(AcceptanceError, "missing its final Summary Snapshot V2 proof"):
-            _verify_summary_proof(connection, 1, "a" * 64, "/unused")
-        connection.close()
+            self.verify()
 
     def test_summary_semantic_proof_is_recomputed_from_pages_and_replay_hashes(self) -> None:
-        connection = sqlite3.connect(self.database)
-        connection.executescript(
-            "CREATE TABLE summary_archive_snapshot_v2_proof(archive_batch_id INTEGER,manifest_sha256 TEXT,page_count INTEGER,row_count INTEGER,coverage_start TEXT,coverage_end TEXT,semantic_sha256 TEXT);"
-            "CREATE TABLE summary_archive_snapshot(archive_batch_id INTEGER,manifest_sha256 TEXT,page_index INTEGER,coverage_start TEXT,coverage_end TEXT,row_count INTEGER,payload BLOB,payload_bytes INTEGER,snapshot_sha256 TEXT,format_version INTEGER);"
-            "CREATE TABLE hourly_rollup_archive_replay(target TEXT,dataset TEXT,file_path TEXT,archive_sha256 TEXT);"
-        )
-        manifest_sha = "a" * 64
-        file_path = "/archives/codex_invocations/2026/codex_invocations-2026-08.sqlite.gz"
-        payload = b"summary-page"
-        page_sha = hashlib.sha256(payload).hexdigest()
-        start = "2026-08-01T00:00:00Z"
-        end = "2026-08-31T23:59:59Z"
-        semantic = hashlib.sha256()
-        semantic.update((0).to_bytes(8, "little", signed=True))
-        semantic.update(page_sha.encode())
-        semantic.update((5).to_bytes(8, "little", signed=True))
-        semantic.update(start.encode())
-        semantic.update(end.encode())
-        connection.execute(
-            "INSERT INTO summary_archive_snapshot VALUES(1,?,0,?,?,5,?,?,?,2)",
-            (manifest_sha, start, end, payload, len(payload), page_sha),
-        )
-        connection.execute(
-            "INSERT INTO summary_archive_snapshot_v2_proof VALUES(1,?,1,5,?,?,?)",
-            (manifest_sha, start, end, semantic.hexdigest()),
-        )
-        from oracle import REPLAY_TARGETS
-
-        connection.executemany(
-            "INSERT INTO hourly_rollup_archive_replay VALUES(?, 'codex_invocations', ?, ?)",
-            [(target, file_path, manifest_sha) for target in REPLAY_TARGETS],
-        )
-        connection.commit()
-        _verify_summary_proof(connection, 1, manifest_sha, file_path)
-        connection.execute("UPDATE summary_archive_snapshot_v2_proof SET semantic_sha256='f'")
-        connection.commit()
+        self.connection.execute("UPDATE summary_archive_snapshot_v2_proof SET semantic_sha256='f'")
         with self.assertRaisesRegex(AcceptanceError, "semantic proof does not match"):
-            _verify_summary_proof(connection, 1, manifest_sha, file_path)
-        connection.close()
+            self.verify()
+        self.store_pages()
+        self.connection.execute("UPDATE hourly_rollup_archive_replay SET archive_sha256='unrelated'")
+        with self.assertRaisesRegex(AcceptanceError, "hash-bound hourly replay proofs"):
+            self.verify()
+
+    def test_self_consistent_hashes_cannot_prove_non_zstd_or_non_json_payloads(self) -> None:
+        for payload, error in (
+            (b"summary-page", "not a zstd frame"),
+            (gzip.compress(canonical_json(self.records[:1])), "not a zstd frame"),
+            (self.compress(canonical_json(self.records[:1]))[:-3], "decoded with zstd"),
+            (self.compress(b"not JSON"), "not valid JSON"),
+            (self.compress(b"[NaN]"), "not valid JSON"),
+            (self.compress(b'[{"id":10,"id":20}]'), "not valid JSON"),
+            (self.compress(b'"not a record list"'), "record list"),
+            (self.compress(b"[]"), "record list"),
+            (self.compress(b"[null]"), "malformed record"),
+        ):
+            with self.subTest(payload=payload):
+                self.store_pages(payloads={0: payload})
+                with self.assertRaisesRegex(AcceptanceError, error):
+                    self.verify()
+
+    def test_missing_decoder_fails_closed(self) -> None:
+        with patch("oracle.subprocess.run", side_effect=FileNotFoundError("zstd")):
+            with self.assertRaisesRegex(AcceptanceError, "decoded with zstd"):
+                self.verify()
+
+    def test_decoded_records_require_v2_semantic_fields(self) -> None:
+        for field, value in (
+            ("id", True), ("id", 2**63), ("invokeId", ""), ("source", None),
+            ("status", " "), ("inputTokens", "12"), ("isActionable", 0),
+            ("model", 1), ("upstreamAccountId", True), ("cost", "1.0"), ("cost", 1e309),
+        ):
+            with self.subTest(field=field):
+                records = [dict(record) for record in self.records]
+                records[0][field] = value
+                self.store_pages([records[:1], records[1:]])
+                with self.assertRaisesRegex(AcceptanceError, f"invalid {field}|not valid JSON"):
+                    self.verify()
+
+    def test_payload_row_count_is_checked_after_successful_decode(self) -> None:
+        self.store_pages(overrides={0: {"row_count": 2}})
+        with self.assertRaisesRegex(AcceptanceError, "payload row count does not match"):
+            self.verify()
+
+    def test_payload_identity_and_occurrence_must_match_actual_archive_rows(self) -> None:
+        for field, value in (("id", 11), ("invokeId", "unrelated-invocation"), ("occurredAt", "2026-08-01T00:00:01Z")):
+            with self.subTest(field=field):
+                records = [dict(record) for record in self.records]
+                records[0][field] = value
+                self.store_pages([records[:1], records[1:]])
+                with self.assertRaisesRegex(AcceptanceError, "differs from actual archived"):
+                    self.verify()
+
+    def test_duplicate_payload_identities_across_pages_are_rejected(self) -> None:
+        self.store_pages([self.records[:1], [self.records[0], self.records[2]]])
+        with self.assertRaisesRegex(AcceptanceError, "duplicate archive row identity"):
+            self.verify()
+
+    def test_payload_cannot_omit_or_add_archived_rows_even_with_matching_metadata(self) -> None:
+        self.store_pages([self.records[:2]])
+        with self.assertRaisesRegex(AcceptanceError, "payload count does not cover"):
+            self.verify(manifest_row_count=2)
+        extra = {**self.records[-1], "id": 40, "invokeId": "seed-40"}
+        self.store_pages([self.records[:1], self.records[1:] + [extra]])
+        with self.assertRaisesRegex(AcceptanceError, "differs from actual archived"):
+            self.verify(manifest_row_count=4)
+        self.store_pages()
+        with self.assertRaisesRegex(AcceptanceError, "payload count does not cover"):
+            self.verify(manifest_row_count=4)
+
+    def test_self_consistent_page_coverage_must_match_decoded_records(self) -> None:
+        for coverage in (
+            {"coverage_start": "2026-07-31T23:59:59Z"},
+            {"coverage_end": "2026-08-01T00:00:01Z"},
+            {"coverage_start": "2026-08-01T00:00:01Z"},
+            {"coverage_end": "invalid"},
+        ):
+            with self.subTest(coverage=coverage):
+                self.store_pages(overrides={0: coverage})
+                with self.assertRaisesRegex(AcceptanceError, "coverage"):
+                    self.verify()
+
+    def test_payload_order_must_match_archive_order_across_pages_at_equal_timestamps(self) -> None:
+        self.store_pages([self.records[:1] + self.records[2:], self.records[1:2]])
+        with self.assertRaisesRegex(AcceptanceError, "differs from actual archived"):
+            self.verify()
+
+    def test_dataset_verification_uses_the_verified_archive_for_summary_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database, template = root / "source.sqlite", root / "template.sqlite"
+            for path in (database, template):
+                target = sqlite3.connect(path)
+                self.archive.backup(target)
+                if path == template:
+                    target.close()
+                    continue
+                target.execute("DELETE FROM codex_invocations")
+                target.executescript(
+                    "CREATE TABLE archive_batches(id INTEGER,dataset TEXT,month_key TEXT,file_path TEXT,sha256 TEXT,row_count INTEGER,status TEXT,cleanup_state TEXT,superseded_by INTEGER,summary_source_kind TEXT);"
+                )
+                target.commit()
+                target.close()
+            archive_root = root / "archives"
+            path = archive_root / "codex_invocations" / "2026" / "codex_invocations-2026-08.sqlite.gz"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(gzip.compress(template.read_bytes()))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.connection.execute("UPDATE summary_archive_snapshot SET manifest_sha256=?", (digest,))
+            self.connection.execute("UPDATE summary_archive_snapshot_v2_proof SET manifest_sha256=?", (digest,))
+            self.connection.execute("UPDATE hourly_rollup_archive_replay SET archive_sha256=?,file_path=?", (digest, str(path)))
+            target = sqlite3.connect(database)
+            target.executescript("\n".join(self.connection.iterdump()))
+            target.execute(
+                "INSERT INTO archive_batches VALUES(1,'codex_invocations','2026-08',?,?,3,'completed','active',NULL,'authoritative')",
+                (str(path), digest),
+            )
+            target.commit()
+            target.close()
+            arguments = (database, archive_root, "invocations", {record["invokeId"] for record in self.records}, 3, 0, root / "scratch")
+            keywords = dict(template_database=template, seed_ids=arguments[3], added_attempt_invocations={}, cutoff="2026-09-01 00:00:00")
+            result = verify_dataset(*arguments, **keywords)
+            self.assertEqual(result["converted_rows"], 3)
+            target = sqlite3.connect(database)
+            target.execute("UPDATE summary_archive_snapshot SET payload=? WHERE page_index=0", (b"summary-page",))
+            target.commit()
+            target.close()
+            with self.assertRaises(AcceptanceError):
+                verify_dataset(*arguments, **keywords)
 
 
 if __name__ == "__main__":

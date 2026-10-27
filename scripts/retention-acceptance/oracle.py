@@ -7,11 +7,14 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
+import json
+import math
 import os
 from pathlib import Path
 import re
 import sqlite3
 import stat
+import subprocess
 import tempfile
 from typing import Any, Callable, Iterator
 
@@ -24,6 +27,8 @@ REPLAY_TARGETS = {
     "upstream_account_usage_breakdown_hourly",
 }
 CONTAINER_ARCHIVE_ROOT = Path("/srv/app/data/archives")
+SUMMARY_PAGE_MAX_BYTES = 64 * 1024 * 1024
+SUMMARY_PAGE_MAX_RECORDS = 400
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -177,7 +182,95 @@ def _archive_path(database: Path, archive_root: Path, stored_path: str, dataset:
     return resolved
 
 
-def _verify_summary_proof(connection: sqlite3.Connection, archive_id: int, manifest_sha: str, file_path: str) -> None:
+def _decode_summary_payload(payload: bytes, budget_check: Callable[[], float] | None) -> list[dict[str, Any]]:
+    if not payload.startswith(b"\x28\xb5\x2f\xfd"):
+        raise AcceptanceError("Summary Snapshot V2 payload is not a zstd frame")
+    timeout = min(30.0, budget_check()) if budget_check is not None else 30.0
+    try:
+        with tempfile.TemporaryFile() as decoded:
+            subprocess.run(
+                ["zstd", "-q", "-d", "-c"],
+                input=payload,
+                stdout=decoded,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=timeout,
+            )
+            decoded.seek(0)
+            raw = decoded.read(SUMMARY_PAGE_MAX_BYTES + 1)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise AcceptanceError("Summary Snapshot V2 payload could not be decoded with zstd") from error
+    if len(raw) > SUMMARY_PAGE_MAX_BYTES:
+        raise AcceptanceError("Summary Snapshot V2 decoded payload exceeds its byte budget")
+
+    def json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON field")
+            result[key] = value
+        return result
+
+    def invalid_constant(value: str) -> Any:
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    try:
+        records = json.loads(raw.decode("utf-8"), object_pairs_hook=json_object, parse_constant=invalid_constant)
+    except (ValueError, UnicodeDecodeError, RecursionError) as error:
+        raise AcceptanceError("Summary Snapshot V2 payload is not valid JSON") from error
+    if not isinstance(records, list) or not 0 < len(records) <= SUMMARY_PAGE_MAX_RECORDS:
+        raise AcceptanceError("Summary Snapshot V2 payload must contain a nonempty bounded record list")
+    for record in records:
+        if not isinstance(record, dict):
+            raise AcceptanceError("Summary Snapshot V2 payload contains a malformed record")
+        for field in ("id", "inputTokens", "outputTokens", "cacheInputTokens", "reasoningTokens", "totalTokens"):
+            if not isinstance(record.get(field), int) or isinstance(record[field], bool) or not -(2**63) <= record[field] < 2**63:
+                raise AcceptanceError(f"Summary Snapshot V2 record has an invalid {field}")
+        for field in ("invokeId", "occurredAt", "source", "status"):
+            if not isinstance(record.get(field), str) or not record[field].strip():
+                raise AcceptanceError(f"Summary Snapshot V2 record has an invalid {field}")
+        if not isinstance(record.get("isActionable"), bool):
+            raise AcceptanceError("Summary Snapshot V2 record has an invalid isActionable")
+        for field in ("model", "responseModel", "reasoningEffort", "errorMessage", "failureKind", "failureClass"):
+            if record.get(field) is not None and not isinstance(record[field], str):
+                raise AcceptanceError(f"Summary Snapshot V2 record has an invalid {field}")
+        account = record.get("upstreamAccountId")
+        if account is not None and (not isinstance(account, int) or isinstance(account, bool) or not -(2**63) <= account < 2**63):
+            raise AcceptanceError("Summary Snapshot V2 record has an invalid upstreamAccountId")
+        for field in ("cost", "costInput", "costCacheWrite", "costCacheRead", "costOutput", "costReasoning"):
+            value = record.get(field)
+            if value is None:
+                continue
+            try:
+                valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise AcceptanceError(f"Summary Snapshot V2 record has an invalid {field}")
+    return records
+
+
+def _summary_time(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise AcceptanceError("Summary Snapshot V2 coverage timestamp is missing")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AcceptanceError("Summary Snapshot V2 coverage timestamp is invalid") from error
+    # Production archives also use SQLite's UTC timestamps without an explicit offset.
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _verify_summary_proof(
+    connection: sqlite3.Connection,
+    archive_id: int,
+    manifest_sha: str,
+    file_path: str,
+    *,
+    archive: sqlite3.Connection,
+    manifest_row_count: int,
+    budget_check: Callable[[], float] | None = None,
+) -> None:
     proof = connection.execute(
         "SELECT page_count,row_count,coverage_start,coverage_end,semantic_sha256 FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
         (archive_id, manifest_sha),
@@ -192,13 +285,49 @@ def _verify_summary_proof(connection: sqlite3.Connection, archive_id: int, manif
         raise AcceptanceError("Summary Snapshot V2 proof page count does not match stored pages")
     semantic = hashlib.sha256()
     total_rows = 0
+    archived_rows = iter(archive.execute(
+        "SELECT id,invoke_id,occurred_at FROM codex_invocations ORDER BY julianday(occurred_at),id"
+    ))
+    seen_ids: set[int] = set()
+    seen_invocations: set[str] = set()
+    previous_key: tuple[datetime, int] | None = None
+    previous_end: datetime | None = None
     for index, page in enumerate(pages):
+        if budget_check is not None:
+            budget_check()
         page_index, start, end, row_count, payload, payload_bytes, page_sha, version = page
+        if not isinstance(payload, bytes) or not 0 < len(payload) <= SUMMARY_PAGE_MAX_BYTES:
+            raise AcceptanceError("Summary Snapshot page payload is missing or exceeds its byte budget")
         payload = bytes(payload)
         if page_index != index or version != 2 or payload_bytes != len(payload):
             raise AcceptanceError("Summary Snapshot page order, format, or byte count is invalid")
         if hashlib.sha256(payload).hexdigest() != page_sha or row_count <= 0 or not start or not end:
             raise AcceptanceError("Summary Snapshot page checksum or coverage is invalid")
+        records = _decode_summary_payload(payload, budget_check)
+        if len(records) != row_count:
+            raise AcceptanceError("Summary Snapshot V2 payload row count does not match its page")
+        coverage_start, coverage_end = _summary_time(start), _summary_time(end)
+        if (
+            coverage_start > coverage_end
+            or (previous_end is not None and coverage_start < previous_end)
+            or coverage_start != _summary_time(records[0]["occurredAt"])
+            or coverage_end != _summary_time(records[-1]["occurredAt"])
+        ):
+            raise AcceptanceError("Summary Snapshot V2 page coverage does not match its payload records")
+        for record in records:
+            identity, invoke_id, occurred_at = record["id"], record["invokeId"], record["occurredAt"]
+            key = (_summary_time(occurred_at), identity)
+            if identity in seen_ids or invoke_id in seen_invocations:
+                raise AcceptanceError("Summary Snapshot V2 payload contains a duplicate archive row identity")
+            if (previous_key is not None and key <= previous_key) or not coverage_start <= key[0] <= coverage_end:
+                raise AcceptanceError("Summary Snapshot V2 record order or coverage is invalid")
+            archived_row = next(archived_rows, None)
+            if archived_row is None or tuple(archived_row) != (identity, invoke_id, occurred_at):
+                raise AcceptanceError("Summary Snapshot V2 payload identity or coverage differs from actual archived codex_invocations rows")
+            seen_ids.add(identity)
+            seen_invocations.add(invoke_id)
+            previous_key = key
+        previous_end = coverage_end
         semantic.update(int(page_index).to_bytes(8, "little", signed=True))
         semantic.update(page_sha.encode())
         semantic.update(int(row_count).to_bytes(8, "little", signed=True))
@@ -207,6 +336,8 @@ def _verify_summary_proof(connection: sqlite3.Connection, archive_id: int, manif
         total_rows += row_count
     if proof[1] != total_rows or proof[2] != pages[0][1] or proof[3] != pages[-1][2] or proof[4] != semantic.hexdigest():
         raise AcceptanceError("Summary Snapshot V2 semantic proof does not match its pages")
+    if total_rows != manifest_row_count or next(archived_rows, None) is not None:
+        raise AcceptanceError("Summary Snapshot V2 payload count does not cover the actual archived codex_invocations rows")
     replayed = {
         row[0]
         for row in connection.execute(
@@ -292,7 +423,6 @@ def verify_dataset(
             if dataset == "codex_invocations":
                 if manifest["summary_source_kind"] != "authoritative":
                     raise AcceptanceError("invocation archive manifest is not authoritative")
-                _verify_summary_proof(connection, manifest["id"], manifest["sha256"], manifest["file_path"])
             path = _archive_path(database, archive_root, manifest["file_path"], dataset, manifest["month_key"])
             decompressed = scratch / f"{dataset}-{manifest['id']}.sqlite"
             with _verified_archive_snapshot(path, manifest["sha256"], scratch, dataset, budget_check) as snapshot:
@@ -306,6 +436,16 @@ def verify_dataset(
                 archived_columns = _table_columns(archive, dataset)
                 if archived_columns != source_columns:
                     raise AcceptanceError(f"{dataset} archive columns differ from the complete source row")
+                if dataset == "codex_invocations":
+                    _verify_summary_proof(
+                        connection,
+                        manifest["id"],
+                        manifest["sha256"],
+                        manifest["file_path"],
+                        archive=archive,
+                        manifest_row_count=manifest["row_count"],
+                        budget_check=budget_check,
+                    )
                 archived_identity_index = archived_columns.index(identity_column)
                 occurred_at_index = archived_columns.index("occurred_at")
                 selected_columns = ",".join(source_columns)
