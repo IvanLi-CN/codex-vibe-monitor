@@ -840,6 +840,10 @@ fn sqlite_busy_and_locked_are_actual_backfill_failures() {
         StartupBackfillFailureKind::ArchiveLockBusy
     );
     assert_eq!(
+        startup_backfill_failure_kind(&anyhow::anyhow!("raw file phase is busy")),
+        StartupBackfillFailureKind::FilePhaseBusy
+    );
+    assert_eq!(
         startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
         StartupBackfillFailureKind::Operation
     );

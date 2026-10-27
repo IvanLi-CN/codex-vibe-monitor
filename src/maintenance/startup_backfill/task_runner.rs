@@ -601,6 +601,16 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             .await?;
             (outcome, None)
         }
+        Err(err)
+            if startup_backfill_failure_kind(&err) == StartupBackfillFailureKind::FilePhaseBusy =>
+        {
+            drop(write_permit.take());
+            let outcome = persist_startup_backfill_file_phase_defer(
+                state, task, &task_name, &progress, started_at,
+            )
+            .await?;
+            (outcome, None)
+        }
         Err(err) => {
             let partial_progress = err.downcast_ref::<BackfillPartialFailure>();
             let mut failure_progress = progress.clone();

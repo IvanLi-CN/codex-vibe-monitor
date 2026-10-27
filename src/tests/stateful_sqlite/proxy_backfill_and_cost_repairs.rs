@@ -193,6 +193,55 @@ async fn backfill_proxy_usage_tokens_reads_from_fallback_root_for_relative_paths
 }
 
 #[tokio::test]
+async fn backfill_proxy_usage_tokens_preserves_cursor_when_file_phase_is_busy() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("proxy-file-phase-busy")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(r#"{"endpoint":"/v1/responses","isStream":false}"#)
+    .bind("{}")
+    .bind("/tmp/proxy-file-phase-busy-response.bin")
+    .execute(&pool)
+    .await
+    .expect("insert busy file-phase row");
+    let row_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM codex_invocations WHERE invoke_id='proxy-file-phase-busy'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("query busy file-phase row id");
+
+    let _file_phase =
+        crate::maintenance::acquire_file_phase_permit("test_backfill_file_phase_busy")
+            .await
+            .expect("hold the shared file phase permit");
+    let error = backfill_proxy_usage_tokens_from_cursor(&pool, 0, row_id, None, None, None)
+        .await
+        .expect_err("busy file phase must defer instead of skipping the row");
+    let partial = error
+        .downcast_ref::<crate::BackfillPartialFailure>()
+        .expect("backfill failure must preserve partial progress");
+    assert_eq!(partial.next_cursor_id, 0);
+    assert_eq!(partial.scanned, 0);
+    assert_eq!(partial.updated, 0);
+    assert!(error.to_string().contains("raw file phase is busy"));
+}
+
+#[tokio::test]
 async fn backfill_proxy_usage_tokens_respects_snapshot_upper_bound() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

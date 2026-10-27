@@ -1794,6 +1794,14 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                     raw_path_fallback_root,
                 ) {
                     Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return Err(anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error.into(),
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        }));
+                    }
                     Err(_) => {
                         summary.skipped_missing_file += 1;
                         push_backfill_sample(

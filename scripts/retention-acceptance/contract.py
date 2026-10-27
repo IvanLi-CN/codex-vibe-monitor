@@ -382,6 +382,10 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             input_end = parse_time(window.get("input_finished_at"))
             cleanup_end = parse_time(window.get("cleanup_finished_at"))
             _require(setup_start <= input_start <= input_end <= cleanup_end, "trial window boundaries are inconsistent")
+            _require(
+                phase_start <= setup_start and cleanup_end <= phase_end,
+                "trial window fell outside the test phase",
+            )
             input_elapsed = (input_end - input_start).total_seconds()
             _require(abs(input_elapsed - RUN_SECONDS) <= 1.0, "foreground input window is not 120 seconds")
             _require(abs(_number(window.get("input_duration_seconds"), "input duration is invalid") - input_elapsed) <= 1.0, "recorded input duration is inconsistent")
@@ -561,6 +565,10 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         _require(isinstance(trial_span, dict), "version trial span is missing")
         group_start = parse_time(trial_span.get("started_at"))
         group_end = parse_time(trial_span.get("finished_at"))
+        _require(
+            phase_start <= group_start <= group_end <= phase_end,
+            f"{version} trial span fell outside the test phase",
+        )
         _require(group_start <= parse_time(trials[0]["window"]["setup_started_at"]), "version span omitted initial preparation")
         _require(group_end >= parse_time(trials[-1]["window"]["cleanup_finished_at"]), "version span omitted final cleanup")
         _require(abs(_number(trial_span.get("elapsed_seconds"), "version span duration is invalid") - (group_end - group_start).total_seconds()) <= 1.0, "version span duration is inconsistent")

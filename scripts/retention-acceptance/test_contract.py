@@ -492,6 +492,22 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "exceeded 900 seconds"):
             validate_evidence(evidence)
 
+    def test_trial_window_must_fit_inside_test_phase(self) -> None:
+        evidence = valid_evidence()
+        phase_start = datetime.fromisoformat(evidence["test_phase"]["started_at"].replace("Z", "+00:00"))
+        trial = evidence["versions"]["baseline"]["trials"][0]
+        trial_start = phase_start - timedelta(seconds=1)
+        trial["window"]["setup_started_at"] = timestamp(trial_start)
+        trial["window"]["full_duration_seconds"] = 124.0
+        group = evidence["versions"]["baseline"]["trial_span"]
+        group_start = phase_start - timedelta(seconds=1)
+        group["started_at"] = timestamp(group_start)
+        group["elapsed_seconds"] = (
+            datetime.fromisoformat(group["finished_at"].replace("Z", "+00:00")) - group_start
+        ).total_seconds()
+        with self.assertRaisesRegex(AcceptanceError, "outside the test phase"):
+            validate_evidence(evidence)
+
 
 if __name__ == "__main__":
     unittest.main()

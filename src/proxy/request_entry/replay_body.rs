@@ -296,10 +296,7 @@ impl PoolReplayBodySnapshot {
             Self::File { temp_file, .. } => {
                 let path = temp_file.path.clone();
                 let content_encoding = content_encoding.map(str::to_string);
-                let file_phase =
-                    crate::maintenance::acquire_file_phase_permit("proxy_replay_stream_flag")
-                        .await
-                        .ok()?;
+                let file_phase = crate::maintenance::try_acquire_file_phase_permit()?;
                 tokio::task::spawn_blocking(move || {
                     let _file_phase = file_phase;
                     let reader =
@@ -1287,7 +1284,7 @@ mod tests {
     use tokio::sync::Notify;
 
     #[tokio::test]
-    async fn file_backed_stream_flag_waits_for_file_phase_permit() {
+    async fn file_backed_stream_flag_does_not_wait_for_file_phase_permit() {
         let path = build_pool_replay_temp_path(91_001);
         tokio::fs::write(&path, br#"{"stream":true}"#)
             .await
@@ -1311,20 +1308,23 @@ mod tests {
         });
 
         holder_ready.notified().await;
-        let mut extraction = Box::pin(snapshot.extract_request_stream_flag(None));
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), &mut extraction)
-                .await
-                .is_err(),
-            "stream flag extraction must wait while the file phase is busy"
-        );
+        let extraction = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            snapshot.extract_request_stream_flag(None),
+        )
+        .await
+        .expect("stream flag extraction must not wait while the file phase is busy");
+        assert_eq!(extraction, None);
         holder_release.notify_one();
+        holder.await.expect("file phase holder task");
         assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), &mut extraction)
-                .await
-                .expect("stream flag extraction should finish after permit release"),
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                snapshot.extract_request_stream_flag(None),
+            )
+            .await
+            .expect("stream flag extraction should finish after permit release"),
             Some(true)
         );
-        holder.await.expect("file phase holder task");
     }
 }

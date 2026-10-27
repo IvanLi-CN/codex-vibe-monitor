@@ -304,14 +304,23 @@ impl StartupBackfillTaskRunOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupBackfillFailureKind {
     ArchiveLockBusy,
+    FilePhaseBusy,
     SqliteBusyOrLocked,
     Operation,
+}
+
+#[derive(Clone, Copy)]
+struct StartupBackfillResourceDeferMetadata {
+    reason: &'static str,
+    wake_reason: &'static str,
+    message: &'static str,
 }
 
 impl StartupBackfillFailureKind {
     fn telemetry_reason(self) -> &'static str {
         match self {
             Self::ArchiveLockBusy => "archive_lock_busy",
+            Self::FilePhaseBusy => "file_phase_busy",
             Self::SqliteBusyOrLocked => "sqlite_busy_or_locked",
             Self::Operation => "operation_error",
         }
@@ -326,6 +335,15 @@ fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureK
     });
     if has_archive_lock_busy_message {
         return StartupBackfillFailureKind::ArchiveLockBusy;
+    }
+    let has_file_phase_busy_message = err.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("raw file phase is busy")
+    });
+    if has_file_phase_busy_message {
+        return StartupBackfillFailureKind::FilePhaseBusy;
     }
     let has_busy_message = err.chain().any(|cause| {
         cause
@@ -520,12 +538,13 @@ async fn persist_startup_backfill_pressure_defer(
     ))
 }
 
-async fn persist_startup_backfill_archive_lock_defer(
+async fn persist_startup_backfill_resource_defer(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     task_name: &str,
     progress: &StartupBackfillProgress,
     started_at: Instant,
+    metadata: StartupBackfillResourceDeferMetadata,
 ) -> Result<StartupBackfillTaskRunOutcome> {
     let retry_at =
         Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
@@ -545,7 +564,7 @@ async fn persist_startup_backfill_archive_lock_defer(
             zero_update_streak: progress.zero_update_streak,
             next_run_after: &retry_after,
             status: STARTUP_BACKFILL_STATUS_IDLE,
-            suspension_reason: Some("archive_lock_busy"),
+            suspension_reason: Some(metadata.reason),
         },
     )
     .await?;
@@ -555,9 +574,9 @@ async fn persist_startup_backfill_archive_lock_defer(
         task_name,
         elapsed_ms = started_at.elapsed().as_millis() as u64,
         next_run_after = %retry_after,
-        defer_reason = "archive_lock_busy",
-        wake_reason = "archive_lock_retry",
-        "startup backfill task deferred because an archive directory lock was busy"
+        defer_reason = metadata.reason,
+        wake_reason = metadata.wake_reason,
+        metadata.message,
     );
     Ok(StartupBackfillTaskRunOutcome {
         actionable: false,
@@ -566,6 +585,50 @@ async fn persist_startup_backfill_archive_lock_defer(
         completed: true,
         next_due: retry_at,
     })
+}
+
+async fn persist_startup_backfill_archive_lock_defer(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    started_at: Instant,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    persist_startup_backfill_resource_defer(
+        state,
+        task,
+        task_name,
+        progress,
+        started_at,
+        StartupBackfillResourceDeferMetadata {
+            reason: "archive_lock_busy",
+            wake_reason: "archive_lock_retry",
+            message: "startup backfill task deferred because an archive directory lock was busy",
+        },
+    )
+    .await
+}
+
+async fn persist_startup_backfill_file_phase_defer(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    started_at: Instant,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    persist_startup_backfill_resource_defer(
+        state,
+        task,
+        task_name,
+        progress,
+        started_at,
+        StartupBackfillResourceDeferMetadata {
+            reason: "file_phase_busy",
+            wake_reason: "file_phase_retry",
+            message: "startup backfill task deferred because the shared file phase was busy",
+        },
+    )
+    .await
 }
 
 fn startup_backfill_pressure_error_defer_outcome(
