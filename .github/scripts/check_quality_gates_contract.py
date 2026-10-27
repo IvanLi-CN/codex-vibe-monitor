@@ -1415,8 +1415,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     assert_event_types(merge_group_config, {"checks_requested"}, "ci-pr.yml.on.merge_group")
 
     concurrency = require_mapping(workflow.get("concurrency"), "ci-pr.yml.concurrency")
-    require(concurrency.get("group") == "ci-pr-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.ref }}", "ci-pr.yml.concurrency.group drifted")
-    require(concurrency.get("cancel-in-progress") is True, "ci-pr.yml.concurrency.cancel-in-progress must stay true")
+    require(concurrency.get("group") == "ci-pr-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('merge-group-{0}', github.ref) }}", "ci-pr.yml.concurrency.group drifted")
+    require(concurrency.get("cancel-in-progress") == "${{ github.event_name == 'pull_request' }}", "ci-pr.yml.concurrency.cancel-in-progress must only cancel pull_request runs")
 
     permissions = require_mapping(workflow.get("permissions"), "ci-pr.yml.permissions")
     require(permissions.get("contents") == "read", "ci-pr.yml.permissions.contents must stay read")
