@@ -1266,6 +1266,16 @@ def run_trial(
     input_started = parse_time(input_start)
     input_finished = parse_time(input_end)
     full_finished = parse_time(cleanup_end)
+    input_duration = (input_finished - input_started).total_seconds()
+    full_duration = (full_finished - full_started).total_seconds()
+    for name, result in oracle["datasets"].items():
+        input_count = len(added[name])
+        result["sustained_window_input_seconds"] = input_duration
+        result["sustained_window_seconds"] = full_duration
+        result["sustained_convergence_factor"] = (
+            (result["converted_rows"] / full_duration)
+            / (input_count / input_duration)
+        )
     oracle["datasets"]["invocations"]["added_ids_sha256"] = sha256_bytes("\n".join(added["invocations"]).encode())
     oracle["datasets"]["pool_upstream_attempts"]["added_ids_sha256"] = sha256_bytes("\n".join(added["pool_upstream_attempts"]).encode())
     return {
@@ -1288,8 +1298,8 @@ def run_trial(
             "input_started_at": input_start,
             "input_finished_at": input_end,
             "cleanup_finished_at": cleanup_end,
-            "input_duration_seconds": (input_finished - input_started).total_seconds(),
-            "full_duration_seconds": (full_finished - full_started).total_seconds(),
+            "input_duration_seconds": input_duration,
+            "full_duration_seconds": full_duration,
             "gap_before_seconds": 0.0 if previous_end is None else (full_started - parse_time(previous_end)).total_seconds(),
             "wall_duration_seconds": time.monotonic() - wall_start,
         },

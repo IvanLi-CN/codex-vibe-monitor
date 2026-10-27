@@ -134,31 +134,15 @@ pub(crate) async fn compress_cold_pool_attempt_response_raw_lane(
             if !dry_run && !prepare_raw_compression_inventory_reset(pool).await? {
                 continue;
             }
-            // Cold compression and orphan removal both mutate this raw directory. Keep the
-            // shared fence through compression, reference replacement, and source cleanup so an
-            // exclusive orphan sweep cannot observe or remove a half-published replacement.
-            let _compression_fence = match acquire_raw_compression_fence(
-                &candidate.raw_path,
-                raw_path_fallback_root,
-            )
-            .await
-            {
-                Ok(fence) => fence,
-                Err(error) => {
-                    warn!(
-                        invocation_id = candidate.id,
-                        field = "attempt_response",
-                        error = %error,
-                        "failed to acquire raw compression directory fence; continuing retention"
-                    );
-                    continue;
-                }
-            };
-            let outcome = match maybe_compress_proxy_raw_path(
+            // Match foreground raw writes: queue for the shared file phase before taking the
+            // raw-directory fence. The file phase is released after compression; the fence is
+            // retained through reference replacement and cleanup so no orphan sweep can observe
+            // a half-published replacement.
+            let (_compression_fence, outcome) = match compress_raw_path_with_file_phase(
                 pool,
                 candidate.id,
                 "attempt_response",
-                Some(candidate.raw_path.as_str()),
+                &candidate.raw_path,
                 config.proxy_raw_compression,
                 raw_path_fallback_root,
                 dry_run,
@@ -166,12 +150,12 @@ pub(crate) async fn compress_cold_pool_attempt_response_raw_lane(
             .await
             {
                 Ok(outcome) => outcome,
-                Err(err) => {
+                Err(error) => {
                     warn!(
                         invocation_id = candidate.id,
                         field = "attempt_response",
-                        error = %err,
-                        "failed to cold-compress raw payload file; continuing retention"
+                        error = %error,
+                        "failed to prepare cold raw compression; continuing retention"
                     );
                     continue;
                 }
@@ -312,31 +296,15 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
                 continue;
             }
 
-            // Keep the shared raw-directory fence until the DB references and old source path
-            // have been updated, matching the orphan sweep's exclusive deletion window.
-            let _compression_fence = match acquire_raw_compression_fence(
-                &candidate.raw_path,
-                raw_path_fallback_root,
-            )
-            .await
-            {
-                Ok(fence) => fence,
-                Err(error) => {
-                    warn!(
-                        invocation_id = candidate.id,
-                        field = field.label(),
-                        error = %error,
-                        "failed to acquire raw compression directory fence; continuing retention"
-                    );
-                    continue;
-                }
-            };
-
-            let outcome = match maybe_compress_proxy_raw_path(
+            // Match foreground raw writes: queue for the shared file phase before taking the
+            // raw-directory fence. The file phase is released after compression; the fence is
+            // retained through reference replacement and cleanup so no orphan sweep can observe
+            // a half-published replacement.
+            let (_compression_fence, outcome) = match compress_raw_path_with_file_phase(
                 pool,
                 candidate.id,
                 field.label(),
-                Some(candidate.raw_path.as_str()),
+                &candidate.raw_path,
                 config.proxy_raw_compression,
                 raw_path_fallback_root,
                 dry_run,
@@ -344,12 +312,12 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             .await
             {
                 Ok(outcome) => outcome,
-                Err(err) => {
+                Err(error) => {
                     warn!(
                         invocation_id = candidate.id,
                         field = field.label(),
-                        error = %err,
-                        "failed to cold-compress raw payload file; continuing retention"
+                        error = %error,
+                        "failed to prepare cold raw compression; continuing retention"
                     );
                     continue;
                 }
@@ -431,6 +399,43 @@ pub(crate) async fn acquire_raw_compression_fence(
                 )
             })?;
     Ok(Some(fence))
+}
+
+async fn compress_raw_path_with_file_phase(
+    pool: &Pool<Sqlite>,
+    invocation_id: i64,
+    field_name: &str,
+    raw_path: &str,
+    codec: RawCompressionCodec,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<(
+    Option<Arc<RetentionArchiveFileLock>>,
+    RawCompressionFileOutcome,
+)> {
+    let file_phase = if let Some(remaining) = retention_run_remaining_budget() {
+        tokio::time::timeout(remaining, acquire_file_phase_permit("raw_compression_file"))
+            .await
+            .map_err(|_| retention_write_deferred("raw_compression_file"))??
+    } else {
+        acquire_file_phase_permit("raw_compression_file").await?
+    };
+    with_file_phase_permit(file_phase, async {
+        let compression_fence =
+            acquire_raw_compression_fence(raw_path, raw_path_fallback_root).await?;
+        let outcome = maybe_compress_proxy_raw_path(
+            pool,
+            invocation_id,
+            field_name,
+            Some(raw_path),
+            codec,
+            raw_path_fallback_root,
+            dry_run,
+        )
+        .await?;
+        Ok((compression_fence, outcome))
+    })
+    .await
 }
 
 pub(crate) async fn maybe_compress_proxy_raw_path(

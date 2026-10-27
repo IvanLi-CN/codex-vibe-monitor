@@ -46,7 +46,7 @@ def histogram_evidence() -> tuple[list[dict], dict[str, int]]:
 
 def oracle_result(name: str, additions: int) -> dict:
     definition = DATASETS[name]
-    converted = additions * 10
+    converted = additions * 12
     identities = [f"retention-input-{name}-{index:06d}" for index in range(1, additions + 1)]
     return {
         "dataset": definition["manifest_dataset"],
@@ -61,6 +61,9 @@ def oracle_result(name: str, additions: int) -> dict:
         "row_content_columns": 8,
         "row_content_rows_checked": definition["seed_rows"] + additions,
         "row_content_sha256": "c" * 64,
+        "sustained_window_input_seconds": 120.0,
+        "sustained_window_seconds": 123.0,
+        "sustained_convergence_factor": (converted / 123.0) / (additions / 120.0),
     }
 
 
@@ -480,6 +483,17 @@ class ContractTests(unittest.TestCase):
             trial["write_hold_samples"][-1]["bucket_counts"][operation] = {"0.1": 0, "0.25": 0, "0.5": 20, "+Inf": 20}
         trial["write_hold_buckets"] = {"0.1": 0, "0.25": 0, "0.5": 40, "+Inf": 40}
         with self.assertRaisesRegex(AcceptanceError, "write-hold p95 exceeded"):
+            validate_evidence(evidence)
+
+    def test_candidate_convergence_includes_the_full_trial_window(self) -> None:
+        evidence = valid_evidence()
+        result = evidence["versions"]["candidate"]["trials"][0]["oracle"]["datasets"]["invocations"]
+        additions = result["actual_added_rows"]
+        result["converted_rows"] = additions * 10
+        result["distinct_archived_rows"] = result["converted_rows"]
+        result["live_rows"] = result["seed_rows"] + additions - result["converted_rows"]
+        result["sustained_convergence_factor"] = 10.0
+        with self.assertRaisesRegex(AcceptanceError, "sustained convergence factor"):
             validate_evidence(evidence)
 
     def test_test_phase_cannot_exceed_900_seconds(self) -> None:

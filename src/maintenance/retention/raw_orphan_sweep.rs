@@ -108,7 +108,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         let scan = match read_retention_raw_directory_slice_with_budget(
             &context,
             &raw_root,
-            traversal.directory.take(),
+            &mut traversal.directory,
         )
         .await
         {
@@ -557,33 +557,34 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             result.failures += 1;
             continue;
         }
-        let unlink_metadata = match retention_raw_file_metadata_with_budget(&context, &path).await {
-            Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
-            Ok(Ok(_)) => {
+        let unlink_metadata = match try_retention_raw_file_metadata_with_file_phase(&path).await {
+            Ok(None) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.deferred = true;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Ok(Some(Ok(metadata))) if metadata.file_type().is_file() => metadata,
+            Ok(Some(Ok(_))) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 continue;
             }
-            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(Some(Err(error))) if error.kind() == io::ErrorKind::NotFound => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 continue;
             }
-            Ok(Err(_)) => {
+            Ok(Some(Err(_))) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 result.complete = false;
                 result.failures += 1;
                 continue;
-            }
-            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
-                drop(directory_lock);
-                drop(inventory_admission);
-                result.complete = false;
-                traversal
-                    .pending_candidates
-                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
-                break;
             }
             Err(_) => {
                 drop(directory_lock);
@@ -663,9 +664,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             break;
         }
         let final_unlink_metadata =
-            match retention_raw_file_metadata_with_budget(&context, &path).await {
-                Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
-                Ok(Ok(_)) | Ok(Err(_)) => {
+            match try_retention_raw_file_metadata_with_file_phase(&path).await {
+                Ok(None) => {
+                    drop(directory_lock);
+                    drop(inventory_admission);
+                    result.complete = false;
+                    result.deferred = true;
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
+                Ok(Some(Ok(metadata))) if metadata.file_type().is_file() => metadata,
+                Ok(Some(Ok(_))) | Ok(Some(Err(_))) => {
                     drop(directory_lock);
                     drop(inventory_admission);
                     result.complete = false;
@@ -673,15 +684,6 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         .pending_candidates
                         .push_back(candidate_entries[candidate_index].clone());
                     continue;
-                }
-                Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    traversal
-                        .pending_candidates
-                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
-                    break;
                 }
                 Err(_) => {
                     drop(directory_lock);

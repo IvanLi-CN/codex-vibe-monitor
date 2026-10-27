@@ -554,7 +554,27 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 if version == "candidate":
                     additions = result["actual_added_rows"]
                     _require(additions > 0, f"candidate added no {name} rows")
-                    factor = result["converted_rows"] / additions
+                    input_duration = _number(
+                        trial["window"].get("input_duration_seconds"),
+                        f"candidate {name} input window is invalid",
+                    )
+                    full_duration = _number(
+                        trial["window"].get("full_duration_seconds"),
+                        f"candidate {name} sustained window is invalid",
+                    )
+                    _require(
+                        input_duration > 0 and full_duration >= input_duration,
+                        f"candidate {name} sustained window is invalid",
+                    )
+                    factor = (result["converted_rows"] / full_duration) / (additions / input_duration)
+                    reported_factor = _number(
+                        result.get("sustained_convergence_factor"),
+                        f"candidate {name} sustained convergence factor is missing",
+                    )
+                    _require(
+                        abs(reported_factor - factor) <= 0.01,
+                        f"reported candidate {name} sustained convergence factor is not derived from the trial window",
+                    )
                     _require(factor >= MIN_CONVERGENCE_FACTOR, f"candidate {name} convergence factor is below 10x")
                     result["convergence_factor"] = factor
 

@@ -189,25 +189,27 @@ impl RawOrphanSweepPassContext {
 pub(crate) async fn read_retention_raw_directory_slice_with_budget(
     context: &RawOrphanSweepPassContext,
     root: &Path,
-    directory: Option<ReadDir>,
+    directory: &mut Option<ReadDir>,
 ) -> Result<RetentionRawDirectorySlice> {
     let root = root.to_owned();
     #[cfg(test)]
     retention_test_raw_directory_entry_event();
-    // A ReadDir cannot be cancelled safely once moved into a blocking worker. Await the
-    // single worker to preserve its position and avoid accumulating detached scans after a
-    // slow filesystem call; the caller checks the budget again before admitting its results.
-    context
-        .run_with_candidate_budget(async move {
-            let file_phase = acquire_file_phase_permit("raw_directory_scan").await?;
-            tokio::task::spawn_blocking(move || {
-                let _file_phase = file_phase;
-                read_retention_raw_directory_slice(&root, directory)
-            })
+    let Some(remaining) = context.candidate_budget_remaining() else {
+        return Err(raw_orphan_sweep_candidate_budget_expired());
+    };
+    // Keep the ReadDir in the caller until file-phase admission succeeds. Once moved into the
+    // blocking worker, always await that worker so cancellation cannot lose its traversal cursor.
+    let file_phase =
+        tokio::time::timeout(remaining, acquire_file_phase_permit("raw_directory_scan"))
             .await
-            .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
-        })
-        .await
+            .map_err(|_| raw_orphan_sweep_candidate_budget_expired())??;
+    let directory = directory.take();
+    tokio::task::spawn_blocking(move || {
+        let _file_phase = file_phase;
+        read_retention_raw_directory_slice(&root, directory)
+    })
+    .await
+    .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
 }
 
 pub(crate) async fn retention_raw_file_metadata_with_budget(
@@ -226,6 +228,22 @@ pub(crate) async fn retention_raw_file_metadata_with_budget(
             .map_err(|error| anyhow!("raw metadata worker failed: {error}"))
         })
         .await
+}
+
+pub(crate) async fn try_retention_raw_file_metadata_with_file_phase(
+    path: &Path,
+) -> Result<Option<io::Result<fs::Metadata>>> {
+    let Some(file_phase) = try_acquire_file_phase_permit() else {
+        return Ok(None);
+    };
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let _file_phase = file_phase;
+        retention_raw_file_metadata(&path)
+    })
+    .await
+    .map(Some)
+    .map_err(|error| anyhow!("raw metadata worker failed: {error}"))
 }
 
 pub(crate) async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanSweepPassContext> {
