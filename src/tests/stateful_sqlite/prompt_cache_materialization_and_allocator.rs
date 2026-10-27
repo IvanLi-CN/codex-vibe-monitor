@@ -562,7 +562,7 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
     .await
     .expect("make prompt-cache statistics stale");
     sqlx::query(
-        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
+        "UPDATE prompt_cache_conversation_stats_freshness SET state = 'stale' WHERE marker_name = 'prompt_cache_conversations_stats_v2'",
     )
     .execute(&pool)
     .await
@@ -590,7 +590,7 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
     assert!((stats.4 - 0.25).abs() < 1e-9);
 
     let marker_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_freshness WHERE marker_name = 'prompt_cache_conversations_stats_v2' AND state = 'fresh'",
     )
     .fetch_one(&pool)
     .await
@@ -985,7 +985,7 @@ async fn prompt_cache_conversation_stats_refresh_is_deferred_after_terminal_batc
         "terminal persistence must defer the historical aggregate refresh"
     );
     let fresh_marker: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2')",
+        "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversation_stats_freshness WHERE marker_name = 'prompt_cache_conversations_stats_v2' AND state = 'fresh')",
     )
     .fetch_one(&state.pool)
     .await

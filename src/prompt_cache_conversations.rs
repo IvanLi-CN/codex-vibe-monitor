@@ -18,6 +18,10 @@ pub(crate) const PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY: u32 =
 const PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS: usize = 5;
 const PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME: &str = "prompt_cache_conversations_v1";
 const PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME: &str = "prompt_cache_conversations_stats_v2";
+const PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE: &str =
+    "prompt_cache_conversation_stats_freshness";
+const PROMPT_CACHE_CONVERSATIONS_STATS_FRESH: &str = "fresh";
+const PROMPT_CACHE_CONVERSATIONS_STATS_STALE: &str = "stale";
 pub(crate) const PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME: &str =
     "prompt_cache_conversations_materialization_v1";
 pub(crate) const PROMPT_CACHE_ANALYTICS_PROJECTION: AnalyticsProjection =
@@ -564,6 +568,27 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     .execute(pool)
     .await
     .context("failed to repair prompt-cache statistics generation clock")?;
+    let stats_marker = PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME;
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} (\
+            marker_name TEXT PRIMARY KEY,\
+            state TEXT NOT NULL DEFAULT '{PROMPT_CACHE_CONVERSATIONS_STATS_STALE}',\
+            generation INTEGER NOT NULL DEFAULT 0,\
+            source_identity TEXT NOT NULL DEFAULT 'codex_invocations',\
+            updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+            CHECK (state IN ('{PROMPT_CACHE_CONVERSATIONS_STATS_STALE}', '{PROMPT_CACHE_CONVERSATIONS_STATS_FRESH}'))\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt-cache statistics freshness state")?;
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} (marker_name,state,generation,source_identity) SELECT ?1, CASE WHEN EXISTS (SELECT 1 FROM schema_refresh_migrations WHERE migration_name = ?1) AND NOT EXISTS (SELECT 1 FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE}) THEN '{PROMPT_CACHE_CONVERSATIONS_STATS_FRESH}' ELSE '{PROMPT_CACHE_CONVERSATIONS_STATS_STALE}' END, 0, 'codex_invocations'"
+    ))
+    .bind(stats_marker)
+    .execute(pool)
+    .await
+    .context("failed to seed prompt-cache statistics freshness state")?;
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (\
             prompt_cache_key TEXT PRIMARY KEY,\
@@ -608,7 +633,6 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     let old_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("OLD");
     let new_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("NEW");
     let refresh_queue_table = PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE;
-    let stats_marker = PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME;
     let mut trigger_tx = pool
         .begin()
         .await
@@ -625,7 +649,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
                      ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
                    INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {new_prompt_cache_key_expr} \
                      ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
-                   DELETE FROM schema_refresh_migrations WHERE migration_name = '{stats_marker}'; \
+                   UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} SET state = '{PROMPT_CACHE_CONVERSATIONS_STATS_STALE}', generation = generation + 1, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE marker_name = '{stats_marker}'; \
                  END"
             ),
         ),
@@ -645,7 +669,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
                      ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
                    INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {new_prompt_cache_key_expr} AND {new_prompt_cache_key_expr} IS NOT NULL AND {new_prompt_cache_key_expr} <> '' AND ({old_prompt_cache_key_expr} IS NULL OR {new_prompt_cache_key_expr} <> {old_prompt_cache_key_expr}) \
                      ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
-                   DELETE FROM schema_refresh_migrations WHERE migration_name = '{stats_marker}'; \
+                   UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} SET state = '{PROMPT_CACHE_CONVERSATIONS_STATS_STALE}', generation = generation + 1, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE marker_name = '{stats_marker}'; \
                  END"
             ),
         ),
@@ -660,7 +684,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
                      ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
                    INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {old_prompt_cache_key_expr} \
                      ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
-                   DELETE FROM schema_refresh_migrations WHERE migration_name = '{stats_marker}'; \
+                   UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} SET state = '{PROMPT_CACHE_CONVERSATIONS_STATS_STALE}', generation = generation + 1, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE marker_name = '{stats_marker}'; \
                  END"
             ),
         ),
@@ -1231,6 +1255,15 @@ async fn prompt_cache_conversation_marker_exists_on_connection(
     connection: &mut SqliteConnection,
     migration_name: &str,
 ) -> Result<bool> {
+    if migration_name == PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME {
+        return Ok(sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} WHERE marker_name = ?1 AND state = '{PROMPT_CACHE_CONVERSATIONS_STATS_FRESH}')"
+        ))
+        .bind(migration_name)
+        .fetch_one(&mut *connection)
+        .await?
+            != 0);
+    }
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name = ?1)",
     )
@@ -1244,6 +1277,15 @@ async fn prompt_cache_conversation_marker_exists(
     pool: &Pool<Sqlite>,
     migration_name: &str,
 ) -> Result<bool> {
+    if migration_name == PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME {
+        return Ok(sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} WHERE marker_name = ?1 AND state = '{PROMPT_CACHE_CONVERSATIONS_STATS_FRESH}')"
+        ))
+        .bind(migration_name)
+        .fetch_one(pool)
+        .await?
+            != 0);
+    }
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name = ?1)",
     )
@@ -3907,7 +3949,10 @@ async fn clear_prompt_cache_conversation_stats_refresh_queue_at_generation_on_co
 pub(crate) async fn mark_prompt_cache_conversation_stats_stale_on_connection(
     connection: &mut SqliteConnection,
 ) -> Result<()> {
-    sqlx::query("DELETE FROM schema_refresh_migrations WHERE migration_name = ?1")
+    sqlx::query(&format!(
+        "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} SET state = ?1, generation = generation + 1, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE marker_name = ?2"
+    ))
+    .bind(PROMPT_CACHE_CONVERSATIONS_STATS_STALE)
         .bind(PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME)
         .execute(&mut *connection)
         .await
@@ -3940,9 +3985,10 @@ pub(crate) async fn mark_prompt_cache_conversation_stats_fresh_on_connection(
     .await?
         != 0;
     if materialization_complete {
-        sqlx::query(
-            "INSERT OR REPLACE INTO schema_refresh_migrations (migration_name) VALUES (?1)",
-        )
+        sqlx::query(&format!(
+            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_FRESHNESS_TABLE} SET state = ?1, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE marker_name = ?2"
+        ))
+        .bind(PROMPT_CACHE_CONVERSATIONS_STATS_FRESH)
         .bind(PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME)
         .execute(&mut *connection)
         .await

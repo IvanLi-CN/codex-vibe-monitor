@@ -475,6 +475,37 @@ pub(super) async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqli
 }
 
 pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqlite>) -> Result<()> {
+    crate::upstream_accounts::ensure_upstream_account_long_term_projection_outbox_schema(pool)
+        .await?;
+    let outbox_table =
+        crate::upstream_accounts::POOL_UPSTREAM_ACCOUNT_LONG_TERM_PROJECTION_OUTBOX_TABLE;
+    let account_columns = sqlx::query("PRAGMA table_info(pool_upstream_accounts)")
+        .fetch_all(pool)
+        .await?;
+    let has_account_column = |name: &str| {
+        account_columns.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .is_ok_and(|value| value == name)
+        })
+    };
+    if !has_account_column("id") || !has_account_column("kind") {
+        bail!(
+            "cannot install long-term account projection bridge: pool_upstream_accounts requires id and kind columns"
+        );
+    }
+    let source_generation_expression = if account_columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == "runtime_routing_generation")
+    }) {
+        "MAX(COALESCE({subject}.runtime_routing_generation, 0), 1)"
+    } else {
+        "1"
+    };
+    let source_identity_expression = if has_account_column("updated_at") {
+        "printf('pool_upstream_accounts:%lld:{event}:%s:%s', {subject}.id, COALESCE({subject}.kind, ''), COALESCE({subject}.updated_at, ''))"
+    } else {
+        "printf('pool_upstream_accounts:%lld:{event}:%s', {subject}.id, COALESCE({subject}.kind, ''))"
+    };
     for trigger in [
         "long_term_projection_account_kind_update",
         "long_term_projection_account_delete",
@@ -484,6 +515,9 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
             .await?;
     }
     for (trigger, event, account_id) in [
+        // Untouched accounts start at routing generation zero. The durable outbox contract uses
+        // generation one as that baseline so acknowledgement and retry never carry an unknown
+        // generation.
         (
             "long_term_projection_account_kind_update",
             "AFTER UPDATE OF kind ON pool_upstream_accounts WHEN OLD.kind IS NOT NEW.kind",
@@ -504,13 +538,43 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
             long_term_rfc3339_shanghai_date_sql("archive.coverage_start_at", None);
         let archive_coverage_end_date =
             long_term_rfc3339_shanghai_date_sql("archive.coverage_end_at", None);
+        let subject = if trigger.ends_with("delete") {
+            "OLD"
+        } else {
+            "NEW"
+        };
+        let source_generation = source_generation_expression.replace("{subject}", subject);
+        let source_identity = source_identity_expression
+            .replace("{subject}", subject)
+            .replace(
+                "{event}",
+                if trigger.ends_with("delete") {
+                    "delete"
+                } else {
+                    "kind"
+                },
+            );
         let statement = format!(
             r#"
             CREATE TRIGGER IF NOT EXISTS {trigger}
             {event}
             BEGIN
-              INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
-              WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
+              INSERT OR IGNORE INTO {outbox_table} (
+                idempotency_key,
+                account_id,
+                bucket_date,
+                repair_reason,
+                source_identity,
+                source_generation,
+                state,
+                attempt_count,
+                next_retry_at
+              )
+              WITH RECURSIVE
+              event_context(account_id, source_identity, source_generation) AS (
+                SELECT {account_id}, {source_identity}, {source_generation}
+              ),
+              affected_dates(bucket_date, end_date) AS (
                 SELECT
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
                     THEN {occurred_at_start_date}
@@ -542,14 +606,26 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
                 FROM affected_dates
                 WHERE bucket_date < end_date
               )
-              SELECT DISTINCT bucket_date, 'account_classification_changed'
+              SELECT DISTINCT
+                printf(
+                  'long-term-projection:%s:%lld:%s:%s:%lld',
+                  '{trigger}',
+                  event_context.account_id,
+                  affected_dates.bucket_date,
+                  event_context.source_identity,
+                  event_context.source_generation
+                ),
+                event_context.account_id,
+                affected_dates.bucket_date,
+                'account_classification_changed',
+                event_context.source_identity,
+                event_context.source_generation,
+                'pending',
+                0,
+                datetime('now')
               FROM affected_dates
-              WHERE bucket_date IS NOT NULL
-              ON CONFLICT(bucket_date) DO UPDATE SET
-                repair_reason = excluded.repair_reason,
-                generation = long_term_projection_dirty_buckets.generation + 1,
-                next_attempt_at = NULL,
-                updated_at = datetime('now');
+              CROSS JOIN event_context
+              WHERE affected_dates.bucket_date IS NOT NULL;
             END
             "#,
         );

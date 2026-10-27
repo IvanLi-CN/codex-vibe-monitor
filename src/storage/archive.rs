@@ -1241,6 +1241,35 @@ pub(crate) struct ArchiveStorageAdapter {
     raw_root: PathBuf,
 }
 
+pub(crate) async fn ensure_archive_storage_schema(pool: &PgPool) -> Result<()> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+                    hashtextextended('codex-vibe-monitor:archive-storage-schema', 0)
+                )",
+    )
+    .execute(&mut *transaction)
+    .await
+    .context("lock archive storage schema initialization")?;
+    for statement in ARCHIVE_STORAGE_SCHEMA {
+        sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| "create archive storage table")?;
+    }
+    for statement in ARCHIVE_STORAGE_SCHEMA_UPGRADES {
+        sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| "upgrade archive storage table")?;
+    }
+    transaction
+        .commit()
+        .await
+        .context("commit archive storage schema initialization")?;
+    Ok(())
+}
+
 impl ArchiveStorageAdapter {
     pub(crate) fn new(pool: PgPool, archive_root: PathBuf, raw_root: PathBuf) -> Self {
         Self {
@@ -1251,32 +1280,7 @@ impl ArchiveStorageAdapter {
     }
 
     pub(crate) async fn ensure_schema(&self) -> Result<()> {
-        let mut transaction = self.pool.begin().await?;
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(
-                        hashtextextended('codex-vibe-monitor:archive-storage-schema', 0)
-                    )",
-        )
-        .execute(&mut *transaction)
-        .await
-        .context("lock archive storage schema initialization")?;
-        for statement in ARCHIVE_STORAGE_SCHEMA {
-            sqlx::query(statement)
-                .execute(&mut *transaction)
-                .await
-                .with_context(|| "create archive storage table")?;
-        }
-        for statement in ARCHIVE_STORAGE_SCHEMA_UPGRADES {
-            sqlx::query(statement)
-                .execute(&mut *transaction)
-                .await
-                .with_context(|| "upgrade archive storage table")?;
-        }
-        transaction
-            .commit()
-            .await
-            .context("commit archive storage schema initialization")?;
-        Ok(())
+        ensure_archive_storage_schema(&self.pool).await
     }
 
     pub(crate) async fn read_retention_prepared_archive(

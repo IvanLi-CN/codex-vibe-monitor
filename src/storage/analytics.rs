@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use sqlx::{FromRow, PgConnection, Postgres, QueryBuilder, Sqlite, SqliteConnection};
+use sqlx::{FromRow, PgConnection, PgPool, Postgres, QueryBuilder, Sqlite, SqliteConnection};
 use tokio::sync::Mutex;
 
 use super::core::{
@@ -28,7 +28,7 @@ const SQLITE_ANALYTICS_AUTHORITY_GENERATION: u64 = 1;
 const SQLITE_TRAFFIC_AUTHORITY_GENERATION: u64 = 1;
 const MAX_TRAFFIC_STATS_PAGE_ROWS: usize = 1_024;
 const DEFAULT_TRAFFIC_STATS_PAGE_ROWS: usize = 256;
-const ANALYTICS_PROJECTION_CHECKPOINTS_TABLE: &str = "analytics_projection_checkpoints";
+pub(crate) const ANALYTICS_PROJECTION_CHECKPOINTS_TABLE: &str = "analytics_projection_checkpoints";
 const SQLITE_ANALYTICS_PROJECTION_CHECKPOINTS_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS analytics_projection_checkpoints (
     projection TEXT PRIMARY KEY,
@@ -77,6 +77,13 @@ CREATE TABLE IF NOT EXISTS analytics_projection_checkpoints (
     )
 )
 "#;
+
+pub(crate) async fn ensure_analytics_projection_checkpoint_schema(pool: &PgPool) -> Result<()> {
+    sqlx::query(POSTGRES_ANALYTICS_PROJECTION_CHECKPOINTS_SCHEMA)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
 
 /// Rebuildable consumers share the analytics authority, but each one keeps an independent
 /// checkpoint and data-quality state. Keeping the names here prevents a consumer from silently

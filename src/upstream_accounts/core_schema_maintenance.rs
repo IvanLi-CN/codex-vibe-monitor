@@ -1,5 +1,8 @@
 use super::*;
 
+pub(crate) const POOL_UPSTREAM_ACCOUNT_LONG_TERM_PROJECTION_OUTBOX_TABLE: &str =
+    "pool_upstream_account_long_term_projection_outbox";
+
 pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -127,6 +130,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_selected_touch_outbox table existence")?;
+    ensure_upstream_account_long_term_projection_outbox_schema(pool).await?;
 
     sqlx::query(
         r#"
@@ -2068,6 +2072,45 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         fence_tx.commit().await?;
     }
 
+    Ok(())
+}
+
+pub(crate) async fn ensure_upstream_account_long_term_projection_outbox_schema(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(&format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS {POOL_UPSTREAM_ACCOUNT_LONG_TERM_PROJECTION_OUTBOX_TABLE} (
+            idempotency_key TEXT PRIMARY KEY,
+            account_id INTEGER NOT NULL,
+            bucket_date TEXT NOT NULL,
+            repair_reason TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            source_generation INTEGER NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_error TEXT,
+            acknowledged_at TEXT,
+            acknowledged_generation INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (state IN ('pending', 'acknowledged')),
+            CHECK (attempt_count >= 0),
+            CHECK (source_generation > 0),
+            UNIQUE (account_id, bucket_date, repair_reason, source_identity, source_generation)
+        )
+        "#
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure account long-term projection outbox")?;
+    sqlx::query(&format!(
+        "CREATE INDEX IF NOT EXISTS idx_{POOL_UPSTREAM_ACCOUNT_LONG_TERM_PROJECTION_OUTBOX_TABLE}_due ON {POOL_UPSTREAM_ACCOUNT_LONG_TERM_PROJECTION_OUTBOX_TABLE} (state, next_retry_at, idempotency_key)"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure account long-term projection outbox due index")?;
     Ok(())
 }
 

@@ -7,4 +7,5 @@ pub(crate) mod core;
 pub(crate) mod migration;
 pub(crate) mod migration_sqlx;
 pub(crate) mod migration_status;
+pub(crate) mod native;
 pub(crate) mod traffic;

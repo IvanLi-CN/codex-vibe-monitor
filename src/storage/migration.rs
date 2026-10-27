@@ -58,6 +58,61 @@ pub(crate) struct ChangeInput {
     pub(crate) payload: Option<Vec<u8>>,
 }
 
+impl ChangeInput {
+    pub(crate) fn insert(
+        table_name: impl Into<String>,
+        stable_key: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            table_name: table_name.into(),
+            stable_key: stable_key.into(),
+            previous_key: None,
+            kind: ChangeKind::Insert,
+            payload: Some(payload.into()),
+        }
+    }
+
+    pub(crate) fn update(
+        table_name: impl Into<String>,
+        stable_key: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            table_name: table_name.into(),
+            stable_key: stable_key.into(),
+            previous_key: None,
+            kind: ChangeKind::Update,
+            payload: Some(payload.into()),
+        }
+    }
+
+    pub(crate) fn delete(table_name: impl Into<String>, stable_key: impl Into<String>) -> Self {
+        Self {
+            table_name: table_name.into(),
+            stable_key: stable_key.into(),
+            previous_key: None,
+            kind: ChangeKind::Delete,
+            payload: None,
+        }
+    }
+
+    pub(crate) fn replace(
+        table_name: impl Into<String>,
+        previous_key: impl Into<String>,
+        stable_key: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            table_name: table_name.into(),
+            stable_key: stable_key.into(),
+            previous_key: Some(previous_key.into()),
+            kind: ChangeKind::Replace,
+            payload: Some(payload.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CapturedChange {
     pub(crate) migration_id: String,
