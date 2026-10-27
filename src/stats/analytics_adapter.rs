@@ -33,6 +33,8 @@ impl<'a> StatsAnalyticsAdapter<'a> {
     }
 
     pub(crate) async fn projection_state(&self) -> Result<ProjectionReadState> {
-        ProjectionReadState::new(self.owner().await?)
+        self.store
+            .load_projection_state(STATS_ANALYTICS_PROJECTION)
+            .await
     }
 }
