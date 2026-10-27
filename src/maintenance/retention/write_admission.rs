@@ -1115,6 +1115,13 @@ pub(crate) fn retention_write_deferred(operation: &'static str) -> anyhow::Error
     anyhow::Error::new(RetentionWriteDeferred { operation })
 }
 
+pub(crate) fn retention_write_deferred_operation(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<RetentionWriteDeferred>())
+        .map(|deferred| deferred.operation)
+}
+
 pub(crate) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.is::<RetentionWriteDeferred>() || cause.is::<RawOrphanSweepAdmissionDeferred>()

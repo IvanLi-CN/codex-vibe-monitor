@@ -335,6 +335,12 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
     // signal only after each committed micro-batch.
     let prompt_cache_should_yield = || coordinator.p2_should_yield();
     observation.set_phase("processing");
+    // Archive public-id repair owns an independent SQLite archive file while it waits for the
+    // shared file phase. Release the scheduler's P2 permit for that wait; the repair reacquires
+    // P2 only around its primary-database publication transaction and progress writes.
+    if task == StartupBackfillTask::PoolAttemptPublicIdArchives {
+        drop(write_permit.take());
+    }
     let task_result = if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
         // Prompt-cache materialization checks priority only between committed micro-batches. The
         // enclosing maintenance pass still cancels the task during process shutdown.
@@ -383,6 +389,13 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             ) => result,
         }
     };
+    if task == StartupBackfillTask::PoolAttemptPublicIdArchives {
+        write_permit = Some(
+            coordinator
+                .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+                .await,
+        );
+    }
     // Network/business work has finished. Do not hold online write admission
     // while waiting for a control update or maintenance-database checkpoint.
     let result_guard = match prompt_cache_materialization_control.as_ref() {

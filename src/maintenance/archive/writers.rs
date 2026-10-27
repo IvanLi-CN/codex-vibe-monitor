@@ -463,6 +463,11 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             }
 
             let backfill_outcome = async {
+                let file_phase =
+                    super::super::acquire_file_phase_permit(
+                        "archive_public_id_file_phase_sqlite",
+                    )
+                    .await?;
                 let mut conn = open_archive_sqlite_connection(&work_path).await?;
                 ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
                 let outcome = backfill_pool_upstream_request_attempt_public_ids_on_connection(
@@ -470,6 +475,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 )
                 .await?;
                 conn.close().await?;
+                drop(file_phase);
                 Ok::<BackfillBatchOutcome<PoolAttemptPublicIdBackfillSummary>, anyhow::Error>(
                     outcome,
                 )
@@ -508,9 +514,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 remove_temp_sqlite_artifacts(&temp_gzip_path);
                 return Err(err);
             }
-            // The startup caller already owns the coordinated P2 write permit. Acquiring the
-            // retention admission again here would self-wait on that permit. Hash the prepared
-            // artifact before entering the bounded publication transaction.
+            // Hash the prepared artifact before entering the bounded publication transaction.
             let sha256 = sha256_hex_file_with_operation_budget(&temp_gzip_path).await?;
             let had_existing_file = archive_path.is_file();
             let backup_path = PathBuf::from(format!(
@@ -519,6 +523,11 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 retention_temp_suffix()
             ));
             let staged_path_string = backup_path.to_string_lossy().to_string();
+            let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                )
+                .await;
             let staged = sqlx::query(
                 "UPDATE archive_batches
                  SET replacement_staged_path = ?1
@@ -648,16 +657,19 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     "archive public-id backfill commit outcome is unknown; recovery will reconcile: {error}"
                 ));
             }
+            drop(write_permit);
             committed_cursor_id = batch.id;
             committed_scanned_batches = summary.scanned_batches;
             committed_updated_rows = summary.updated_rows;
-            let Some(cleanup_file_phase) = super::super::try_acquire_file_phase_permit() else {
-                return Err(super::super::retention::retention_write_deferred(
-                    "archive_public_id_cleanup",
-                ));
-            };
+            let cleanup_file_phase =
+                super::super::acquire_file_phase_permit("archive_public_id_cleanup").await?;
             let _ = fs::remove_file(&backup_path);
             drop(cleanup_file_phase);
+            let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                )
+                .await;
             let _ = sqlx::query(
                 "UPDATE archive_batches SET replacement_staged_path = NULL
                  WHERE id = ?1 AND replacement_staged_path = ?2",
@@ -720,6 +732,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 })?,
         );
     }
+    let file_phase = super::super::acquire_file_phase_permit("archive_month_batch_copy").await?;
     let mut conn = open_archive_sqlite_connection(work_path).await?;
     sqlx::query(&create_sql)
         .execute(&mut conn)
@@ -814,6 +827,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
         .await
         .with_context(|| format!("failed to count direct archive rows for {}", spec.dataset))?;
     conn.close().await?;
+    drop(file_phase);
     Ok((row_count, Vec::new()))
 }
 
@@ -971,6 +985,8 @@ async fn archive_rows_into_month_batch_with_snapshots(
         async {
         // An ATTACH must not survive cancellation on a pooled connection. Open a dedicated connection with the pool options
         // so the pooled handles (including an in-memory keeper) remain available; own it so every error/cancel closes it instead of returning an attached handle.
+        let file_phase =
+            super::super::acquire_file_phase_permit("archive_month_batch_copy").await?;
         let mut conn = SqliteConnection::connect_with(pool.connect_options().as_ref()).await?;
         sqlx::query("ATTACH DATABASE ?1 AS archive_db")
             .bind(archive_disk_attach_uri(&work_path)?)
@@ -1125,6 +1141,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
             .await
             .context("failed to detach archive database")?;
         conn.close().await?;
+        drop(file_phase);
         Ok::<
             (
                 i64,

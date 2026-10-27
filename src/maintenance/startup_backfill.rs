@@ -341,7 +341,9 @@ fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureK
             .to_string()
             .to_ascii_lowercase()
             .contains("raw file phase is busy")
-    });
+    })
+        || crate::maintenance::retention::retention_write_deferred_operation(err)
+            .is_some_and(startup_backfill_file_phase_operation);
     if has_file_phase_busy_message {
         return StartupBackfillFailureKind::FilePhaseBusy;
     }
@@ -356,6 +358,15 @@ fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureK
     } else {
         StartupBackfillFailureKind::Operation
     }
+}
+
+fn startup_backfill_file_phase_operation(operation: &str) -> bool {
+    operation.contains("file_phase")
+        || operation.contains("file_")
+        || operation.ends_with("_file")
+        || operation.ends_with("_cleanup")
+        || operation.ends_with("_fence")
+        || operation.ends_with("_lock")
 }
 fn record_startup_backfill_pressure_error(
     gate: &crate::db_pressure::DbPressureGate,

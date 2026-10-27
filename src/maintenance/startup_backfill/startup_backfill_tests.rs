@@ -844,6 +844,18 @@ fn sqlite_busy_and_locked_are_actual_backfill_failures() {
         StartupBackfillFailureKind::FilePhaseBusy
     );
     assert_eq!(
+        startup_backfill_failure_kind(&crate::retention_write_deferred(
+            "archive_public_id_file_phase",
+        )),
+        StartupBackfillFailureKind::FilePhaseBusy
+    );
+    assert_eq!(
+        startup_backfill_failure_kind(&crate::retention_write_deferred(
+            "archive_public_id_cleanup",
+        )),
+        StartupBackfillFailureKind::FilePhaseBusy
+    );
+    assert_eq!(
         startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
         StartupBackfillFailureKind::Operation
     );

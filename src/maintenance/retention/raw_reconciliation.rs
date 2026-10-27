@@ -187,27 +187,27 @@ impl RawOrphanSweepPassContext {
 }
 
 pub(crate) async fn read_retention_raw_directory_slice_with_budget(
+    context: &RawOrphanSweepPassContext,
     root: &Path,
     directory: Option<ReadDir>,
 ) -> Result<RetentionRawDirectorySlice> {
     let root = root.to_owned();
     #[cfg(test)]
     retention_test_raw_directory_entry_event();
-    let Some(file_phase) = try_acquire_file_phase_permit() else {
-        return Err(raw_orphan_sweep_admission_deferred(
-            "file_phase",
-            "file_phase_busy",
-        ));
-    };
     // A ReadDir cannot be cancelled safely once moved into a blocking worker. Await the
     // single worker to preserve its position and avoid accumulating detached scans after a
     // slow filesystem call; the caller checks the budget again before admitting its results.
-    tokio::task::spawn_blocking(move || {
-        let _file_phase = file_phase;
-        read_retention_raw_directory_slice(&root, directory)
-    })
-    .await
-    .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
+    context
+        .run_with_candidate_budget(async move {
+            let file_phase = acquire_file_phase_permit("raw_directory_scan").await?;
+            tokio::task::spawn_blocking(move || {
+                let _file_phase = file_phase;
+                read_retention_raw_directory_slice(&root, directory)
+            })
+            .await
+            .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
+        })
+        .await
 }
 
 pub(crate) async fn retention_raw_file_metadata_with_budget(
@@ -215,14 +215,9 @@ pub(crate) async fn retention_raw_file_metadata_with_budget(
     path: &Path,
 ) -> Result<io::Result<fs::Metadata>> {
     let path = path.to_owned();
-    let Some(file_phase) = try_acquire_file_phase_permit() else {
-        return Err(raw_orphan_sweep_admission_deferred(
-            "file_phase",
-            "file_phase_busy",
-        ));
-    };
     context
         .run_with_candidate_budget(async move {
+            let file_phase = acquire_file_phase_permit("raw_file_metadata").await?;
             tokio::task::spawn_blocking(move || {
                 let _file_phase = file_phase;
                 retention_raw_file_metadata(&path)

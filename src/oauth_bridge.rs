@@ -570,7 +570,7 @@ async fn counted_oauth_responses(
             (
                 Body::from(prepared.body),
                 request_debug,
-                prepared.wants_stream,
+                Some(prepared.wants_stream),
             )
         }
         CountedOauthUpstreamRequestBody::Bytes(bytes) => {
@@ -600,7 +600,7 @@ async fn counted_oauth_responses(
             (
                 Body::from(prepared.body),
                 request_debug,
-                prepared.wants_stream,
+                Some(prepared.wants_stream),
             )
         }
         CountedOauthUpstreamRequestBody::Stream {
@@ -618,7 +618,7 @@ async fn counted_oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
-            (body, request_debug, request_is_stream.unwrap_or(false))
+            (body, request_debug, request_is_stream)
         }
     };
     outbound_headers.insert(
@@ -696,7 +696,7 @@ async fn counted_oauth_responses(
             request_debug: Some(request_debug),
         };
     }
-    if wants_stream {
+    if should_passthrough_oauth_stream_response(wants_stream) {
         return OauthUpstreamResponse {
             response: normalize_counted_stream_response(upstream),
             request_debug: Some(request_debug),
@@ -973,6 +973,12 @@ fn normalize_counted_stream_response(mut response: Response) -> Response {
     response
 }
 
+fn should_passthrough_oauth_stream_response(request_is_stream: Option<bool>) -> bool {
+    // An unavailable file-phase read must not downgrade a large streaming request into a
+    // buffered response. Passing the upstream body through is safe for either response shape.
+    request_is_stream != Some(false)
+}
+
 async fn read_counted_oauth_upstream_bytes_with_timeout(
     upstream: Response,
     total_timeout: Duration,
@@ -1180,7 +1186,7 @@ async fn oauth_responses(
             (
                 request.body(prepared.body),
                 request_debug,
-                prepared.wants_stream,
+                Some(prepared.wants_stream),
             )
         }
         OauthUpstreamRequestBody::Bytes(bytes) => {
@@ -1210,7 +1216,7 @@ async fn oauth_responses(
             (
                 request.body(prepared.body),
                 request_debug,
-                prepared.wants_stream,
+                Some(prepared.wants_stream),
             )
         }
         OauthUpstreamRequestBody::Stream {
@@ -1228,11 +1234,7 @@ async fn oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
-            (
-                request.body(body),
-                request_debug,
-                request_is_stream.unwrap_or(false),
-            )
+            (request.body(body), request_debug, request_is_stream)
         }
     };
     let request = request
@@ -1364,7 +1366,7 @@ async fn oauth_responses(
             request_debug: Some(request_debug),
         };
     }
-    if wants_stream {
+    if should_passthrough_oauth_stream_response(wants_stream) {
         return OauthUpstreamResponse {
             response: reqwest_response_to_axum_response(upstream),
             request_debug: Some(request_debug),

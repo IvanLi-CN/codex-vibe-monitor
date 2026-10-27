@@ -442,8 +442,12 @@ pub(crate) async fn maybe_compress_proxy_raw_path(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<RawCompressionFileOutcome> {
-    let Some(file_phase) = try_acquire_file_phase_permit() else {
-        return Err(retention_write_deferred("raw_compression_file"));
+    let file_phase = if let Some(remaining) = retention_run_remaining_budget() {
+        tokio::time::timeout(remaining, acquire_file_phase_permit("raw_compression_file"))
+            .await
+            .map_err(|_| retention_write_deferred("raw_compression_file"))??
+    } else {
+        acquire_file_phase_permit("raw_compression_file").await?
     };
     with_file_phase_permit(
         file_phase,
