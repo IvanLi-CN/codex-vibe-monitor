@@ -243,6 +243,16 @@ class MeasurementBudgetTests(unittest.TestCase):
                 )
                 maintenance.execute("CREATE TABLE managed_task_runs (id INTEGER)")
                 maintenance.execute("CREATE TABLE managed_task_work_runs (id INTEGER)")
+                maintenance.execute(
+                    """
+                    CREATE TABLE maintenance_owner_retry_state (
+                        task_key TEXT PRIMARY KEY,
+                        failure_count INTEGER NOT NULL DEFAULT 0,
+                        next_eligible_at TEXT,
+                        reason TEXT
+                    )
+                    """
+                )
                 task_rows = [
                     (key, 1, "old-trigger", "old-catchup", "old-reason", "old-updated")
                     for key in (
@@ -254,6 +264,13 @@ class MeasurementBudgetTests(unittest.TestCase):
                 maintenance.executemany(
                     "INSERT INTO managed_tasks VALUES (?,?,?,?,?,?)",
                     task_rows,
+                )
+                maintenance.executemany(
+                    "INSERT INTO maintenance_owner_retry_state(task_key,failure_count,next_eligible_at,reason) VALUES(?,?,?,?)",
+                    [
+                        (CONTROLLED_TASK_KEYS[0], 3, "2099-01-01T00:00:00.000Z", "sqlite_pressure"),
+                        ("summary_snapshot", 2, "2099-01-01T00:00:00.000Z", "retry_backoff"),
+                    ],
                 )
                 main.commit()
                 maintenance.commit()
@@ -277,6 +294,12 @@ class MeasurementBudgetTests(unittest.TestCase):
                         "SELECT task_key,enabled,next_trigger_at,next_catchup_at,catchup_reason FROM managed_tasks"
                     )
                 }
+                retry_rows = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        "SELECT task_key,failure_count,next_eligible_at,reason FROM maintenance_owner_retry_state"
+                    )
+                }
             finally:
                 connection.close()
 
@@ -295,6 +318,11 @@ class MeasurementBudgetTests(unittest.TestCase):
             self.assertEqual(
                 rows["long_term_projection"],
                 (0, None, None, None),
+            )
+            self.assertNotIn(CONTROLLED_TASK_KEYS[0], retry_rows)
+            self.assertEqual(
+                retry_rows["summary_snapshot"],
+                (2, "2099-01-01T00:00:00.000Z", "retry_backoff"),
             )
 
     def test_observed_attempt_states_counts_rows_from_five_column_query(self) -> None:
