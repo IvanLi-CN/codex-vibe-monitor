@@ -91,6 +91,15 @@ tokio::task_local! {
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED: Arc<Notify>;
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES:
         Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_QUERY:
+        Arc<crate::maintenance::TaskArchiveSnapshotQueryProbe>;
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TaskArchiveSnapshotQueryProbe {
+    pub(crate) started: Notify,
+    pub(crate) resume: Notify,
 }
 
 #[derive(Debug, Clone)]
@@ -1403,20 +1412,28 @@ async fn load_task_month_snapshot_pages(
             });
         }
         let archive_rows = {
-            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-            if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(next_page_query)
-                    .bind(occurred_at)
-                    .bind(*row_id)
-                    .bind(row_count)
-                    .fetch_all(archive_pool)
-                    .await?
-            } else {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(first_page_query)
-                    .bind(row_count)
-                    .fetch_all(archive_pool)
-                    .await?
-            }
+            let archive_pool = archive_pool.clone();
+            let first_page_query = first_page_query.to_string();
+            let next_page_query = next_page_query.to_string();
+            let previous_cursor = previous_cursor.clone();
+            task_snapshot_archive_query(async move {
+                if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_page_query)
+                        .bind(occurred_at)
+                        .bind(*row_id)
+                        .bind(row_count)
+                        .fetch_all(&archive_pool)
+                        .await
+                        .map_err(Into::into)
+                } else {
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_page_query)
+                        .bind(row_count)
+                        .fetch_all(&archive_pool)
+                        .await
+                        .map_err(Into::into)
+                }
+            })
+            .await?
         };
         let record_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
         let archive_ids = archive_rows.iter().map(|row| row.id).collect::<Vec<_>>();
@@ -1437,15 +1454,19 @@ async fn load_task_month_snapshot_pages(
         let ids = archive_ids;
         let ids_json = serde_json::to_string(&ids)?;
         let invoke_ids = {
-            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-            sqlx::query_as::<_, (i64, String)>(
-                "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
-            )
-            .bind(&ids_json)
-            .fetch_all(archive_pool)
+            let archive_pool = archive_pool.clone();
+            let ids_json = ids_json.clone();
+            task_snapshot_archive_query(async move {
+                sqlx::query_as::<_, (i64, String)>(
+                    "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
+                )
+                .bind(&ids_json)
+                .fetch_all(&archive_pool)
+                .await
+                .map(|rows| rows.into_iter().collect::<HashMap<_, _>>())
+                .map_err(Into::into)
+            })
             .await?
-            .into_iter()
-            .collect::<HashMap<_, _>>()
         };
         if invoke_ids.len() != archive_rows.len()
             || super::super::retention::encode_summary_archive_snapshot_v2_payload(
@@ -1572,6 +1593,72 @@ impl Drop for TaskSnapshotArchivePoolDrain {
     }
 }
 
+async fn connect_task_snapshot_archive_pool(
+    options: SqliteConnectOptions,
+    cleanup_path: PathBuf,
+) -> Result<Pool<Sqlite>> {
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(async move {
+        let mut cleanup_guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: None,
+            cleanup_path: Some(cleanup_path),
+            file_phase: Some(file_phase),
+        };
+        let result = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(anyhow::Error::from);
+        match result {
+            Ok(pool) => match sender.send(Ok(pool)) {
+                Ok(()) => {
+                    cleanup_guard.cleanup_path.take();
+                    cleanup_guard.file_phase.take();
+                }
+                Err(Ok(pool)) => {
+                    cleanup_guard.pool = Some(pool);
+                    finish_task_snapshot_archive_pool_cleanup(&mut cleanup_guard).await;
+                }
+                Err(Err(_)) => unreachable!("connect result sender only sends a pool here"),
+            },
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                if let Some(path) = cleanup_guard.cleanup_path.take() {
+                    remove_temp_sqlite_artifacts_unchecked(&path);
+                }
+                cleanup_guard.file_phase.take();
+            }
+        }
+    });
+    drop(worker);
+    receiver
+        .await
+        .context("task snapshot archive pool connect worker failed")?
+}
+
+async fn task_snapshot_archive_query<F, T>(future: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    #[cfg(test)]
+    let query_probe = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_QUERY
+        .try_with(Arc::clone)
+        .ok();
+    #[cfg(test)]
+    let future = async move {
+        #[cfg(test)]
+        if let Some(probe) = query_probe {
+            probe.started.notify_one();
+            probe.resume.notified().await;
+        }
+        future.await
+    };
+    super::super::spawn_file_phase_task(file_phase, future).await
+}
+
 async fn prepare_task_month_snapshot_pages(
     pool: &Pool<Sqlite>,
     work_path: &Path,
@@ -1579,15 +1666,7 @@ async fn prepare_task_month_snapshot_pages(
     batch_id: i64,
 ) -> Result<Vec<TaskArchiveSnapshotPage>> {
     let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
-    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-    let archive_pool = super::super::spawn_file_phase_task(file_phase, async move {
-        sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .map_err(Into::into)
-    })
-    .await?;
+    let archive_pool = connect_task_snapshot_archive_pool(options, work_path.to_path_buf()).await?;
     let mut archive_pool_drain =
         TaskSnapshotArchivePoolDrain::new(archive_pool, work_path.to_path_buf());
     let result = {
@@ -1597,8 +1676,11 @@ async fn prepare_task_month_snapshot_pages(
             .expect("snapshot archive pool drain owns the pool");
         async {
         let columns = {
-            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-            load_archive_table_columns(archive_pool, "codex_invocations").await?
+            let archive_pool = archive_pool.clone();
+            task_snapshot_archive_query(async move {
+                load_archive_table_columns(&archive_pool, "codex_invocations").await
+            })
+            .await?
         };
         // Tuple keyset pagination must seek rather than sort/scan the month once per 400-row
         // page. The index was installed before the artifact was compressed.
@@ -1655,39 +1737,56 @@ async fn prepare_task_month_snapshot_pages(
         };
         loop {
             let next_page = {
-                let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-                let rows = if let Some(cursor) = occurred_at.as_deref() {
-                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
-                        .bind(cursor).bind(row_id).bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                        .fetch_all(archive_pool).await?
-                } else {
-                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
-                        .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                        .fetch_all(archive_pool).await?
-                };
-                if rows.is_empty() {
-                    None
-                } else {
-                    let mut identities = QueryBuilder::<Sqlite>::new(
-                        "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
-                    );
-                    let mut ids = identities.separated(", ");
-                    for row in &rows { ids.push_bind(row.id); }
-                    ids.push_unseparated(")");
-                    let invoke_ids = identities.build_query_as::<(i64, String)>()
-                        .fetch_all(archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
-                    let first = rows.first().expect("nonempty snapshot page");
-                    let last = rows.last().expect("nonempty snapshot page");
-                    let page = TaskArchiveSnapshotPage {
-                        coverage_start: first.occurred_at.clone(),
-                        coverage_end: last.occurred_at.clone(),
-                        row_count: u32::try_from(rows.len())?,
-                        payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
-                            &rows, &invoke_ids,
-                        )?,
+                let archive_pool = archive_pool.clone();
+                let occurred_at = occurred_at.clone();
+                let next_query = next_query.clone();
+                let first_query = first_query.clone();
+                task_snapshot_archive_query(async move {
+                    let rows = if let Some(cursor) = occurred_at.as_deref() {
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
+                            .bind(cursor)
+                            .bind(row_id)
+                            .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                            .fetch_all(&archive_pool)
+                            .await?
+                    } else {
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
+                            .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                            .fetch_all(&archive_pool)
+                            .await?
                     };
-                    Some((rows, page))
-                }
+                    if rows.is_empty() {
+                        Ok(None)
+                    } else {
+                        let mut identities = QueryBuilder::<Sqlite>::new(
+                            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
+                        );
+                        let mut ids = identities.separated(", ");
+                        for row in &rows {
+                            ids.push_bind(row.id);
+                        }
+                        ids.push_unseparated(")");
+                        let invoke_ids = identities
+                            .build_query_as::<(i64, String)>()
+                            .fetch_all(&archive_pool)
+                            .await?
+                            .into_iter()
+                            .collect::<HashMap<_, _>>();
+                        let first = rows.first().expect("nonempty snapshot page");
+                        let last = rows.last().expect("nonempty snapshot page");
+                        let page = TaskArchiveSnapshotPage {
+                            coverage_start: first.occurred_at.clone(),
+                            coverage_end: last.occurred_at.clone(),
+                            row_count: u32::try_from(rows.len())?,
+                            payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
+                                &rows,
+                                &invoke_ids,
+                            )?,
+                        };
+                        Ok(Some((rows, page)))
+                    }
+                })
+                .await?
             };
             let Some((rows, page)) = next_page else { break; };
             let page_index = u32::try_from(pages.len())?;

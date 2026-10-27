@@ -452,6 +452,192 @@ async fn repair_partial_timestamped_archive(
     Ok(())
 }
 
+enum PartialArchiveRepairPlan {
+    Invocation {
+        pool: Pool<Sqlite>,
+        outcome: ArchiveBatchOutcome,
+        selected_group: Vec<InvocationArchiveCandidate>,
+    },
+    Timestamped {
+        pool: Pool<Sqlite>,
+        outcome: ArchiveBatchOutcome,
+        selected_group: Vec<TimestampedArchiveCandidate>,
+    },
+}
+
+struct PartialArchiveRepairState {
+    committed_rows: std::sync::atomic::AtomicUsize,
+    repair_claimed: std::sync::atomic::AtomicBool,
+    cleanup_finished: std::sync::Arc<tokio::sync::Notify>,
+    cleanup_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    plan: PartialArchiveRepairPlan,
+}
+
+struct PartialArchiveRepairOwner {
+    state: std::sync::Arc<PartialArchiveRepairState>,
+}
+
+impl PartialArchiveRepairOwner {
+    fn invocation(
+        pool: &Pool<Sqlite>,
+        outcome: &ArchiveBatchOutcome,
+        selected_group: &[InvocationArchiveCandidate],
+        cleanup_signal: (
+            std::sync::Arc<tokio::sync::Notify>,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ),
+    ) -> Self {
+        Self::new(
+            PartialArchiveRepairPlan::Invocation {
+                pool: pool.clone(),
+                outcome: outcome.clone(),
+                selected_group: selected_group.to_vec(),
+            },
+            cleanup_signal,
+        )
+    }
+
+    fn timestamped(
+        pool: &Pool<Sqlite>,
+        outcome: &ArchiveBatchOutcome,
+        selected_group: &[TimestampedArchiveCandidate],
+        cleanup_signal: (
+            std::sync::Arc<tokio::sync::Notify>,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ),
+    ) -> Self {
+        Self::new(
+            PartialArchiveRepairPlan::Timestamped {
+                pool: pool.clone(),
+                outcome: outcome.clone(),
+                selected_group: selected_group.to_vec(),
+            },
+            cleanup_signal,
+        )
+    }
+
+    fn new(
+        plan: PartialArchiveRepairPlan,
+        (cleanup_finished, cleanup_done): (
+            std::sync::Arc<tokio::sync::Notify>,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ),
+    ) -> Self {
+        Self {
+            state: std::sync::Arc::new(PartialArchiveRepairState {
+                committed_rows: std::sync::atomic::AtomicUsize::new(0),
+                repair_claimed: std::sync::atomic::AtomicBool::new(false),
+                cleanup_finished,
+                cleanup_done,
+                plan,
+            }),
+        }
+    }
+
+    fn record_committed(&self, rows: usize) {
+        self.state
+            .committed_rows
+            .fetch_add(rows, std::sync::atomic::Ordering::Release);
+    }
+
+    fn is_partial(&self) -> bool {
+        let committed_rows = self
+            .state
+            .committed_rows
+            .load(std::sync::atomic::Ordering::Acquire);
+        match &self.state.plan {
+            PartialArchiveRepairPlan::Invocation { selected_group, .. } => {
+                committed_rows > 0 && committed_rows < selected_group.len()
+            }
+            PartialArchiveRepairPlan::Timestamped { selected_group, .. } => {
+                committed_rows > 0 && committed_rows < selected_group.len()
+            }
+        }
+    }
+
+    fn spawn_worker(&self) -> Option<tokio::task::JoinHandle<Result<()>>> {
+        if !self.is_partial() {
+            return None;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return None;
+        };
+        if self
+            .state
+            .repair_claimed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return None;
+        }
+        let state = std::sync::Arc::clone(&self.state);
+        Some(runtime.spawn(async move {
+            while !state
+                .cleanup_done
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                state.cleanup_finished.notified().await;
+            }
+            let committed_rows = state
+                .committed_rows
+                .load(std::sync::atomic::Ordering::Acquire);
+            crate::maintenance::retention_run_cleanup_scope(async move {
+                match &state.plan {
+                    PartialArchiveRepairPlan::Invocation {
+                        pool,
+                        outcome,
+                        selected_group,
+                    } => {
+                        repair_partial_invocation_archive(
+                            pool,
+                            outcome,
+                            selected_group,
+                            committed_rows,
+                        )
+                        .await
+                    }
+                    PartialArchiveRepairPlan::Timestamped {
+                        pool,
+                        outcome,
+                        selected_group,
+                    } => {
+                        repair_partial_timestamped_archive(
+                            pool,
+                            outcome,
+                            selected_group,
+                            committed_rows,
+                        )
+                        .await
+                    }
+                }
+            })
+            .await
+        }))
+    }
+
+    async fn finish(&self) -> Result<()> {
+        let Some(worker) = self.spawn_worker() else {
+            return Ok(());
+        };
+        worker
+            .await
+            .context("partial archive repair worker failed")?
+    }
+}
+
+impl Drop for PartialArchiveRepairOwner {
+    fn drop(&mut self) {
+        if let Some(worker) = self.spawn_worker() {
+            drop(worker);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn invocation_archive_candidate_selection_for_test(
     pool: &Pool<Sqlite>,
@@ -477,6 +663,8 @@ pub(crate) async fn invocation_archive_candidate_selection_for_test(
 struct ArchiveSourceIdentityProof {
     resources: std::sync::Arc<tokio::sync::Mutex<Option<ArchiveSourceIdentityProofResources>>>,
     spec: ArchiveTableSpec,
+    cleanup_finished: std::sync::Arc<tokio::sync::Notify>,
+    cleanup_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct ArchiveSourceIdentityProofResources {
@@ -484,6 +672,8 @@ struct ArchiveSourceIdentityProofResources {
     cleanup: Option<TempSqliteCleanup>,
     _work_owner_file: Option<crate::maintenance::archive::TaskWorkOwner>,
     proof_path: PathBuf,
+    cleanup_finished: std::sync::Arc<tokio::sync::Notify>,
+    cleanup_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for ArchiveSourceIdentityProofResources {
@@ -491,7 +681,11 @@ impl Drop for ArchiveSourceIdentityProofResources {
         let connection = self.connection.take();
         let cleanup = self.cleanup.take();
         let work_owner_file = self._work_owner_file.take();
+        let cleanup_finished = std::sync::Arc::clone(&self.cleanup_finished);
+        let cleanup_done = std::sync::Arc::clone(&self.cleanup_done);
         if connection.is_none() && cleanup.is_none() && work_owner_file.is_none() {
+            cleanup_done.store(true, std::sync::atomic::Ordering::Release);
+            cleanup_finished.notify_waiters();
             return;
         }
         let proof_path = self.proof_path.clone();
@@ -512,6 +706,8 @@ impl Drop for ArchiveSourceIdentityProofResources {
                 }
                 drop(cleanup);
                 drop(work_owner_file);
+                cleanup_done.store(true, std::sync::atomic::Ordering::Release);
+                cleanup_finished.notify_waiters();
             })
             .await;
         }));
@@ -568,6 +764,8 @@ impl ArchiveSourceIdentityProof {
             crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?,
         );
         let mut cleanup = Some(TempSqliteCleanup::new(proof_path.clone()));
+        let cleanup_finished = std::sync::Arc::new(tokio::sync::Notify::new());
+        let cleanup_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let result = async {
             #[cfg(test)]
             batch_admission::pause_before_archive_identity_proof_inflate().await;
@@ -601,9 +799,13 @@ impl ArchiveSourceIdentityProof {
                         cleanup: cleanup.take(),
                         _work_owner_file: work_owner_file.take(),
                         proof_path: proof_path.clone(),
+                        cleanup_finished: std::sync::Arc::clone(&cleanup_finished),
+                        cleanup_done: std::sync::Arc::clone(&cleanup_done),
                     },
                 ))),
                 spec,
+                cleanup_finished,
+                cleanup_done,
             })
         }
         .await;
@@ -764,6 +966,18 @@ impl ArchiveSourceIdentityProof {
         })
         .await
     }
+
+    fn cleanup_signal(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        (
+            std::sync::Arc::clone(&self.cleanup_finished),
+            std::sync::Arc::clone(&self.cleanup_done),
+        )
+    }
 }
 
 async fn close_archive_identity_proof_resources(
@@ -793,6 +1007,10 @@ async fn close_archive_identity_proof_resources_owned(
     };
     drop(resources.cleanup.take());
     drop(resources._work_owner_file.take());
+    resources
+        .cleanup_done
+        .store(true, std::sync::atomic::Ordering::Release);
+    resources.cleanup_finished.notify_waiters();
     close_result
 }
 
@@ -2025,6 +2243,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     )
                 };
             let selected_group = group;
+            let repair_owner = PartialArchiveRepairOwner::invocation(
+                pool,
+                &archive_outcome,
+                &selected_group,
+                archive_identity_proof.cleanup_signal(),
+            );
             let mut committed_rows = 0;
             let proof_result: Result<InvocationArchiveProofResult> = async {
                 #[cfg(test)]
@@ -2311,6 +2535,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     workload::record_processed_count(group.len());
                     rows_archived += group.len();
                     committed_rows += group.len();
+                    repair_owner.record_committed(group.len());
                     recovery_diagnostic.committed(group.len());
                     batch_observation.committed(group.len(), lock_wait);
                     drop(transaction_phase);
@@ -2360,18 +2585,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             .await;
             let proof_close_result = archive_identity_proof.close().await;
-            let repair_result = if committed_rows > 0 && committed_rows < selected_group.len() {
-                crate::maintenance::retention_run_cleanup_scope(repair_partial_invocation_archive(
-                    pool,
-                    &archive_outcome,
-                    &selected_group,
-                    committed_rows,
-                ))
+            let repair_result = repair_owner
+                .finish()
                 .await
-                .context("repair partially committed invocation archive")
-            } else {
-                Ok(())
-            };
+                .context("repair partially committed invocation archive");
             let proof_result = match (proof_result, proof_close_result) {
                 (Ok(value), Ok(())) => Ok(value),
                 (Err(error), Ok(())) => Err(error),
@@ -2699,6 +2916,12 @@ pub(crate) async fn archive_timestamped_dataset(
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
             let selected_group = group;
+            let repair_owner = PartialArchiveRepairOwner::timestamped(
+                pool,
+                &archive_outcome,
+                &selected_group,
+                archive_identity_proof.cleanup_signal(),
+            );
             let mut pending_group = selected_group.clone();
             let operation_result: Result<()> = async {
                 while !pending_group.is_empty() {
@@ -3017,6 +3240,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 );
                 rows_archived += group.len();
                 committed_rows += group.len();
+                repair_owner.record_committed(group.len());
                 recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
@@ -3063,16 +3287,10 @@ pub(crate) async fn archive_timestamped_dataset(
             .await;
             let operation_result =
                 finish_archive_identity_proof(archive_identity_proof, operation_result).await;
-            let repair_result = crate::maintenance::retention_run_cleanup_scope(
-                repair_partial_timestamped_archive(
-                    pool,
-                    &archive_outcome,
-                    &selected_group,
-                    committed_rows,
-                ),
-            )
-            .await
-            .context("repair partially committed timestamped archive");
+            let repair_result = repair_owner
+                .finish()
+                .await
+                .context("repair partially committed timestamped archive");
             if let Err(repair_error) = repair_result {
                 return Err(match operation_result {
                     Ok(()) => repair_error,

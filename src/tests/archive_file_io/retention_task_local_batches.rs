@@ -3225,6 +3225,181 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_shutdown
 }
 
 #[tokio::test]
+#[allow(unused_mut)]
+async fn retention_task_local_partial_timestamped_archive_repairs_after_direct_cancellation() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-direct-cancel").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-direct-attempt-'||i, 'partial-direct-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("direct-cancellation timestamped archive candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let mut work = Box::pin(crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_work_budget(
+                Duration::from_secs(60),
+                archive_timestamped_dataset(
+                    &pool,
+                    &config,
+                    archive_table_spec("pool_upstream_request_attempts"),
+                    select_sql,
+                    "9999-01-01 00:00:00".to_string(),
+                    false,
+                    None,
+                ),
+            ),
+        ),
+    ));
+    tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::select! {
+            _ = probe.committed.notified() => {}
+            result = &mut work => panic!("timestamped work completed before direct cancellation: {result:?}"),
+        }
+    })
+        .await
+        .expect("first timestamped chunk commits before direct cancellation");
+    drop(work);
+
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("direct-cancellation timestamped archive path");
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let row_count = sqlx::query_scalar::<_, i64>(
+                "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+            )
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_optional(&pool)
+            .await
+            .expect("poll direct-cancellation repaired manifest");
+            if row_count == Some(64) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("independent partial repair completes after direct cancellation");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&pool)
+            .await
+            .expect("remaining timestamped sources after direct cancellation"),
+        936
+    );
+
+    let second = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("reselect remaining timestamped rows after direct cancellation");
+    assert_eq!(second.0, 936);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&pool)
+            .await
+            .expect("all timestamped sources converted once after direct cancellation"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("final direct-cancellation timestamped manifest"),
+        1_000
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(unused_mut)]
+async fn retention_task_local_snapshot_query_cancellation_keeps_file_phase_until_drain() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-query-cancel").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let probe = Arc::new(crate::maintenance::TaskArchiveSnapshotQueryProbe::default());
+    let mut work = Box::pin(
+        crate::maintenance::RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_QUERY.scope(
+            probe.clone(),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::select! {
+            _ = probe.started.notified() => {}
+            result = &mut work => panic!("snapshot work completed before native query pause: {result:?}"),
+        }
+    })
+        .await
+        .expect("snapshot native query starts before cancellation");
+    drop(work);
+    assert!(
+        crate::maintenance::try_acquire_file_phase_permit().is_none(),
+        "cancelled caller must not release the native snapshot query's file permit"
+    );
+    probe.resume.notify_one();
+
+    let permit = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(permit) = crate::maintenance::try_acquire_file_phase_permit() {
+                break permit;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("snapshot native query drains before file permit release");
+    drop(permit);
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_month_writer_reads_the_shared_memory_source() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("task-local-memory-source").await;
