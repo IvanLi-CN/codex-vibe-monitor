@@ -261,6 +261,59 @@ def _summary_time(value: Any) -> datetime:
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
+def _summary_record_from_archive_row(columns: list[str], row: tuple[Any, ...]) -> dict[str, Any]:
+    values = dict(zip(columns, row, strict=True))
+    payload: dict[str, Any] = {}
+    raw_payload = values.get("payload")
+    if isinstance(raw_payload, str):
+        try:
+            parsed_payload = json.loads(raw_payload)
+        except (ValueError, UnicodeDecodeError):
+            parsed_payload = None
+        if isinstance(parsed_payload, dict):
+            payload = parsed_payload
+
+    def payload_string(field: str) -> str | None:
+        value = payload.get(field)
+        return value if isinstance(value, str) else None
+
+    model = values.get("model")
+    if model is None:
+        model = payload_string("model")
+    upstream_account_id = values.get("upstream_account_id")
+    if upstream_account_id is None:
+        candidate = payload.get("upstreamAccountId")
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            upstream_account_id = candidate
+
+    return {
+        "id": values["id"],
+        "invokeId": values["invoke_id"],
+        "occurredAt": values["occurred_at"],
+        "source": values["source"],
+        "model": model,
+        "responseModel": payload_string("responseModel"),
+        "inputTokens": values.get("input_tokens") if values.get("input_tokens") is not None else 0,
+        "outputTokens": values.get("output_tokens") if values.get("output_tokens") is not None else 0,
+        "cacheInputTokens": values.get("cache_input_tokens") if values.get("cache_input_tokens") is not None else 0,
+        "reasoningTokens": values.get("reasoning_tokens") if values.get("reasoning_tokens") is not None else 0,
+        "reasoningEffort": payload_string("reasoningEffort"),
+        "totalTokens": values.get("total_tokens") if values.get("total_tokens") is not None else 0,
+        "cost": values.get("cost"),
+        "costInput": values.get("cost_input"),
+        "costCacheWrite": values.get("cost_cache_write"),
+        "costCacheRead": values.get("cost_cache_read"),
+        "costOutput": values.get("cost_output"),
+        "costReasoning": values.get("cost_reasoning"),
+        "status": values["status"] if values.get("status") is not None else "unknown",
+        "errorMessage": values.get("error_message"),
+        "failureKind": values.get("failure_kind"),
+        "failureClass": values.get("failure_class"),
+        "isActionable": bool(values.get("is_actionable") or 0),
+        "upstreamAccountId": upstream_account_id,
+    }
+
+
 def _verify_summary_proof(
     connection: sqlite3.Connection,
     archive_id: int,
@@ -285,9 +338,8 @@ def _verify_summary_proof(
         raise AcceptanceError("Summary Snapshot V2 proof page count does not match stored pages")
     semantic = hashlib.sha256()
     total_rows = 0
-    archived_rows = iter(archive.execute(
-        "SELECT id,invoke_id,occurred_at FROM codex_invocations ORDER BY julianday(occurred_at),id"
-    ))
+    archive_columns = _table_columns(archive, "codex_invocations")
+    archived_rows = iter(archive.execute("SELECT * FROM codex_invocations ORDER BY julianday(occurred_at),id"))
     seen_ids: set[int] = set()
     seen_invocations: set[str] = set()
     previous_key: tuple[datetime, int] | None = None
@@ -322,8 +374,8 @@ def _verify_summary_proof(
             if (previous_key is not None and key <= previous_key) or not coverage_start <= key[0] <= coverage_end:
                 raise AcceptanceError("Summary Snapshot V2 record order or coverage is invalid")
             archived_row = next(archived_rows, None)
-            if archived_row is None or tuple(archived_row) != (identity, invoke_id, occurred_at):
-                raise AcceptanceError("Summary Snapshot V2 payload identity or coverage differs from actual archived codex_invocations rows")
+            if archived_row is None or _summary_record_from_archive_row(archive_columns, tuple(archived_row)) != record:
+                raise AcceptanceError("Summary Snapshot V2 payload differs from actual archived codex_invocations row content")
             seen_ids.add(identity)
             seen_invocations.add(invoke_id)
             previous_key = key

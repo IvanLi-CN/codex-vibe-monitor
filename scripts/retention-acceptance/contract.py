@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -84,7 +84,9 @@ def parse_time(value: str) -> datetime:
     except ValueError as error:
         raise AcceptanceError("invalid timestamp") from error
     if parsed.tzinfo is None:
-        raise AcceptanceError("timestamp must include a UTC offset")
+        # SQLite invocation timestamps are naive Asia/Shanghai local time; evidence timestamps
+        # produced by the runner normally carry an explicit UTC offset.
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
     return parsed.astimezone(timezone.utc)
 
 

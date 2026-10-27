@@ -722,7 +722,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
     spec: ArchiveTableSpec,
     ids: &[i64],
     work_path: &Path,
-) -> Result<(i64, Vec<(i64, String)>)> {
+) -> Result<(i64, Vec<(i64, String)>, String)> {
     let create_sql = spec.create_sql.replace("archive_db.", "");
     let mut rows = Vec::new();
     for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
@@ -854,8 +854,10 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
             .fetch_one(&mut conn)
             .await
             .with_context(|| format!("failed to count direct archive rows for {}", spec.dataset))?;
+        let source_identity = archive_table_source_identity_sha256(&mut conn, spec, "main", &ids)
+            .await?;
         conn.close().await?;
-        Ok((row_count, Vec::new()))
+        Ok((row_count, Vec::new(), source_identity))
     })
     .await
 }
@@ -999,14 +1001,11 @@ async fn archive_rows_into_month_batch_with_snapshots(
     writer_observation.advance(MonthlyWriterPhase::CopyAndSourceIdentity);
     let row_count = if spec.dataset == "pool_upstream_request_attempts" {
         async {
-            let (count, activity) = archive_pool_upstream_request_attempt_rows_into_month_batch(
-                pool, spec, ids, &work_path,
-            )
-            .await?;
-            let mut connection = open_archive_sqlite_connection(&work_path).await?;
-            let identity =
-                archive_table_source_identity_sha256(&mut connection, spec, "main", ids).await?;
-            connection.close().await?;
+            let (count, activity, identity) =
+                archive_pool_upstream_request_attempt_rows_into_month_batch(
+                    pool, spec, ids, &work_path,
+                )
+                .await?;
             Ok::<_, anyhow::Error>((count, activity, Some(identity), false, None))
         }
         .await

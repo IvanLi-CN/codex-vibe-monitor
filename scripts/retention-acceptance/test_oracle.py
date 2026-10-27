@@ -330,7 +330,18 @@ class SummaryProofTests(unittest.TestCase):
             "CREATE TABLE summary_archive_snapshot(archive_batch_id INTEGER,manifest_sha256 TEXT,page_index INTEGER,coverage_start TEXT,coverage_end TEXT,row_count INTEGER,payload BLOB,payload_bytes INTEGER,snapshot_sha256 TEXT,format_version INTEGER);"
             "CREATE TABLE hourly_rollup_archive_replay(target TEXT,dataset TEXT,file_path TEXT,archive_sha256 TEXT);"
         )
-        self.archive.execute("CREATE TABLE codex_invocations(id INTEGER,invoke_id TEXT,occurred_at TEXT)")
+        self.archive.execute(
+            """
+            CREATE TABLE codex_invocations(
+                id INTEGER, invoke_id TEXT, occurred_at TEXT, source TEXT, model TEXT,
+                input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER,
+                reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, cost_input REAL,
+                cost_cache_write REAL, cost_cache_read REAL, cost_output REAL, cost_reasoning REAL,
+                status TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT,
+                is_actionable INTEGER, payload TEXT
+            )
+            """
+        )
         self.records = [
             {
                 "id": index,
@@ -361,8 +372,18 @@ class SummaryProofTests(unittest.TestCase):
             for index in (10, 20, 30)
         ]
         self.archive.executemany(
-            "INSERT INTO codex_invocations VALUES(?,?,?)",
-            [(record["id"], record["invokeId"], record["occurredAt"]) for record in reversed(self.records)],
+            "INSERT INTO codex_invocations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    record["id"], record["invokeId"], record["occurredAt"], record["source"], record["model"],
+                    record["inputTokens"], record["outputTokens"], record["cacheInputTokens"],
+                    record["reasoningTokens"], record["totalTokens"], record["cost"], record["costInput"],
+                    record["costCacheWrite"], record["costCacheRead"], record["costOutput"],
+                    record["costReasoning"], record["status"], record["errorMessage"], record["failureKind"],
+                    record["failureClass"], int(record["isActionable"]), None,
+                )
+                for record in reversed(self.records)
+            ],
         )
         self.archive.commit()
         self.manifest_sha = "a" * 64
@@ -489,6 +510,13 @@ class SummaryProofTests(unittest.TestCase):
                 self.store_pages([records[:1], records[1:]])
                 with self.assertRaisesRegex(AcceptanceError, "differs from actual archived"):
                     self.verify()
+
+    def test_payload_business_fields_must_match_actual_archive_rows(self) -> None:
+        records = [dict(record) for record in self.records]
+        records[0]["inputTokens"] = 999
+        self.store_pages([records[:1], records[1:]])
+        with self.assertRaisesRegex(AcceptanceError, "differs from actual archived"):
+            self.verify()
 
     def test_duplicate_payload_identities_across_pages_are_rejected(self) -> None:
         self.store_pages([self.records[:1], [self.records[0], self.records[2]]])
