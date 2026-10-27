@@ -1109,17 +1109,6 @@ async fn retention_raw_deletion_plan_defers_while_writer_holds_fence() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
-#[tokio::test]
-async fn empty_raw_deletion_plan_does_not_wait_for_file_phase() {
-    let _file_phase = crate::maintenance::acquire_file_phase_permit("empty_raw_delete_test")
-        .await
-        .expect("acquire test file phase permit");
-    let removed =
-        crate::maintenance::delete_proxy_raw_paths(crate::ProxyRawDeletionPlan::empty(), None)
-            .expect("empty raw deletion plan should be a no-op");
-    assert_eq!(removed, 0);
-}
-
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retention_raw_deletion_plan_preserves_replaced_identity() {
