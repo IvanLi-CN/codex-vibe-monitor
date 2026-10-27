@@ -1095,7 +1095,7 @@ pub(crate) async fn run() -> Result<()> {
                 .await
                 .context("failed to recover durable storage migration state")?,
         );
-        initialize_invocation_identity_cleanup_state(&pool).await?;
+        initialize_invocation_identity_cleanup_state(&pool, false).await?;
         let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
                 maintenance_pool = Some(store.pool.clone());
