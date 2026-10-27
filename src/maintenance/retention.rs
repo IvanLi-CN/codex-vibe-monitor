@@ -34,10 +34,12 @@ pub(crate) use task_batches::{
     archive_old_invocations, invocation_archive_candidate_selection_for_test,
 };
 pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_details};
-pub(crate) use task_transaction_resources::RetentionTransactionResources;
 #[cfg(test)]
 pub(crate) use task_transaction_resources::{
     RETENTION_CLEANUP_WAITER_READY, RETENTION_TEST_RETURN_TO_POOL, RetentionReturnToPoolProbe,
+};
+pub(crate) use task_transaction_resources::{
+    RetentionTransactionResources, RetentionTransactionSettlement,
 };
 
 use chrono::{TimeZone, Timelike};
@@ -69,8 +71,9 @@ mod write_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
 pub(crate) use batch_admission::{
-    ArchiveArtifactProbe, ArchiveFileVerifyProbe, ArchiveIdentityProofProbe, BatchCommitProbe,
-    GateGenerationProbe, RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
+    ArchiveArtifactProbe, ArchiveFileFenceProbe, ArchiveFileVerifyProbe, ArchiveIdentityProofProbe,
+    BatchCommitProbe, GateGenerationProbe, RETENTION_TEST_ARCHIVE_ARTIFACT,
+    RETENTION_TEST_ARCHIVE_FILE_FENCE, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
     RETENTION_TEST_ARCHIVE_IDENTITY_PROOF, RETENTION_TEST_BATCH_COMMIT,
     RETENTION_TEST_GATE_GENERATION, RETENTION_TEST_TRANSACTION_BEGIN, TransactionBeginProbe,
 };

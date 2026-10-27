@@ -475,6 +475,75 @@ pub(crate) async fn stage_task_summary_archive_manifest(
     } else {
         outcome.clone()
     };
+    if let Some(existing_sha256) = expected_existing_sha256 {
+        let proven_batch_id_result: Result<Option<i64>> = async {
+            let proven_batch_id = sqlx::query_scalar::<_, i64>(
+                "SELECT id
+                 FROM archive_batches
+                 WHERE dataset=?1 AND month_key=?2 AND file_path=?3 AND sha256=?4
+                   AND row_count=?5 AND status='completed'
+                   AND summary_source_kind='authoritative'
+                 ORDER BY id DESC
+                 LIMIT 1",
+            )
+            .bind(staging_outcome.dataset)
+            .bind(&staging_outcome.month_key)
+            .bind(&staging_outcome.file_path)
+            .bind(existing_sha256)
+            .bind(staging_outcome.row_count)
+            .fetch_optional(resources.connection_mut())
+            .await?;
+            if let Some(batch_id) = proven_batch_id
+                && crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
+                    resources.connection_mut(),
+                    batch_id,
+                    existing_sha256,
+                )
+                .await?
+            {
+                return Ok(Some(batch_id));
+            }
+            Ok(None)
+        }
+        .await;
+        let proven_batch_id = match proven_batch_id_result {
+            Ok(batch_id) => batch_id,
+            Err(error) => {
+                let cleanup_error = resources.rollback_and_close().await;
+                let mut error = error;
+                if let Err(cleanup_error) = cleanup_error {
+                    error = error.context(format!(
+                        "proven summary manifest lookup rollback and close failed: {cleanup_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
+        if let Some(batch_id) = proven_batch_id {
+            if let Err(error) = sqlx::query("COMMIT")
+                .execute(resources.connection_mut())
+                .await
+            {
+                let cleanup_error = resources.rollback_and_close().await;
+                let mut error: anyhow::Error = error.into();
+                if let Err(cleanup_error) = cleanup_error {
+                    error = error.context(format!(
+                        "failed to rollback and close proven summary manifest transaction after commit error: {cleanup_error}"
+                    ));
+                }
+                return Err(error);
+            }
+            resources.mark_transaction_finished();
+            #[cfg(test)]
+            resources.observe_return_for_test("archive_snapshot_manifest_stage");
+            let archive_lock = resources
+                .return_to_pool_retaining_archive_fence()
+                .await
+                .context("return proven summary manifest connection to pool")?;
+            drop(archive_lock);
+            return Ok(Some(batch_id));
+        }
+    }
     let batch_id = match stage_invocation_archive_batch_manifest_for_summary_pages(
         resources.connection_mut(),
         &staging_outcome,
@@ -685,6 +754,18 @@ pub(crate) async fn store_task_summary_snapshot_page(
         return Err(error);
     }
     let page_result: Result<()> = async {
+        // A completed proof is an authority fence. A retry may have selected this page before
+        // proof publication, but it must not rewrite a proven page set after the final marker
+        // commits and trigger proof invalidation.
+        if crate::summary_source_change::summary_archive_snapshot_final_proof_marker_exists_tx(
+            resources.connection_mut(),
+            batch_id,
+            &outcome.sha256,
+        )
+        .await?
+        {
+            return Ok(());
+        }
         let manifest_matches = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(
                 SELECT 1 FROM archive_batches

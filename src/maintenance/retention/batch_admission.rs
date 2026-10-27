@@ -9,6 +9,9 @@ pub(crate) struct BatchCommitProbe {
     pub(crate) committed: Notify,
     pub(crate) resume: Notify,
     pub(crate) force_commit_busy_timeout_zero: std::sync::atomic::AtomicBool,
+    pub(crate) commit_receipt: Notify,
+    pub(crate) resume_commit_receipt: Notify,
+    pub(crate) pause_after_commit_before_record: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -48,6 +51,13 @@ pub(crate) struct GateGenerationProbe {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ArchiveFileFenceProbe {
+    pub(crate) busy: Notify,
+    pub(crate) force_busy: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_BATCH_COMMIT: Arc<BatchCommitProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_ARTIFACT: Arc<ArchiveArtifactProbe>;
@@ -55,6 +65,7 @@ tokio::task_local! {
     pub(crate) static RETENTION_TEST_ARCHIVE_FILE_VERIFY: Arc<ArchiveFileVerifyProbe>;
     pub(crate) static RETENTION_TEST_TRANSACTION_BEGIN: Arc<TransactionBeginProbe>;
     pub(crate) static RETENTION_TEST_GATE_GENERATION: Arc<GateGenerationProbe>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_FILE_FENCE: Arc<ArchiveFileFenceProbe>;
 }
 
 #[cfg(test)]
@@ -80,6 +91,20 @@ pub(super) async fn prepare_commit_for_test(connection: &mut SqliteConnection) {
             .execute(connection)
             .await
             .expect("set deterministic commit lock timeout");
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn pause_after_commit_before_record() {
+    let Ok(probe) = RETENTION_TEST_BATCH_COMMIT.try_with(Arc::clone) else {
+        return;
+    };
+    if probe
+        .pause_after_commit_before_record
+        .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        probe.commit_receipt.notify_one();
+        probe.resume_commit_receipt.notified().await;
     }
 }
 
@@ -124,6 +149,24 @@ pub(super) async fn pause_after_gate_generation() {
         probe.captured.notify_one();
         probe.resume.notified().await;
     }
+}
+
+#[cfg(test)]
+fn notify_archive_file_fence_busy() {
+    if let Ok(probe) = RETENTION_TEST_ARCHIVE_FILE_FENCE.try_with(Arc::clone) {
+        probe.busy.notify_one();
+    }
+}
+
+#[cfg(test)]
+fn force_archive_file_fence_busy() -> bool {
+    RETENTION_TEST_ARCHIVE_FILE_FENCE
+        .try_with(|probe| {
+            probe
+                .force_busy
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) async fn acquire_retention_batch_write_connection(
@@ -181,11 +224,18 @@ where
     let requested_at = Instant::now();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
+    let admission_retry_started = Instant::now();
+    let had_run_defer_reason = retention_run_defer_reason().is_some();
+    let mut retried_after_admission_defer = false;
 
     loop {
         // Confirm pool readiness before taking the archive fence. This readiness notification is
         // also the synchronization point used by the admission tests to inject competition.
         let Some(mut connection) = acquire_retention_pool_connection(pool, operation).await? else {
+            if wait_for_retention_admission_retry(operation, admission_retry_started).await {
+                retried_after_admission_defer = true;
+                continue;
+            }
             return Ok(None);
         };
         let release = connection.return_to_pool();
@@ -240,6 +290,12 @@ where
                 }
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
                     if !wait_for_background_change(gate, operation, gate_generation).await {
+                        if wait_for_retention_admission_retry(operation, admission_retry_started)
+                            .await
+                        {
+                            retried_after_admission_defer = true;
+                            continue;
+                        }
                         return Ok(None);
                     }
                     continue;
@@ -263,7 +319,33 @@ where
         // The shared file permit and directory fence cover only artifact verification. If either
         // resource is unavailable, release both before waiting for database admission.
         let file_phase = acquire_file_phase_permit(operation).await?;
-        let archive_lock = retention_archive_file_try_lock(archive_path)?;
+        let archive_lock_result = {
+            #[cfg(test)]
+            if force_archive_file_fence_busy() {
+                retention_record_defer("archive_file_fence", "archive_directory_lock_busy");
+                Err(retention_write_deferred("archive_file_fence"))
+            } else {
+                retention_archive_file_try_lock(archive_path)
+            }
+            #[cfg(not(test))]
+            {
+                retention_archive_file_try_lock(archive_path)
+            }
+        };
+        let archive_lock = match archive_lock_result {
+            Ok(lock) => lock,
+            Err(error) if is_retention_write_deferred(&error) => {
+                drop(file_phase);
+                #[cfg(test)]
+                notify_archive_file_fence_busy();
+                if wait_for_retention_admission_retry(operation, admission_retry_started).await {
+                    retried_after_admission_defer = true;
+                    continue;
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         #[cfg(test)]
         pause_before_archive_file_verify().await;
         let file_verify_phase = observe_file_verify();
@@ -315,6 +397,9 @@ where
                     return Ok(None);
                 }
                 if let Some(connection) = pool.try_acquire() {
+                    if retried_after_admission_defer && !had_run_defer_reason {
+                        retention_clear_run_defer_reason();
+                    }
                     return Ok(Some((connection, admission, archive_lock)));
                 }
                 admission.write_permit.revoke_fairness_admission();
@@ -341,6 +426,15 @@ where
                     }
                     crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
                         if !wait_for_background_change(gate, operation, generation).await {
+                            if wait_for_retention_admission_retry(
+                                operation,
+                                admission_retry_started,
+                            )
+                            .await
+                            {
+                                retried_after_admission_defer = true;
+                                continue;
+                            }
                             return Ok(None);
                         }
                         continue;
@@ -350,6 +444,11 @@ where
             Err(RetentionWriteAdmissionRejection::CoordinatorBusy) => {
                 drop(archive_lock);
                 if !wait_for_maintenance_eligibility(operation, requested_at).await {
+                    if wait_for_retention_admission_retry(operation, admission_retry_started).await
+                    {
+                        retried_after_admission_defer = true;
+                        continue;
+                    }
                     return Ok(None);
                 }
             }
@@ -518,6 +617,7 @@ pub(super) async fn acquire_write_connection(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let nested_pressure_slot = super::retention_db_pressure_slot_held();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
     loop {
@@ -539,7 +639,7 @@ pub(super) async fn acquire_write_connection(
                 }
                 continue;
             }
-            if !wait_for_busy {
+            if !wait_for_busy && !nested_pressure_slot {
                 retention_record_defer(operation, reason);
                 return Ok(None);
             }
@@ -620,6 +720,7 @@ pub(super) async fn acquire_write_admission(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let nested_pressure_slot = super::retention_db_pressure_slot_held();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
     loop {
@@ -640,16 +741,23 @@ pub(super) async fn acquire_write_admission(
                     }
                     continue;
                 }
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+                    if nested_pressure_slot =>
+                {
+                    // The enclosing recovery turn already owns the sole pressure slot. It still
+                    // needs a fresh SQLite coordinator permit for this write, but must not request
+                    // a second process-wide pressure slot and self-defer.
+                }
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
                     if wait_for_busy
                         && wait_for_background_change(gate, operation, generation).await
                     {
                         continue;
                     }
+                    retention_record_defer(operation, reason);
+                    return None;
                 }
             }
-            retention_record_defer(operation, reason);
-            return None;
         }
         if retention_run_budget_expired() {
             retention_record_defer(operation, "retention_work_budget");
@@ -663,7 +771,22 @@ pub(super) async fn acquire_write_admission(
             return None;
         }
         let try_generation = gate.eligibility_generation();
-        match gate.try_begin_background(operation) {
+        let pressure_permit = if nested_pressure_slot {
+            if matches!(
+                gate.background_deny_reason(),
+                Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. })
+            ) {
+                write_permit.revoke_fairness_admission();
+                drop(write_permit);
+                retention_record_defer(operation, "pressure_cooldown");
+                return None;
+            }
+            crate::task_timeline::clear_background_denial(operation);
+            Ok(crate::db_pressure::DbBackgroundPermit::nested())
+        } else {
+            gate.try_begin_background(operation)
+        };
+        match pressure_permit {
             Ok(pressure_permit) => {
                 crate::task_runtime_observation::mark_managed_maintenance_work_started();
                 return Some(RetentionWriteAdmission {
@@ -746,4 +869,70 @@ async fn wait_for_background_change(
         return false;
     }
     true
+}
+
+async fn wait_for_retention_admission_retry(operation: &'static str, started: Instant) -> bool {
+    if retention_run_budget_expired()
+        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+    {
+        return false;
+    }
+    let remaining = RETENTION_PRESSURE_RETRY_BUDGET.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return false;
+    }
+    let sleep = tokio::time::sleep(remaining.min(Duration::from_millis(100)));
+    if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                false
+            }
+            _ = sleep => !retention_run_budget_expired(),
+        }
+    } else {
+        sleep.await;
+        !retention_run_budget_expired()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nested_recovery_write_reuses_parent_pressure_slot() {
+        let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+            1,
+            Duration::from_secs(1),
+        ));
+        let parent = gate
+            .try_begin_background("summary_historical_coverage_recovery")
+            .expect("recovery owns the background pressure slot");
+        let coordinator =
+            crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+
+        let admission = RETENTION_TEST_DB_PRESSURE_GATE
+            .scope(
+                gate.clone(),
+                RETENTION_TEST_WRITE_COORDINATOR.scope(
+                    coordinator,
+                    RETENTION_DB_PRESSURE_SLOT_HELD.scope(
+                        (),
+                        acquire_write_admission("summary_snapshot_proof_promotion", false),
+                    ),
+                ),
+            )
+            .await;
+
+        assert!(admission.is_some(), "nested write must not self-defer");
+        drop(admission);
+        assert!(matches!(
+            gate.try_begin_background("other_background_work"),
+            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy)
+        ));
+        drop(parent);
+        assert!(gate.try_begin_background("other_background_work").is_ok());
+    }
 }

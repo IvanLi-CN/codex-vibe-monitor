@@ -91,6 +91,15 @@ tokio::task_local! {
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED: Arc<Notify>;
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_STORES:
         Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_QUERY:
+        Arc<crate::maintenance::TaskArchiveSnapshotQueryProbe>;
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TaskArchiveSnapshotQueryProbe {
+    pub(crate) started: Notify,
+    pub(crate) resume: Notify,
 }
 
 #[derive(Debug, Clone)]
@@ -1251,6 +1260,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
         ArchiveReplacement {
             row_count: Some(result),
             sha256: &sha256,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
         },
     )
     .await
@@ -1402,18 +1412,29 @@ async fn load_task_month_snapshot_pages(
                 valid: false,
             });
         }
-        let archive_rows = if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
-            sqlx::query_as::<_, InvocationHourlySourceRecord>(next_page_query)
-                .bind(occurred_at)
-                .bind(*row_id)
-                .bind(row_count)
-                .fetch_all(archive_pool)
-                .await?
-        } else {
-            sqlx::query_as::<_, InvocationHourlySourceRecord>(first_page_query)
-                .bind(row_count)
-                .fetch_all(archive_pool)
-                .await?
+        let archive_rows = {
+            let archive_pool = archive_pool.clone();
+            let first_page_query = first_page_query.to_string();
+            let next_page_query = next_page_query.to_string();
+            let previous_cursor = previous_cursor.clone();
+            task_snapshot_archive_query(async move {
+                if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_page_query)
+                        .bind(occurred_at)
+                        .bind(*row_id)
+                        .bind(row_count)
+                        .fetch_all(&archive_pool)
+                        .await
+                        .map_err(Into::into)
+                } else {
+                    sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_page_query)
+                        .bind(row_count)
+                        .fetch_all(&archive_pool)
+                        .await
+                        .map_err(Into::into)
+                }
+            })
+            .await?
         };
         let record_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
         let archive_ids = archive_rows.iter().map(|row| row.id).collect::<Vec<_>>();
@@ -1433,14 +1454,21 @@ async fn load_task_month_snapshot_pages(
         }
         let ids = archive_ids;
         let ids_json = serde_json::to_string(&ids)?;
-        let invoke_ids = sqlx::query_as::<_, (i64, String)>(
-            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
-        )
-        .bind(&ids_json)
-        .fetch_all(archive_pool)
-        .await?
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+        let invoke_ids = {
+            let archive_pool = archive_pool.clone();
+            let ids_json = ids_json.clone();
+            task_snapshot_archive_query(async move {
+                sqlx::query_as::<_, (i64, String)>(
+                    "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
+                )
+                .bind(&ids_json)
+                .fetch_all(&archive_pool)
+                .await
+                .map(|rows| rows.into_iter().collect::<HashMap<_, _>>())
+                .map_err(Into::into)
+            })
+            .await?
+        };
         if invoke_ids.len() != archive_rows.len()
             || super::super::retention::encode_summary_archive_snapshot_v2_payload(
                 &archive_rows,
@@ -1470,6 +1498,214 @@ async fn load_task_month_snapshot_pages(
     })
 }
 
+struct TaskSnapshotArchivePoolDrain {
+    pool: Option<Pool<Sqlite>>,
+    cleanup_path: Option<PathBuf>,
+}
+
+struct TaskSnapshotArchivePoolCleanupGuard {
+    pool: Option<Pool<Sqlite>>,
+    cleanup_path: Option<PathBuf>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+struct TaskSnapshotArchivePoolHandoff {
+    pool: Option<Pool<Sqlite>>,
+    cleanup_path: Option<PathBuf>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+impl TaskSnapshotArchivePoolHandoff {
+    fn into_drain(mut self) -> TaskSnapshotArchivePoolDrain {
+        let pool = self
+            .pool
+            .take()
+            .expect("snapshot archive pool handoff owns a connected pool");
+        let cleanup_path = self
+            .cleanup_path
+            .take()
+            .expect("snapshot archive pool handoff owns its cleanup path");
+        drop(self.file_phase.take());
+        TaskSnapshotArchivePoolDrain::new(pool, cleanup_path)
+    }
+}
+
+impl Drop for TaskSnapshotArchivePoolHandoff {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup_path), Some(file_phase)) = (
+            self.pool.take(),
+            self.cleanup_path.take(),
+            self.file_phase.take(),
+        ) else {
+            return;
+        };
+        let mut guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+            file_phase: Some(file_phase),
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                finish_task_snapshot_archive_pool_cleanup(&mut guard).await;
+            }));
+        } else {
+            // Runtime teardown cannot acknowledge native drain. Keep every ownership part until
+            // process exit rather than advertising that the file operation is released.
+            drop(guard);
+        }
+    }
+}
+
+impl Drop for TaskSnapshotArchivePoolCleanupGuard {
+    fn drop(&mut self) {
+        // A cancelled cleanup task has not acknowledged SQLite worker drain. Retain the pool,
+        // temporary file and permit through process exit instead of releasing live ownership.
+        if let Some(pool) = self.pool.take() {
+            std::mem::forget(pool);
+        }
+        if let Some(path) = self.cleanup_path.take() {
+            std::mem::forget(path);
+        }
+        if let Some(file_phase) = self.file_phase.take() {
+            std::mem::forget(file_phase);
+        }
+    }
+}
+
+async fn finish_task_snapshot_archive_pool_cleanup(
+    guard: &mut TaskSnapshotArchivePoolCleanupGuard,
+) {
+    let Some(file_phase) = guard.file_phase.as_ref().cloned() else {
+        return;
+    };
+    crate::with_file_phase_permit(file_phase, async {
+        if let Some(pool) = guard.pool.as_ref() {
+            pool.close().await;
+        }
+        guard.pool.take();
+        if let Some(path) = guard.cleanup_path.take() {
+            remove_temp_sqlite_artifacts_unchecked(&path);
+        }
+    })
+    .await;
+    guard.file_phase.take();
+}
+
+impl TaskSnapshotArchivePoolDrain {
+    fn new(pool: Pool<Sqlite>, cleanup_path: PathBuf) -> Self {
+        Self {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+        }
+    }
+
+    async fn complete(&mut self) {
+        let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+        let (Some(pool), Some(cleanup_path)) = (self.pool.take(), self.cleanup_path.take()) else {
+            drop(file_phase);
+            return;
+        };
+        let mut guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+            file_phase: Some(file_phase),
+        };
+        let worker = tokio::spawn(async move {
+            finish_task_snapshot_archive_pool_cleanup(&mut guard).await;
+        });
+        let _ = worker.await;
+    }
+}
+
+impl Drop for TaskSnapshotArchivePoolDrain {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup_path)) = (self.pool.take(), self.cleanup_path.take()) else {
+            return;
+        };
+        let mut guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+            file_phase: None,
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                guard.file_phase =
+                    Some(super::super::acquire_file_phase_permit_for_cleanup().await);
+                finish_task_snapshot_archive_pool_cleanup(&mut guard).await;
+            }));
+        } else {
+            // Runtime teardown cannot acknowledge native drain. Keep every ownership part until
+            // process exit rather than advertising that the file operation is released.
+            drop(guard);
+        }
+    }
+}
+
+async fn connect_task_snapshot_archive_pool(
+    options: SqliteConnectOptions,
+    cleanup_path: PathBuf,
+) -> Result<TaskSnapshotArchivePoolHandoff> {
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(async move {
+        let mut cleanup_guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: None,
+            cleanup_path: Some(cleanup_path),
+            file_phase: Some(file_phase),
+        };
+        let result = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(anyhow::Error::from);
+        match result {
+            Ok(pool) => {
+                let handoff = TaskSnapshotArchivePoolHandoff {
+                    pool: Some(pool),
+                    cleanup_path: cleanup_guard.cleanup_path.take(),
+                    file_phase: cleanup_guard.file_phase.take(),
+                };
+                if let Err(Ok(handoff)) = sender.send(Ok(handoff)) {
+                    drop(handoff);
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                if let Some(path) = cleanup_guard.cleanup_path.take() {
+                    remove_temp_sqlite_artifacts_unchecked(&path);
+                }
+                cleanup_guard.file_phase.take();
+            }
+        }
+    });
+    drop(worker);
+    receiver
+        .await
+        .context("task snapshot archive pool connect worker failed")?
+}
+
+async fn task_snapshot_archive_query<F, T>(future: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    #[cfg(test)]
+    let query_probe = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_QUERY
+        .try_with(Arc::clone)
+        .ok();
+    #[cfg(test)]
+    let future = async move {
+        #[cfg(test)]
+        if let Some(probe) = query_probe {
+            probe.started.notify_one();
+            probe.resume.notified().await;
+        }
+        future.await
+    };
+    super::super::spawn_file_phase_task(file_phase, future).await
+}
+
 async fn prepare_task_month_snapshot_pages(
     pool: &Pool<Sqlite>,
     work_path: &Path,
@@ -1477,12 +1713,22 @@ async fn prepare_task_month_snapshot_pages(
     batch_id: i64,
 ) -> Result<Vec<TaskArchiveSnapshotPage>> {
     let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
-    let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await?;
-    let result = async {
-        let columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+    let archive_pool_handoff =
+        connect_task_snapshot_archive_pool(options, work_path.to_path_buf()).await?;
+    let mut archive_pool_drain = archive_pool_handoff.into_drain();
+    let result = {
+        let archive_pool = archive_pool_drain
+            .pool
+            .as_ref()
+            .expect("snapshot archive pool drain owns the pool");
+        async {
+        let columns = {
+            let archive_pool = archive_pool.clone();
+            task_snapshot_archive_query(async move {
+                load_archive_table_columns(&archive_pool, "codex_invocations").await
+            })
+            .await?
+        };
         // Tuple keyset pagination must seek rather than sort/scan the month once per 400-row
         // page. The index was installed before the artifact was compressed.
         let base = build_invocation_archive_rows_chunk_query(&columns);
@@ -1496,7 +1742,7 @@ async fn prepare_task_month_snapshot_pages(
         );
         let loaded_pages = load_task_month_snapshot_pages(
             pool,
-            &archive_pool,
+            archive_pool,
             &first_query,
             &next_query,
             batch_id,
@@ -1537,34 +1783,59 @@ async fn prepare_task_month_snapshot_pages(
             (None, 0)
         };
         loop {
-            let rows = if let Some(cursor) = occurred_at.as_deref() {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
-                    .bind(cursor).bind(row_id).bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                    .fetch_all(&archive_pool).await?
-            } else {
-                sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
-                    .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
-                    .fetch_all(&archive_pool).await?
+            let next_page = {
+                let archive_pool = archive_pool.clone();
+                let occurred_at = occurred_at.clone();
+                let next_query = next_query.clone();
+                let first_query = first_query.clone();
+                task_snapshot_archive_query(async move {
+                    let rows = if let Some(cursor) = occurred_at.as_deref() {
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
+                            .bind(cursor)
+                            .bind(row_id)
+                            .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                            .fetch_all(&archive_pool)
+                            .await?
+                    } else {
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&first_query)
+                            .bind(SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS as i64)
+                            .fetch_all(&archive_pool)
+                            .await?
+                    };
+                    if rows.is_empty() {
+                        Ok(None)
+                    } else {
+                        let mut identities = QueryBuilder::<Sqlite>::new(
+                            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
+                        );
+                        let mut ids = identities.separated(", ");
+                        for row in &rows {
+                            ids.push_bind(row.id);
+                        }
+                        ids.push_unseparated(")");
+                        let invoke_ids = identities
+                            .build_query_as::<(i64, String)>()
+                            .fetch_all(&archive_pool)
+                            .await?
+                            .into_iter()
+                            .collect::<HashMap<_, _>>();
+                        let first = rows.first().expect("nonempty snapshot page");
+                        let last = rows.last().expect("nonempty snapshot page");
+                        let page = TaskArchiveSnapshotPage {
+                            coverage_start: first.occurred_at.clone(),
+                            coverage_end: last.occurred_at.clone(),
+                            row_count: u32::try_from(rows.len())?,
+                            payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
+                                &rows,
+                                &invoke_ids,
+                            )?,
+                        };
+                        Ok(Some((rows, page)))
+                    }
+                })
+                .await?
             };
-            if rows.is_empty() { break; }
-            let mut identities = QueryBuilder::<Sqlite>::new(
-                "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
-            );
-            let mut ids = identities.separated(", ");
-            for row in &rows { ids.push_bind(row.id); }
-            ids.push_unseparated(")");
-            let invoke_ids = identities.build_query_as::<(i64, String)>()
-                .fetch_all(&archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
-            let first = rows.first().expect("nonempty snapshot page");
-            let last = rows.last().expect("nonempty snapshot page");
-            let page = TaskArchiveSnapshotPage {
-                coverage_start: first.occurred_at.clone(),
-                coverage_end: last.occurred_at.clone(),
-                row_count: u32::try_from(rows.len())?,
-                payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
-                    &rows, &invoke_ids,
-                )?,
-            };
+            let Some((rows, page)) = next_page else { break; };
             let page_index = u32::try_from(pages.len())?;
             let stored = super::super::retention::store_task_summary_snapshot_page(
                 pool,
@@ -1599,6 +1870,7 @@ async fn prepare_task_month_snapshot_pages(
                     tokio::time::sleep(delay).await;
                 }
             }
+            let last = rows.last().expect("nonempty snapshot page");
             occurred_at = Some(last.occurred_at.clone());
             row_id = last.id;
             if super::super::retention::retention_run_remaining_budget()
@@ -1616,8 +1888,10 @@ async fn prepare_task_month_snapshot_pages(
             }
         }
         Ok::<_, anyhow::Error>(pages)
-    }.await;
-    archive_pool.close().await;
+        }
+        .await
+    };
+    archive_pool_drain.complete().await;
     result
 }
 
@@ -1788,6 +2062,352 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     })
 }
 
+pub(crate) struct PartialArchiveRepairArtifact {
+    temporary_file_path: Option<PathBuf>,
+    row_count: i64,
+    sha256: String,
+}
+
+impl PartialArchiveRepairArtifact {
+    fn new((temporary_file_path, row_count, sha256): (PathBuf, i64, String)) -> Self {
+        Self {
+            temporary_file_path: Some(temporary_file_path),
+            row_count,
+            sha256,
+        }
+    }
+
+    pub(crate) fn temporary_file_path(&self) -> &Path {
+        self.temporary_file_path
+            .as_deref()
+            .expect("partial archive repair artifact is still owned")
+    }
+
+    pub(crate) fn row_count(&self) -> i64 {
+        self.row_count
+    }
+
+    pub(crate) fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.temporary_file_path.take();
+    }
+}
+
+impl Drop for PartialArchiveRepairArtifact {
+    fn drop(&mut self) {
+        if let Some(path) = self.temporary_file_path.take() {
+            remove_temp_sqlite_artifacts_unchecked(&path);
+        }
+    }
+}
+
+/// Rebuild a prepared archive after a source transaction committed only a prefix of its
+/// selected rows. The caller supplies IDs that must be removed from the already published
+/// artifact; predecessor rows in a legacy monthly archive therefore remain intact.
+pub(crate) async fn trim_archive_batch_file_by_ids(
+    outcome: &ArchiveBatchOutcome,
+    remove_ids: &[i64],
+    shutdown: Option<tokio_util::sync::CancellationToken>,
+) -> Result<PartialArchiveRepairArtifact> {
+    if remove_ids.is_empty() {
+        bail!("partial archive repair requires rows to remove");
+    }
+
+    let final_path = PathBuf::from(&outcome.file_path);
+    let archive_table = match outcome.dataset {
+        "codex_invocations" | "forward_proxy_attempts" | "pool_upstream_request_attempts" => {
+            outcome.dataset
+        }
+        dataset => bail!("partial archive repair does not support dataset {dataset}"),
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let remove_ids = remove_ids.to_vec();
+    tokio::spawn(async move {
+        let result =
+            trim_archive_batch_file_by_ids_owned(final_path, remove_ids, archive_table, shutdown)
+                .await
+                .map(PartialArchiveRepairArtifact::new);
+        let _ = sender.send(result);
+    });
+    receiver
+        .await
+        .context("partial archive repair worker exited before reporting its result")?
+}
+
+async fn delete_and_count_partial_archive_rows(
+    work_path: &Path,
+    archive_table: &str,
+    ids_json: &str,
+    shutdown: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<i64> {
+    if shutdown.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    let mut connection = open_archive_sqlite_connection(work_path).await?;
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let interrupted = std::sync::Arc::clone(&interrupted);
+        let shutdown = shutdown.cloned();
+        let mut handle = connection.lock_handle().await?;
+        handle.set_progress_handler(1_000, move || {
+            let keep_running = shutdown
+                .as_ref()
+                .is_none_or(|shutdown| !shutdown.is_cancelled());
+            if !keep_running {
+                interrupted.store(true, std::sync::atomic::Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    let result: Result<i64> = async {
+        let delete_sql =
+            format!("DELETE FROM {archive_table} WHERE id IN (SELECT value FROM json_each(?1))");
+        sqlx::query(&delete_sql)
+            .bind(ids_json)
+            .execute(&mut connection)
+            .await
+            .context("remove uncommitted rows from partial archive repair")?;
+        let count_sql = format!("SELECT COUNT(*) FROM {archive_table}");
+        sqlx::query_scalar(&count_sql)
+            .fetch_one(&mut connection)
+            .await
+            .context("count rows after partial archive repair")
+    }
+    .await;
+    let cleanup = connection.lock_handle().await.map(|mut handle| {
+        handle.remove_progress_handler();
+    });
+    let close = connection.close().await;
+    drop(file_phase);
+    cleanup?;
+    close?;
+    if interrupted.load(std::sync::atomic::Ordering::Acquire)
+        || shutdown.is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    result
+}
+
+pub(crate) async fn finalize_archive_sqlite_file_with_shutdown(
+    path: &Path,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if shutdown.is_cancelled() {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    let mut connection = open_archive_sqlite_connection(path).await?;
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let interrupted = std::sync::Arc::clone(&interrupted);
+        let shutdown = shutdown.clone();
+        let mut handle = connection.lock_handle().await?;
+        handle.set_progress_handler(1_000, move || {
+            let keep_running = !shutdown.is_cancelled();
+            if !keep_running {
+                interrupted.store(true, std::sync::atomic::Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    let result = sqlx::query("PRAGMA optimize")
+        .execute(&mut connection)
+        .await
+        .with_context(|| format!("failed to finalize archive sqlite file {}", path.display()));
+    let cleanup = connection.lock_handle().await.map(|mut handle| {
+        handle.remove_progress_handler();
+    });
+    let close = connection.close().await;
+    cleanup?;
+    close?;
+    if interrupted.load(std::sync::atomic::Ordering::Acquire) || shutdown.is_cancelled() {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    result.map(|_| ())
+}
+
+async fn trim_archive_batch_file_by_ids_owned(
+    final_path: PathBuf,
+    remove_ids: Vec<i64>,
+    archive_table: &'static str,
+    shutdown: Option<tokio_util::sync::CancellationToken>,
+) -> Result<(PathBuf, i64, String)> {
+    let final_path = final_path.as_path();
+    let suffix = retention_temp_suffix();
+    let work_path = PathBuf::from(format!(
+        "{}.partial-repair-{}.sqlite",
+        final_path.display(),
+        suffix
+    ));
+    let temp_gzip_path = PathBuf::from(format!(
+        "{}.partial-repair-{}.tmp",
+        final_path.display(),
+        suffix
+    ));
+    let cleanup_work_path = work_path.clone();
+    let cleanup_temp_gzip_path = temp_gzip_path.clone();
+
+    let result = async {
+        if shutdown
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            return Err(super::super::retention::retention_write_deferred(
+                "partial_archive_repair",
+            ));
+        }
+        if let Some(shutdown) = shutdown.as_ref() {
+            inflate_gzip_sqlite_file_with_operation_budget_for_cleanup_with_shutdown(
+                final_path,
+                &work_path,
+                shutdown.clone(),
+            )
+            .await?;
+        } else {
+            inflate_gzip_sqlite_file_with_operation_budget_for_cleanup(final_path, &work_path)
+                .await?;
+        }
+        let ids_json = serde_json::to_string(&remove_ids)
+            .context("encode partial archive repair source ids")?;
+        let row_count = delete_and_count_partial_archive_rows(
+            &work_path,
+            archive_table,
+            &ids_json,
+            shutdown.as_ref(),
+        )
+        .await?;
+        if shutdown
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            return Err(super::super::retention::retention_write_deferred(
+                "partial_archive_repair",
+            ));
+        }
+        if let Some(shutdown) = shutdown.as_ref() {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            finalize_archive_sqlite_file_with_shutdown(&work_path, shutdown.clone()).await?;
+        } else {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            finalize_archive_sqlite_file(&work_path).await?;
+        }
+        if let Some(shutdown) = shutdown.as_ref() {
+            deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup_with_shutdown(
+                &work_path,
+                &temp_gzip_path,
+                shutdown.clone(),
+            )
+            .await?;
+        } else {
+            deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup(
+                &work_path,
+                &temp_gzip_path,
+            )
+            .await?;
+        }
+        let sha256 = if let Some(shutdown) = shutdown.as_ref() {
+            sha256_hex_file_with_operation_budget_for_cleanup_with_shutdown(
+                &temp_gzip_path,
+                shutdown.clone(),
+            )
+            .await?
+        } else {
+            sha256_hex_file_with_operation_budget_for_cleanup(&temp_gzip_path).await?
+        };
+        Ok::<_, anyhow::Error>((temp_gzip_path, row_count, sha256))
+    }
+    .await;
+
+    if result.is_err() {
+        remove_temp_sqlite_artifacts(&cleanup_work_path);
+        remove_temp_sqlite_artifacts(&cleanup_temp_gzip_path);
+    } else {
+        // The native archive worker has drained after the awaited deflate/hash operations. The
+        // compressed result remains owned by the caller; the decompressed repair workspace does
+        // not, so remove it before returning successfully.
+        remove_temp_sqlite_artifacts_unchecked(&cleanup_work_path);
+    }
+    result
+}
+
+pub(crate) async fn replace_archive_batch_file_with_cleanup_serialization(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    temporary_file_path: &Path,
+    expected_existing_sha256: &str,
+) -> Result<()> {
+    replace_legacy_archive_file_with_cleanup_serialization(
+        pool,
+        outcome.dataset,
+        &outcome.month_key,
+        temporary_file_path,
+        Path::new(&outcome.file_path),
+        Some(expected_existing_sha256),
+        ArchiveReplacement {
+            row_count: Some(outcome.row_count),
+            sha256: &outcome.sha256,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn replace_archive_batch_file_with_cleanup_serialization_for_repair(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    temporary_file_path: &Path,
+    expected_existing_sha256: &str,
+) -> Result<()> {
+    replace_legacy_archive_file_with_cleanup_serialization(
+        pool,
+        outcome.dataset,
+        &outcome.month_key,
+        temporary_file_path,
+        Path::new(&outcome.file_path),
+        Some(expected_existing_sha256),
+        ArchiveReplacement {
+            row_count: Some(outcome.row_count),
+            sha256: &outcome.sha256,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_REPAIR_PENDING,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn rebuild_task_month_snapshot_pages_for_archive(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    batch_id: i64,
+) -> Result<Vec<super::super::retention::TaskArchiveSnapshotPage>> {
+    let final_path = Path::new(&outcome.file_path);
+    let work_path = PathBuf::from(format!(
+        "{}.partial-repair-pages-{}.sqlite",
+        final_path.display(),
+        retention_temp_suffix()
+    ));
+    let cleanup_work_path = work_path.clone();
+    let result = async {
+        inflate_gzip_sqlite_file_with_operation_budget(final_path, &work_path).await?;
+        let pages = prepare_task_month_snapshot_pages(pool, &work_path, outcome, batch_id).await?;
+        Ok::<_, anyhow::Error>(pages)
+    }
+    .await;
+    remove_temp_sqlite_artifacts(&cleanup_work_path);
+    result
+}
+
 pub(crate) async fn upsert_archived_upstream_last_activity(
     tx: &mut sqlx::SqliteConnection,
     values: &[(i64, String)],
@@ -1890,6 +2510,26 @@ async fn upsert_archive_batch_manifest_with_status(
     status: &str,
     preserve_existing_artifact_identity: bool,
 ) -> Result<i64> {
+    let repair_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(
+             SELECT 1 FROM archive_batches
+             WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+               AND cleanup_state = ?4
+         )",
+    )
+    .bind(batch.dataset)
+    .bind(&batch.month_key)
+    .bind(&batch.file_path)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .fetch_one(&mut *tx)
+    .await?;
+    if repair_pending != 0 {
+        bail!(
+            "archive batch repair is pending for {} {}",
+            batch.dataset,
+            batch.file_path
+        );
+    }
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -2368,6 +3008,7 @@ mod tests {
             ArchiveReplacement {
                 row_count: None,
                 sha256: "replacement-sha",
+                cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
             },
         )
         .await
@@ -2420,6 +3061,7 @@ mod tests {
             ArchiveReplacement {
                 row_count: None,
                 sha256: "replacement-sha",
+                cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
             },
         )
         .await

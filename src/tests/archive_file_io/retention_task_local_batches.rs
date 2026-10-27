@@ -103,6 +103,71 @@ async fn retention_archive_exports_transaction_and_complete_write_hold_separatel
 }
 
 #[tokio::test]
+async fn retention_archive_retries_after_archive_file_fence_busy() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-file-fence-retry").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month)
+        .expect("canonical archive target");
+    fs::create_dir_all(target.parent().expect("archive target parent"))
+        .expect("create archive target parent");
+    let held_fence = crate::maintenance::retention_archive_file_lock(&target)
+        .expect("hold archive directory fence");
+    let probe = Arc::new(crate::maintenance::ArchiveFileFenceProbe::default());
+    probe
+        .force_busy
+        .store(true, std::sync::atomic::Ordering::Release);
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let work = crate::maintenance::retention_test_with_recorded_defer_reason(
+        RETENTION_TEST_WRITE_COORDINATOR.scope(
+            coordinator,
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                gate,
+                crate::maintenance::RETENTION_TEST_ARCHIVE_FILE_FENCE.scope(
+                    probe.clone(),
+                    archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = probe.busy.notified() => {}
+            result = &mut work => panic!("archive completed before file fence retry: {result:?}"),
+        }
+    })
+    .await
+    .expect("archive attempted while file fence was busy");
+    drop(held_fence);
+
+    let (result, defer_reason) = tokio::time::timeout(Duration::from_secs(10), &mut work)
+        .await
+        .expect("archive retry completes after file fence release");
+    let result = result.expect("archive retry succeeds");
+    assert_eq!(defer_reason, None);
+    assert_eq!(result.0, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("count source rows after retry"),
+        0
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_rejects_source_change_after_archive_artifact_proof() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-artifact-source-change").await;
@@ -1551,7 +1616,7 @@ async fn retention_task_local_cancel_closes_attached_connection_and_cleans_work(
         })
         .await;
     assert!(result.is_err(), "cancel during attached task-local work");
-    assert_no_task_work_files(&config.archive_dir);
+    wait_for_no_task_work_files(&config.archive_dir).await;
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
@@ -1680,10 +1745,7 @@ fn assert_no_task_work_files(directory: &Path) {
             assert_no_task_work_files(&entry.path());
         } else {
             let name = entry.file_name().to_string_lossy().into_owned();
-            assert!(
-                !name.contains(".task-") && !name.ends_with(".restore"),
-                "unfinished file: {name}"
-            );
+            assert!(!is_task_work_file(&name), "unfinished file: {name}");
         }
     }
 }
@@ -1697,9 +1759,13 @@ fn has_task_work_files(directory: &Path) -> bool {
                 has_task_work_files(&entry.path())
             } else {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                name.contains(".task-") || name.ends_with(".restore")
+                is_task_work_file(&name)
             }
         })
+}
+
+fn is_task_work_file(name: &str) -> bool {
+    name.contains(".task-") || name.ends_with(".restore") || name.contains(".partial-repair-")
 }
 
 async fn wait_for_no_task_work_files(directory: &Path) {
@@ -2269,7 +2335,58 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
             .expect("existing final Summary proof"),
         1
     );
-    for (page_index, page) in pages {
+    let original_page_payload = pages
+        .first()
+        .map(|(_, page)| page.payload.clone())
+        .expect("completed Summary archive has a page");
+    let original_manifest_fields: (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT day_key, part_key, archive_expires_at
+             FROM archive_batches WHERE id=?1",
+        )
+        .bind(batch_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load original proven manifest fields");
+    let mut stale_manifest_outcome = outcome.clone();
+    stale_manifest_outcome.day_key = Some("stale-day".to_string());
+    stale_manifest_outcome.part_key = Some("stale-part".to_string());
+    stale_manifest_outcome.archive_expires_at = Some("2099-01-01T00:00:00".to_string());
+    assert_eq!(
+        crate::maintenance::stage_task_summary_archive_manifest(
+            &pool,
+            &stale_manifest_outcome,
+            Some(&outcome.sha256),
+            Some(outcome.row_count),
+        )
+        .await
+        .expect("same-SHA manifest replay"),
+        Some(batch_id)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof")
+            .fetch_one(&pool)
+            .await
+            .expect("final Summary proof after same-SHA manifest replay"),
+        1
+    );
+    let persisted_manifest_fields: (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT day_key, part_key, archive_expires_at
+             FROM archive_batches WHERE id=?1",
+        )
+        .bind(batch_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load preserved proven manifest");
+    assert_eq!(persisted_manifest_fields, original_manifest_fields);
+    for (page_index, mut page) in pages {
+        if page_index == 0 {
+            // Simulate a stale retry selected before proof publication. A valid final proof is an
+            // authority fence, so the retry must leave the proven page set untouched even when
+            // the replacement payload is not decodable.
+            page.payload = b"stale-retry-page".to_vec();
+        }
         crate::maintenance::store_task_summary_snapshot_page(
             &pool, &outcome, batch_id, page_index, page,
         )
@@ -2284,6 +2401,16 @@ async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
             .expect("final Summary proof after same-SHA replay"),
         1
     );
+    let retained_page_payload: Vec<u8> = sqlx::query_scalar(
+        "SELECT payload FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2 AND page_index=0",
+    )
+    .bind(batch_id)
+    .bind(&outcome.sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained proven Summary page");
+    assert_eq!(retained_page_payload, original_page_payload);
     assert_no_task_work_files(&config.archive_dir);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
@@ -2731,6 +2858,60 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
             .expect("uncommitted sources"),
         936
     );
+    let day_key = shanghai_day_key_from_local_naive(&occurred_at).expect("archive day");
+    let full_batch_ids = (1..=1_000).collect::<Vec<_>>();
+    let part_key = archive_segment_part_key_for_ids(&full_batch_ids).expect("archive part");
+    let archive_path = archive_segment_file_path(
+        &config,
+        "codex_invocations",
+        &day_key,
+        &part_key,
+        config.invocation_archive_codec,
+    )
+    .expect("archive path");
+    assert!(
+        archive_path.is_file(),
+        "partial archive artifact must remain recoverable"
+    );
+    let inflated_path = temp_dir.join("partial-source-archive.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate repaired partial archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open repaired partial archive");
+    let archive_row_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&mut archive_connection)
+        .await
+        .expect("count repaired partial archive rows");
+    archive_connection
+        .close()
+        .await
+        .expect("close repaired partial archive");
+    assert_eq!(archive_row_count, 64);
+    let archive_path = archive_path.to_string_lossy().to_string();
+    let repaired_manifest = sqlx::query_as::<_, (i64, String)>(
+        "SELECT row_count, sha256 FROM archive_batches
+         WHERE dataset='codex_invocations' AND file_path=?1
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired partial archive manifest");
+    assert_eq!(repaired_manifest.0, 64);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay
+             WHERE dataset='codex_invocations' AND file_path=?1 AND archive_sha256=?2",
+        )
+        .bind(&archive_path)
+        .bind(&repaired_manifest.1)
+        .fetch_one(&pool)
+        .await
+        .expect("load replay markers for repaired partial archive"),
+        INVOCATION_HOURLY_ROLLUP_TARGETS.len() as i64
+    );
     let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("exact totals after partial source conversion");
@@ -2759,6 +2940,637 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
             .expect("no continuation"),
         0
     );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_reselects_without_duplicates() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-archive").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-attempt-'||i, 'partial-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("timestamped archive candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("timestamped archive path");
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_work_budget(
+                Duration::from_secs(60),
+                archive_timestamped_dataset(
+                    &pool,
+                    &config,
+                    archive_table_spec("pool_upstream_request_attempts"),
+                    select_sql,
+                    "9999-01-01 00:00:00".to_string(),
+                    false,
+                    None,
+                ),
+            ),
+        ),
+    );
+    let competitor = async {
+        probe.committed.notified().await;
+        sqlx::query(
+            "UPDATE archive_batches
+             SET cleanup_state=?1
+             WHERE dataset=?2 AND month_key=?3 AND file_path=?4",
+        )
+        .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+        .bind("pool_upstream_request_attempts")
+        .bind(&occurred_at[..7])
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("mark timestamped archive cleanup pending");
+        probe.resume.notify_one();
+    };
+    let (first, ()) = tokio::join!(work, competitor);
+    let first = first.expect("timestamped archive should defer after a committed prefix");
+    assert_eq!(first.0, 64);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("remaining live timestamped rows"),
+        936
+    );
+
+    let manifest_row_count: i64 = sqlx::query_scalar(
+        "SELECT row_count FROM archive_batches
+         WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("partial timestamped archive manifest");
+    assert_eq!(manifest_row_count, 64);
+    let inflated_path = temp_dir.join("partial-timestamped-archive.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate repaired timestamped archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open repaired timestamped archive");
+    let archive_row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count repaired timestamped archive rows");
+    archive_connection
+        .close()
+        .await
+        .expect("close repaired timestamped archive");
+    assert_eq!(archive_row_count, 64);
+
+    let second = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("reselect remaining timestamped rows");
+    assert_eq!(second.0, 936);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("all timestamped source rows converted"),
+        0
+    );
+    let final_manifest_row_count: i64 = sqlx::query_scalar(
+        "SELECT row_count FROM archive_batches
+         WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("final timestamped archive manifest");
+    assert_eq!(final_manifest_row_count, 1_000);
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_recovers_pending_partial_archive_after_restart() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-pending-partial-recovery").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<100)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'restart-attempt-'||i, 'restart-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("seed restart recovery timestamped archive candidates");
+
+    let month_key = &occurred_at[..7];
+    let ids = (1..=100).collect::<Vec<_>>();
+    let outcome = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        month_key,
+        &ids,
+    )
+    .await
+    .expect("prepare interrupted timestamped archive artifact");
+    let staged_path = PathBuf::from(format!("{}.restore", outcome.file_path));
+    fs::copy(&outcome.file_path, &staged_path).expect("prepare verifiable replacement journal");
+    let staged_path_string = staged_path.to_string_lossy().to_string();
+    sqlx::query("DELETE FROM pool_upstream_request_attempts WHERE id <= 36")
+        .execute(&pool)
+        .await
+        .expect("simulate committed source prefix before restart");
+    sqlx::query(
+        "INSERT INTO archive_batches
+             (dataset, month_key, file_path, sha256, row_count, status, layout, codec,
+              writer_version, cleanup_state, replacement_staged_path, summary_source_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?7, ?8, ?9, ?10, ?11)",
+    )
+    .bind(outcome.dataset)
+    .bind(&outcome.month_key)
+    .bind(&outcome.file_path)
+    .bind(&outcome.sha256)
+    .bind(outcome.row_count)
+    .bind(outcome.layout)
+    .bind(outcome.codec)
+    .bind(outcome.writer_version)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .bind(&staged_path_string)
+    .bind(outcome.summary_source_kind)
+    .execute(&pool)
+    .await
+    .expect("persist interrupted partial repair manifest");
+
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let recovered = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("recover and finish pending partial archive");
+    assert_eq!(recovered.0, 64);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining source rows after restart recovery"),
+        0
+    );
+    let archive_path = outcome.file_path.clone();
+    let manifest = sqlx::query_as::<_, (i64, String)>(
+        "SELECT row_count, cleanup_state FROM archive_batches WHERE file_path=?1",
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered archive manifest");
+    assert_eq!(manifest, (100, ARCHIVE_CLEANUP_STATE_ACTIVE.to_string()));
+    assert!(
+        !staged_path.exists(),
+        "timestamped owner must reconcile the replacement journal before recovery"
+    );
+    let inflated_path = temp_dir.join("pending-partial-recovery.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(Path::new(&archive_path), &inflated_path)
+        .await
+        .expect("inflate recovered archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open recovered archive");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count recovered archive rows"),
+        100
+    );
+    archive_connection
+        .close()
+        .await
+        .expect("close recovered archive");
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_repairs_after_source_error() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-error").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-error-attempt-'||i, 'partial-error-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("timestamped archive error candidates");
+    sqlx::query("CREATE TRIGGER task_local_timestamped_error BEFORE DELETE ON pool_upstream_request_attempts WHEN OLD.id=65 BEGIN SELECT RAISE(ABORT,'injected timestamped source conversion failure'); END")
+        .execute(&pool)
+        .await
+        .expect("stop timestamped source conversion after first chunk");
+
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let result = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await;
+    result.expect_err("timestamped source error should be returned after repair");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("uncommitted timestamped sources remain"),
+        936
+    );
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("timestamped archive path");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("repaired timestamped archive manifest"),
+        64
+    );
+    let inflated_path = temp_dir.join("partial-timestamped-error.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
+        .await
+        .expect("inflate repaired timestamped error archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open repaired timestamped error archive");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count repaired timestamped error rows"),
+        64
+    );
+    archive_connection
+        .close()
+        .await
+        .expect("close repaired timestamped error archive");
+    assert_no_task_work_files(&config.archive_dir);
+    sqlx::query("DROP TRIGGER task_local_timestamped_error")
+        .execute(&pool)
+        .await
+        .expect("remove timestamped source error");
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_leaves_repair_pending_after_shutdown() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-shutdown").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-shutdown-attempt-'||i, 'partial-shutdown-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("timestamped archive shutdown candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_shutdown(
+                shutdown.clone(),
+                crate::maintenance::retention_test_with_work_budget(
+                    Duration::from_secs(60),
+                    archive_timestamped_dataset(
+                        &pool,
+                        &config,
+                        archive_table_spec("pool_upstream_request_attempts"),
+                        select_sql,
+                        "9999-01-01 00:00:00".to_string(),
+                        false,
+                        None,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let cancel_after_first_chunk = async {
+        probe.committed.notified().await;
+        shutdown.cancel();
+        probe.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(work, cancel_after_first_chunk);
+    result.expect_err("shutdown should stop timestamped work after repair");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("uncommitted shutdown sources remain"),
+        936
+    );
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("shutdown archive path");
+    let manifest = sqlx::query_as::<_, (i64, String)>(
+        "SELECT row_count, cleanup_state FROM archive_batches
+         WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("shutdown partial archive manifest");
+    assert_eq!(manifest.0, 1_000);
+    assert_eq!(manifest.1, ARCHIVE_CLEANUP_STATE_REPAIR_PENDING);
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_partial_timestamped_archive_repairs_after_direct_cancellation() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-timestamped-direct-cancel").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'partial-direct-attempt-'||i, 'partial-direct-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("direct-cancellation timestamped archive candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    probe
+        .pause_after_commit_before_record
+        .store(true, std::sync::atomic::Ordering::Release);
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let mut work = Box::pin(crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_work_budget(
+                Duration::from_secs(60),
+                archive_timestamped_dataset(
+                    &pool,
+                    &config,
+                    archive_table_spec("pool_upstream_request_attempts"),
+                    select_sql,
+                    "9999-01-01 00:00:00".to_string(),
+                    false,
+                    None,
+                ),
+            ),
+        ),
+    ));
+    let mut work_pin = work.as_mut();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::select! {
+            _ = probe.commit_receipt.notified() => {}
+            result = &mut work_pin => panic!("timestamped work completed before direct cancellation: {result:?}"),
+        }
+    })
+        .await
+        .expect("first timestamped chunk commits before direct cancellation");
+    drop(work);
+
+    let archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
+            .expect("direct-cancellation timestamped archive path");
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let row_count = sqlx::query_scalar::<_, i64>(
+                "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+            )
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_optional(&pool)
+            .await
+            .expect("poll direct-cancellation repaired manifest");
+            if row_count == Some(64) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("independent partial repair completes after direct cancellation");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&pool)
+            .await
+            .expect("remaining timestamped sources after direct cancellation"),
+        936
+    );
+
+    let second = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("reselect remaining timestamped rows after direct cancellation");
+    assert_eq!(second.0, 936);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&pool)
+            .await
+            .expect("all timestamped sources converted once after direct cancellation"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("final direct-cancellation timestamped manifest"),
+        1_000
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_snapshot_query_cancellation_keeps_file_phase_until_drain() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-query-cancel").await;
+    config.codex_invocation_archive_layout = ArchiveBatchLayout::LegacyMonth;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let probe = Arc::new(crate::maintenance::TaskArchiveSnapshotQueryProbe::default());
+    let mut work = Box::pin(
+        crate::maintenance::RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_QUERY.scope(
+            probe.clone(),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    );
+    let mut work_pin = work.as_mut();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::select! {
+            _ = probe.started.notified() => {}
+            result = &mut work_pin => panic!("snapshot work completed before native query pause: {result:?}"),
+        }
+    })
+        .await
+        .expect("snapshot native query starts before cancellation");
+    drop(work);
+    assert!(
+        crate::maintenance::try_acquire_file_phase_permit().is_none(),
+        "cancelled caller must not release the native snapshot query's file permit"
+    );
+    probe.resume.notify_one();
+
+    let permit = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(permit) = crate::maintenance::try_acquire_file_phase_permit() {
+                break permit;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("snapshot native query drains before file permit release");
+    drop(permit);
     assert_no_task_work_files(&config.archive_dir);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

@@ -18,6 +18,42 @@ pub(crate) struct RawOrphanSweepPassResult {
     pub(crate) admission_cause: Option<String>,
 }
 
+pub(crate) fn is_raw_orphan_sweep_deferred(error: &anyhow::Error) -> bool {
+    is_retention_write_deferred(error) || crate::is_sqlite_lock_error(error)
+}
+
+fn defer_raw_orphan_sweep_candidate(
+    result: &mut RawOrphanSweepPassResult,
+    traversal: &mut RetentionRawDirectoryTraversal,
+    candidate_entries: &[RetentionRawDirectoryEntry],
+    candidate_index: usize,
+    error: &anyhow::Error,
+) -> bool {
+    if !mark_raw_orphan_sweep_deferred(result, error) {
+        return false;
+    }
+    traversal
+        .pending_candidates
+        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+    true
+}
+
+fn mark_raw_orphan_sweep_deferred(
+    result: &mut RawOrphanSweepPassResult,
+    error: &anyhow::Error,
+) -> bool {
+    if !is_raw_orphan_sweep_deferred(error) {
+        return false;
+    }
+    result.complete = false;
+    result.deferred = true;
+    if let Some((stage, cause)) = raw_orphan_sweep_admission_details(error) {
+        result.admission_stage = Some(stage.to_string());
+        result.admission_cause = Some(cause.to_string());
+    }
+    true
+}
+
 pub(crate) async fn sweep_orphan_proxy_raw_files(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -81,7 +117,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     result.complete = false;
                 }
             }
-            Err(error) if is_retention_write_deferred(&error) => {
+            Err(error) if is_raw_orphan_sweep_deferred(&error) => {
                 result.complete = false;
                 result.deferred = true;
                 if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -107,11 +143,20 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
     let candidate_entries = if traversal.pending_candidates.is_empty() {
         let scan = match read_retention_raw_directory_slice_with_budget(
             &raw_root,
-            traversal.directory.take(),
+            &mut traversal.directory,
         )
         .await
         {
             Ok(scan) => scan,
+            Err(error) if is_raw_orphan_sweep_deferred(&error) => {
+                result.complete = false;
+                result.deferred = true;
+                if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                    result.admission_stage = Some(stage.to_string());
+                    result.admission_cause = Some(cause.to_string());
+                }
+                return Ok(result);
+            }
             Err(error) => return Err(error),
         };
         result.inspected_entries += scan.inspected_entries;
@@ -152,6 +197,16 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         Ok(paths) => paths,
         Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
             result.complete = false;
+            traversal.pending_candidates.extend(candidate_entries);
+            return Ok(result);
+        }
+        Err(error) if is_raw_orphan_sweep_deferred(&error) => {
+            result.complete = false;
+            result.deferred = true;
+            if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                result.admission_stage = Some(stage.to_string());
+                result.admission_cause = Some(cause.to_string());
+            }
             traversal.pending_candidates.extend(candidate_entries);
             return Ok(result);
         }
@@ -211,6 +266,18 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
+            Err(error) if is_raw_orphan_sweep_deferred(&error) => {
+                result.complete = false;
+                result.deferred = true;
+                if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                    result.admission_stage = Some(stage.to_string());
+                    result.admission_cause = Some(cause.to_string());
+                }
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
             Err(_) => {
                 result.complete = false;
                 result.failures += 1;
@@ -246,6 +313,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
+                break;
+            }
             Err(_) => {
                 result.complete = false;
                 result.failures += 1;
@@ -262,26 +340,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     clear_retention_raw_reconciliation_row(pool, &context, &raw_path, None).await
             {
                 result.complete = false;
-                result.failures += 1;
                 if is_raw_orphan_sweep_candidate_budget_expired(&error) {
-                    result.failures = result.failures.saturating_sub(1);
                     traversal
                         .pending_candidates
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
-                if is_retention_write_deferred(&error) {
-                    result.complete = false;
-                    result.deferred = true;
-                    if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
-                        result.admission_stage = Some(stage.to_string());
-                        result.admission_cause = Some(cause.to_string());
-                    }
+                if mark_raw_orphan_sweep_deferred(&mut result, &error) {
                     traversal
                         .pending_candidates
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
+                result.failures += 1;
                 continue;
             }
             result.referenced_skipped += 1;
@@ -302,26 +373,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .await
             {
                 result.complete = false;
-                result.failures += 1;
                 if is_raw_orphan_sweep_candidate_budget_expired(&error) {
-                    result.failures = result.failures.saturating_sub(1);
                     traversal
                         .pending_candidates
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
-                if is_retention_write_deferred(&error) {
-                    result.complete = false;
-                    result.deferred = true;
-                    if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
-                        result.admission_stage = Some(stage.to_string());
-                        result.admission_cause = Some(cause.to_string());
-                    }
+                if mark_raw_orphan_sweep_deferred(&mut result, &error) {
                     traversal
                         .pending_candidates
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
+                result.failures += 1;
                 continue;
             }
             if !dry_run {
@@ -362,26 +426,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .await
                 {
                     result.complete = false;
-                    result.failures += 1;
                     if is_raw_orphan_sweep_candidate_budget_expired(&error) {
-                        result.failures = result.failures.saturating_sub(1);
                         traversal
                             .pending_candidates
                             .extend(candidate_entries.iter().skip(candidate_index).cloned());
                         break;
                     }
-                    if is_retention_write_deferred(&error) {
-                        result.complete = false;
-                        result.deferred = true;
-                        if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
-                            result.admission_stage = Some(stage.to_string());
-                            result.admission_cause = Some(cause.to_string());
-                        }
+                    if mark_raw_orphan_sweep_deferred(&mut result, &error) {
                         traversal
                             .pending_candidates
                             .extend(candidate_entries.iter().skip(candidate_index).cloned());
                         break;
                     }
+                    result.failures += 1;
                 }
                 continue;
             }
@@ -395,6 +452,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
                 break;
             }
             Err(_) => {
@@ -457,7 +525,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
-                if is_retention_write_deferred(&error) {
+                if is_raw_orphan_sweep_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
                     if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
@@ -502,6 +570,17 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .await
             {
                 Ok(lock) => lock,
+                Err(error) if error.to_string() == "archive directory lock busy" => {
+                    result.complete = false;
+                    result.deferred = true;
+                    result.admission_stage = Some("archive_file_phase".to_string());
+                    result.admission_cause = Some("archive_directory_lock_busy".to_string());
+                    drop(inventory_admission);
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
                 Err(_) => {
                     drop(inventory_admission);
                     result.complete = false;
@@ -582,6 +661,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(error)
+                if defer_raw_orphan_sweep_candidate(
+                    &mut result,
+                    traversal,
+                    &candidate_entries,
+                    candidate_index,
+                    &error,
+                ) =>
+            {
+                drop(directory_lock);
+                drop(inventory_admission);
                 break;
             }
             Err(_) => {
@@ -682,6 +774,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         .extend(candidate_entries.iter().skip(candidate_index).cloned());
                     break;
                 }
+                Err(error)
+                    if defer_raw_orphan_sweep_candidate(
+                        &mut result,
+                        traversal,
+                        &candidate_entries,
+                        candidate_index,
+                        &error,
+                    ) =>
+                {
+                    drop(directory_lock);
+                    drop(inventory_admission);
+                    break;
+                }
                 Err(_) => {
                     drop(directory_lock);
                     drop(inventory_admission);
@@ -743,6 +848,8 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             drop(inventory_admission);
             result.complete = false;
             result.deferred = true;
+            result.admission_stage = Some("file_phase".to_string());
+            result.admission_cause = Some("file_phase_busy".to_string());
             traversal
                 .pending_candidates
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
@@ -820,7 +927,8 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             drop(directory_lock);
             drop(inventory_admission);
             result.complete = false;
-            if !is_raw_orphan_sweep_candidate_budget_expired(&error) {
+            let budget_expired = is_raw_orphan_sweep_candidate_budget_expired(&error);
+            if !budget_expired && !mark_raw_orphan_sweep_deferred(&mut result, &error) {
                 result.failures += 1;
             }
             traversal
@@ -839,26 +947,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         .await
         {
             result.complete = false;
-            result.failures += 1;
             if is_raw_orphan_sweep_candidate_budget_expired(&error) {
-                result.failures = result.failures.saturating_sub(1);
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
-            if is_retention_write_deferred(&error) {
-                result.complete = false;
-                result.deferred = true;
-                if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
-                    result.admission_stage = Some(stage.to_string());
-                    result.admission_cause = Some(cause.to_string());
-                }
+            if mark_raw_orphan_sweep_deferred(&mut result, &error) {
                 traversal
                     .pending_candidates
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
+            result.failures += 1;
         }
     }
 
@@ -1267,7 +1368,7 @@ pub(crate) fn raw_orphan_sweep_next_retry_secs(
     pass: &RawOrphanSweepPassResult,
     consecutive_failure_count: u32,
 ) -> i64 {
-    if pass.failures > 0 {
+    if pass.failures > 0 && pass.removed == 0 {
         raw_orphan_sweep_failure_retry_secs(consecutive_failure_count)
     } else if !pass.complete || pass.reconciliation_has_more || !pass.reached_end {
         RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS
@@ -1351,7 +1452,12 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
                 || pass.reconciliation_rows_checked > 0
                 || pass.removed > 0;
             let retry = if pass.deferred {
-                RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS
+                match pass.admission_cause.as_deref() {
+                    Some("file_phase_busy" | "archive_directory_lock_busy") => {
+                        RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS
+                    }
+                    _ => RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
+                }
             } else {
                 raw_orphan_sweep_next_retry_secs(&pass, schedule.consecutive_failure_count)
             };
@@ -1413,7 +1519,7 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
         }
         Err(error) => {
             if !dry_run {
-                let pressure = is_retention_write_deferred(&error);
+                let pressure = is_raw_orphan_sweep_deferred(&error);
                 let retry = if pressure {
                     RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS
                 } else {
@@ -1438,5 +1544,61 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
             }
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_lock_errors_are_deferred_for_raw_sweep() {
+        let error = anyhow::anyhow!("error returned from database: (code: 5) database is locked");
+
+        assert!(is_raw_orphan_sweep_deferred(&error));
+    }
+
+    #[test]
+    fn transient_raw_sweep_errors_do_not_become_candidate_failures() {
+        let error = anyhow::anyhow!("error returned from database: (code: 5) database is locked");
+        let mut result = RawOrphanSweepPassResult {
+            complete: true,
+            ..Default::default()
+        };
+
+        assert!(mark_raw_orphan_sweep_deferred(&mut result, &error));
+        assert!(result.deferred);
+        assert!(!result.complete);
+        assert_eq!(result.failures, 0);
+    }
+
+    #[test]
+    fn non_transient_raw_sweep_errors_remain_failures() {
+        let error = anyhow::anyhow!("raw reconciliation ledger row was corrupted");
+
+        assert!(!is_raw_orphan_sweep_deferred(&error));
+    }
+
+    #[test]
+    fn progressing_raw_sweep_failure_retries_before_safety_backoff() {
+        let pass = RawOrphanSweepPassResult {
+            complete: false,
+            failures: 1,
+            removed: 5,
+            ..Default::default()
+        };
+
+        assert_eq!(raw_orphan_sweep_next_retry_secs(&pass, 0), 1);
+    }
+
+    #[test]
+    fn non_progressing_raw_sweep_failure_keeps_safety_backoff() {
+        let pass = RawOrphanSweepPassResult {
+            complete: false,
+            failures: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(raw_orphan_sweep_next_retry_secs(&pass, 0), 300);
     }
 }

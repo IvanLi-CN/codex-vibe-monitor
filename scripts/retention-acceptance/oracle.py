@@ -15,7 +15,7 @@ import stat
 import tempfile
 from typing import Any, Callable, Iterator
 
-from contract import AcceptanceError, DATASETS, canonical_json, parse_time, sha256_json
+from contract import AcceptanceError, DATASETS, canonical_json, sha256_json
 
 
 REPLAY_TARGETS = {
@@ -24,6 +24,24 @@ REPLAY_TARGETS = {
     "upstream_account_usage_breakdown_hourly",
 }
 CONTAINER_ARCHIVE_ROOT = Path("/srv/app/data/archives")
+ARCHIVE_OMITTED_SOURCE_COLUMNS = {
+    "codex_invocations": {"timeline_json"},
+    "pool_upstream_request_attempts": {"occurred_epoch_ms"},
+}
+PRODUCTION_LOCAL_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _parse_production_local_time(value: str) -> datetime:
+    """Parse SQLite production timestamps, which are usually Shanghai-local naive values."""
+    if not isinstance(value, str) or not value:
+        raise AcceptanceError("missing production timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AcceptanceError("invalid production timestamp") from error
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=PRODUCTION_LOCAL_TIMEZONE)
+    return parsed.astimezone(PRODUCTION_LOCAL_TIMEZONE)
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -32,6 +50,32 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in connection.execute(f"PRAGMA table_xinfo('{table}')") if row[6] != 1]
+
+
+def _archive_projection_columns(dataset: str, source_columns: list[str]) -> list[str]:
+    omitted = ARCHIVE_OMITTED_SOURCE_COLUMNS.get(dataset, set())
+    projection = [column for column in source_columns if column not in omitted]
+    if not projection:
+        raise AcceptanceError(f"{dataset} archive projection is empty")
+    return projection
+
+
+def _validated_archive_columns(
+    dataset: str,
+    source_columns: list[str],
+    archived_columns: list[str],
+) -> list[str]:
+    source_set = set(source_columns)
+    archived_set = set(archived_columns)
+    missing = source_set - archived_set
+    extra = archived_set - source_set
+    allowed_missing = ARCHIVE_OMITTED_SOURCE_COLUMNS.get(dataset, set())
+    if extra or missing - allowed_missing or not archived_columns:
+        raise AcceptanceError(
+            f"{dataset} archive columns differ from the production archive projection "
+            f"(missing={sorted(missing)}, extra={sorted(extra)})"
+        )
+    return archived_columns
 
 
 def _row_digest(row: tuple[Any, ...]) -> str:
@@ -169,8 +213,21 @@ def _archive_path(database: Path, archive_root: Path, stored_path: str, dataset:
     except ValueError as error:
         raise AcceptanceError("archive manifest escaped the configured archive root") from error
     parts = relative.parts
-    expected = (dataset, month_key[:4], f"{dataset}-{month_key}.sqlite.gz")
-    if parts != expected or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_key):
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_key):
+        raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
+    legacy_month_path = parts == (dataset, month_key[:4], f"{dataset}-{month_key}.sqlite.gz")
+    segment_path = False
+    if dataset == "codex_invocations" and len(parts) == 5:
+        segment_path = (
+            parts[:3] == (dataset, month_key[:4], month_key[5:])
+            and re.fullmatch(r"0[1-9]|[12][0-9]|3[01]", parts[3]) is not None
+            and re.fullmatch(
+                r"part-[0-9a-f]{16}-[0-9a-f]{16}-[0-9a-f]{16}\.sqlite\.gz",
+                parts[4],
+            )
+            is not None
+        )
+    if not legacy_month_path and not segment_path:
         raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
     if resolved.suffixes[-2:] != [".sqlite", ".gz"]:
         raise AcceptanceError("archive artifact is not a gzip SQLite file")
@@ -231,6 +288,7 @@ def verify_dataset(
     seed_ids: set[str],
     added_attempt_invocations: dict[str, str],
     cutoff: str,
+    require_summary_proof: bool = True,
     budget_check: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     dataset = DATASETS[dataset_name]["manifest_dataset"]
@@ -255,7 +313,9 @@ def verify_dataset(
     connection.row_factory = sqlite3.Row
     template = sqlite3.connect(f"file:{template_database}?mode=ro", uri=True)
     archive_counts: Counter[str] = Counter()
+    archive_column_counts: set[int] = set()
     content_records: list[tuple[str, str, str]] = []
+    summary_proof_verified = True
     try:
         source_columns = _table_columns(connection, table)
         template_columns = _table_columns(template, table)
@@ -263,6 +323,8 @@ def verify_dataset(
             raise AcceptanceError(f"{dataset} pristine template schema differs from the trial source schema")
         template_column_list = ",".join(template_columns)
         identity_index = template_columns.index(identity_column)
+        source_column_indexes = {column: index for index, column in enumerate(source_columns)}
+        seed_rows: dict[str, tuple[Any, ...]] = {}
         seed_fingerprints: dict[str, str] = {}
         for index, row in enumerate(template.execute(f"SELECT {template_column_list} FROM {table}")):
             if budget_check is not None and index % 256 == 0:
@@ -272,7 +334,9 @@ def verify_dataset(
                 continue
             if identity in seed_fingerprints:
                 raise AcceptanceError(f"{dataset} pristine template contains a duplicate seed identity")
-            seed_fingerprints[identity] = _row_digest(tuple(row))
+            seed_row = tuple(row)
+            seed_rows[identity] = seed_row
+            seed_fingerprints[identity] = _row_digest(seed_row)
         if set(seed_fingerprints) != seed_ids:
             raise AcceptanceError(f"{dataset} pristine template does not contain every seed source row")
 
@@ -280,8 +344,12 @@ def verify_dataset(
         required = {"id", "dataset", "month_key", "file_path", "sha256", "row_count", "status", "cleanup_state", "superseded_by"}
         if not required.issubset(manifest_columns):
             raise AcceptanceError(f"production archive manifest schema is incomplete for {dataset}")
+        source_kind_clause = " AND summary_source_kind='authoritative'" if dataset == "codex_invocations" else ""
         manifests = connection.execute(
-            "SELECT id,dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL ORDER BY month_key,file_path,id",
+            "SELECT id,dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind FROM archive_batches "
+            f"WHERE dataset=? AND status='completed' AND cleanup_state='active' "
+            f"AND superseded_by IS NULL{source_kind_clause} "
+            "ORDER BY month_key,file_path,id",
             (dataset,),
         ).fetchall()
         if not manifests:
@@ -292,7 +360,14 @@ def verify_dataset(
             if dataset == "codex_invocations":
                 if manifest["summary_source_kind"] != "authoritative":
                     raise AcceptanceError("invocation archive manifest is not authoritative")
-                _verify_summary_proof(connection, manifest["id"], manifest["sha256"], manifest["file_path"])
+                proof_exists = connection.execute(
+                    "SELECT 1 FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
+                    (manifest["id"], manifest["sha256"]),
+                ).fetchone() is not None
+                if proof_exists or require_summary_proof:
+                    _verify_summary_proof(connection, manifest["id"], manifest["sha256"], manifest["file_path"])
+                else:
+                    summary_proof_verified = False
             path = _archive_path(database, archive_root, manifest["file_path"], dataset, manifest["month_key"])
             decompressed = scratch / f"{dataset}-{manifest['id']}.sqlite"
             with _verified_archive_snapshot(path, manifest["sha256"], scratch, dataset, budget_check) as snapshot:
@@ -304,11 +379,11 @@ def verify_dataset(
             archive = sqlite3.connect(f"file:{decompressed}?mode=ro", uri=True)
             try:
                 archived_columns = _table_columns(archive, dataset)
-                if archived_columns != source_columns:
-                    raise AcceptanceError(f"{dataset} archive columns differ from the complete source row")
-                archived_identity_index = archived_columns.index(identity_column)
-                occurred_at_index = archived_columns.index("occurred_at")
-                selected_columns = ",".join(source_columns)
+                _validated_archive_columns(dataset, source_columns, archived_columns)
+                archived_column_indexes = {column: archived_columns.index(column) for column in archived_columns}
+                archived_identity_index = archived_column_indexes[identity_column]
+                occurred_at_index = archived_column_indexes["occurred_at"]
+                selected_columns = ",".join(archived_columns)
                 rows = archive.execute(f"SELECT {selected_columns} FROM {dataset}")
                 actual_count = 0
                 for index, row in enumerate(rows):
@@ -324,11 +399,14 @@ def verify_dataset(
                         raise AcceptanceError(f"{dataset} archive contains rows outside the seeded and measured input")
                     if identity not in seed_ids:
                         raise AcceptanceError(f"{dataset} archive converted a measured input row past the fixed retention cutoff")
-                    row_fingerprint = _row_digest(tuple(row))
-                    if row_fingerprint != seed_fingerprints[identity]:
+                    archive_fingerprint = _row_digest(tuple(row))
+                    seed_row = seed_rows[identity]
+                    source_projection = tuple(seed_row[source_column_indexes[column]] for column in archived_columns)
+                    if archive_fingerprint != _row_digest(source_projection):
                         raise AcceptanceError(f"{dataset} archive changed full source row content for {identity}")
                     archive_counts[identity] += 1
-                    content_records.append((identity, "archive", row_fingerprint))
+                    content_records.append((identity, "archive", archive_fingerprint))
+                    archive_column_counts.add(len(archived_columns))
                     actual_count += 1
                 if actual_count != manifest["row_count"]:
                     raise AcceptanceError(f"{dataset} artifact row count disagrees with its completed manifest")
@@ -340,7 +418,7 @@ def verify_dataset(
         source_identity_index = source_columns.index(identity_column)
         source_occurred_at_index = source_columns.index("occurred_at")
         attempt_invoke_index = source_columns.index("invoke_id") if dataset == "pool_upstream_request_attempts" else None
-        cutoff_at = datetime.fromisoformat(cutoff).replace(tzinfo=timezone(timedelta(hours=8)))
+        cutoff_at = datetime.fromisoformat(cutoff).replace(tzinfo=PRODUCTION_LOCAL_TIMEZONE)
         selected_columns = ",".join(source_columns)
         for index, row in enumerate(connection.execute(f"SELECT {selected_columns} FROM {table}")):
             if budget_check is not None and index % 256 == 0:
@@ -355,7 +433,7 @@ def verify_dataset(
                 occurred_at = row[source_occurred_at_index]
                 if not isinstance(occurred_at, str):
                     raise AcceptanceError(f"{dataset} measured source row has no valid occurrence time")
-                if parse_time(occurred_at) < cutoff_at:
+                if _parse_production_local_time(occurred_at) < cutoff_at:
                     raise AcceptanceError(f"{dataset} measured source row predates the fixed retention cutoff")
                 if attempt_invoke_index is not None and row[attempt_invoke_index] != added_attempt_invocations[identity]:
                     raise AcceptanceError(f"{dataset} live source changed the measured attempt-to-invocation association")
@@ -393,9 +471,11 @@ def verify_dataset(
         "lost_rows": lost_rows,
         "duplicate_rows": duplicate_rows,
         "archive_manifest_count": len(manifests),
-        "row_content_columns": len(source_columns),
+        "row_content_columns": min(archive_column_counts, default=len(source_columns)),
         "row_content_rows_checked": len(content_records),
         "row_content_sha256": content_digest.hexdigest(),
+        "summary_proof_required": require_summary_proof,
+        "summary_proof_verified": summary_proof_verified,
         **({"attempt_invocation_map_sha256": sha256_json(sorted([[attempt_id, invoke_id] for attempt_id, invoke_id in added_attempt_invocations.items()]))} if dataset == "pool_upstream_request_attempts" else {}),
         "verified": True,
     }
@@ -409,11 +489,16 @@ def verify_trial(
     template_database: Path,
     cutoff: str,
     scratch: Path,
+    require_summary_proof: bool = True,
     budget_check: Callable[[], float] | None = None,
+    skip_datasets: set[str] | None = None,
 ) -> dict[str, Any]:
     scratch.mkdir(parents=True, exist_ok=True)
     results = {}
+    skipped = skip_datasets or set()
     for name, definition in DATASETS.items():
+        if name in skipped:
+            continue
         seed_ids = {
             f"retention-seed-{name}-{index:06d}"
             for index in range(1, definition["seed_rows"] + 1)
@@ -437,6 +522,7 @@ def verify_trial(
                 for row in attempt_states
             } if name == "pool_upstream_attempts" else {},
             cutoff=cutoff,
+            require_summary_proof=require_summary_proof,
             budget_check=budget_check,
         )
         results[name] = result

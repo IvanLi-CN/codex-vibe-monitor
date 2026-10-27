@@ -188,7 +188,7 @@ impl RawOrphanSweepPassContext {
 
 pub(crate) async fn read_retention_raw_directory_slice_with_budget(
     root: &Path,
-    directory: Option<ReadDir>,
+    directory: &mut Option<ReadDir>,
 ) -> Result<RetentionRawDirectorySlice> {
     let root = root.to_owned();
     #[cfg(test)]
@@ -199,6 +199,7 @@ pub(crate) async fn read_retention_raw_directory_slice_with_budget(
             "file_phase_busy",
         ));
     };
+    let directory = directory.take();
     // A ReadDir cannot be cancelled safely once moved into a blocking worker. Await the
     // single worker to preserve its position and avoid accumulating detached scans after a
     // slow filesystem call; the caller checks the budget again before admitting its results.

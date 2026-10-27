@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import shutil
@@ -22,19 +23,30 @@ from contract import (
     CONTAINER_RUN_ID_LABEL,
     CONTAINER_TRIAL_LABEL,
     DATASETS,
+    SUMMARY_RECOVERY_TASK,
     TRIAL_EXECUTION_ORDER,
 )
-from fixture import CONTROLLED_TASK_KEYS, prepare_competitor
+from fixture import (
+    CONTROLLED_TASK_KEYS,
+    _history_timestamp,
+    prepare_competitor,
+    seed_parallel_work_coverage,
+)
 from measure import (
     OwnedContainerLedger,
     cleanup_budget,
     cleanup_named_container,
     cleanup_path_if_safe,
+    add_observed_input_identity_digests,
     observed_attempt_states,
     remaining_budget,
     run_command,
     run_foreground,
     start_container,
+    task_state_snapshot,
+    validate_task_snapshot,
+    verify_baseline_trial_with_negative_controls,
+    wait_for_task_evidence,
 )
 
 
@@ -48,6 +60,490 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_baseline_verification_collects_each_duplicate_control(self) -> None:
+        calls: list[set[str]] = []
+
+        def fake_verify_trial(*args: object, **kwargs: object) -> dict[str, object]:
+            skipped = set(kwargs["skip_datasets"])
+            calls.append(skipped)
+            if not skipped:
+                raise AcceptanceError(
+                    "codex_invocations source/artifact conservation failed: lost=0, duplicates=3"
+                )
+            if skipped == {"invocations"}:
+                raise AcceptanceError(
+                    "pool_upstream_request_attempts source/artifact conservation failed: "
+                    "lost=0, duplicates=4"
+                )
+            return {"verified": True, "datasets": {}}
+
+        with patch("measure.verify_trial", side_effect=fake_verify_trial):
+            oracle = verify_baseline_trial_with_negative_controls(
+                Path("main.sqlite"),
+                Path("archives"),
+                {"invocations": [], "pool_upstream_attempts": []},
+                [],
+                Path("template.sqlite"),
+                "2026-10-01T00:00:00Z",
+                Path("scratch"),
+                lambda: 1.0,
+            )
+
+        self.assertEqual(calls, [set(), {"invocations"}])
+        self.assertEqual(
+            [control["dataset"] for control in oracle["negative_controls"]],
+            ["codex_invocations", "pool_upstream_request_attempts"],
+        )
+        self.assertEqual(oracle["datasets"], {})
+
+    def test_negative_control_oracle_binds_remaining_dataset_input_digests(self) -> None:
+        oracle = {
+            "verified": False,
+            "failure_class": "source_artifact_conservation",
+            "datasets": {
+                "pool_upstream_attempts": {},
+            },
+        }
+        add_observed_input_identity_digests(
+            oracle,
+            {"invocations": ["invoke-1"], "pool_upstream_attempts": ["attempt-1"]},
+        )
+        self.assertRegex(
+            oracle["datasets"]["pool_upstream_attempts"]["added_ids_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+
+    def test_legacy_partial_status_is_accepted_when_selected_batch_is_complete(self) -> None:
+        archive_details = {
+            "result": "partial",
+            "fatalError": None,
+            "errorChain": None,
+            "timeoutCount": 0,
+            "selectedScope": {"selected": 1000, "committed": 1000},
+            "archiveBatches": [{"batchRows": 1000, "committedRows": 1000, "timeoutCount": 0}],
+        }
+        rows = [
+            {
+                "task_key": task_key,
+                "trigger_kind": trigger_kind,
+                "status": "skipped" if task_key == "retention_archive" and trigger_kind == "schedule" else "success",
+                "completion": "partial" if task_key == "retention_archive" and trigger_kind == "schedule" else "complete",
+                "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                "processed_count": 1000 if task_key != COMPETITOR_TASK else None,
+                "committed_work": 512 if task_key == COMPETITOR_TASK else 1000,
+                "committed_bytes": 512 * 256 if task_key == COMPETITOR_TASK else 0,
+                "details": archive_details if task_key == "retention_archive" and trigger_kind == "schedule" else {},
+                "error_detail": None,
+            }
+            for index, (task_key, trigger_kind) in enumerate(
+                [
+                    ("retention_archive", "schedule"),
+                    ("retention_archive", "catchup"),
+                    ("pool_upstream_attempt_archive", "schedule"),
+                    ("pool_upstream_attempt_archive", "catchup"),
+                    (COMPETITOR_TASK, "schedule"),
+                ],
+                start=1,
+            )
+        ]
+
+        validate_task_snapshot(rows)
+
+    def test_partial_status_is_rejected_when_selected_batch_is_incomplete(self) -> None:
+        rows = [
+            {
+                "task_key": "retention_archive",
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "details": {
+                    "result": "partial",
+                    "selectedScope": {"selected": 1000, "committed": 999},
+                    "archiveBatches": [{"batchRows": 1000, "committedRows": 999, "timeoutCount": 0}],
+                },
+                "error_detail": None,
+            }
+        ]
+
+        with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
+            validate_task_snapshot(rows)
+
+    def test_competitor_partial_chunks_count_toward_fixed_workload(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                "committed_work": 32,
+                "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+                "committed_bytes": 32 * 256,
+                "error_detail": None,
+            }
+            for index in range(16)
+        ] + [
+            {
+                "task_key": task_key,
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                "committed_work": 1000,
+                "committed_bytes": 0,
+                "details": {},
+                "error_detail": None,
+            }
+            for index, (task_key, trigger_kind) in enumerate(
+                [
+                    ("retention_archive", "schedule"),
+                    ("retention_archive", "catchup"),
+                    ("pool_upstream_attempt_archive", "schedule"),
+                    ("pool_upstream_attempt_archive", "catchup"),
+                ],
+                start=1,
+            )
+        ]
+
+        validate_task_snapshot(rows)
+
+    def test_zero_contribution_file_phase_defer_is_ignored_for_fixed_workload(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "deferred",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": None,
+                "committed_bytes": None,
+                "details": {
+                    "filesChecked": None,
+                    "directoryEntriesChecked": None,
+                    "reconciliationRowsChecked": None,
+                    "filesReleased": None,
+                    "bytesReleased": None,
+                    "referencedSkipped": None,
+                    "quarantined": None,
+                    "failures": None,
+                    "waitReason": "file_phase_busy",
+                    "admissionStage": "file_phase",
+                },
+                "error_detail": None,
+            },
+            *[
+                {
+                    "task_key": COMPETITOR_TASK,
+                    "trigger_kind": "schedule",
+                    "status": "skipped",
+                    "completion": "partial",
+                    "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                    "committed_work": 32,
+                    "committed_bytes": 32 * 256,
+                    "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+                    "error_detail": None,
+                }
+                for index in range(1, 17)
+            ],
+            *[
+                {
+                    "task_key": task_key,
+                    "trigger_kind": trigger_kind,
+                    "status": "success",
+                    "completion": "complete",
+                    "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                    "committed_work": 1000,
+                    "committed_bytes": 0,
+                    "details": {},
+                    "error_detail": None,
+                }
+                for index, (task_key, trigger_kind) in enumerate(
+                    [
+                        ("retention_archive", "schedule"),
+                        ("retention_archive", "catchup"),
+                        ("pool_upstream_attempt_archive", "schedule"),
+                        ("pool_upstream_attempt_archive", "catchup"),
+                    ],
+                    start=1,
+                )
+            ],
+        ]
+
+        validate_task_snapshot(rows)
+
+    def test_recoverable_competitor_failure_counts_after_file_oracle_completion(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "error_detail": None,
+            },
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": "2026-10-25T00:00:02Z",
+                "actual_finished_at": "2026-10-25T00:00:03Z",
+                "committed_work": 0,
+                "committed_bytes": 0,
+                "details": {},
+                "error_detail": None,
+            },
+            *[
+                {
+                    "task_key": task_key,
+                    "trigger_kind": trigger_kind,
+                    "status": "success",
+                    "completion": "complete",
+                    "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                    "committed_work": 1000,
+                    "details": {},
+                    "error_detail": None,
+                }
+                for index, (task_key, trigger_kind) in enumerate(
+                    [
+                        ("retention_archive", "schedule"),
+                        ("retention_archive", "catchup"),
+                        ("pool_upstream_attempt_archive", "schedule"),
+                        ("pool_upstream_attempt_archive", "catchup"),
+                    ],
+                    start=1,
+                )
+            ],
+        ]
+
+        with self.assertRaisesRegex(AcceptanceError, "fixed workload"):
+            validate_task_snapshot(rows)
+        validate_task_snapshot(rows, allow_recoverable_competitor_failures=True)
+
+    def test_recoverable_competitor_failure_waits_for_successful_retry(self) -> None:
+        rows = [
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "error_detail": None,
+            },
+            *[
+                {
+                    "task_key": task_key,
+                    "trigger_kind": trigger_kind,
+                    "status": "success",
+                    "completion": "complete",
+                    "actual_started_at": f"2026-10-25T00:01:{index:02d}Z",
+                    "actual_finished_at": f"2026-10-25T00:01:{index + 1:02d}Z",
+                    "committed_work": 1000,
+                    "details": {},
+                    "error_detail": None,
+                }
+                for index, (task_key, trigger_kind) in enumerate(
+                    [
+                        ("retention_archive", "schedule"),
+                        ("retention_archive", "catchup"),
+                        ("pool_upstream_attempt_archive", "schedule"),
+                        ("pool_upstream_attempt_archive", "catchup"),
+                    ],
+                    start=1,
+                )
+            ],
+        ]
+
+        with self.assertRaisesRegex(AcceptanceError, "no later successful retry"):
+            validate_task_snapshot(rows, allow_recoverable_competitor_failures=True)
+
+    def test_fixture_history_timestamps_match_retention_local_time_contract(self) -> None:
+        timestamp = _history_timestamp("2026-10-24 00:00:00", 0)
+
+        self.assertEqual(timestamp, "2026-09-01 00:00:00")
+        self.assertNotIn("T", timestamp)
+        self.assertNotIn("Z", timestamp)
+
+    def test_task_state_snapshot_missing_database_is_non_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = task_state_snapshot(Path(temporary) / "missing.sqlite")
+
+        self.assertIn("error", snapshot)
+        self.assertIn("unable to open database file", snapshot["error"])
+
+    def test_task_state_snapshot_preserves_terminal_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "maintenance.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "CREATE TABLE managed_tasks (task_key TEXT, enabled INTEGER, is_manual INTEGER, "
+                    "interval_secs INTEGER, next_trigger_at TEXT, next_catchup_at TEXT, catchup_reason TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE managed_task_runs (id INTEGER, task_key TEXT, trigger_kind TEXT, status TEXT, "
+                    "started_at TEXT, actual_started_at TEXT, finished_at TEXT, actual_finished_at TEXT, "
+                    "summary TEXT, error_detail TEXT, processed_count INTEGER, updated_count INTEGER, "
+                    "details TEXT, completion TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE maintenance_owner_retry_state (task_key TEXT, failure_count INTEGER, "
+                    "next_eligible_at TEXT, reason TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO managed_task_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        1,
+                        "retention_archive",
+                        "schedule",
+                        "failed",
+                        "2026-10-25T00:00:00.000Z",
+                        "2026-10-25T00:00:00.100Z",
+                        "2026-10-25T00:00:01.000Z",
+                        "2026-10-25T00:00:01.100Z",
+                        "retention_archive 执行失败",
+                        "fatal_error;failure_fingerprint:abc",
+                        0,
+                        0,
+                        '{"fatalError":"archive failed","waitReason":"owner_failed"}',
+                        "failed",
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            snapshot = task_state_snapshot(database)
+
+        self.assertEqual(snapshot["managed_task_runs"][0]["details"]["fatalError"], "archive failed")
+        self.assertEqual(snapshot["managed_task_runs"][0]["error_detail"], "fatal_error;failure_fingerprint:abc")
+
+    def test_task_evidence_drain_uses_remaining_phase_budget(self) -> None:
+        valid_runs = [
+            {
+                "task_key": "retention_archive",
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "actual_started_at": (
+                    "2026-10-25T00:00:02Z" if trigger_kind == "catchup" else "2026-10-25T00:00:00Z"
+                ),
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+            }
+            for trigger_kind in ("schedule", "catchup")
+        ] + [
+            {
+                "task_key": "pool_upstream_attempt_archive",
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "actual_started_at": (
+                    "2026-10-25T00:00:02Z" if trigger_kind == "catchup" else "2026-10-25T00:00:00Z"
+                ),
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+            }
+            for trigger_kind in ("schedule", "catchup")
+        ] + [
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "interval",
+                "status": "success",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 512,
+            }
+        ]
+        with (
+            patch("measure.remaining_budget", return_value=120),
+            patch("measure.time.monotonic", side_effect=[0, 0, 31, 31]),
+            patch("measure.time.sleep"),
+            patch("measure.task_runs", side_effect=[[], valid_runs, valid_runs]),
+            patch("measure.quiesce_controlled_tasks") as quiesce_controlled,
+            patch("measure.controlled_task_runs_idle", return_value=True) as task_runs_idle,
+            patch(
+                "measure.archive_proof_status",
+                return_value={
+                    "ready": True,
+                    "reference_ready": True,
+                    "datasets": {
+                        "invocations": {
+                            "dataset": "codex_invocations",
+                            "ready": True,
+                            "reference_ready": True,
+                            "summary_proof_complete": True,
+                            "summary_proof_missing": [],
+                        },
+                        "pool_upstream_attempts": {
+                            "dataset": "pool_upstream_request_attempts",
+                            "ready": True,
+                            "reference_ready": True,
+                            "summary_proof_complete": True,
+                            "summary_proof_missing": [],
+                        },
+                    },
+                },
+            ),
+        ):
+            result = wait_for_task_evidence(
+                Path("main.sqlite"),
+                Path("maintenance.sqlite"),
+                "2026-10-24 00:00:00",
+                {"invocations": 81, "pool_upstream_attempts": 97},
+                0,
+            )
+
+        self.assertEqual(result, valid_runs)
+        quiesce_controlled.assert_called_once_with(Path("maintenance.sqlite"), 0)
+        task_runs_idle.assert_called_once_with(Path("maintenance.sqlite"))
+
+    def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "coverage.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE parallel_work_hourly_coverage (
+                        hour_start_epoch INTEGER NOT NULL,
+                        source_scope TEXT NOT NULL,
+                        minute_keys_complete INTEGER NOT NULL,
+                        hourly_scalar_complete INTEGER NOT NULL,
+                        PRIMARY KEY (hour_start_epoch, source_scope)
+                    )
+                    """
+                )
+                seed_parallel_work_coverage(connection, "2026-10-24 00:00:00")
+                rows = connection.execute(
+                    """
+                    SELECT hour_start_epoch, source_scope, minute_keys_complete
+                    FROM parallel_work_hourly_coverage
+                    ORDER BY hour_start_epoch, source_scope
+                    """
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(rows), 29 * 24 * 2)
+        self.assertEqual({row[1] for row in rows}, {"all", "proxy_only"})
+        self.assertEqual({row[2] for row in rows}, {1})
+        self.assertEqual(rows[0][0], int(datetime(2026, 9, 24, 16, tzinfo=timezone.utc).timestamp()))
+        self.assertEqual(rows[-1][0], int(datetime(2026, 10, 23, 15, tzinfo=timezone.utc).timestamp()))
+
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -83,6 +579,33 @@ class MeasurementBudgetTests(unittest.TestCase):
                 )
                 maintenance.execute("CREATE TABLE managed_task_runs (id INTEGER)")
                 maintenance.execute("CREATE TABLE managed_task_work_runs (id INTEGER)")
+                maintenance.execute(
+                    """
+                    CREATE TABLE maintenance_owner_retry_state (
+                        task_key TEXT PRIMARY KEY,
+                        failure_count INTEGER NOT NULL DEFAULT 0,
+                        next_eligible_at TEXT,
+                        reason TEXT
+                    )
+                    """
+                )
+                maintenance.execute(
+                    """
+                    CREATE TABLE startup_backfill_progress (
+                        task_name TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL,
+                        next_run_after TEXT,
+                        next_probe_at TEXT
+                    )
+                    """
+                )
+                maintenance.executemany(
+                    "INSERT INTO startup_backfill_progress VALUES (?,?,?,?)",
+                    [
+                        ("historical_rollups", 1, "old-run", "old-probe"),
+                        ("prompt_cache_key", 1, "old-run", "old-probe"),
+                    ],
+                )
                 task_rows = [
                     (key, 1, "old-trigger", "old-catchup", "old-reason", "old-updated")
                     for key in (
@@ -94,6 +617,13 @@ class MeasurementBudgetTests(unittest.TestCase):
                 maintenance.executemany(
                     "INSERT INTO managed_tasks VALUES (?,?,?,?,?,?)",
                     task_rows,
+                )
+                maintenance.executemany(
+                    "INSERT INTO maintenance_owner_retry_state(task_key,failure_count,next_eligible_at,reason) VALUES(?,?,?,?)",
+                    [
+                        (CONTROLLED_TASK_KEYS[0], 3, "2099-01-01T00:00:00.000Z", "sqlite_pressure"),
+                        ("summary_snapshot", 2, "2099-01-01T00:00:00.000Z", "retry_backoff"),
+                    ],
                 )
                 main.commit()
                 maintenance.commit()
@@ -117,12 +647,19 @@ class MeasurementBudgetTests(unittest.TestCase):
                         "SELECT task_key,enabled,next_trigger_at,next_catchup_at,catchup_reason FROM managed_tasks"
                     )
                 }
+                retry_rows = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        "SELECT task_key,failure_count,next_eligible_at,reason FROM maintenance_owner_retry_state"
+                    )
+                }
             finally:
                 connection.close()
 
             self.assertEqual(
                 set(CONTROLLED_TASK_KEYS),
-                {DATASETS[name]["task_key"] for name in DATASETS} | {COMPETITOR_TASK},
+                {DATASETS[name]["task_key"] for name in DATASETS}
+                | {COMPETITOR_TASK, SUMMARY_RECOVERY_TASK},
             )
             self.assertEqual(set(CONTROLLED_TASK_KEYS), {
                 key for key, (enabled, next_trigger, next_catchup, _) in rows.items()
@@ -136,6 +673,20 @@ class MeasurementBudgetTests(unittest.TestCase):
                 rows["long_term_projection"],
                 (0, None, None, None),
             )
+            self.assertNotIn(CONTROLLED_TASK_KEYS[0], retry_rows)
+            self.assertEqual(
+                retry_rows["summary_snapshot"],
+                (2, "2099-01-01T00:00:00.000Z", "retry_backoff"),
+            )
+            progress_connection = sqlite3.connect(maintenance_database)
+            try:
+                progress_rows = progress_connection.execute(
+                    "SELECT enabled,next_run_after,next_probe_at "
+                    "FROM startup_backfill_progress ORDER BY task_name"
+                ).fetchall()
+            finally:
+                progress_connection.close()
+            self.assertEqual(progress_rows, [(0, None, None), (0, None, None)])
 
     def test_observed_attempt_states_counts_rows_from_five_column_query(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

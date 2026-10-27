@@ -30,8 +30,16 @@ DATASETS = {
         "task_key": "pool_upstream_attempt_archive",
     },
 }
+# The fixed baseline is known to duplicate-publish these two source datasets. Keep this
+# allowlist explicit so adding a future dataset cannot silently become a tolerated defect.
+BASELINE_NEGATIVE_CONTROL_DATASETS = frozenset({
+    "codex_invocations",
+    "pool_upstream_request_attempts",
+})
 COMPETITOR_TASK = "raw_orphan_sweep"
+SUMMARY_RECOVERY_TASK = "summary_coverage_recovery"
 COMPETITOR_FILE_COUNT = 512
+COMPETITOR_FILE_BYTES = 256
 RUN_SECONDS = 120
 TRIALS_PER_VERSION = 3
 MAX_TEST_PHASE_SECONDS = 900
@@ -40,7 +48,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 9
 CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
 CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
 CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
@@ -61,6 +69,36 @@ TRIAL_EXECUTION_ORDER = [
 
 class AcceptanceError(ValueError):
     """The evidence is incomplete, inconsistent, or failed an acceptance gate."""
+
+
+BASELINE_NEGATIVE_CONTROL_FAILURE = "source_artifact_conservation"
+
+
+def baseline_negative_control_oracle(error: BaseException) -> dict[str, Any] | None:
+    """Classify one known baseline duplicate-publication defect without weakening candidate gates."""
+    message = str(error)
+    match = re.fullmatch(
+        r"(?P<dataset>[a-z_]+) source/artifact conservation failed: "
+        r"lost=(?P<lost>[0-9]+), duplicates=(?P<duplicates>[0-9]+)",
+        message,
+    )
+    if match is None:
+        return None
+    dataset = match.group("dataset")
+    lost_rows = int(match.group("lost"))
+    duplicate_rows = int(match.group("duplicates"))
+    if dataset not in BASELINE_NEGATIVE_CONTROL_DATASETS or lost_rows != 0 or duplicate_rows <= 0:
+        return None
+    return {
+        "verified": False,
+        "failure_class": BASELINE_NEGATIVE_CONTROL_FAILURE,
+        "negative_controls": [{
+            "dataset": dataset,
+            "lost_rows": lost_rows,
+            "duplicate_rows": duplicate_rows,
+            "error": message,
+        }],
+    }
 
 
 def canonical_json(value: Any) -> bytes:
@@ -85,6 +123,149 @@ def parse_time(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise AcceptanceError("timestamp must include a UTC offset")
     return parsed.astimezone(timezone.utc)
+
+
+def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
+    """Accept legacy partial status only when the selected batch was fully committed."""
+    if row.get("status") == "success":
+        return True
+    if row.get("status") != "skipped" or row.get("completion") != "partial":
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    if details.get("result") not in (None, "partial"):
+        return False
+    if details.get("fatalError") is not None or details.get("errorChain") is not None:
+        return False
+    if details.get("timeoutCount", 0) != 0:
+        return False
+    scope = details.get("selectedScope")
+    if not isinstance(scope, dict):
+        return False
+    selected = scope.get("selected")
+    committed = scope.get("committed")
+    if (
+        not isinstance(selected, int)
+        or isinstance(selected, bool)
+        or selected <= 0
+        or not isinstance(committed, int)
+        or isinstance(committed, bool)
+        or committed <= 0
+        or committed > selected
+    ):
+        return False
+    if committed != selected and scope.get("hasMore") is not True:
+        return False
+    batches = details.get("archiveBatches")
+    if not isinstance(batches, list) or not batches:
+        return False
+    return all(
+        isinstance(batch, dict)
+        and isinstance(batch.get("batchRows"), int)
+        and isinstance(batch.get("committedRows"), int)
+        and batch.get("committedRows") > 0
+        and batch.get("committedRows") <= batch.get("batchRows")
+        and batch.get("timeoutCount", 0) == 0
+        for batch in batches
+    )
+
+
+def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
+    """Accept bounded chunks while keeping fixed-file completion as the oracle."""
+    if row.get("status") == "success":
+        details = row.get("details")
+        if details is None:
+            return True
+        if not isinstance(details, dict):
+            return False
+        failures = details.get("failures", 0)
+        return isinstance(failures, int) and not isinstance(failures, bool) and failures == 0
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    failures = details.get("failures", 0)
+    if not isinstance(failures, int) or isinstance(failures, bool) or failures != 0:
+        return False
+    released = details.get("filesReleased")
+    checked = details.get("filesChecked")
+    return (
+        isinstance(released, int)
+        and not isinstance(released, bool)
+        and released > 0
+        and isinstance(checked, int)
+        and not isinstance(checked, bool)
+        and checked >= released
+    )
+
+
+def task_run_is_accepted_zero_contribution_competitor_defer(row: dict[str, Any]) -> bool:
+    """Accept a legal file-admission defer without counting work that did not run."""
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    if (
+        "committed_work" not in row
+        or row["committed_work"] is not None
+        or "committed_bytes" not in row
+        or row["committed_bytes"] is not None
+    ):
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    admission_pair = (details.get("admissionStage"), details.get("waitReason"))
+    if admission_pair not in {
+        ("file_phase", "file_phase_busy"),
+        ("archive_file_phase", "archive_directory_lock_busy"),
+    }:
+        return False
+    required_null_fields = (
+        "filesChecked",
+        "directoryEntriesChecked",
+        "reconciliationRowsChecked",
+        "filesReleased",
+        "bytesReleased",
+        "referencedSkipped",
+        "quarantined",
+        "failures",
+    )
+    return all(
+        field in details and details[field] is None
+        for field in required_null_fields
+    )
+
+
+def task_run_is_recoverable_competitor_chunk(row: dict[str, Any]) -> bool:
+    """Recognize a progressed chunk whose transient failure was retried later."""
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict) or details.get("hasMore") is not True:
+        return False
+    released = details.get("filesReleased")
+    checked = details.get("filesChecked")
+    failures = details.get("failures", 0)
+    return (
+        isinstance(released, int)
+        and not isinstance(released, bool)
+        and released > 0
+        and isinstance(checked, int)
+        and not isinstance(checked, bool)
+        and checked >= released
+        and isinstance(failures, int)
+        and not isinstance(failures, bool)
+        and failures > 0
+    )
 
 
 def _number(value: Any, message: str) -> float:
@@ -204,10 +385,12 @@ def _validate_task_runs(
     setup_start: datetime,
     cleanup_end: datetime,
     require_competitor_overlap: bool,
+    competitor_oracle: dict[str, Any] | None = None,
 ) -> int:
     rows = trial.get("task_runs")
     _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
     by_key: dict[str, list[dict[str, Any]]] = {}
+    recoverable_competitor_rows: list[dict[str, Any]] = []
     for row in rows:
         _require(isinstance(row, dict), "malformed production task-run evidence")
         key = row.get("task_key")
@@ -216,10 +399,47 @@ def _validate_task_runs(
         finished = parse_time(row.get("actual_finished_at"))
         _require(finished >= started, "task run has an inverted execution interval")
         _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
-        _require(row.get("status") == "success", f"background task {key} did not finish successfully")
+        zero_contribution_defer = (
+            key == COMPETITOR_TASK
+            and task_run_is_accepted_zero_contribution_competitor_defer(row)
+        )
+        accepted = (
+            zero_contribution_defer
+            or task_run_is_accepted_competitor_chunk(row)
+            if key == COMPETITOR_TASK
+            else task_run_is_accepted_terminal(row)
+        )
+        if (
+            not accepted
+            and key == COMPETITOR_TASK
+            and isinstance(competitor_oracle, dict)
+            and competitor_oracle.get("verified_empty") is True
+            and competitor_oracle.get("remaining_count") == 0
+            and competitor_oracle.get("remaining_bytes") == 0
+            and task_run_is_recoverable_competitor_chunk(row)
+        ):
+            accepted = True
+            recoverable_competitor_rows.append(row)
+        _require(accepted, f"background task {key} did not finish successfully or commit valid work")
         work = row.get("committed_work")
-        _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
+        if zero_contribution_defer:
+            _require(work is None, f"task {key} zero-contribution defer reported committed work")
+        else:
+            _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
+
+    for row in recoverable_competitor_rows:
+        finished = parse_time(row["actual_finished_at"])
+        _require(
+            any(
+                candidate is not row
+                and candidate.get("task_key") == COMPETITOR_TASK
+                and parse_time(candidate["actual_started_at"]) >= finished
+                and task_run_is_accepted_competitor_chunk(candidate)
+                for candidate in rows
+            ),
+            "recoverable competitor chunk has no later successful retry",
+        )
 
     targets = [DATASETS[name]["task_key"] for name in DATASETS]
     for key in targets:
@@ -234,14 +454,27 @@ def _validate_task_runs(
 
     competitor = by_key.get(COMPETITOR_TASK, [])
     _require(competitor, "real background competitor evidence is missing")
-    competitor_work = sum(row["committed_work"] for row in competitor)
+    counted_competitor = [
+        row
+        for row in competitor
+        if not task_run_is_accepted_zero_contribution_competitor_defer(row)
+    ]
+    competitor_work = sum(row["committed_work"] for row in counted_competitor)
     _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
+    competitor_bytes = [row.get("committed_bytes") for row in counted_competitor]
+    _require(
+        len(competitor_bytes) == len(counted_competitor)
+        and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in competitor_bytes)
+        and sum(competitor_bytes) == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+        "background competitor released an unexpected byte count",
+    )
     target_rows = [row for key in targets for row in by_key.get(key, [])]
+    productive_competitor = [row for row in counted_competitor if row["committed_work"] > 0]
     overlap = any(
         max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
         < min(parse_time(left["actual_finished_at"]), parse_time(right["actual_finished_at"]))
         for left in target_rows
-        for right in competitor
+        for right in productive_competitor
     )
     if require_competitor_overlap:
         _require(overlap, "candidate raw orphan-sweep did not overlap a retention owner run")
@@ -460,12 +693,23 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             raw_samples = trial["latency_samples_ms"]
             _require(len(raw_samples["write"]) == invocation_count, "foreground response latency sample count does not match HTTP writes")
             _require(len(raw_samples["read"]) == workload["pool_read_requests"], "foreground read latency sample count is inconsistent")
+            competitor_oracle = trial.get("competitor_file_oracle")
+            _require(
+                isinstance(competitor_oracle, dict)
+                and competitor_oracle.get("expected_count") == COMPETITOR_FILE_COUNT
+                and competitor_oracle.get("expected_bytes") == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES
+                and competitor_oracle.get("remaining_count") == 0
+                and competitor_oracle.get("remaining_bytes") == 0
+                and competitor_oracle.get("verified_empty") is True,
+                "fixed competitor file oracle is missing or not empty",
+            )
             competitor_workloads[version].append(
                 _validate_task_runs(
                     trial,
                     setup_start,
                     cleanup_end,
                     require_competitor_overlap=version == "candidate",
+                    competitor_oracle=competitor_oracle,
                 )
             )
             scrape_rows = trial.get("write_hold_samples")
@@ -501,14 +745,87 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             if version == "candidate":
                 _require(hold_p95 <= MAX_WRITE_HOLD_P95_MS, "steady write-hold p95 exceeded 250ms")
 
-            oracle = trial.get("oracle")
-            _require(isinstance(oracle, dict) and oracle.get("verified") is True, "source/artifact oracle evidence is missing")
-            datasets = oracle.get("datasets")
-            _require(isinstance(datasets, dict) and set(datasets) == set(DATASETS), "oracle dataset evidence is incomplete")
+            proof_status = trial.get("archive_proof_status")
+            _require(isinstance(proof_status, dict), "archive proof status evidence is missing")
+            proof_datasets = proof_status.get("datasets")
+            _require(
+                isinstance(proof_datasets, dict) and set(proof_datasets) == set(DATASETS),
+                "archive proof status dataset evidence is incomplete",
+            )
             for name in DATASETS:
+                dataset_status = proof_datasets[name]
+                _require(isinstance(dataset_status, dict), f"archive proof status for {name} is malformed")
+                _require(dataset_status.get("dataset") == DATASETS[name]["manifest_dataset"], f"archive proof status dataset mismatch for {name}")
+                _require(dataset_status.get("reference_ready") is True, f"archive reference evidence for {name} is incomplete")
+                _require(isinstance(dataset_status.get("summary_proof_complete"), bool), f"archive summary proof status for {name} is malformed")
+                if version == "candidate":
+                    _require(dataset_status.get("ready") is True, f"candidate archive proof status for {name} is incomplete")
+                    _require(dataset_status.get("summary_proof_complete") is True, f"candidate summary proof for {name} is incomplete")
+                    _require(dataset_status.get("summary_proof_missing") == [], f"candidate summary proof for {name} has missing obligations")
+
+            oracle = trial.get("oracle")
+            _require(isinstance(oracle, dict), "source/artifact oracle evidence is missing")
+            negative_dataset_names: set[str] = set()
+            if version == "baseline" and oracle.get("verified") is False:
+                _require(
+                    oracle.get("failure_class") == BASELINE_NEGATIVE_CONTROL_FAILURE,
+                    "baseline negative-control failure class is invalid",
+                )
+                controls = oracle.get("negative_controls")
+                _require(
+                    isinstance(controls, list) and controls,
+                    "baseline negative-control evidence is missing",
+                )
+                for control in controls:
+                    _require(isinstance(control, dict), "baseline negative-control entry is malformed")
+                    dataset = control.get("dataset")
+                    _require(
+                        dataset in BASELINE_NEGATIVE_CONTROL_DATASETS,
+                        "baseline negative-control dataset is invalid",
+                    )
+                    lost_rows = control.get("lost_rows")
+                    duplicate_rows = control.get("duplicate_rows")
+                    _require(
+                        lost_rows == 0
+                        and isinstance(duplicate_rows, int)
+                        and not isinstance(duplicate_rows, bool)
+                        and duplicate_rows > 0,
+                        "baseline negative-control counts are invalid",
+                    )
+                    _require(
+                        control.get("error")
+                        == f"{dataset} source/artifact conservation failed: "
+                        f"lost=0, duplicates={duplicate_rows}",
+                        "baseline negative-control error is not bound to its counts",
+                    )
+                    negative_dataset_name = next(
+                        name
+                        for name, definition in DATASETS.items()
+                        if definition["manifest_dataset"] == dataset
+                    )
+                    _require(
+                        negative_dataset_name not in negative_dataset_names,
+                        "baseline negative-control dataset is repeated",
+                    )
+                    negative_dataset_names.add(negative_dataset_name)
+            else:
+                _require(oracle.get("verified") is True, "source/artifact oracle evidence is missing")
+            datasets = oracle.get("datasets")
+            expected_dataset_names = set(DATASETS) - negative_dataset_names
+            _require(
+                isinstance(datasets, dict) and set(datasets) == expected_dataset_names,
+                "oracle dataset evidence is incomplete",
+            )
+            for name in DATASETS:
+                if name in negative_dataset_names:
+                    continue
                 result = datasets[name]
                 _require(isinstance(result, dict), f"oracle result for {name} is malformed")
                 _require(result.get("dataset") == DATASETS[name]["manifest_dataset"], f"oracle dataset mismatch for {name}")
+                _require(result.get("summary_proof_required") is (version == "candidate"), f"oracle summary proof requirement for {name} is not bound to the version")
+                _require(isinstance(result.get("summary_proof_verified"), bool), f"oracle summary proof result for {name} is malformed")
+                if version == "candidate":
+                    _require(result.get("summary_proof_verified") is True, f"candidate summary proof for {name} was not verified")
                 _require(result.get("seed_rows") == DATASETS[name]["seed_rows"], f"oracle seed population mismatch for {name}")
                 _require(result.get("actual_added_rows") == trial["input_counts"][name], f"oracle {name} addition count is not bound to measured writes")
                 for field in ("actual_added_rows", "converted_rows", "distinct_archived_rows", "live_rows", "lost_rows", "duplicate_rows"):

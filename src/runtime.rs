@@ -1874,7 +1874,6 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
         let mut workers = tokio::task::JoinSet::new();
         let mut heavy_waiters = tokio::task::JoinSet::new();
         let mut finalizers = tokio::task::JoinSet::new();
-        let heavy_file_gate = Arc::new(Semaphore::new(1));
         loop {
             while finalizers.len() < MANAGED_TASK_MAX_ACTIVE_FINALIZERS {
                 let Some(finish) = pending_finishes.pop_front() else {
@@ -2071,9 +2070,6 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         },
                         Some(run_id),
                     );
-                    let worker_file_gate =
-                        managed_task_requires_heavy_file_operation(&task_key)
-                            .then(|| heavy_file_gate.clone());
                     let heavy_file_operation = managed_task_requires_heavy_file_operation(&task_key);
                     let worker = run_managed_task_worker_guarded(
                         state.clone(),
@@ -2083,12 +2079,11 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         trigger_kind,
                         observation,
                         execution_lease,
-                        worker_file_gate,
                         initial_stages,
                     );
                     if heavy_file_operation {
-                        // Waiting for the single native-file permit must not consume one of the
-                        // worker slots reserved for light maintenance tasks.
+                        // Waiting for file-phase admission must not consume one of the worker
+                        // slots reserved for light maintenance tasks.
                         heavy_waiters.spawn(worker);
                     } else {
                         workers.spawn(worker);
@@ -2242,7 +2237,6 @@ async fn run_managed_task_worker_guarded(
     trigger_kind: String,
     observation: crate::TaskExecutionObservation,
     execution_lease: crate::maintenance_store::TaskExecutionLease,
-    heavy_file_gate: Option<Arc<Semaphore>>,
     initial_stages: Option<Vec<crate::maintenance_store::TaskStage>>,
 ) -> ManagedTaskFinish {
     let fallback_task_key = task_key.clone();
@@ -2257,7 +2251,6 @@ async fn run_managed_task_worker_guarded(
         trigger_kind,
         observation,
         execution_lease,
-        heavy_file_gate,
         initial_stages,
     ))
     .catch_unwind()
@@ -2303,13 +2296,8 @@ async fn run_managed_task_worker(
     trigger_kind: String,
     observation: crate::TaskExecutionObservation,
     _execution_lease: crate::maintenance_store::TaskExecutionLease,
-    heavy_file_gate: Option<Arc<Semaphore>>,
     initial_stages: Option<Vec<crate::maintenance_store::TaskStage>>,
 ) -> ManagedTaskFinish {
-    let _heavy_file_permit = match heavy_file_gate {
-        Some(gate) => Some(gate.acquire_owned().await.expect("managed file gate open")),
-        None => None,
-    };
     observation.mark_work_started();
     let store = crate::maintenance_store::global()
         .cloned()
@@ -2341,7 +2329,14 @@ async fn run_managed_task_worker(
                     "invocation_identity_cleanup" | "raw_orphan_sweep"
                 )
                 && let Err(retry_error) = store
-                    .record_owned_retry(&task_key, is_retention_write_deferred(&error))
+                    .record_owned_retry(
+                        &task_key,
+                        if task_key == "raw_orphan_sweep" {
+                            is_raw_orphan_sweep_deferred(&error)
+                        } else {
+                            is_retention_write_deferred(&error)
+                        },
+                    )
                     .await
             {
                 warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");

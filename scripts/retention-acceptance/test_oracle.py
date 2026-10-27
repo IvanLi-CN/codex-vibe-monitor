@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -9,7 +10,14 @@ import unittest
 from unittest.mock import patch
 
 from contract import AcceptanceError, sha256_json
-from oracle import _verify_summary_proof, verify_dataset
+from oracle import (
+    _archive_path,
+    _archive_projection_columns,
+    _parse_production_local_time,
+    _validated_archive_columns,
+    _verify_summary_proof,
+    verify_dataset,
+)
 
 
 DATASET = "pool_upstream_request_attempts"
@@ -174,6 +182,60 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(result["live_rows"], 1)
         self.assertEqual(result["lost_rows"], 0)
 
+    def test_archive_projection_excludes_known_generated_or_unarchived_columns(self) -> None:
+        self.assertEqual(
+            _archive_projection_columns(
+                "codex_invocations",
+                ["id", "invoke_id", "timeline_json", "occurred_at"],
+            ),
+            ["id", "invoke_id", "occurred_at"],
+        )
+        self.assertEqual(
+            _archive_projection_columns(
+                "pool_upstream_request_attempts",
+                ["id", "occurred_epoch_ms", "attempt_public_id"],
+            ),
+            ["id", "attempt_public_id"],
+        )
+
+    def test_production_local_timestamps_accept_naive_sqlite_values(self) -> None:
+        local_time = _parse_production_local_time("2026-08-12 12:00:00")
+        utc_time = _parse_production_local_time("2026-08-12T04:00:00Z")
+        self.assertEqual(local_time.utcoffset(), timedelta(hours=8))
+        self.assertEqual(local_time, utc_time)
+
+    def test_archive_columns_accept_current_and_legacy_known_shapes_only(self) -> None:
+        source_columns = [
+            "id",
+            "attempt_public_id",
+            "invoke_id",
+            "occurred_at",
+            "occurred_epoch_ms",
+            "status",
+            "request_summary_json",
+        ]
+        self.assertEqual(
+            _validated_archive_columns("pool_upstream_request_attempts", source_columns, source_columns),
+            source_columns,
+        )
+        legacy_columns = [column for column in source_columns if column != "occurred_epoch_ms"]
+        self.assertEqual(
+            _validated_archive_columns("pool_upstream_request_attempts", source_columns, legacy_columns),
+            legacy_columns,
+        )
+        with self.assertRaisesRegex(AcceptanceError, "missing=.*status"):
+            _validated_archive_columns(
+                "pool_upstream_request_attempts",
+                source_columns,
+                [column for column in source_columns if column != "status"],
+            )
+        with self.assertRaisesRegex(AcceptanceError, "extra=.*unexpected"):
+            _validated_archive_columns(
+                "pool_upstream_request_attempts",
+                source_columns,
+                [*source_columns, "unexpected"],
+            )
+
     def test_container_archive_mount_path_maps_into_the_trial_volume(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
         self.add_manifest(
@@ -183,6 +245,20 @@ class OracleTests(unittest.TestCase):
         )
         result = self.verify({"seed-archived", "seed-live"})
         self.assertEqual(result["converted_rows"], 1)
+
+    def test_invocation_segment_v1_archive_path_maps_into_the_trial_volume(self) -> None:
+        part_name = "part-0000000000000001-0000000000000001-0123456789abcdef.sqlite.gz"
+        path = self.archive_root / "codex_invocations" / "2026" / "08" / "12" / part_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"segment")
+        resolved = _archive_path(
+            self.database,
+            self.archive_root,
+            f"/srv/app/data/archives/codex_invocations/2026/08/12/{part_name}",
+            "codex_invocations",
+            MONTH,
+        )
+        self.assertEqual(resolved, path.resolve())
 
     def test_archive_full_row_content_must_match_the_pristine_source(self) -> None:
         path = self.make_archive(
@@ -328,6 +404,37 @@ class OracleTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "missing its final Summary Snapshot V2 proof"):
             _verify_summary_proof(connection, 1, "a" * 64, "/unused")
         connection.close()
+
+    def test_live_mirror_invocation_manifest_is_not_an_authoritative_archive(self) -> None:
+        for database in (self.database, self.template_database):
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "CREATE TABLE codex_invocations(invoke_id TEXT NOT NULL,occurred_at TEXT NOT NULL,raw_response TEXT NOT NULL)"
+            )
+            connection.commit()
+            connection.close()
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO archive_batches(dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind) "
+            "VALUES('codex_invocations',?,?,?,?, 'completed','active',NULL,'live_mirror')",
+            (MONTH, "/unused", "a" * 64, 0),
+        )
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(AcceptanceError, "no active completed codex_invocations manifests"):
+            verify_dataset(
+                self.database,
+                self.archive_root,
+                "invocations",
+                set(),
+                0,
+                0,
+                self.scratch,
+                template_database=self.template_database,
+                seed_ids=set(),
+                added_attempt_invocations={},
+                cutoff=f"{MONTH}-01 00:00:00",
+            )
 
     def test_summary_semantic_proof_is_recomputed_from_pages_and_replay_hashes(self) -> None:
         connection = sqlite3.connect(self.database)

@@ -148,6 +148,46 @@ async fn retention_task_work_cleanup_survives_reused_pid_and_owner_process_death
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[tokio::test]
+async fn retention_task_work_owner_drop_waits_for_file_phase_before_cleanup() {
+    let root = std::env::temp_dir().join(format!(
+        "retention-task-work-owner-file-phase-{}",
+        nanoid::nanoid!()
+    ));
+    fs::create_dir_all(&root).expect("create task work owner test directory");
+    let final_path = root.join("archive.sqlite.gz");
+    let work_path = root.join("archive.task-1-1-1.sqlite");
+    let owner_path = work_path.with_extension("owner");
+    let owner = crate::maintenance::create_retention_identity_work_file(&final_path, &work_path)
+        .expect("create task work owner");
+    let file_phase = crate::maintenance::acquire_file_phase_permit("test_task_work_owner_drop")
+        .await
+        .expect("hold file phase");
+    let lease = crate::maintenance::try_acquire_archive_file_operation_lease(&work_path)
+        .expect("hold archive file operation");
+
+    drop(owner);
+    assert!(work_path.exists());
+    assert!(owner_path.exists());
+
+    drop(lease);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        work_path.exists() && owner_path.exists(),
+        "owner cleanup must not bypass a held file-phase permit"
+    );
+
+    drop(file_phase);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while work_path.exists() || owner_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("owner cleanup must finish after file-phase admission");
+    fs::remove_dir_all(root).expect("remove task work owner test directory");
+}
+
 #[cfg(unix)]
 async fn seed_task_work_source(pool: &SqlitePool, config: &AppConfig, index: i64) {
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);

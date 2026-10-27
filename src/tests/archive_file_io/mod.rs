@@ -39,6 +39,7 @@ mod raw_payload_archive_finalization;
 mod raw_payload_capture_and_ownership;
 mod raw_payload_cleanup_and_reconciliation;
 mod raw_payload_compression;
+mod raw_payload_file_phase_contention;
 mod raw_reconciliation_pressure_retry;
 mod retention_batch_wait;
 mod retention_capacity_benchmark;

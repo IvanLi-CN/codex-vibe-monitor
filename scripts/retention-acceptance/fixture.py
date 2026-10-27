@@ -9,12 +9,23 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Iterable
 
-from contract import COMPETITOR_FILE_COUNT, COMPETITOR_TASK, DATASETS, RETENTION_DAYS, SEED, canonical_json
+from contract import (
+    COMPETITOR_FILE_COUNT,
+    COMPETITOR_TASK,
+    DATASETS,
+    RETENTION_DAYS,
+    SEED,
+    SUMMARY_RECOVERY_TASK,
+    canonical_json,
+)
 
 
 CONTROLLED_TASK_KEYS = tuple(
-    [DATASETS[name]["task_key"] for name in DATASETS] + [COMPETITOR_TASK]
+    [DATASETS[name]["task_key"] for name in DATASETS]
+    + [COMPETITOR_TASK, SUMMARY_RECOVERY_TASK]
 )
+SHANGHAI = timezone(timedelta(hours=8))
+PARALLEL_WORK_COVERAGE_DAYS = 30
 
 
 def shanghai_cutoff(now: datetime | None = None) -> str:
@@ -38,7 +49,9 @@ def _history_timestamp(cutoff: str, index: int) -> str:
     last_day = (date(next_month_year, next_month, 1) - timedelta(days=1)).day
     day = 1 + (index * 17 + index // 97) % last_day
     second = (index * 7919) % 86_400
-    return f"{first.replace(day=day):%Y-%m-%d}T{second // 3600:02d}:{second // 60 % 60:02d}:{second % 60:02d}.000Z"
+    # Retention archive grouping treats occurred_at as Shanghai-local naive time,
+    # matching the production SQLite field contract.
+    return f"{first.replace(day=day):%Y-%m-%d} {second // 3600:02d}:{second // 60 % 60:02d}:{second % 60:02d}"
 
 
 def _payload(dataset: str, index: int) -> str:
@@ -123,6 +136,31 @@ def _filter_record(connection: sqlite3.Connection, table: str, record: dict[str,
     return selected
 
 
+def seed_parallel_work_coverage(connection: sqlite3.Connection, cutoff: str) -> None:
+    cutoff_local = datetime.fromisoformat(cutoff).replace(tzinfo=SHANGHAI)
+    current_local_date = cutoff_local.date() + timedelta(days=RETENTION_DAYS)
+    keep_start_local = datetime.combine(
+        current_local_date - timedelta(days=PARALLEL_WORK_COVERAGE_DAYS),
+        datetime.min.time(),
+        tzinfo=SHANGHAI,
+    )
+    keep_start_epoch = int(keep_start_local.astimezone(timezone.utc).timestamp())
+    cutoff_epoch = int(cutoff_local.astimezone(timezone.utc).timestamp())
+    rows = [
+        (hour_start_epoch, source_scope, 1, 0)
+        for hour_start_epoch in range(keep_start_epoch, cutoff_epoch, 3_600)
+        for source_scope in ("all", "proxy_only")
+    ]
+    connection.executemany(
+        """
+        INSERT OR REPLACE INTO parallel_work_hourly_coverage
+            (hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
 def populate_template(database: Path, cutoff: str, budget_check: Callable[[], float] | None = None) -> str:
     hasher = hashlib.sha256()
     timeout = min(30.0, budget_check()) if budget_check is not None else 30.0
@@ -145,6 +183,7 @@ def populate_template(database: Path, cutoff: str, budget_check: Callable[[], fl
                     rows.append(_filter_record(connection, table, record, columns))
                     _record_fingerprint(hasher, name, identity, occurred_at, payload)
                 _insert_many(connection, table, rows)
+        seed_parallel_work_coverage(connection, cutoff)
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -191,12 +230,22 @@ def prepare_competitor(
                 maintenance.execute(f"DELETE FROM {table}")
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+        if "maintenance_owner_retry_state" in table_names:
+            maintenance.execute(
+                f"DELETE FROM maintenance_owner_retry_state WHERE task_key IN ({placeholders})",
+                CONTROLLED_TASK_KEYS,
+            )
         maintenance.execute(
             f"UPDATE managed_tasks "
             f"SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
             f"WHERE task_key NOT IN ({placeholders})",
             (now, *CONTROLLED_TASK_KEYS),
         )
+        if "startup_backfill_progress" in table_names:
+            maintenance.execute(
+                "UPDATE startup_backfill_progress "
+                "SET enabled=0,next_run_after=NULL,next_probe_at=NULL"
+            )
         task_keys = CONTROLLED_TASK_KEYS
         for key in task_keys:
             cursor = maintenance.execute(

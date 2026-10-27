@@ -42,6 +42,7 @@ async fn publication_test_phase(phase: PublicationTestPhase) -> Result<()> {
 pub(crate) struct ArchiveReplacement<'a> {
     pub(crate) row_count: Option<i64>,
     pub(crate) sha256: &'a str,
+    pub(crate) cleanup_state: &'a str,
 }
 
 pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
@@ -127,9 +128,9 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
              SET cleanup_state = ?1, cleanup_source_safe_start_date = NULL,
                  sha256 = ?2, row_count = COALESCE(?3, row_count)
              WHERE dataset = ?4 AND month_key = ?5 AND file_path = ?6
-               AND cleanup_state IN (?7, ?8)",
+               AND cleanup_state IN (?7, ?8, ?9)",
         )
-        .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+        .bind(replacement.cleanup_state)
         .bind(replacement.sha256)
         .bind(replacement.row_count)
         .bind(dataset)
@@ -137,6 +138,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
         .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+        .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
         .execute(resources.connection_mut())
         .await?;
         fs::rename(temporary_file_path, final_file_path).context("publish prepared archive")?;

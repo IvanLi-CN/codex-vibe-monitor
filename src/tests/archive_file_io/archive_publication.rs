@@ -90,6 +90,7 @@ impl PublicationFixture {
                 ArchiveReplacement {
                     row_count: None,
                     sha256: &self.next_sha,
+                    cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
                 },
             ),
         )

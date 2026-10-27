@@ -16,12 +16,13 @@ import tempfile
 import time
 import traceback
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from contract import (
     BASELINE_SHA,
     CLEANUP_RESERVE_SECONDS,
     COMPETITOR_FILE_COUNT,
+    COMPETITOR_FILE_BYTES,
     COMPETITOR_TASK,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
@@ -35,14 +36,20 @@ from contract import (
     RUN_SECONDS,
     SCHEMA_VERSION,
     SEED,
+    SUMMARY_RECOVERY_TASK,
     TRIAL_EXECUTION_ORDER,
     TRIALS_PER_VERSION,
     AcceptanceError,
+    baseline_negative_control_oracle,
     parse_time,
     sha256_bytes,
+    task_run_is_accepted_competitor_chunk,
+    task_run_is_accepted_zero_contribution_competitor_defer,
+    task_run_is_recoverable_competitor_chunk,
+    task_run_is_accepted_terminal,
     validate_evidence,
 )
-from fixture import populate_template, prepare_competitor, shanghai_cutoff
+from fixture import CONTROLLED_TASK_KEYS, populate_template, prepare_competitor, shanghai_cutoff
 from oracle import verify_trial
 
 
@@ -916,7 +923,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
+            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
@@ -926,6 +933,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
             except (TypeError, json.JSONDecodeError):
                 detail = {}
             released = detail.get("filesReleased", 0) if isinstance(detail, dict) else 0
+            released_bytes = detail.get("bytesReleased", 0) if isinstance(detail, dict) else 0
             result.append({
                 "task_key": row["task_key"],
                 "trigger_kind": row["trigger_kind"],
@@ -935,54 +943,258 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "processed_count": row["processed_count"],
                 "updated_count": row["updated_count"],
                 "committed_work": released if row["task_key"] == "raw_orphan_sweep" else (row["processed_count"] or row["updated_count"] or 0),
+                "committed_bytes": released_bytes if row["task_key"] == "raw_orphan_sweep" else 0,
                 "details": detail,
+                "error_detail": row["error_detail"],
+                "completion": row["completion"],
             })
         return result
     finally:
         connection.close()
 
 
-def task_owners_idle(maintenance_db: Path) -> bool:
+def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
+    """Capture scheduler state when a trial cannot produce terminal evidence."""
+    try:
+        connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True, timeout=2)
+        connection.execute("PRAGMA busy_timeout=2000")
+        keys = (*tuple(DATASETS[name]["task_key"] for name in DATASETS), COMPETITOR_TASK, SUMMARY_RECOVERY_TASK)
+        placeholders = ",".join("?" for _ in keys)
+        tasks = [
+            {
+                "task_key": row[0],
+                "enabled": row[1],
+                "is_manual": row[2],
+                "interval_secs": row[3],
+                "next_trigger_at": row[4],
+                "next_catchup_at": row[5],
+                "catchup_reason": row[6],
+            }
+            for row in connection.execute(
+                "SELECT task_key,enabled,is_manual,interval_secs,next_trigger_at,next_catchup_at,catchup_reason "
+                f"FROM managed_tasks WHERE task_key IN ({placeholders}) ORDER BY task_key",
+                keys,
+            )
+        ]
+        runs = []
+        for row in connection.execute(
+            "SELECT id,task_key,trigger_kind,status,started_at,actual_started_at,finished_at,"
+            "actual_finished_at,summary,error_detail,processed_count,updated_count,details,completion "
+            f"FROM managed_task_runs WHERE task_key IN ({placeholders}) ORDER BY id",
+            keys,
+        ):
+            raw_details = row[12]
+            try:
+                details = json.loads(raw_details) if raw_details else None
+            except (TypeError, json.JSONDecodeError):
+                details = {"raw": raw_details}
+            runs.append(
+                {
+                    "id": row[0],
+                    "task_key": row[1],
+                    "trigger_kind": row[2],
+                    "status": row[3],
+                    "started_at": row[4],
+                    "actual_started_at": row[5],
+                    "finished_at": row[6],
+                    "actual_finished_at": row[7],
+                    "summary": row[8],
+                    "error_detail": row[9],
+                    "processed_count": row[10],
+                    "updated_count": row[11],
+                    "details": details,
+                    "completion": row[13],
+                }
+            )
+        retry_state = [
+            {
+                "task_key": row[0],
+                "failure_count": row[1],
+                "next_eligible_at": row[2],
+                "reason": row[3],
+            }
+            for row in connection.execute(
+                "SELECT task_key,failure_count,next_eligible_at,reason "
+                f"FROM maintenance_owner_retry_state WHERE task_key IN ({placeholders}) ORDER BY task_key",
+                keys,
+            )
+        ]
+        return {"managed_tasks": tasks, "managed_task_runs": runs, "retry_state": retry_state}
+    except sqlite3.Error as error:
+        return {"error": f"could not capture maintenance scheduler state: {error}"}
+    finally:
+        if "connection" in locals():
+            connection.close()
+
+
+def competitor_file_oracle(raw_dir: Path) -> dict[str, Any]:
+    """Verify the fixed fixture cohort, excluding unrelated raw files."""
+    remaining = [
+        path
+        for path in sorted(raw_dir.glob("retention-orphan-*.bin"))
+        if path.exists() or path.is_symlink()
+    ]
+    remaining_files = [path for path in remaining if path.is_file()]
+    remaining_bytes = sum(path.stat().st_size for path in remaining_files)
+    return {
+        "expected_count": COMPETITOR_FILE_COUNT,
+        "expected_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+        "remaining_count": len(remaining),
+        "remaining_bytes": remaining_bytes,
+        "verified_empty": not remaining,
+    }
+
+
+def quiesce_controlled_tasks(maintenance_db: Path, started: float) -> None:
+    """Stop new fixture-owned dispatch while allowing an active owner to finish."""
+    timeout = min(30.0, remaining_budget(started))
+    connection = sqlite3.connect(maintenance_db, timeout=timeout)
+    connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+    placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+    now = utc_now()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            f"UPDATE managed_tasks "
+            f"SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
+            f"WHERE task_key IN ({placeholders})",
+            (now, *CONTROLLED_TASK_KEYS),
+        )
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def controlled_task_runs_idle(maintenance_db: Path) -> bool:
     connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
     try:
-        keys = tuple(DATASETS[name]["task_key"] for name in DATASETS) + (COMPETITOR_TASK,)
-        placeholders = ",".join("?" for _ in keys)
+        placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
         pending = connection.execute(
-            f"SELECT COUNT(*) FROM managed_task_runs WHERE task_key IN ({placeholders}) AND status IN ('running','requested','queued')",
-            keys,
+            f"SELECT COUNT(*) FROM managed_task_runs "
+            f"WHERE task_key IN ({placeholders}) AND status IN ('running','requested','queued')",
+            CONTROLLED_TASK_KEYS,
         ).fetchone()[0]
         return pending == 0
     finally:
         connection.close()
 
 
-def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
+def archive_proof_status(database: Path, cutoff: str, added_counts: dict[str, int]) -> dict[str, Any]:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
+        datasets: dict[str, dict[str, Any]] = {}
         for name, definition in DATASETS.items():
             dataset = definition["manifest_dataset"]
             table = definition["table"]
+            required_converted = math.ceil(10 * added_counts[name])
+            dataset_status: dict[str, Any] = {
+                "dataset": dataset,
+                "manifest_count": 0,
+                "converted_rows": None,
+                "required_converted_rows": required_converted,
+                "missing": [],
+                "reference_missing": [],
+                "summary_proof_missing": [],
+                "missing_manifest_details": [],
+            }
+            source_kind_clause = " AND summary_source_kind='authoritative'" if name == "invocations" else ""
             manifests = connection.execute(
-                "SELECT id,file_path,sha256 FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL",
+                "SELECT id,file_path,sha256,row_count,status,cleanup_state,summary_source_kind, "
+                "coverage_start_at,coverage_end_at,created_at FROM archive_batches "
+                "WHERE dataset=? AND status='completed' AND cleanup_state='active' "
+                f"AND superseded_by IS NULL{source_kind_clause}",
                 (dataset,),
             ).fetchall()
+            dataset_status["manifest_count"] = len(manifests)
             if not manifests:
-                return False
+                dataset_status["missing"].append("completed active archive manifest")
+                dataset_status["reference_missing"].append("completed active archive manifest")
             if name == "invocations":
                 targets = {"invocation_rollup_hourly", "upstream_account_stats_hourly", "upstream_account_usage_breakdown_hourly"}
-                for archive_id, file_path, manifest_sha in manifests:
+                for (
+                    archive_id,
+                    file_path,
+                    manifest_sha,
+                    manifest_row_count,
+                    manifest_status,
+                    cleanup_state,
+                    summary_source_kind,
+                    coverage_start_at,
+                    coverage_end_at,
+                    created_at,
+                ) in manifests:
                     proof = connection.execute(
                         "SELECT page_count FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
                         (archive_id, manifest_sha),
                     ).fetchone()
-                    if proof is None:
-                        return False
                     pages = connection.execute(
                         "SELECT COUNT(*) FROM summary_archive_snapshot WHERE archive_batch_id=? AND manifest_sha256=? AND format_version=2",
                         (archive_id, manifest_sha),
                     ).fetchone()[0]
+                    if proof is None:
+                        missing_proof = f"summary proof:{archive_id}"
+                        dataset_status["missing"].append(missing_proof)
+                        dataset_status["summary_proof_missing"].append(missing_proof)
+                        obligation = connection.execute(
+                            "SELECT state,terminal_reason,updated_at,resolved_at "
+                            "FROM summary_coverage_obligation "
+                            "WHERE archive_batch_id=? AND manifest_sha256=?",
+                            (archive_id, manifest_sha),
+                        ).fetchone()
+                        outcome = connection.execute(
+                            "SELECT disposition,failure_kind,next_probe_at,updated_at,next_page_index, "
+                            "next_row_id,hash_complete_sha256,source_fingerprint "
+                            "FROM summary_archive_snapshot_backfill_outcome "
+                            "WHERE archive_batch_id=? AND manifest_sha256=?",
+                            (archive_id, manifest_sha),
+                        ).fetchone()
+                        dataset_status["missing_manifest_details"].append(
+                            {
+                                "archive_id": archive_id,
+                                "file_path": file_path,
+                                "manifest_sha256": manifest_sha,
+                                "row_count": manifest_row_count,
+                                "status": manifest_status,
+                                "cleanup_state": cleanup_state,
+                                "summary_source_kind": summary_source_kind,
+                                "coverage_start_at": coverage_start_at,
+                                "coverage_end_at": coverage_end_at,
+                                "created_at": created_at,
+                                "v2_page_count": pages,
+                                "obligation": (
+                                    {
+                                        "state": obligation[0],
+                                        "terminal_reason": obligation[1],
+                                        "updated_at": obligation[2],
+                                        "resolved_at": obligation[3],
+                                    }
+                                    if obligation is not None
+                                    else None
+                                ),
+                                "backfill_outcome": (
+                                    {
+                                        "disposition": outcome[0],
+                                        "failure_kind": outcome[1],
+                                        "next_probe_at": outcome[2],
+                                        "updated_at": outcome[3],
+                                        "next_page_index": outcome[4],
+                                        "next_row_id": outcome[5],
+                                        "hash_complete_sha256": outcome[6],
+                                        "source_fingerprint": outcome[7],
+                                    }
+                                    if outcome is not None
+                                    else None
+                                ),
+                            }
+                        )
+                        continue
                     if pages != proof[0]:
-                        return False
+                        missing_pages = f"summary pages:{archive_id}:{pages}/{proof[0]}"
+                        dataset_status["missing"].append(missing_pages)
+                        dataset_status["summary_proof_missing"].append(missing_pages)
                     replayed = {
                         row[0]
                         for row in connection.execute(
@@ -990,18 +1202,36 @@ def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, in
                             (dataset, file_path, manifest_sha),
                         )
                     }
-                    if not targets.issubset(replayed):
-                        return False
+                    missing_targets = sorted(targets - replayed)
+                    if missing_targets:
+                        missing_replay = f"replay:{archive_id}:{','.join(missing_targets)}"
+                        dataset_status["missing"].append(missing_replay)
+                        dataset_status["summary_proof_missing"].append(missing_replay)
             identity_column = definition["identity_column"]
             converted = definition["seed_rows"] - connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE {identity_column} LIKE 'retention-seed-%' AND occurred_at < ?",
                 (cutoff,),
             ).fetchone()[0]
-            if converted < math.ceil(10 * added_counts[name]):
-                return False
-        return True
+            dataset_status["converted_rows"] = converted
+            if converted < required_converted:
+                missing_conversion = f"source conversion:{converted}/{required_converted}"
+                dataset_status["missing"].append(missing_conversion)
+                dataset_status["reference_missing"].append(missing_conversion)
+            dataset_status["summary_proof_complete"] = not dataset_status["summary_proof_missing"]
+            dataset_status["reference_ready"] = not dataset_status["reference_missing"]
+            dataset_status["ready"] = not dataset_status["missing"]
+            datasets[name] = dataset_status
+        return {
+            "ready": all(not dataset["missing"] for dataset in datasets.values()),
+            "reference_ready": all(dataset["reference_ready"] for dataset in datasets.values()),
+            "datasets": datasets,
+        }
     finally:
         connection.close()
+
+
+def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
+    return archive_proof_status(database, cutoff, added_counts)["ready"]
 
 
 def wait_for_task_evidence(
@@ -1010,32 +1240,90 @@ def wait_for_task_evidence(
     cutoff: str,
     added_counts: dict[str, int],
     started: float,
-    timeout_seconds: float = 30,
+    timeout_seconds: float | None = None,
+    competitor_raw_dir: Path | None = None,
+    require_summary_proof: bool = True,
 ) -> list[dict[str, Any]]:
-    deadline = time.monotonic() + min(timeout_seconds, remaining_budget(started))
+    available = remaining_budget(started)
+    deadline = time.monotonic() + (
+        available if timeout_seconds is None else min(timeout_seconds, available)
+    )
     latest: list[dict[str, Any]] = []
     last_error: AcceptanceError | None = None
+    quiesced = False
     while time.monotonic() < deadline:
         latest = task_runs(maintenance_db)
         try:
-            validate_task_snapshot(latest)
-            if task_owners_idle(maintenance_db) and archive_proofs_ready(main_db, cutoff, added_counts):
-                return latest
-            last_error = AcceptanceError("retention owners, archive proofs, or 10x source conversion are still draining")
+            raw_oracle = competitor_file_oracle(competitor_raw_dir) if competitor_raw_dir is not None else None
+            validate_task_snapshot(
+                latest,
+                allow_recoverable_competitor_failures=bool(
+                    raw_oracle is not None and raw_oracle["verified_empty"]
+                ),
+            )
+            proof_status = archive_proof_status(main_db, cutoff, added_counts)
+            proof_ready = proof_status["ready"] if require_summary_proof else proof_status["reference_ready"]
+            # The fixed seed snapshot intentionally contains 100,000 expired rows. Waiting
+            # for every background owner to become idle would turn one 10x cohort check into
+            # a full backlog drain and make the six-trial comparison exceed its 900s budget.
+            if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+                if not quiesced:
+                    quiesce_controlled_tasks(maintenance_db, started)
+                    quiesced = True
+                elif controlled_task_runs_idle(maintenance_db):
+                    return latest
+                else:
+                    last_error = AcceptanceError("selected retention work is still draining after dispatch was frozen")
+                    time.sleep(0.5)
+                    continue
+            last_error = AcceptanceError(
+                "archive proofs, 10x source conversion, or fixed competitor files are still draining"
+            )
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
     if last_error is not None:
-        raise AcceptanceError(f"production task/evidence drain timed out: {last_error}") from last_error
+        proof_status = archive_proof_status(main_db, cutoff, added_counts)
+        raise AcceptanceError(
+            "production task/evidence drain timed out: "
+            f"{last_error}; archive_proof_status={json.dumps(proof_status, sort_keys=True)}"
+        ) from last_error
     validate_task_snapshot(latest)
     raise AcceptanceError("production task/evidence drain timed out")
 
 
-def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
+def validate_task_snapshot(
+    rows: list[dict[str, Any]],
+    *,
+    allow_recoverable_competitor_failures: bool = False,
+) -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if row.get("actual_finished_at") is not None and row.get("status") == "success":
+        if row.get("actual_finished_at") is not None and (
+            task_run_is_accepted_competitor_chunk(row)
+            or task_run_is_accepted_zero_contribution_competitor_defer(row)
+            or (
+                allow_recoverable_competitor_failures
+                and task_run_is_recoverable_competitor_chunk(row)
+            )
+            if row.get("task_key") == COMPETITOR_TASK
+            else task_run_is_accepted_terminal(row)
+        ):
             by_key.setdefault(row["task_key"], []).append(row)
+    if allow_recoverable_competitor_failures:
+        for row in rows:
+            if not task_run_is_recoverable_competitor_chunk(row):
+                continue
+            finished = parse_time(row.get("actual_finished_at"))
+            if not any(
+                candidate is not row
+                and candidate.get("task_key") == COMPETITOR_TASK
+                and candidate.get("actual_started_at") is not None
+                and parse_time(candidate["actual_started_at"]) >= finished
+                and task_run_is_accepted_competitor_chunk(candidate)
+                for candidate in rows
+            ):
+                raise AcceptanceError("recoverable competitor chunk has no later successful retry")
     for key in (DATASETS[name]["task_key"] for name in DATASETS):
         runs = by_key.get(key, [])
         scheduled = [row for row in runs if row.get("trigger_kind") == "schedule"]
@@ -1049,11 +1337,87 @@ def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
         ):
             raise AcceptanceError(f"production catch-up did not follow a scheduled run for {key}")
     competitors = by_key.get("raw_orphan_sweep", [])
-    released = sum(row.get("committed_work", 0) for row in competitors)
+    released = sum(row.get("committed_work") or 0 for row in competitors)
     if released < COMPETITOR_FILE_COUNT:
         raise AcceptanceError("production raw-orphan competitor has not completed the fixed workload")
     if released > COMPETITOR_FILE_COUNT:
         raise AcceptanceError("production raw-orphan competitor exceeded the fixed workload")
+
+
+def add_observed_input_identity_digests(
+    oracle: dict[str, Any],
+    added: dict[str, list[str]],
+) -> None:
+    """Bind measured input identities to every dataset result present in the oracle."""
+    datasets = oracle.get("datasets")
+    if not isinstance(datasets, dict):
+        return
+    for name in ("invocations", "pool_upstream_attempts"):
+        result = datasets.get(name)
+        if isinstance(result, dict):
+            result["added_ids_sha256"] = sha256_bytes(
+                "\n".join(added[name]).encode()
+            )
+
+
+def verify_baseline_trial_with_negative_controls(
+    main_db: Path,
+    archive_root: Path,
+    added: dict[str, list[str]],
+    attempt_states: list[dict[str, Any]],
+    template_database: Path,
+    cutoff: str,
+    scratch_root: Path,
+    budget_check: Callable[[], float],
+) -> dict[str, Any]:
+    """Verify all baseline datasets while recording each known duplicate control."""
+    skipped_datasets: set[str] = set()
+    negative_controls: list[dict[str, Any]] = []
+    verified_datasets: dict[str, Any] = {}
+    while skipped_datasets != set(DATASETS):
+        scratch = scratch_root if not skipped_datasets else scratch_root / f"remaining-{len(negative_controls)}"
+        try:
+            result = verify_trial(
+                main_db,
+                archive_root,
+                added,
+                attempt_states,
+                template_database,
+                cutoff,
+                scratch,
+                require_summary_proof=False,
+                budget_check=budget_check,
+                skip_datasets=skipped_datasets,
+            )
+        except AcceptanceError as error:
+            negative_control = baseline_negative_control_oracle(error)
+            if negative_control is None:
+                raise
+            controls = negative_control["negative_controls"]
+            if not isinstance(controls, list) or len(controls) != 1:
+                raise AcceptanceError("baseline negative-control parser returned malformed evidence")
+            control = controls[0]
+            dataset_name = next(
+                name
+                for name, definition in DATASETS.items()
+                if definition["manifest_dataset"] == control["dataset"]
+            )
+            if dataset_name in skipped_datasets:
+                raise AcceptanceError("baseline negative-control dataset was reported more than once")
+            skipped_datasets.add(dataset_name)
+            negative_controls.append(control)
+            continue
+        verified_datasets.update(result["datasets"])
+        break
+
+    if not negative_controls:
+        return {"verified": True, "datasets": verified_datasets}
+    return {
+        "verified": False,
+        "failure_class": "source_artifact_conservation",
+        "negative_controls": negative_controls,
+        "datasets": verified_datasets,
+    }
 
 
 def run_trial(
@@ -1102,11 +1466,14 @@ def run_trial(
     driver_cleanup: dict[str, Any] = {}
     foreground_evidence: dict[str, Any] = {}
     task_evidence: list[dict[str, Any]] = []
+    proof_status: dict[str, Any] | None = None
     write_scrapes: list[dict[str, Any]] = []
     write_buckets: dict[str, int] | None = None
     oracle: dict[str, Any] | None = None
+    competitor_oracle: dict[str, Any] | None = None
     input_start = input_end = cleanup_end = None
     container_stopped = False
+    scheduler_snapshot: dict[str, Any] | None = None
     wall_start = time.monotonic()
     try:
         container_id = start_container(
@@ -1173,7 +1540,15 @@ def run_trial(
             cutoff,
             {name: len(added[name]) for name in DATASETS},
             phase_started,
+            competitor_raw_dir=raw_dir,
+            require_summary_proof=version == "candidate",
         )
+        proof_status = archive_proof_status(
+            main_db,
+            cutoff,
+            {name: len(added[name]) for name in DATASETS},
+        )
+        competitor_oracle = competitor_file_oracle(raw_dir)
         post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
         write_buckets = histogram_delta(pre_buckets, post_buckets)
@@ -1187,16 +1562,29 @@ def run_trial(
             log_path=evidence_dir / "logs" / f"{version}-{index}.log",
         )
         container_stopped = True
-        oracle = verify_trial(
-            main_db,
-            trial_dir / "archives",
-            added,
-            attempt_states,
-            template / "codex_vibe_monitor.db",
-            cutoff,
-            root / f"oracle-{version}-{index}",
-            budget_check=lambda: remaining_budget(phase_started),
-        )
+        if version == "baseline":
+            oracle = verify_baseline_trial_with_negative_controls(
+                main_db,
+                trial_dir / "archives",
+                added,
+                attempt_states,
+                template / "codex_vibe_monitor.db",
+                cutoff,
+                root / f"oracle-{version}-{index}",
+                lambda: remaining_budget(phase_started),
+            )
+        else:
+            oracle = verify_trial(
+                main_db,
+                trial_dir / "archives",
+                added,
+                attempt_states,
+                template / "codex_vibe_monitor.db",
+                cutoff,
+                root / f"oracle-{version}-{index}",
+                require_summary_proof=True,
+                budget_check=lambda: remaining_budget(phase_started),
+            )
     except BaseException as error:
         trial_error = error
     finally:
@@ -1213,6 +1601,7 @@ def run_trial(
                 cleanup_errors.append(error)
         if input_end is None:
             input_end = utc_now()
+        scheduler_snapshot = task_state_snapshot(maintenance_db)
         trial_cleanup, retry_errors = cleanup_path_if_safe(
             trial_dir,
             root,
@@ -1246,8 +1635,11 @@ def run_trial(
             "latency_samples_ms": input_samples,
             "foreground_workload": foreground_evidence,
             "task_runs": task_evidence,
+            "archive_proof_status": proof_status,
+            "task_state_snapshot": scheduler_snapshot or {"error": "scheduler snapshot was not captured"},
             "write_hold_samples": write_scrapes,
             "write_hold_buckets": write_buckets,
+            "competitor_file_oracle": competitor_oracle,
         }
         if not trial_cleanup["removed"]:
             partial["cleanup_recovery"] = trial_cleanup["recovery"]
@@ -1265,8 +1657,7 @@ def run_trial(
     input_started = parse_time(input_start)
     input_finished = parse_time(input_end)
     full_finished = parse_time(cleanup_end)
-    oracle["datasets"]["invocations"]["added_ids_sha256"] = sha256_bytes("\n".join(added["invocations"]).encode())
-    oracle["datasets"]["pool_upstream_attempts"]["added_ids_sha256"] = sha256_bytes("\n".join(added["pool_upstream_attempts"]).encode())
+    add_observed_input_identity_digests(oracle, added)
     return {
         "trial_index": index,
         "source_sha": image["source_sha"],
@@ -1297,6 +1688,8 @@ def run_trial(
         "latency_samples_ms": input_samples,
         "foreground_workload": foreground_evidence,
         "task_runs": task_evidence,
+        "archive_proof_status": proof_status,
+        "competitor_file_oracle": competitor_oracle,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
         "oracle": oracle,

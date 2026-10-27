@@ -152,6 +152,16 @@ impl Drop for DbBackgroundPermit {
 }
 
 impl DbBackgroundPermit {
+    /// Creates a no-op child permit for a bounded operation that already owns the process-wide
+    /// background slot. The parent permit remains responsible for pressure admission and release.
+    pub(crate) fn nested() -> Self {
+        Self {
+            _permit: None,
+            started_at: Instant::now(),
+            eligibility: None,
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn elapsed(&self) -> Duration {
         self.started_at.elapsed()

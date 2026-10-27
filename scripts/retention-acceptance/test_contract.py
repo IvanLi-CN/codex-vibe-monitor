@@ -8,6 +8,7 @@ import unittest
 from contract import (
     BASELINE_SHA,
     COMPETITOR_FILE_COUNT,
+    COMPETITOR_FILE_BYTES,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
     CONTAINER_RUN_ID_LABEL,
@@ -20,11 +21,42 @@ from contract import (
     TRIAL_EXECUTION_ORDER,
     AcceptanceError,
     sha256_json,
+    task_run_is_accepted_competitor_chunk,
+    task_run_is_accepted_zero_contribution_competitor_defer,
+    task_run_is_recoverable_competitor_chunk,
+    task_run_is_accepted_terminal,
     validate_evidence,
 )
 
 
 RUN_ID = "123456abcdef"
+
+
+def baseline_negative_control_oracle(
+    evidence: dict,
+    *,
+    lost_rows: int = 0,
+    duplicate_rows: int = 132,
+    dataset_names: tuple[str, ...] = ("invocations",),
+) -> dict:
+    datasets = evidence["versions"]["baseline"]["trials"][0]["oracle"]["datasets"]
+    controls = []
+    for name in dataset_names:
+        dataset = DATASETS[name]["manifest_dataset"]
+        controls.append({
+            "dataset": dataset,
+            "lost_rows": lost_rows,
+            "duplicate_rows": duplicate_rows,
+            "error": f"{dataset} source/artifact conservation failed: lost={lost_rows}, duplicates={duplicate_rows}",
+        })
+    return {
+        "verified": False,
+        "failure_class": "source_artifact_conservation",
+        "negative_controls": controls,
+        "datasets": {
+            name: result for name, result in datasets.items() if name not in dataset_names
+        },
+    }
 
 
 def timestamp(value: datetime) -> str:
@@ -90,6 +122,7 @@ def task_runs(start: datetime) -> list[dict]:
             "actual_finished_at": timestamp(first_end),
             "status": "success",
             "committed_work": COMPETITOR_FILE_COUNT if key == "raw_orphan_sweep" else 100,
+            "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES if key == "raw_orphan_sweep" else 0,
         })
         if key != "raw_orphan_sweep":
             rows.append({
@@ -154,6 +187,23 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
     ))
     oracle_datasets = {name: oracle_result(name, input_counts[name]) for name in DATASETS}
     oracle_datasets["pool_upstream_attempts"]["attempt_invocation_map_sha256"] = attempt_map_digest
+    for result in oracle_datasets.values():
+        result["summary_proof_required"] = version == "candidate"
+        result["summary_proof_verified"] = version == "candidate"
+    archive_proof_status = {
+        "ready": version == "candidate",
+        "reference_ready": True,
+        "datasets": {
+            name: {
+                "dataset": DATASETS[name]["manifest_dataset"],
+                "ready": version == "candidate",
+                "reference_ready": True,
+                "summary_proof_complete": version == "candidate",
+                "summary_proof_missing": [] if version == "candidate" else ["summary proof:baseline-reference"],
+            }
+            for name in DATASETS
+        },
+    }
     return {
         "trial_index": index,
         "source_sha": BASELINE_SHA if version == "baseline" else "a" * 40,
@@ -196,11 +246,19 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
             },
         },
         "task_runs": task_runs(start),
+        "archive_proof_status": archive_proof_status,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
         "oracle": {
             "verified": True,
             "datasets": oracle_datasets,
+        },
+        "competitor_file_oracle": {
+            "expected_count": COMPETITOR_FILE_COUNT,
+            "expected_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+            "remaining_count": 0,
+            "remaining_bytes": 0,
+            "verified_empty": True,
         },
     }, cleanup
 
@@ -269,6 +327,259 @@ def valid_evidence() -> dict:
 
 
 class ContractTests(unittest.TestCase):
+    def test_partial_task_run_requires_progress_and_more_work(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "partial",
+            "error_detail": None,
+            "details": {
+                "result": "partial",
+                "fatalError": None,
+                "errorChain": None,
+                "timeoutCount": 0,
+                "selectedScope": {"selected": 1000, "committed": 735, "hasMore": True},
+                "archiveBatches": [{"batchRows": 1000, "committedRows": 735, "timeoutCount": 0}],
+            },
+        }
+        self.assertTrue(task_run_is_accepted_terminal(row))
+        row["details"]["selectedScope"]["committed"] = 0
+        self.assertFalse(task_run_is_accepted_terminal(row))
+        row["details"]["selectedScope"]["committed"] = 999
+        row["details"]["selectedScope"]["hasMore"] = False
+        self.assertFalse(task_run_is_accepted_terminal(row))
+
+    def test_competitor_progress_chunk_requires_zero_failures(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "partial",
+            "error_detail": None,
+            "details": {"filesChecked": 32, "filesReleased": 32, "failures": 0},
+        }
+        self.assertTrue(task_run_is_accepted_competitor_chunk(row))
+        row["completion"] = "deferred"
+        self.assertTrue(task_run_is_accepted_competitor_chunk(row))
+        row["details"]["failures"] = 1
+        self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        row["details"]["hasMore"] = True
+        self.assertTrue(task_run_is_recoverable_competitor_chunk(row))
+        row["details"]["filesReleased"] = 0
+        self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        self.assertFalse(task_run_is_recoverable_competitor_chunk(row))
+        row["status"] = "success"
+        row["details"]["filesReleased"] = 32
+        row["details"]["failures"] = 1
+        self.assertFalse(task_run_is_accepted_competitor_chunk(row))
+        self.assertFalse(task_run_is_recoverable_competitor_chunk(row))
+
+    def test_zero_contribution_file_phase_defer_does_not_claim_work(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "deferred",
+            "error_detail": None,
+            "committed_work": None,
+            "committed_bytes": None,
+            "details": {
+                "filesChecked": None,
+                "directoryEntriesChecked": None,
+                "reconciliationRowsChecked": None,
+                "filesReleased": None,
+                "bytesReleased": None,
+                "referencedSkipped": None,
+                "quarantined": None,
+                "failures": None,
+                "waitReason": "file_phase_busy",
+                "admissionStage": "file_phase",
+            },
+        }
+        self.assertTrue(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["waitReason"] = "sqlite_pressure"
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["waitReason"] = "file_phase_busy"
+        row["details"]["admissionStage"] = "archive_file_phase"
+        row["details"]["waitReason"] = "archive_directory_lock_busy"
+        self.assertTrue(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["waitReason"] = "file_phase_busy"
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["admissionStage"] = "file_phase"
+        del row["details"]["failures"]
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+        row["details"]["failures"] = None
+        row["committed_work"] = 0
+        self.assertFalse(task_run_is_accepted_zero_contribution_competitor_defer(row))
+
+    def test_evidence_validator_accepts_retried_competitor_chunk_after_oracle_completion(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "partial",
+                "error_detail": None,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+            }
+        )
+        evidence["versions"]["baseline"]["trials"][0]["task_runs"].append(
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(datetime(2026, 10, 24, 0, 0, 11, tzinfo=timezone.utc)),
+                "actual_finished_at": timestamp(datetime(2026, 10, 24, 0, 0, 12, tzinfo=timezone.utc)),
+                "status": "success",
+                "committed_work": 0,
+                "committed_bytes": 0,
+            }
+        )
+        validate_evidence(evidence)
+
+    def test_evidence_validator_accepts_zero_contribution_file_phase_defer(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "deferred",
+                "error_detail": None,
+                "committed_work": None,
+                "committed_bytes": None,
+                "details": {
+                    "filesChecked": None,
+                    "directoryEntriesChecked": None,
+                    "reconciliationRowsChecked": None,
+                    "filesReleased": None,
+                    "bytesReleased": None,
+                    "referencedSkipped": None,
+                    "quarantined": None,
+                    "failures": None,
+                    "waitReason": "file_phase_busy",
+                    "admissionStage": "file_phase",
+                },
+            }
+        )
+        evidence["versions"]["baseline"]["trials"][0]["task_runs"].append(
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(datetime(2026, 10, 24, 0, 0, 11, tzinfo=timezone.utc)),
+                "actual_finished_at": timestamp(datetime(2026, 10, 24, 0, 0, 12, tzinfo=timezone.utc)),
+                "status": "success",
+                "committed_work": COMPETITOR_FILE_COUNT,
+                "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+                "details": {},
+                "error_detail": None,
+                "completion": "complete",
+            }
+        )
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_evidence_validator_requires_productive_competitor_overlap(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        row = next(item for item in trial["task_runs"] if item["task_key"] == "raw_orphan_sweep")
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "deferred",
+                "error_detail": None,
+                "committed_work": None,
+                "committed_bytes": None,
+                "details": {
+                    "filesChecked": None,
+                    "directoryEntriesChecked": None,
+                    "reconciliationRowsChecked": None,
+                    "filesReleased": None,
+                    "bytesReleased": None,
+                    "referencedSkipped": None,
+                    "quarantined": None,
+                    "failures": None,
+                    "waitReason": "file_phase_busy",
+                    "admissionStage": "file_phase",
+                },
+            }
+        )
+        trial_start = datetime.fromisoformat(trial["window"]["setup_started_at"].replace("Z", "+00:00"))
+        trial["task_runs"].append(
+            {
+                "task_key": "raw_orphan_sweep",
+                "trigger_kind": "catchup",
+                "actual_started_at": timestamp(trial_start + timedelta(seconds=20)),
+                "actual_finished_at": timestamp(trial_start + timedelta(seconds=21)),
+                "status": "success",
+                "committed_work": COMPETITOR_FILE_COUNT,
+                "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+                "details": {},
+                "error_detail": None,
+                "completion": "complete",
+            }
+        )
+        with self.assertRaisesRegex(AcceptanceError, "did not overlap"):
+            validate_evidence(evidence)
+
+    def test_evidence_validator_requires_bytes_for_each_productive_chunk(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row["committed_bytes"] = None
+        with self.assertRaisesRegex(AcceptanceError, "unexpected byte count"):
+            validate_evidence(evidence)
+
+    def test_evidence_validator_rejects_recoverable_competitor_without_retry(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "partial",
+                "error_detail": None,
+                "details": {"filesChecked": 512, "filesReleased": 512, "failures": 1, "hasMore": True},
+                "committed_work": 512,
+                "committed_bytes": 512 * 256,
+            }
+        )
+        with self.assertRaisesRegex(AcceptanceError, "no later successful retry"):
+            validate_evidence(evidence)
+
+    def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "retention_archive" and item["trigger_kind"] == "schedule"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "partial",
+                "error_detail": None,
+                "details": {
+                    "result": "partial",
+                    "fatalError": None,
+                    "errorChain": None,
+                    "timeoutCount": 0,
+                    "selectedScope": {"selected": 1000, "committed": 1000},
+                    "archiveBatches": [{"batchRows": 1000, "committedRows": 1000, "timeoutCount": 0}],
+                },
+            }
+        )
+
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
     def test_valid_evidence_passes(self) -> None:
         result = validate_evidence(valid_evidence())
         self.assertEqual(result["status"], "passed")
@@ -455,6 +766,17 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "fixed 512-file workload"):
             validate_evidence(evidence)
 
+    def test_competitor_byte_oracle_rejects_mismatched_release(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["candidate"]["trials"][0]["task_runs"]
+            if item["task_key"] == "raw_orphan_sweep"
+        )
+        row["committed_bytes"] = COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES - 1
+        with self.assertRaisesRegex(AcceptanceError, "unexpected byte count"):
+            validate_evidence(evidence)
+
     def test_missing_oracle_and_lost_rows_are_rejected(self) -> None:
         evidence = valid_evidence()
         evidence["versions"]["candidate"]["trials"][2]["oracle"]["verified"] = False
@@ -464,6 +786,44 @@ class ContractTests(unittest.TestCase):
         evidence = valid_evidence()
         evidence["versions"]["candidate"]["trials"][0]["oracle"]["datasets"]["invocations"]["lost_rows"] = 1
         with self.assertRaisesRegex(AcceptanceError, "found lost"):
+            validate_evidence(evidence)
+
+    def test_baseline_duplicate_publication_is_recorded_as_negative_control(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence)
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_baseline_duplicate_publication_controls_cover_each_failed_dataset(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(
+            evidence,
+            dataset_names=("invocations", "pool_upstream_attempts"),
+        )
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_baseline_negative_control_requires_remaining_dataset_evidence(self) -> None:
+        evidence = valid_evidence()
+        oracle = baseline_negative_control_oracle(evidence)
+        del oracle["datasets"]["pool_upstream_attempts"]
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = oracle
+        with self.assertRaisesRegex(AcceptanceError, "oracle dataset evidence is incomplete"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence)
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_baseline_negative_control_cannot_hide_lost_rows(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence, lost_rows=1)
+        with self.assertRaisesRegex(AcceptanceError, "baseline negative-control counts"):
+            validate_evidence(evidence)
+
+        evidence = valid_evidence()
+        oracle = baseline_negative_control_oracle(evidence)
+        oracle["datasets"]["pool_upstream_attempts"]["lost_rows"] = 1
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = oracle
+        with self.assertRaisesRegex(AcceptanceError, "found lost pool_upstream_attempts"):
             validate_evidence(evidence)
 
     def test_write_hold_is_recomputed_from_raw_histogram_scrapes(self) -> None:

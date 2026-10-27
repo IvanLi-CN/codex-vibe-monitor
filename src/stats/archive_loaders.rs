@@ -1096,54 +1096,175 @@ pub(crate) async fn open_pool_upstream_request_attempt_archive_batch_pool(
     open_archive_batch_pool(archive_row, "pool_upstream_request_attempts", read_surface).await
 }
 
+struct ArchiveBatchPoolOpenDrain {
+    pool: Option<Pool<Sqlite>>,
+    cleanup: Option<TempSqliteCleanup>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+    open_task: Option<tokio::task::JoinHandle<Result<i64>>>,
+}
+
+struct ArchiveBatchPoolCleanupGuard {
+    pool: Option<Pool<Sqlite>>,
+    cleanup: Option<TempSqliteCleanup>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+    open_task: Option<tokio::task::JoinHandle<Result<i64>>>,
+}
+
+impl Drop for ArchiveBatchPoolCleanupGuard {
+    fn drop(&mut self) {
+        // A cancelled cleanup task has not acknowledged native SQLite drain. Retain every
+        // ownership component through process exit rather than releasing a live worker or
+        // deleting its temporary file without the file-phase permit.
+        if let Some(open_task) = self.open_task.take() {
+            std::mem::forget(open_task);
+        }
+        if let Some(pool) = self.pool.take() {
+            std::mem::forget(pool);
+        }
+        if let Some(cleanup) = self.cleanup.take() {
+            std::mem::forget(cleanup);
+        }
+        if let Some(file_phase) = self.file_phase.take() {
+            std::mem::forget(file_phase);
+        }
+    }
+}
+
+async fn finish_archive_batch_pool_cleanup(guard: &mut ArchiveBatchPoolCleanupGuard) {
+    let Some(file_phase) = guard.file_phase.as_ref().cloned() else {
+        return;
+    };
+    crate::maintenance::with_file_phase_permit(file_phase, async {
+        if let Some(pool) = guard.pool.as_ref() {
+            pool.close().await;
+        }
+        guard.pool.take();
+        guard.cleanup.take();
+    })
+    .await;
+    guard.file_phase.take();
+}
+
+impl ArchiveBatchPoolOpenDrain {
+    fn new(
+        pool: &Pool<Sqlite>,
+        cleanup: TempSqliteCleanup,
+        file_phase: crate::maintenance::FilePhasePermit,
+    ) -> Self {
+        Self {
+            pool: Some(pool.clone()),
+            cleanup: Some(cleanup),
+            file_phase: Some(file_phase),
+            open_task: None,
+        }
+    }
+
+    fn set_open_task(&mut self, task: tokio::task::JoinHandle<Result<i64>>) {
+        debug_assert!(self.open_task.is_none());
+        self.open_task = Some(task);
+    }
+
+    async fn wait_for_open_task(&mut self) -> Result<i64> {
+        let task = self
+            .open_task
+            .as_mut()
+            .context("archive pool opener task is missing")?;
+        let result = task.await.context("archive pool opener task failed")?;
+        self.open_task.take();
+        result
+    }
+
+    async fn complete(&mut self) {
+        debug_assert!(self.open_task.is_none());
+        let (Some(pool), Some(cleanup), Some(file_phase)) = (
+            self.pool.take(),
+            self.cleanup.take(),
+            self.file_phase.take(),
+        ) else {
+            return;
+        };
+        let mut guard = ArchiveBatchPoolCleanupGuard {
+            pool: Some(pool),
+            cleanup: Some(cleanup),
+            file_phase: Some(file_phase),
+            open_task: None,
+        };
+        let worker = tokio::spawn(async move {
+            finish_archive_batch_pool_cleanup(&mut guard).await;
+        });
+        let _ = worker.await;
+    }
+
+    fn disarm(mut self) -> TempSqliteCleanup {
+        debug_assert!(self.open_task.is_none());
+        self.pool.take();
+        self.file_phase.take();
+        self.cleanup
+            .take()
+            .expect("archive pool opener drain cleanup")
+    }
+}
+
+impl Drop for ArchiveBatchPoolOpenDrain {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup), Some(file_phase)) = (
+            self.pool.take(),
+            self.cleanup.take(),
+            self.file_phase.take(),
+        ) else {
+            return;
+        };
+        let mut guard = ArchiveBatchPoolCleanupGuard {
+            pool: Some(pool),
+            cleanup: Some(cleanup),
+            file_phase: Some(file_phase),
+            open_task: self.open_task.take(),
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                if let Some(open_task) = guard.open_task.as_mut() {
+                    let _ = open_task.await;
+                }
+                guard.open_task.take();
+                finish_archive_batch_pool_cleanup(&mut guard).await;
+            }));
+        } else {
+            // Runtime teardown cannot provide a native SQLite drain acknowledgement.
+            drop(guard);
+        }
+    }
+}
+
 async fn open_archive_batch_pool(
     archive_row: &ArchiveBatchPathRow,
     expected_table: &str,
     read_surface: &'static str,
 ) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
-    let archive_path = PathBuf::from(&archive_row.file_path);
-    let is_materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
-    if !archive_path.exists() {
-        warn!(
-            read_surface,
-            historical_rollups_materialized = is_materialized_archive,
-            "skipping missing archive while serving read-only historical fallback"
-        );
-        return Ok(None);
-    }
-
-    let temp_path = PathBuf::from(format!(
-        "{}.{}.sqlite",
-        archive_path.display(),
-        retention_temp_suffix()
-    ));
-    if temp_path.exists() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
-    if let Err(err) =
-        inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await
-    {
-        drop(temp_cleanup);
-        if is_unreadable_invocation_summary_archive_error(&err) {
+    let file_phase = crate::maintenance::acquire_file_phase_permit(read_surface).await?;
+    crate::maintenance::with_file_phase_permit(file_phase.clone(), async move {
+        let archive_path = PathBuf::from(&archive_row.file_path);
+        let is_materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
+        if !archive_path.exists() {
             warn!(
                 read_surface,
-                error = %err,
                 historical_rollups_materialized = is_materialized_archive,
-                "skipping unreadable archive while serving read-only historical fallback"
+                "skipping missing archive while serving read-only historical fallback"
             );
             return Ok(None);
         }
-        return Err(err);
-    }
-    let archive_pool = match SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&sqlite_url_for_path(&temp_path))
-        .await
-        .context("failed to open archive batch")
-    {
-        Ok(pool) => pool,
-        Err(err) => {
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
+        if let Err(err) =
+            inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &temp_path).await
+        {
             drop(temp_cleanup);
             if is_unreadable_invocation_summary_archive_error(&err) {
                 warn!(
@@ -1156,24 +1277,86 @@ async fn open_archive_batch_pool(
             }
             return Err(err);
         }
-    };
-    let has_expected_table = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-    )
-    .bind(expected_table)
-    .fetch_one(&archive_pool)
-    .await?
-        != 0;
-    if !has_expected_table {
-        archive_pool.close().await;
-        drop(temp_cleanup);
-        return Ok(None);
-    }
-    if expected_table == "codex_invocations" {
-        ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
-    }
+        // Keep pool construction lazy for the caller, but prewarm its only connection inside the
+        // owner task below so native initialization is never owned by the caller's future.
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            // The owner task below is the only path allowed to open this pool. The long watchdog
+            // is not a retention budget; SQLx exposes only a finite Duration here, so use a
+            // process-lifetime-scale sentinel instead of its default short acquire timeout.
+            .acquire_timeout(Duration::from_secs(100 * 365 * 24 * 60 * 60))
+            // Never let the pool retire the prewarmed connection and silently start a new native
+            // worker outside the owner task.
+            .idle_timeout(None)
+            .max_lifetime(None)
+            // The owner task prewarms the sole connection. Without a pre-acquire ping, later
+            // cancellation cannot drop an already-idle native connection between acquire and
+            // handing it to the archive query.
+            .test_before_acquire(false)
+            .connect_lazy(&sqlite_url_for_path(&temp_path))
+            .context("failed to configure archive batch")?;
+        let mut pool_drain =
+            ArchiveBatchPoolOpenDrain::new(&archive_pool, temp_cleanup, file_phase.clone());
+        let expected_table_for_open = expected_table.to_owned();
+        let open_pool = archive_pool.clone();
+        let open_task =
+            tokio::spawn(crate::maintenance::with_file_phase_permit(
+                file_phase.clone(),
+                async move {
+                    let mut connection = open_pool
+                        .acquire()
+                        .await
+                        .context("failed to open archive batch")?;
+                    let is_invocation_archive = expected_table_for_open == "codex_invocations";
+                    let result: Result<i64> = async {
+                        let has_expected_table = sqlx::query_scalar::<_, i64>(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                        )
+                        .bind(expected_table_for_open)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("failed to open archive batch")?;
+                        if is_invocation_archive && has_expected_table != 0 {
+                            ensure_invocation_archive_first_token_compatibility_on_connection(
+                                &mut connection,
+                            )
+                            .await?;
+                        }
+                        Ok(has_expected_table)
+                    }
+                    .await;
+                    drop(connection);
+                    result
+                },
+            ));
+        pool_drain.set_open_task(open_task);
+        let has_expected_table = match pool_drain.wait_for_open_task().await {
+            Ok(value) => value != 0,
+            Err(err) => {
+                drop(archive_pool);
+                pool_drain.complete().await;
+                if is_unreadable_invocation_summary_archive_error(&err) {
+                    warn!(
+                        read_surface,
+                        error = %err,
+                        historical_rollups_materialized = is_materialized_archive,
+                        "skipping unreadable archive while serving read-only historical fallback"
+                    );
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        };
+        if !has_expected_table {
+            drop(archive_pool);
+            pool_drain.complete().await;
+            return Ok(None);
+        }
 
-    Ok(Some((archive_pool, temp_cleanup)))
+        let temp_cleanup = pool_drain.disarm();
+        Ok(Some((archive_pool, temp_cleanup)))
+    })
+    .await
 }
 
 #[derive(Debug, FromRow)]
@@ -1307,6 +1490,34 @@ async fn ensure_invocation_archive_first_token_compatibility(pool: &Pool<Sqlite>
             .context("failed to add nullable TTFT compatibility column to archive copy")?;
     }
     Ok(())
+}
+
+async fn ensure_invocation_archive_first_token_compatibility_on_connection(
+    connection: &mut SqliteConnection,
+) -> Result<()> {
+    if !sqlite_connection_table_has_column(connection, "codex_invocations", "first_token_ms")
+        .await?
+    {
+        sqlx::query("ALTER TABLE codex_invocations ADD COLUMN first_token_ms REAL")
+            .execute(&mut *connection)
+            .await
+            .context("failed to add nullable TTFT compatibility column to archive copy")?;
+    }
+    Ok(())
+}
+
+async fn sqlite_connection_table_has_column(
+    connection: &mut SqliteConnection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool> {
+    let escaped_table_name = table_name.replace('\'', "''");
+    let pragma = format!("PRAGMA table_info('{escaped_table_name}')");
+    let rows = sqlx::query(&pragma).fetch_all(&mut *connection).await?;
+    Ok(rows.into_iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == column_name)
+    }))
 }
 
 #[cfg(test)]

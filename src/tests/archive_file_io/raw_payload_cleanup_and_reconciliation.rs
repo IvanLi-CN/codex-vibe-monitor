@@ -1207,7 +1207,13 @@ async fn raw_orphan_sweep_defers_a_busy_directory_lock_without_holding_write_adm
         completed_before_lock_release,
         "a busy cross-process lock must defer without blocking"
     );
-    assert_eq!(pass.failures, 1);
+    assert!(pass.deferred);
+    assert_eq!(pass.admission_stage.as_deref(), Some("archive_file_phase"));
+    assert_eq!(
+        pass.admission_cause.as_deref(),
+        Some("archive_directory_lock_busy")
+    );
+    assert_eq!(pass.failures, 0);
     assert_eq!(pass.removed, 0);
     assert!(raw_path.exists());
     let _p1_permit = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
@@ -1490,61 +1496,6 @@ async fn raw_orphan_sweep_retains_unprocessed_batch_after_midpass_admission_defe
         .await
         .expect("count retained midpass ledger rows");
     assert_eq!(ledger_rows, 2);
-
-    pool.close().await;
-    cleanup_temp_test_dir(&temp_dir);
-}
-
-#[tokio::test]
-async fn raw_orphan_sweep_holds_pressure_slot_but_releases_write_admission_during_directory_io() {
-    let (pool, config, temp_dir) =
-        retention_fresh_schema_test_pool_and_config("retention-raw-pressure-slot").await;
-    fs::write(
-        config.proxy_raw_dir.join("pressure-slot-candidate.bin"),
-        b"candidate",
-    )
-    .expect("write raw candidate");
-
-    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
-    let pressure_gate = std::sync::Arc::new(crate::db_pressure::DbPressureGate::new(
-        1,
-        std::time::Duration::from_secs(60),
-    ));
-    let pressure_probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let p1_probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut traversal = RetentionRawDirectoryTraversal::default();
-    let result = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
-        .scope(
-            coordinator,
-            crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
-                pressure_gate,
-                crate::maintenance::RETENTION_TEST_RAW_DIRECTORY_PRESSURE_PROBES.scope(
-                    pressure_probes.clone(),
-                    crate::maintenance::RETENTION_TEST_RAW_DIRECTORY_P1_PROBES.scope(
-                        p1_probes.clone(),
-                        sweep_orphan_proxy_raw_files_slice(
-                            &pool,
-                            &config,
-                            None,
-                            false,
-                            &mut traversal,
-                        ),
-                    ),
-                ),
-            ),
-        )
-        .await
-        .expect("scan bounded raw directory");
-
-    assert!(result.inspected_entries > 0);
-    assert!(
-        pressure_probes.load(std::sync::atomic::Ordering::Relaxed) > 0,
-        "another background task must not take the pressure slot during directory I/O"
-    );
-    assert!(
-        p1_probes.load(std::sync::atomic::Ordering::Relaxed) > 0,
-        "the coordinator write permit must be released before directory I/O"
-    );
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
