@@ -11,7 +11,7 @@ from statistics import median
 from typing import Any
 
 
-BASELINE_SHA = "76beb053ac529bde47961dddb1e14b4d176700f8"
+BASELINE_SHA = "4d46276dc5f8a6fca7db8cfb9cff98a03bd0ba9f"
 DATASETS = {
     "invocations": {
         "table": "codex_invocations",

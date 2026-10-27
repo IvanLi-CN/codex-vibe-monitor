@@ -42,7 +42,7 @@ jobs:
       matrix:
         include:
           - version: baseline
-            source_sha: 76beb053ac529bde47961dddb1e14b4d176700f8
+            source_sha: 4d46276dc5f8a6fca7db8cfb9cff98a03bd0ba9f
           - version: candidate
             source_sha: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -124,7 +124,7 @@ jobs:
     steps:
       - name: Start complete test-phase clock and initialize preflight evidence
         env:
-          ACCEPTANCE_BASELINE_SHA: 76beb053ac529bde47961dddb1e14b4d176700f8
+          ACCEPTANCE_BASELINE_SHA: 4d46276dc5f8a6fca7db8cfb9cff98a03bd0ba9f
           ACCEPTANCE_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
           ACCEPTANCE_EVIDENCE_DIR: ${{ runner.temp }}/retention-acceptance-evidence
           ACCEPTANCE_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -198,7 +198,7 @@ jobs:
           import hashlib, json, os, pathlib, subprocess
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "retention-images"
           expected = {
-              "baseline": "76beb053ac529bde47961dddb1e14b4d176700f8",
+              "baseline": "4d46276dc5f8a6fca7db8cfb9cff98a03bd0ba9f",
               "candidate": os.environ["CANDIDATE_SHA"],
           }
           for version, source in expected.items():
