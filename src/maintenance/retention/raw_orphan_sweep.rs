@@ -557,8 +557,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             result.failures += 1;
             continue;
         }
-        let unlink_metadata = match try_retention_raw_file_metadata_with_file_phase(&path).await {
-            Ok(None) => {
+        let unlink_metadata = match try_retention_raw_file_metadata_with_file_phase(
+            &path,
+            context.candidate_budget_remaining(),
+        )
+        .await
+        {
+            Ok(RetentionRawFileMetadataProbe::FilePhaseBusy) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 result.complete = false;
@@ -568,18 +573,33 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
-            Ok(Some(Ok(metadata))) if metadata.file_type().is_file() => metadata,
-            Ok(Some(Ok(_))) => {
+            Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(metadata)))
+                if metadata.file_type().is_file() =>
+            {
+                metadata
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(_))) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 continue;
             }
-            Ok(Some(Err(error))) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(RetentionRawFileMetadataProbe::Ready(Err(error)))
+                if error.kind() == io::ErrorKind::NotFound =>
+            {
                 drop(directory_lock);
                 drop(inventory_admission);
                 continue;
             }
-            Ok(Some(Err(_))) => {
+            Ok(RetentionRawFileMetadataProbe::Ready(Err(_))) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 result.complete = false;
@@ -663,39 +683,57 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
         }
-        let final_unlink_metadata =
-            match try_retention_raw_file_metadata_with_file_phase(&path).await {
-                Ok(None) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    result.deferred = true;
-                    traversal
-                        .pending_candidates
-                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
-                    break;
-                }
-                Ok(Some(Ok(metadata))) if metadata.file_type().is_file() => metadata,
-                Ok(Some(Ok(_))) | Ok(Some(Err(_))) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    traversal
-                        .pending_candidates
-                        .push_back(candidate_entries[candidate_index].clone());
-                    continue;
-                }
-                Err(_) => {
-                    drop(directory_lock);
-                    drop(inventory_admission);
-                    result.complete = false;
-                    result.failures += 1;
-                    traversal
-                        .pending_candidates
-                        .push_back(candidate_entries[candidate_index].clone());
-                    continue;
-                }
-            };
+        let final_unlink_metadata = match try_retention_raw_file_metadata_with_file_phase(
+            &path,
+            context.candidate_budget_remaining(),
+        )
+        .await
+        {
+            Ok(RetentionRawFileMetadataProbe::FilePhaseBusy) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.deferred = true;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(metadata)))
+                if metadata.file_type().is_file() =>
+            {
+                metadata
+            }
+            Ok(RetentionRawFileMetadataProbe::Ready(Ok(_)))
+            | Ok(RetentionRawFileMetadataProbe::Ready(Err(_))) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .push_back(candidate_entries[candidate_index].clone());
+                continue;
+            }
+            Err(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                traversal
+                    .pending_candidates
+                    .push_back(candidate_entries[candidate_index].clone());
+                continue;
+            }
+        };
         let final_unlink_identity = retention_raw_file_identity(&final_unlink_metadata);
         let final_unlink_size = match i64::try_from(final_unlink_metadata.len()) {
             Ok(size) => size,

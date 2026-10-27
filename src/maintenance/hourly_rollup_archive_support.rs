@@ -234,6 +234,9 @@ pub(crate) fn delete_proxy_raw_paths(
         fences,
         identities,
     } = plan;
+    if raw_paths.iter().all(Option::is_none) {
+        return Ok(0);
+    }
     let Some(_file_phase) = super::file_phase::try_acquire_file_phase_permit() else {
         return Err(super::retention::retention_write_deferred(
             "proxy_raw_delete",

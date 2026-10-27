@@ -52,6 +52,12 @@ pub(crate) fn is_raw_orphan_sweep_candidate_budget_expired(error: &anyhow::Error
         .any(|cause| cause.is::<RawOrphanSweepCandidateBudgetExpired>())
 }
 
+pub(crate) enum RetentionRawFileMetadataProbe {
+    FilePhaseBusy,
+    CandidateBudgetExpired,
+    Ready(io::Result<fs::Metadata>),
+}
+
 pub(crate) struct RawOrphanSweepPassContext {
     pub(crate) _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     pub(crate) candidate_deadline: Instant,
@@ -194,15 +200,15 @@ pub(crate) async fn read_retention_raw_directory_slice_with_budget(
     let root = root.to_owned();
     #[cfg(test)]
     retention_test_raw_directory_entry_event();
-    let Some(remaining) = context.candidate_budget_remaining() else {
+    let Some(_remaining) = context.candidate_budget_remaining() else {
         return Err(raw_orphan_sweep_candidate_budget_expired());
     };
     // Keep the ReadDir in the caller until file-phase admission succeeds. Once moved into the
-    // blocking worker, always await that worker so cancellation cannot lose its traversal cursor.
-    let file_phase =
-        tokio::time::timeout(remaining, acquire_file_phase_permit("raw_directory_scan"))
-            .await
-            .map_err(|_| raw_orphan_sweep_candidate_budget_expired())??;
+    // blocking worker, await it to preserve the traversal cursor across normal budget handling.
+    let Some(file_phase) = try_acquire_file_phase_permit() else {
+        retention_record_defer("raw_directory_scan", "file_phase_busy");
+        return Err(retention_write_deferred("raw_directory_scan"));
+    };
     let directory = directory.take();
     tokio::task::spawn_blocking(move || {
         let _file_phase = file_phase;
@@ -232,18 +238,30 @@ pub(crate) async fn retention_raw_file_metadata_with_budget(
 
 pub(crate) async fn try_retention_raw_file_metadata_with_file_phase(
     path: &Path,
-) -> Result<Option<io::Result<fs::Metadata>>> {
+    candidate_budget: Option<Duration>,
+) -> Result<RetentionRawFileMetadataProbe> {
+    let Some(remaining) = candidate_budget else {
+        return Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired);
+    };
     let Some(file_phase) = try_acquire_file_phase_permit() else {
-        return Ok(None);
+        return Ok(RetentionRawFileMetadataProbe::FilePhaseBusy);
     };
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
+    let mut worker = tokio::task::spawn_blocking(move || {
         let _file_phase = file_phase;
         retention_raw_file_metadata(&path)
-    })
-    .await
-    .map(Some)
-    .map_err(|error| anyhow!("raw metadata worker failed: {error}"))
+    });
+    match tokio::time::timeout(remaining, &mut worker).await {
+        Ok(joined) => joined
+            .map(RetentionRawFileMetadataProbe::Ready)
+            .map_err(|error| anyhow!("raw metadata worker failed: {error}")),
+        Err(_) => {
+            // Dropping the join handle detaches the worker; its closure still owns the permit
+            // until the blocking metadata operation exits, while the caller releases SQL/fence
+            // resources and retries this candidate later.
+            Ok(RetentionRawFileMetadataProbe::CandidateBudgetExpired)
+        }
+    }
 }
 
 pub(crate) async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanSweepPassContext> {

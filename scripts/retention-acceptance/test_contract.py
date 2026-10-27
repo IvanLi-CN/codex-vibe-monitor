@@ -433,6 +433,28 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "candidate raw orphan-sweep did not overlap"):
             validate_evidence(evidence)
 
+    def test_candidate_must_make_owner_progress_during_foreground_input(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        input_end = datetime.fromisoformat(trial["window"]["input_finished_at"].replace("Z", "+00:00"))
+        owner_offsets = {
+            "retention_archive": (0.5, 0.75, 1.0, 1.25),
+            "pool_upstream_attempt_archive": (0.75, 1.0, 1.25, 1.5),
+        }
+        for row in trial["task_runs"]:
+            offsets = owner_offsets.get(row["task_key"])
+            if offsets is None:
+                continue
+            scheduled_start, scheduled_finish, catchup_start, catchup_finish = offsets
+            if row["trigger_kind"] == "schedule":
+                start_offset, finish_offset = scheduled_start, scheduled_finish
+            else:
+                start_offset, finish_offset = catchup_start, catchup_finish
+            row["actual_started_at"] = timestamp(input_end + timedelta(seconds=start_offset))
+            row["actual_finished_at"] = timestamp(input_end + timedelta(seconds=finish_offset))
+        with self.assertRaisesRegex(AcceptanceError, "made no progress during foreground input"):
+            validate_evidence(evidence)
+
     def test_latency_samples_must_measure_production_http_requests(self) -> None:
         evidence = valid_evidence()
         sample = evidence["versions"]["candidate"]["trials"][0]["latency_samples_ms"]["write"][0]

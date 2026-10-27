@@ -150,6 +150,7 @@ pub(crate) async fn compress_cold_pool_attempt_response_raw_lane(
             .await
             {
                 Ok(outcome) => outcome,
+                Err(error) if is_retention_write_deferred(&error) => return Err(error),
                 Err(error) => {
                     warn!(
                         invocation_id = candidate.id,
@@ -312,6 +313,7 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             .await
             {
                 Ok(outcome) => outcome,
+                Err(error) if is_retention_write_deferred(&error) => return Err(error),
                 Err(error) => {
                     warn!(
                         invocation_id = candidate.id,
@@ -373,7 +375,7 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
     Ok((summary, hit_batch_limit))
 }
 
-pub(crate) async fn acquire_raw_compression_fence(
+pub(crate) async fn try_acquire_raw_compression_fence(
     raw_path: &str,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<Option<Arc<RetentionArchiveFileLock>>> {
@@ -388,17 +390,19 @@ pub(crate) async fn acquire_raw_compression_fence(
         return Ok(None);
     };
     let lock_description = lock_path.display().to_string();
-    let fence =
-        tokio::task::spawn_blocking(move || acquire_retention_raw_exclusive_fence(&lock_path))
-            .await
-            .map_err(|error| anyhow!("raw compression fence worker failed: {error}"))?
-            .with_context(|| {
-                format!(
-                    "failed to acquire raw compression directory fence: {}",
-                    lock_description
-                )
-            })?;
-    Ok(Some(fence))
+    let fence = tokio::task::spawn_blocking(move || retention_archive_file_try_lock(&lock_path))
+        .await
+        .map_err(|error| anyhow!("raw compression fence worker failed: {error}"))?;
+    match fence {
+        Ok(fence) => Ok(Some(Arc::new(fence))),
+        Err(error) if is_retention_write_deferred(&error) => Err(error),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to try raw compression directory fence: {}",
+                lock_description
+            )
+        }),
+    }
 }
 
 async fn compress_raw_path_with_file_phase(
@@ -422,7 +426,7 @@ async fn compress_raw_path_with_file_phase(
     };
     with_file_phase_permit(file_phase, async {
         let compression_fence =
-            acquire_raw_compression_fence(raw_path, raw_path_fallback_root).await?;
+            try_acquire_raw_compression_fence(raw_path, raw_path_fallback_root).await?;
         let outcome = maybe_compress_proxy_raw_path(
             pool,
             invocation_id,

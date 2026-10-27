@@ -202,6 +202,7 @@ def _validate_samples(trial: dict[str, Any], input_start: datetime, input_end: d
 def _validate_task_runs(
     trial: dict[str, Any],
     setup_start: datetime,
+    input_end: datetime,
     cleanup_end: datetime,
     require_competitor_overlap: bool,
 ) -> int:
@@ -230,6 +231,14 @@ def _validate_task_runs(
         _require(
             any(parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"]) for schedule in scheduled for catchup in catchups),
             f"production catch-up did not follow a scheduled run for {key}",
+        )
+        _require(
+            any(
+                row["committed_work"] > 0
+                and parse_time(row["actual_finished_at"]) <= input_end
+                for row in runs
+            ),
+            f"production owner {key} made no progress during foreground input",
         )
 
     competitor = by_key.get(COMPETITOR_TASK, [])
@@ -468,6 +477,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 _validate_task_runs(
                     trial,
                     setup_start,
+                    input_end,
                     cleanup_end,
                     require_competitor_overlap=version == "candidate",
                 )
