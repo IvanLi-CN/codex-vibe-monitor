@@ -279,6 +279,12 @@ impl DurableProjectionCheckpoint {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProjectionCheckpointExpectation {
+    exists: bool,
+    checkpoint: DurableProjectionCheckpoint,
+}
+
 /// In-memory publication state used by each projection adapter. The durable cursor is updated
 /// only after the target transaction commits; a failed batch changes quality but never invents a
 /// new cursor. The payload itself remains owned by the existing module-specific read model.
@@ -288,6 +294,7 @@ pub(crate) struct ProjectionReadState {
     pub(crate) last_good_cursor: Option<ProjectionCursor>,
     pub(crate) quality: ProjectionDataQuality,
     pub(crate) has_more: bool,
+    checkpoint_exists: bool,
 }
 
 impl ProjectionReadState {
@@ -298,6 +305,7 @@ impl ProjectionReadState {
             last_good_cursor: None,
             quality: ProjectionDataQuality::Unavailable,
             has_more: false,
+            checkpoint_exists: false,
         })
     }
 
@@ -320,7 +328,20 @@ impl ProjectionReadState {
             last_good_cursor: checkpoint.last_good_cursor,
             quality: checkpoint.quality,
             has_more: checkpoint.has_more,
+            checkpoint_exists: true,
         })
+    }
+
+    fn checkpoint_expectation(self) -> ProjectionCheckpointExpectation {
+        ProjectionCheckpointExpectation {
+            exists: self.checkpoint_exists,
+            checkpoint: DurableProjectionCheckpoint {
+                target_generation: self.owner.target_generation,
+                last_good_cursor: self.last_good_cursor,
+                quality: self.quality,
+                has_more: self.has_more,
+            },
+        }
     }
 
     pub(crate) fn plan(&self, batch: ProjectionBatch) -> Result<ProjectionCommitDecision> {
@@ -353,6 +374,7 @@ impl ProjectionReadState {
                 self.has_more = true;
             }
         }
+        self.checkpoint_exists = true;
         Ok(())
     }
 }
@@ -895,16 +917,32 @@ impl AnalyticsProjectionTransaction {
 
     pub(crate) fn plan_projection_commit(
         &self,
-        previous: Option<ProjectionCursor>,
+        expected: &ProjectionReadState,
         batch: ProjectionBatch,
     ) -> Result<ProjectionCommitDecision> {
-        plan_projection_commit(self.target_generation, previous, batch)
+        expected.owner.validate()?;
+        if expected.owner.target_generation != self.target_generation {
+            bail!(
+                "projection {} state target generation does not match its transaction",
+                expected.owner.projection.name()
+            );
+        }
+        if let Some(projection) = self.projection
+            && expected.owner.projection != projection
+        {
+            bail!(
+                "projection {} state does not match its transaction owner",
+                expected.owner.projection.name()
+            );
+        }
+        plan_projection_commit(self.target_generation, expected.last_good_cursor, batch)
     }
 
     async fn persist_projection_checkpoint(
         &mut self,
         projection: AnalyticsProjection,
         decision: ProjectionCommitDecision,
+        expected: ProjectionCheckpointExpectation,
     ) -> Result<()> {
         if self.projection != Some(projection) {
             bail!(
@@ -920,6 +958,7 @@ impl AnalyticsProjectionTransaction {
                     self.sqlite_connection()?,
                     projection,
                     checkpoint,
+                    expected,
                 )
                 .await
             }
@@ -928,6 +967,7 @@ impl AnalyticsProjectionTransaction {
                     self.postgres_connection()?,
                     projection,
                     checkpoint,
+                    expected,
                 )
                 .await
             }
@@ -941,20 +981,37 @@ impl AnalyticsProjectionTransaction {
         self.transaction.commit().await
     }
 
-    /// Start an atomic projection publication. The returned guard refuses to commit until its
-    /// durable checkpoint has been written through the same target transaction.
+    /// Start an atomic projection publication. The expected state is written into the checkpoint
+    /// compare-and-swap predicate so a stale worker cannot publish after another worker wins.
     pub(crate) fn prepare_projection_commit(
         self,
+        expected: ProjectionReadState,
         decision: ProjectionCommitDecision,
     ) -> Result<AnalyticsProjectionCommit> {
         let Some(projection) = self.projection else {
             bail!("analytics projection commit requires a named projection owner");
         };
+        expected.owner.validate()?;
+        if expected.owner.projection != projection {
+            bail!(
+                "projection {} state does not match its transaction owner",
+                expected.owner.projection.name()
+            );
+        }
+        if expected.owner.target_generation != self.target_generation {
+            bail!(
+                "projection {} state target generation does not match its transaction",
+                projection.name()
+            );
+        }
+        let expected = expected.checkpoint_expectation();
+        expected.checkpoint.validate()?;
         DurableProjectionCheckpoint::from_decision(self.target_generation, decision)?;
         Ok(AnalyticsProjectionCommit {
             transaction: self,
             projection,
             decision,
+            expected,
             checkpoint_persisted: false,
         })
     }
@@ -968,6 +1025,7 @@ pub(crate) struct AnalyticsProjectionCommit {
     transaction: AnalyticsProjectionTransaction,
     projection: AnalyticsProjection,
     decision: ProjectionCommitDecision,
+    expected: ProjectionCheckpointExpectation,
     checkpoint_persisted: bool,
 }
 
@@ -981,7 +1039,7 @@ impl AnalyticsProjectionCommit {
     /// database write succeeds; callers cannot self-report a durable checkpoint.
     pub(crate) async fn persist_checkpoint(&mut self) -> Result<()> {
         self.transaction
-            .persist_projection_checkpoint(self.projection, self.decision)
+            .persist_projection_checkpoint(self.projection, self.decision, self.expected)
             .await?;
         self.checkpoint_persisted = true;
         Ok(())
@@ -1212,22 +1270,53 @@ async fn persist_projection_checkpoint_sqlite(
     connection: &mut SqliteConnection,
     projection: AnalyticsProjection,
     checkpoint: DurableProjectionCheckpoint,
+    expected: ProjectionCheckpointExpectation,
 ) -> Result<()> {
     ensure_projection_checkpoint_schema_sqlite(connection).await?;
     let values = projection_checkpoint_values(checkpoint)?;
-    let query = format!(
-        "INSERT INTO {ANALYTICS_PROJECTION_CHECKPOINTS_TABLE} (projection, target_generation, last_good_source_generation, last_good_row_id, last_good_source_watermark, quality, has_more) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(projection) DO UPDATE SET target_generation = excluded.target_generation, last_good_source_generation = excluded.last_good_source_generation, last_good_row_id = excluded.last_good_row_id, last_good_source_watermark = excluded.last_good_source_watermark, quality = excluded.quality, has_more = excluded.has_more, updated_at = datetime('now')"
-    );
-    sqlx::query(&query)
-        .bind(projection.name())
-        .bind(values.target_generation)
-        .bind(values.source_generation)
-        .bind(values.row_id)
-        .bind(values.source_watermark)
-        .bind(checkpoint.quality.as_str())
-        .bind(i64::from(checkpoint.has_more))
-        .execute(&mut *connection)
-        .await?;
+    expected.checkpoint.validate()?;
+    let result = if expected.exists {
+        let expected_values = projection_checkpoint_values(expected.checkpoint)?;
+        let query = format!(
+            "UPDATE {ANALYTICS_PROJECTION_CHECKPOINTS_TABLE} SET target_generation = ?, last_good_source_generation = ?, last_good_row_id = ?, last_good_source_watermark = ?, quality = ?, has_more = ?, updated_at = datetime('now') WHERE projection = ? AND target_generation = ? AND last_good_source_generation IS ? AND last_good_row_id IS ? AND last_good_source_watermark IS ? AND quality = ? AND has_more = ?"
+        );
+        sqlx::query(&query)
+            .bind(values.target_generation)
+            .bind(values.source_generation)
+            .bind(values.row_id)
+            .bind(values.source_watermark)
+            .bind(checkpoint.quality.as_str())
+            .bind(i64::from(checkpoint.has_more))
+            .bind(projection.name())
+            .bind(expected_values.target_generation)
+            .bind(expected_values.source_generation)
+            .bind(expected_values.row_id)
+            .bind(expected_values.source_watermark)
+            .bind(expected.checkpoint.quality.as_str())
+            .bind(i64::from(expected.checkpoint.has_more))
+            .execute(&mut *connection)
+            .await?
+    } else {
+        let query = format!(
+            "INSERT INTO {ANALYTICS_PROJECTION_CHECKPOINTS_TABLE} (projection, target_generation, last_good_source_generation, last_good_row_id, last_good_source_watermark, quality, has_more) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(projection) DO NOTHING"
+        );
+        sqlx::query(&query)
+            .bind(projection.name())
+            .bind(values.target_generation)
+            .bind(values.source_generation)
+            .bind(values.row_id)
+            .bind(values.source_watermark)
+            .bind(checkpoint.quality.as_str())
+            .bind(i64::from(checkpoint.has_more))
+            .execute(&mut *connection)
+            .await?
+    };
+    if result.rows_affected() != 1 {
+        bail!(
+            "analytics projection checkpoint conflict for {}",
+            projection.name()
+        );
+    }
     Ok(())
 }
 
@@ -1235,22 +1324,53 @@ async fn persist_projection_checkpoint_postgres(
     connection: &mut PgConnection,
     projection: AnalyticsProjection,
     checkpoint: DurableProjectionCheckpoint,
+    expected: ProjectionCheckpointExpectation,
 ) -> Result<()> {
     ensure_projection_checkpoint_schema_postgres(connection).await?;
     let values = projection_checkpoint_values(checkpoint)?;
-    let query = format!(
-        "INSERT INTO {ANALYTICS_PROJECTION_CHECKPOINTS_TABLE} (projection, target_generation, last_good_source_generation, last_good_row_id, last_good_source_watermark, quality, has_more) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(projection) DO UPDATE SET target_generation = excluded.target_generation, last_good_source_generation = excluded.last_good_source_generation, last_good_row_id = excluded.last_good_row_id, last_good_source_watermark = excluded.last_good_source_watermark, quality = excluded.quality, has_more = excluded.has_more, updated_at = CURRENT_TIMESTAMP"
-    );
-    sqlx::query(&query)
-        .bind(projection.name())
-        .bind(values.target_generation)
-        .bind(values.source_generation)
-        .bind(values.row_id)
-        .bind(values.source_watermark)
-        .bind(checkpoint.quality.as_str())
-        .bind(checkpoint.has_more)
-        .execute(&mut *connection)
-        .await?;
+    expected.checkpoint.validate()?;
+    let result = if expected.exists {
+        let expected_values = projection_checkpoint_values(expected.checkpoint)?;
+        let query = format!(
+            "UPDATE {ANALYTICS_PROJECTION_CHECKPOINTS_TABLE} SET target_generation = $1, last_good_source_generation = $2, last_good_row_id = $3, last_good_source_watermark = $4, quality = $5, has_more = $6, updated_at = CURRENT_TIMESTAMP WHERE projection = $7 AND target_generation = $8 AND last_good_source_generation IS NOT DISTINCT FROM $9 AND last_good_row_id IS NOT DISTINCT FROM $10 AND last_good_source_watermark IS NOT DISTINCT FROM $11 AND quality = $12 AND has_more = $13"
+        );
+        sqlx::query(&query)
+            .bind(values.target_generation)
+            .bind(values.source_generation)
+            .bind(values.row_id)
+            .bind(values.source_watermark)
+            .bind(checkpoint.quality.as_str())
+            .bind(checkpoint.has_more)
+            .bind(projection.name())
+            .bind(expected_values.target_generation)
+            .bind(expected_values.source_generation)
+            .bind(expected_values.row_id)
+            .bind(expected_values.source_watermark)
+            .bind(expected.checkpoint.quality.as_str())
+            .bind(expected.checkpoint.has_more)
+            .execute(&mut *connection)
+            .await?
+    } else {
+        let query = format!(
+            "INSERT INTO {ANALYTICS_PROJECTION_CHECKPOINTS_TABLE} (projection, target_generation, last_good_source_generation, last_good_row_id, last_good_source_watermark, quality, has_more) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(projection) DO NOTHING"
+        );
+        sqlx::query(&query)
+            .bind(projection.name())
+            .bind(values.target_generation)
+            .bind(values.source_generation)
+            .bind(values.row_id)
+            .bind(values.source_watermark)
+            .bind(checkpoint.quality.as_str())
+            .bind(checkpoint.has_more)
+            .execute(&mut *connection)
+            .await?
+    };
+    if result.rows_affected() != 1 {
+        bail!(
+            "analytics projection checkpoint conflict for {}",
+            projection.name()
+        );
+    }
     Ok(())
 }
 
@@ -1313,9 +1433,13 @@ const TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL_TEMPLATE: &str = concat!(
 const SQLITE_PAYLOAD_FAILURE_KIND_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END";
 const SQLITE_PAYLOAD_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
-const POSTGRES_PAYLOAD_FAILURE_KIND_SQL: &str = "payload::jsonb ->> 'failureKind'";
+// Legacy traffic rows can contain empty or malformed payload text. PostgreSQL 18's SQL/JSON
+// predicate makes the cast conditional, so invalid or non-object payloads yield NULL and the
+// column fallback still applies without aborting the aggregate query.
+const POSTGRES_PAYLOAD_FAILURE_KIND_SQL: &str =
+    "CASE WHEN payload IS JSON OBJECT THEN payload::jsonb ->> 'failureKind' END";
 const POSTGRES_PAYLOAD_DOWNSTREAM_ERROR_MESSAGE_SQL: &str =
-    "payload::jsonb ->> 'downstreamErrorMessage'";
+    "CASE WHEN payload IS JSON OBJECT THEN payload::jsonb ->> 'downstreamErrorMessage' END";
 
 fn traffic_stats_resolved_failure_class_sql(
     payload_failure_kind_sql: &str,
@@ -1882,8 +2006,12 @@ fn finish_authority_read<T>(result: Result<T>, rollback_result: Result<()>) -> R
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+
+    static SQLITE_TEST_DATABASE_ID: AtomicUsize = AtomicUsize::new(0);
 
     fn batch(quality: ProjectionDataQuality, next_row_id: i64, has_more: bool) -> ProjectionBatch {
         ProjectionBatch {
@@ -1985,9 +2113,21 @@ mod tests {
     }
 
     async fn sqlite_store() -> Result<(AnalyticsProjectionStore, SqlitePool)> {
+        sqlite_store_with_max_connections(1).await
+    }
+
+    async fn sqlite_store_with_max_connections(
+        max_connections: u32,
+    ) -> Result<(AnalyticsProjectionStore, SqlitePool)> {
+        let database_url = if max_connections == 1 {
+            "sqlite::memory:".to_string()
+        } else {
+            let database_id = SQLITE_TEST_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
+            format!("sqlite:file:analytics-projection-test-{database_id}?mode=memory&cache=shared")
+        };
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
+            .max_connections(max_connections)
+            .connect(&database_url)
             .await?;
         sqlx::query(
             "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, occurred_at TEXT, status TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, payload TEXT, total_tokens INTEGER, cost REAL)",
@@ -2148,6 +2288,59 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn postgres_payload_classification_is_fail_soft_for_malformed_text() {
+        let postgres_sql = traffic_stats_aggregate_select_sql(BackendKind::Postgres);
+        assert!(postgres_sql.contains("payload IS JSON OBJECT"));
+        assert!(postgres_sql.contains("failureKind"));
+        assert!(postgres_sql.contains("downstreamErrorMessage"));
+        assert!(postgres_sql.contains("payload::jsonb ->> 'failureKind'"));
+
+        let sqlite_sql = traffic_stats_aggregate_select_sql(BackendKind::Sqlite);
+        assert!(sqlite_sql.contains("json_valid(payload)"));
+    }
+
+    #[tokio::test]
+    async fn malformed_payload_is_ignored_while_valid_payload_is_classified() -> Result<()> {
+        let (store, pool) = sqlite_store().await?;
+        for (id, status, payload, cost) in [
+            (1, "http_200", "{bad-json", 0.25),
+            (
+                2,
+                "failed",
+                r#"{"failureKind":"upstream_response_failed"}"#,
+                0.5,
+            ),
+        ] {
+            sqlx::query("INSERT INTO codex_invocations (id, source, status, error_message, failure_kind, failure_class, payload, total_tokens, cost) VALUES (?1, 'proxy', ?2, '', NULL, 'none', ?3, 10, ?4)")
+                .bind(id)
+                .bind(status)
+                .bind(payload)
+                .bind(cost)
+                .execute(&pool)
+                .await?;
+        }
+
+        let read = store
+            .query_bounded_traffic_stats(TrafficStatsAggregateRequest {
+                filter: crate::stats::StatsFilter::All,
+                source_scope: crate::InvocationSourceScope::All,
+                upper_bound_id: 2,
+            })
+            .await?;
+        assert_eq!(read.aggregate.total_count, 2);
+        assert_eq!(read.aggregate.failure_count, 1);
+        assert_eq!(read.aggregate.non_success_cost, 0.5);
+
+        let page = store
+            .read_bounded_traffic_stats(TrafficStatsReadRequest::default())
+            .await?;
+        assert_eq!(page.row_count, 2);
+        assert_eq!(page.aggregate.failure_count, 1);
+        assert_eq!(page.aggregate.non_success_cost, 0.5);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn sqlite_rollup_read_marks_unproven_buckets_partial() -> Result<()> {
         let (store, pool) = sqlite_store().await?;
@@ -2170,10 +2363,13 @@ mod tests {
         sqlx::query("CREATE TABLE projection_rows (id INTEGER PRIMARY KEY)")
             .execute(&pool)
             .await?;
+        let expected = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
         let transaction = store.begin_projection(AnalyticsProjection::Summary).await?;
         let decision = transaction
-            .plan_projection_commit(None, batch(ProjectionDataQuality::Fresh, 1, false))?;
-        let mut commit = transaction.prepare_projection_commit(decision)?;
+            .plan_projection_commit(&expected, batch(ProjectionDataQuality::Fresh, 1, false))?;
+        let mut commit = transaction.prepare_projection_commit(expected, decision)?;
         sqlx::query("INSERT INTO projection_rows (id) VALUES (1)")
             .execute(commit.transaction_mut().sqlite_connection()?)
             .await?;
@@ -2207,12 +2403,15 @@ mod tests {
     #[tokio::test]
     async fn projection_checkpoint_restores_last_good_after_partial_commit() -> Result<()> {
         let (store, _pool) = sqlite_store().await?;
+        let expected = store
+            .load_projection_state(AnalyticsProjection::Timeseries)
+            .await?;
         let transaction = store
             .begin_projection(AnalyticsProjection::Timeseries)
             .await?;
         let decision = transaction
-            .plan_projection_commit(None, batch(ProjectionDataQuality::Fresh, 4, true))?;
-        let mut commit = transaction.prepare_projection_commit(decision)?;
+            .plan_projection_commit(&expected, batch(ProjectionDataQuality::Fresh, 4, true))?;
+        let mut commit = transaction.prepare_projection_commit(expected, decision)?;
         commit.persist_checkpoint().await?;
         commit.commit().await?;
 
@@ -2223,10 +2422,8 @@ mod tests {
         let transaction = store
             .begin_projection(AnalyticsProjection::Timeseries)
             .await?;
-        let decision = transaction.plan_projection_commit(
-            last_good_cursor,
-            batch(ProjectionDataQuality::Partial, 6, true),
-        )?;
+        let decision = transaction
+            .plan_projection_commit(&fresh, batch(ProjectionDataQuality::Partial, 6, true))?;
         assert!(matches!(
             decision,
             ProjectionCommitDecision::RetainLastGood {
@@ -2234,7 +2431,7 @@ mod tests {
                 ..
             }
         ));
-        let mut commit = transaction.prepare_projection_commit(decision)?;
+        let mut commit = transaction.prepare_projection_commit(fresh, decision)?;
         commit.persist_checkpoint().await?;
         commit.commit().await?;
 
@@ -2248,31 +2445,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_projection_checkpoint_commit_conflicts_without_regressing_fresh_state()
+    -> Result<()> {
+        let (store, _pool) = sqlite_store_with_max_connections(2).await?;
+        let store = std::sync::Arc::new(store);
+        let initial = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        let transaction = store.begin_projection(AnalyticsProjection::Summary).await?;
+        let decision = transaction
+            .plan_projection_commit(&initial, batch(ProjectionDataQuality::Fresh, 4, true))?;
+        let mut commit = transaction.prepare_projection_commit(initial, decision)?;
+        commit.persist_checkpoint().await?;
+        commit.commit().await?;
+
+        // Both workers captured this same durable snapshot before either one planned its batch.
+        let expected = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        let stale_decision = plan_projection_commit(
+            expected.owner.target_generation,
+            expected.last_good_cursor,
+            batch(ProjectionDataQuality::Partial, 4, true),
+        )?;
+        let fresh_decision = plan_projection_commit(
+            expected.owner.target_generation,
+            expected.last_good_cursor,
+            batch(ProjectionDataQuality::Fresh, 6, false),
+        )?;
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let fresh_done = std::sync::Arc::new(tokio::sync::Notify::new());
+        let fresh_task = {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let fresh_done = std::sync::Arc::clone(&fresh_done);
+            tokio::spawn(async move {
+                let transaction = store.begin_projection(AnalyticsProjection::Summary).await?;
+                let mut commit = transaction.prepare_projection_commit(expected, fresh_decision)?;
+                barrier.wait().await;
+                commit.persist_checkpoint().await?;
+                commit.commit().await?;
+                fresh_done.notify_one();
+                Ok::<(), anyhow::Error>(())
+            })
+        };
+        let stale_task = {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let fresh_done = std::sync::Arc::clone(&fresh_done);
+            tokio::spawn(async move {
+                let transaction = store.begin_projection(AnalyticsProjection::Summary).await?;
+                let mut commit = transaction.prepare_projection_commit(expected, stale_decision)?;
+                let fresh_committed = fresh_done.notified();
+                barrier.wait().await;
+                fresh_committed.await;
+                let error = commit.persist_checkpoint().await.unwrap_err();
+                assert!(error.to_string().contains("checkpoint conflict"));
+                commit.rollback().await?;
+                Ok::<(), anyhow::Error>(())
+            })
+        };
+        fresh_task.await??;
+        stale_task.await??;
+
+        let restored = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        assert_eq!(restored.last_good_cursor.unwrap().row_id, 6);
+        assert_eq!(restored.quality, ProjectionDataQuality::Fresh);
+        assert!(!restored.has_more);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn projection_commit_requires_checkpoint_write_and_persists_unavailable_quality()
     -> Result<()> {
         let (store, pool) = sqlite_store().await?;
         sqlx::query("CREATE TABLE projection_rows (id INTEGER PRIMARY KEY)")
             .execute(&pool)
             .await?;
+        let expected = store
+            .load_projection_state(AnalyticsProjection::LongTerm)
+            .await?;
         let transaction = store
             .begin_projection(AnalyticsProjection::LongTerm)
             .await?;
         let decision = transaction
-            .plan_projection_commit(None, batch(ProjectionDataQuality::Partial, 1, true))?;
+            .plan_projection_commit(&expected, batch(ProjectionDataQuality::Partial, 1, true))?;
         assert!(matches!(
             decision,
             ProjectionCommitDecision::Unavailable { .. }
         ));
-        let commit = transaction.prepare_projection_commit(decision)?;
+        let commit = transaction.prepare_projection_commit(expected, decision)?;
         let error = commit.commit().await.unwrap_err();
         assert!(error.to_string().contains("durable checkpoint"));
 
+        let expected = store
+            .load_projection_state(AnalyticsProjection::LongTerm)
+            .await?;
         let transaction = store
             .begin_projection(AnalyticsProjection::LongTerm)
             .await?;
         let decision = transaction
-            .plan_projection_commit(None, batch(ProjectionDataQuality::Partial, 1, true))?;
-        let mut commit = transaction.prepare_projection_commit(decision)?;
+            .plan_projection_commit(&expected, batch(ProjectionDataQuality::Partial, 1, true))?;
+        let mut commit = transaction.prepare_projection_commit(expected, decision)?;
         commit.persist_checkpoint().await?;
         let receipt = commit.commit().await?;
         assert!(receipt.cursor.is_none());
