@@ -498,6 +498,49 @@ impl SqliteMigrationSource {
         Ok(change)
     }
 
+    /// Capture one source mutation in the caller's business transaction.
+    ///
+    /// The source version is allocated from the durable capture checkpoint while the caller's
+    /// transaction is still open. The source-row mutation and this capture row therefore commit
+    /// or roll back together; callers must abort the transaction when this method returns an
+    /// error.
+    pub(crate) async fn capture_mutation_tx(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        input: ChangeInput,
+    ) -> Result<CapturedChange> {
+        self.capture_mutation_tx_for_generation(transaction, self.writer_generation, input)
+            .await
+    }
+
+    pub(crate) async fn capture_mutation_tx_for_generation(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        expected_generation: u64,
+        input: ChangeInput,
+    ) -> Result<CapturedChange> {
+        let state = self.load_capture_state_tx(transaction).await?;
+        if state.continuity_lost {
+            bail!("SQLite migration capture continuity has been lost");
+        }
+        if state.source_writes_fenced || state.authority_generation != expected_generation {
+            bail!("SQLite migration writer generation is stale or source writes are fenced");
+        }
+        let source_version = state
+            .next_version
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("SQLite migration source version exhausted"))?;
+        let change = CapturedChange::from_input(
+            &self.migration_id,
+            &self.source_identity,
+            source_version,
+            input,
+        )?;
+        self.append_captured_change_tx_for_generation(transaction, expected_generation, &change)
+            .await?;
+        Ok(change)
+    }
+
     pub(crate) async fn append_captured_change_tx(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,

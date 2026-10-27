@@ -178,6 +178,109 @@ async fn prompt_cache_stats_generation_clock_survives_queue_drain() {
 }
 
 #[tokio::test]
+async fn prompt_cache_stats_invalidation_stays_in_analytics_for_all_mutations() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache conversation structure");
+    sqlx::query(
+        "INSERT OR REPLACE INTO schema_refresh_migrations (migration_name) VALUES ('prompt_cache_conversations_stats_v2')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy task marker for compatibility check");
+
+    async fn mark_fresh(pool: &Pool<Sqlite>) {
+        sqlx::query(
+            "UPDATE prompt_cache_conversation_stats_freshness SET state='fresh' WHERE marker_name='prompt_cache_conversations_stats_v2'",
+        )
+        .execute(pool)
+        .await
+        .expect("mark analytics freshness state");
+    }
+
+    async fn freshness(pool: &Pool<Sqlite>) -> (String, i64) {
+        sqlx::query_as(
+            "SELECT state, generation FROM prompt_cache_conversation_stats_freshness WHERE marker_name='prompt_cache_conversations_stats_v2'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("read analytics freshness state")
+    }
+
+    let initial_generation = freshness(&pool).await.1;
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES ('mutation','2026-09-01T00:00:00Z','proxy','success',?1,'{}')",
+    )
+    .bind(json!({"promptCacheKey": "mutation-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert mutation fixture");
+    let after_insert = freshness(&pool).await;
+    assert_eq!(after_insert.0, "stale");
+    assert_eq!(after_insert.1, initial_generation + 1);
+
+    let legacy_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name='prompt_cache_conversations_stats_v2'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read legacy task marker");
+    assert_eq!(legacy_marker_count, 1);
+
+    mark_fresh(&pool).await;
+    sqlx::query(
+        "UPDATE codex_invocations SET payload=?1 WHERE invoke_id='mutation' AND occurred_at='2026-09-01T00:00:00Z'",
+    )
+    .bind(json!({"promptCacheKey": "mutation-key-updated"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("update mutation fixture");
+    let after_update = freshness(&pool).await;
+    assert_eq!(after_update.0, "stale");
+    assert_eq!(after_update.1, after_insert.1 + 1);
+
+    mark_fresh(&pool).await;
+    sqlx::query(
+        "DELETE FROM codex_invocations WHERE invoke_id='mutation' AND occurred_at='2026-09-01T00:00:00Z'",
+    )
+    .execute(&pool)
+    .await
+    .expect("delete mutation fixture");
+    let after_delete = freshness(&pool).await;
+    assert_eq!(after_delete.0, "stale");
+    assert_eq!(after_delete.1, after_update.1 + 1);
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES ('replace','2026-09-01T00:00:00Z','proxy','success',?1,'{}')",
+    )
+    .bind(json!({"promptCacheKey": "replace-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert replace fixture");
+    mark_fresh(&pool).await;
+    let before_replace = freshness(&pool).await.1;
+    sqlx::query(
+        "INSERT OR REPLACE INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES ('replace','2026-09-01T00:00:00Z','proxy','success',?1,'{}')",
+    )
+    .bind(json!({"promptCacheKey": "replace-key-new"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("replace mutation fixture");
+    let after_replace = freshness(&pool).await;
+    assert_eq!(after_replace.0, "stale");
+    // SQLite's REPLACE path observes one replacement insert callback here; the contract is that
+    // it invalidates the Analytics freshness state without deleting the retained Task marker.
+    assert_eq!(after_replace.1, before_replace + 1);
+}
+
+#[tokio::test]
 async fn prompt_cache_materialization_yields_only_after_a_committed_micro_batch() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -562,7 +665,7 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
     .await
     .expect("make prompt-cache statistics stale");
     sqlx::query(
-        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
+        "UPDATE prompt_cache_conversation_stats_freshness SET state = 'stale' WHERE marker_name = 'prompt_cache_conversations_stats_v2'",
     )
     .execute(&pool)
     .await
@@ -590,7 +693,7 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
     assert!((stats.4 - 0.25).abs() < 1e-9);
 
     let marker_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_freshness WHERE marker_name = 'prompt_cache_conversations_stats_v2' AND state = 'fresh'",
     )
     .fetch_one(&pool)
     .await
@@ -985,7 +1088,7 @@ async fn prompt_cache_conversation_stats_refresh_is_deferred_after_terminal_batc
         "terminal persistence must defer the historical aggregate refresh"
     );
     let fresh_marker: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2')",
+        "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversation_stats_freshness WHERE marker_name = 'prompt_cache_conversations_stats_v2' AND state = 'fresh')",
     )
     .fetch_one(&state.pool)
     .await

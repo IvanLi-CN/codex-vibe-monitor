@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use sqlx::{Row, SqlitePool};
 
@@ -42,6 +45,10 @@ pub(crate) struct SchemaObject {
 pub(crate) struct ForeignKeyRelation {
     pub(crate) table: String,
     pub(crate) referenced_table: String,
+    pub(crate) columns: Vec<String>,
+    pub(crate) referenced_columns: Vec<String>,
+    pub(crate) on_delete: String,
+    pub(crate) on_update: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +56,326 @@ pub(crate) struct TriggerWriteRelation {
     pub(crate) trigger: String,
     pub(crate) source_table: String,
     pub(crate) target_table: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum NativeColumnType {
+    BigInt,
+    DoublePrecision,
+    Boolean,
+    Text,
+    Bytea,
+}
+
+impl NativeColumnType {
+    pub(crate) fn postgres_name(self) -> &'static str {
+        match self {
+            Self::BigInt => "BIGINT",
+            Self::DoublePrecision => "DOUBLE PRECISION",
+            Self::Boolean => "BOOLEAN",
+            Self::Text => "TEXT",
+            Self::Bytea => "BYTEA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeColumn {
+    pub(crate) name: String,
+    pub(crate) ordinal: i64,
+    pub(crate) declared_type: String,
+    pub(crate) postgres_type: NativeColumnType,
+    pub(crate) nullable: bool,
+    pub(crate) default_sql: Option<String>,
+    pub(crate) primary_key_ordinal: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeUniqueConstraint {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<String>,
+    pub(crate) partial_predicate: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeIndex {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<String>,
+    pub(crate) unique: bool,
+    pub(crate) partial_predicate: Option<String>,
+    pub(crate) expression: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NativeResourceReferenceKind {
+    Raw,
+    ArchiveFile,
+    StagedFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeResourceReference {
+    pub(crate) column: String,
+    pub(crate) kind: NativeResourceReferenceKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCaptureDeleteSemantics {
+    pub(crate) operation_column: String,
+    pub(crate) delete_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCaptureMetadata {
+    // These columns belong to the capture log/state tables, not to each business table copied by
+    // NativeRow. Keeping this mapping explicit prevents a virtual source_version column from
+    // leaking into PostgreSQL table DDL or wide-row payloads.
+    pub(crate) log_table: String,
+    pub(crate) state_table: String,
+    pub(crate) table_name_column: String,
+    pub(crate) stable_key_column: String,
+    pub(crate) operation_column: String,
+    pub(crate) source_identity_column: String,
+    pub(crate) source_version_column: String,
+    pub(crate) generation_column: String,
+    pub(crate) delete: NativeCaptureDeleteSemantics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSourceWatermark {
+    pub(crate) business_source_version_column: Option<String>,
+    pub(crate) stable_key_columns: Vec<String>,
+    pub(crate) capture: NativeCaptureMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeTableSpec {
+    pub(crate) owner: TableOwner,
+    pub(crate) columns: Vec<NativeColumn>,
+    pub(crate) primary_key: Vec<String>,
+    pub(crate) unique_constraints: Vec<NativeUniqueConstraint>,
+    pub(crate) indexes: Vec<NativeIndex>,
+    pub(crate) foreign_keys: Vec<ForeignKeyRelation>,
+    pub(crate) checks: Vec<String>,
+    pub(crate) resource_references: Vec<NativeResourceReference>,
+    pub(crate) source_watermark: NativeSourceWatermark,
+}
+
+impl NativeTableSpec {
+    pub(crate) fn table_name(&self) -> &str {
+        &self.owner.table
+    }
+
+    pub(crate) fn stable_key_columns(&self) -> &[String] {
+        &self.source_watermark.stable_key_columns
+    }
+
+    pub(crate) fn postgres_create_table_sql(&self) -> Result<String, CatalogError> {
+        let mut definitions = Vec::with_capacity(self.columns.len() + 2);
+        for column in &self.columns {
+            let mut definition = format!(
+                "{} {}",
+                quote_native_identifier(&column.name),
+                column.postgres_type.postgres_name()
+            );
+            if !column.nullable {
+                definition.push_str(" NOT NULL");
+            }
+            if let Some(default_sql) = &column.default_sql {
+                definition.push_str(" DEFAULT ");
+                definition.push_str(&normalize_native_default(default_sql).ok_or_else(|| {
+                    CatalogError::NativeCatalogIncomplete {
+                        table: self.owner.table.clone(),
+                        detail: format!(
+                            "unsupported default for column {}{}",
+                            column.name,
+                            sqlite_expression_detail(default_sql)
+                                .map_or_else(String::new, |expression| {
+                                    format!(" (SQLite-only expression {expression})")
+                                })
+                        ),
+                    }
+                })?);
+            }
+            definitions.push(definition);
+        }
+        if !self.primary_key.is_empty() {
+            definitions.push(format!(
+                "PRIMARY KEY ({})",
+                self.primary_key
+                    .iter()
+                    .map(|column| quote_native_identifier(column))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        for unique in &self.unique_constraints {
+            if unique.partial_predicate.is_none() && unique.columns != self.primary_key {
+                definitions.push(format!(
+                    "CONSTRAINT {} UNIQUE ({})",
+                    quote_native_identifier(&unique.name),
+                    unique
+                        .columns
+                        .iter()
+                        .map(|column| quote_native_identifier(column))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        for check in &self.checks {
+            ensure_native_expression_supported(&self.owner.table, "CHECK", check)?;
+            definitions.push(format!("CHECK ({check})"));
+        }
+        Ok(format!(
+            "CREATE TABLE IF NOT EXISTS {} (\n    {}\n)",
+            quote_native_identifier(&self.owner.table),
+            definitions.join(",\n    ")
+        ))
+    }
+
+    pub(crate) fn postgres_foreign_key_sql(&self) -> Result<Vec<String>, CatalogError> {
+        let mut statements = Vec::new();
+        for (index, foreign_key) in self.foreign_keys.iter().enumerate() {
+            if foreign_key.columns.is_empty() || foreign_key.referenced_columns.is_empty() {
+                return Err(CatalogError::NativeCatalogIncomplete {
+                    table: self.owner.table.clone(),
+                    detail: format!("foreign key {index} has incomplete column metadata"),
+                });
+            }
+            let constraint_name = format!("fk_{}_{}", self.owner.table, index);
+            let source_table_regclass =
+                quote_native_literal(&format!("\"{}\"", self.owner.table.replace('"', "\"\"")));
+            let referenced_table_regclass = quote_native_literal(&format!(
+                "\"{}\"",
+                foreign_key.referenced_table.replace('"', "\"\"")
+            ));
+            let source_columns = native_text_array(&foreign_key.columns);
+            let referenced_columns = native_text_array(&foreign_key.referenced_columns);
+            let update_action = normalize_fk_action(&foreign_key.on_update);
+            let delete_action = normalize_fk_action(&foreign_key.on_delete);
+            statements.push(format!(
+                "DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint AS pc
+         WHERE pc.contype = 'f'
+           AND pc.conrelid = to_regclass({source_table_regclass})
+           AND pc.confrelid = to_regclass({referenced_table_regclass})
+           AND pc.conkey = ARRAY(
+               SELECT attribute.attnum
+                 FROM pg_attribute AS attribute
+                WHERE attribute.attrelid = pc.conrelid
+                  AND attribute.attname = ANY ({source_columns})
+                ORDER BY array_position({source_columns}, attribute.attname)
+           )
+           AND pc.confkey = ARRAY(
+               SELECT attribute.attnum
+                 FROM pg_attribute AS attribute
+                WHERE attribute.attrelid = pc.confrelid
+                  AND attribute.attname = ANY ({referenced_columns})
+                ORDER BY array_position({referenced_columns}, attribute.attname)
+           )
+           AND pc.confupdtype = '{update_code}'
+           AND pc.confdeltype = '{delete_code}'
+    ) THEN
+        ALTER TABLE {source_table} ADD CONSTRAINT {constraint_name} FOREIGN KEY ({source_columns_sql}) REFERENCES {referenced_table} ({referenced_columns_sql}) ON UPDATE {update_action} ON DELETE {delete_action};
+    END IF;
+END
+$$",
+                source_table_regclass = source_table_regclass,
+                referenced_table_regclass = referenced_table_regclass,
+                source_columns = source_columns,
+                referenced_columns = referenced_columns,
+                update_code = postgres_fk_action_code(update_action),
+                delete_code = postgres_fk_action_code(delete_action),
+                source_table = quote_native_identifier(&self.owner.table),
+                constraint_name = quote_native_identifier(&constraint_name),
+                source_columns_sql = foreign_key
+                    .columns
+                    .iter()
+                    .map(|column| quote_native_identifier(column))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                referenced_table = quote_native_identifier(&foreign_key.referenced_table),
+                referenced_columns_sql = foreign_key
+                    .referenced_columns
+                    .iter()
+                    .map(|column| quote_native_identifier(column))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+        Ok(statements)
+    }
+
+    pub(crate) fn postgres_index_sql(&self) -> Result<Vec<String>, CatalogError> {
+        let mut statements = Vec::new();
+        for index in &self.indexes {
+            if index.name.starts_with("sqlite_autoindex_") {
+                continue;
+            }
+            if index.expression {
+                if index.unique {
+                    return Err(CatalogError::NativeCatalogIncomplete {
+                        table: self.owner.table.clone(),
+                        detail: format!(
+                            "unique expression index {} cannot be represented safely",
+                            index.name
+                        ),
+                    });
+                }
+                continue;
+            }
+            if index.columns.is_empty() {
+                return Err(CatalogError::NativeCatalogIncomplete {
+                    table: self.owner.table.clone(),
+                    detail: format!("index {} has no column metadata", index.name),
+                });
+            }
+            let unique = if index.unique { "UNIQUE " } else { "" };
+            let predicate = if let Some(value) = index.partial_predicate.as_deref() {
+                ensure_native_expression_supported(
+                    &self.owner.table,
+                    "partial index predicate",
+                    value,
+                )?;
+                format!(" WHERE {value}")
+            } else {
+                String::new()
+            };
+            statements.push(format!(
+                "CREATE {unique}INDEX IF NOT EXISTS {} ON {} ({}){predicate}",
+                quote_native_identifier(&index.name),
+                quote_native_identifier(&self.owner.table),
+                index
+                    .columns
+                    .iter()
+                    .map(|column| quote_native_identifier(column))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        Ok(statements)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeMigrationCatalog {
+    pub(crate) modules: BTreeSet<ModuleId>,
+    pub(crate) tables: Vec<NativeTableSpec>,
+    pub(crate) trigger_writes: Vec<TriggerWriteRelation>,
+}
+
+impl NativeMigrationCatalog {
+    pub(crate) fn table(&self, table: &str) -> Option<&NativeTableSpec> {
+        self.tables.iter().find(|spec| spec.table_name() == table)
+    }
+
+    pub(crate) fn table_names(&self) -> impl Iterator<Item = &str> {
+        self.tables.iter().map(NativeTableSpec::table_name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +389,15 @@ pub(crate) enum CatalogError {
     CrossModuleForeignKey {
         table: String,
         referenced_table: String,
+    },
+    NativeCatalogIncomplete {
+        table: String,
+        detail: String,
+    },
+    NativeCrossModuleEdge {
+        edge_kind: &'static str,
+        source_table: String,
+        target_table: String,
     },
 }
 
@@ -86,6 +422,20 @@ impl fmt::Display for CatalogError {
                 formatter,
                 "foreign key crosses module boundary from {table} to {referenced_table}"
             ),
+            Self::NativeCatalogIncomplete { table, detail } => {
+                write!(
+                    formatter,
+                    "native catalog cannot safely migrate {table}: {detail}"
+                )
+            }
+            Self::NativeCrossModuleEdge {
+                edge_kind,
+                source_table,
+                target_table,
+            } => write!(
+                formatter,
+                "native migration closure crosses an unapproved {edge_kind} edge from {source_table} to {target_table}"
+            ),
         }
     }
 }
@@ -95,9 +445,11 @@ impl std::error::Error for CatalogError {}
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ModuleCatalog {
     owners: Vec<TableOwner>,
+    excluded_tables: BTreeSet<String>,
     objects: Vec<SchemaObject>,
     foreign_keys: Vec<ForeignKeyRelation>,
     trigger_writes: Vec<TriggerWriteRelation>,
+    table_schemas: BTreeMap<String, NativeTableSpec>,
 }
 
 impl ModuleCatalog {
@@ -109,6 +461,7 @@ impl ModuleCatalog {
         .await
         .map_err(|_| CatalogError::UnknownOwnership("<sqlite_master unavailable>".into()))?;
         let mut owners = Vec::new();
+        let mut excluded_tables = BTreeSet::new();
         let mut objects = Vec::with_capacity(object_rows.len());
         for row in object_rows {
             let kind = row.try_get::<String, _>("type").map_err(|_| {
@@ -124,7 +477,11 @@ impl ModuleCatalog {
                 CatalogError::UnknownOwnership("<invalid schema object definition>".into())
             })?;
             if kind == "table" {
-                owners.push(classify_table(name.clone())?);
+                if is_migration_metadata_table(&name) {
+                    excluded_tables.insert(name.clone());
+                } else {
+                    owners.push(classify_table(name.clone())?);
+                }
             }
             objects.push(SchemaObject {
                 kind,
@@ -137,23 +494,63 @@ impl ModuleCatalog {
         for owner in &owners {
             let escaped_name = owner.table.replace('\'', "''");
             let query = format!("PRAGMA foreign_key_list('{escaped_name}')");
+            let mut grouped = BTreeMap::<i64, ForeignKeyRelation>::new();
             for row in sqlx::query(&query).fetch_all(pool).await.map_err(|_| {
                 CatalogError::UnknownOwnership(format!(
                     "<foreign keys for {} unavailable>",
                     owner.table
                 ))
             })? {
+                let id = row.try_get::<i64, _>("id").map_err(|_| {
+                    CatalogError::UnknownOwnership(format!(
+                        "<invalid foreign key id for {}>",
+                        owner.table
+                    ))
+                })?;
                 let referenced_table = row.try_get::<String, _>("table").map_err(|_| {
                     CatalogError::UnknownOwnership(format!(
                         "<invalid foreign key target for {}>",
                         owner.table
                     ))
                 })?;
-                foreign_keys.push(ForeignKeyRelation {
+                let relation = grouped.entry(id).or_insert_with(|| ForeignKeyRelation {
                     table: owner.table.clone(),
-                    referenced_table,
+                    referenced_table: referenced_table.clone(),
+                    columns: Vec::new(),
+                    referenced_columns: Vec::new(),
+                    on_delete: row
+                        .try_get::<String, _>("on_delete")
+                        .unwrap_or_else(|_| "NO ACTION".into()),
+                    on_update: row
+                        .try_get::<String, _>("on_update")
+                        .unwrap_or_else(|_| "NO ACTION".into()),
                 });
+                if relation.referenced_table != referenced_table {
+                    return Err(CatalogError::NativeCatalogIncomplete {
+                        table: owner.table.clone(),
+                        detail: format!("foreign key {id} changes referenced table"),
+                    });
+                }
+                let source_column = row.try_get::<Option<String>, _>("from").map_err(|_| {
+                    CatalogError::NativeCatalogIncomplete {
+                        table: owner.table.clone(),
+                        detail: format!("foreign key {id} has no source column"),
+                    }
+                })?;
+                let referenced_column = row.try_get::<Option<String>, _>("to").map_err(|_| {
+                    CatalogError::NativeCatalogIncomplete {
+                        table: owner.table.clone(),
+                        detail: format!("foreign key {id} has no target column"),
+                    }
+                })?;
+                if let Some(source_column) = source_column {
+                    relation.columns.push(source_column);
+                }
+                if let Some(referenced_column) = referenced_column {
+                    relation.referenced_columns.push(referenced_column);
+                }
             }
+            foreign_keys.extend(grouped.into_values());
         }
         let mut trigger_writes = Vec::new();
         for object in objects.iter().filter(|object| object.kind == "trigger") {
@@ -163,7 +560,13 @@ impl ModuleCatalog {
                     object.name
                 ))
             })?;
+            if is_migration_metadata_table(&object.table) {
+                continue;
+            }
             for target_table in trigger_write_tables(definition) {
+                if is_migration_metadata_table(&target_table) {
+                    continue;
+                }
                 if !owners.iter().any(|owner| owner.table == target_table) {
                     return Err(CatalogError::UnknownOwnership(target_table));
                 }
@@ -174,11 +577,14 @@ impl ModuleCatalog {
                 });
             }
         }
+        let table_schemas = inspect_table_schemas(pool, &owners, &objects, &foreign_keys).await?;
         let catalog = Self {
             owners,
+            excluded_tables,
             objects,
             foreign_keys,
             trigger_writes,
+            table_schemas,
         };
         catalog.validate_schema_object_owners()?;
         catalog.validate_foreign_key_ownership()?;
@@ -187,6 +593,10 @@ impl ModuleCatalog {
 
     pub(crate) fn owners(&self) -> &[TableOwner] {
         &self.owners
+    }
+
+    pub(crate) fn excluded_tables(&self) -> &BTreeSet<String> {
+        &self.excluded_tables
     }
 
     pub(crate) fn schema_objects(&self) -> &[SchemaObject] {
@@ -199,6 +609,117 @@ impl ModuleCatalog {
 
     pub(crate) fn trigger_writes(&self) -> &[TriggerWriteRelation] {
         &self.trigger_writes
+    }
+
+    pub(crate) fn table_schemas(&self) -> impl Iterator<Item = &NativeTableSpec> {
+        self.table_schemas.values()
+    }
+
+    /// Build the exact native table closure for one approved migration unit.
+    ///
+    /// Both sides of a trigger/FK edge are considered. This catches incoming writers as well as
+    /// the more obvious outgoing writes, so a target cannot be prepared while an unselected
+    /// SQLite owner can still mutate it.
+    pub(crate) fn native_migration_catalog(
+        &self,
+        modules: impl IntoIterator<Item = ModuleId>,
+    ) -> Result<NativeMigrationCatalog, CatalogError> {
+        let modules = modules.into_iter().collect::<BTreeSet<_>>();
+        if modules.is_empty() {
+            return Err(CatalogError::NativeCatalogIncomplete {
+                table: "<module set>".into(),
+                detail: "native migration requires at least one module".into(),
+            });
+        }
+        let mut closure = self
+            .owners
+            .iter()
+            .filter(|owner| modules.contains(&owner.module))
+            .map(|owner| owner.table.clone())
+            .collect::<BTreeSet<_>>();
+        if closure.is_empty() {
+            return Err(CatalogError::NativeCatalogIncomplete {
+                table: "<module set>".into(),
+                detail: "approved modules have no catalog tables".into(),
+            });
+        }
+
+        let owner_module = |table: &str| {
+            self.owners
+                .iter()
+                .find(|owner| owner.table == table)
+                .map(|owner| owner.module)
+                .ok_or_else(|| CatalogError::UnknownOwnership(table.into()))
+        };
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for relation in &self.trigger_writes {
+                if closure.contains(&relation.source_table)
+                    || closure.contains(&relation.target_table)
+                {
+                    let source_module = owner_module(&relation.source_table)?;
+                    let target_module = owner_module(&relation.target_table)?;
+                    if !modules.contains(&source_module) || !modules.contains(&target_module) {
+                        return Err(CatalogError::NativeCrossModuleEdge {
+                            edge_kind: "trigger",
+                            source_table: relation.source_table.clone(),
+                            target_table: relation.target_table.clone(),
+                        });
+                    }
+                    changed |= closure.insert(relation.source_table.clone());
+                    changed |= closure.insert(relation.target_table.clone());
+                }
+            }
+            for relation in &self.foreign_keys {
+                if closure.contains(&relation.table) || closure.contains(&relation.referenced_table)
+                {
+                    let source_module = owner_module(&relation.table)?;
+                    let target_module = owner_module(&relation.referenced_table)?;
+                    if !modules.contains(&source_module) || !modules.contains(&target_module) {
+                        return Err(CatalogError::NativeCrossModuleEdge {
+                            edge_kind: "foreign-key",
+                            source_table: relation.table.clone(),
+                            target_table: relation.referenced_table.clone(),
+                        });
+                    }
+                    changed |= closure.insert(relation.table.clone());
+                    changed |= closure.insert(relation.referenced_table.clone());
+                }
+            }
+        }
+
+        let mut tables = Vec::with_capacity(closure.len());
+        for table in &closure {
+            let spec = self.table_schemas.get(table).ok_or_else(|| {
+                CatalogError::NativeCatalogIncomplete {
+                    table: table.clone(),
+                    detail: "SQLite table schema was not captured by the executable catalog".into(),
+                }
+            })?;
+            if spec.stable_key_columns().is_empty() {
+                return Err(CatalogError::NativeCatalogIncomplete {
+                    table: table.clone(),
+                    detail: "table has no deterministic primary or non-null unique key".into(),
+                });
+            }
+            tables.push(spec.clone());
+        }
+        tables.sort_by(|left, right| left.table_name().cmp(right.table_name()));
+        let trigger_writes = self
+            .trigger_writes
+            .iter()
+            .filter(|relation| {
+                closure_contains_table(&tables, &relation.source_table)
+                    && closure_contains_table(&tables, &relation.target_table)
+            })
+            .cloned()
+            .collect();
+        Ok(NativeMigrationCatalog {
+            modules,
+            tables,
+            trigger_writes,
+        })
     }
 
     pub(crate) fn cross_module_trigger_writes(&self) -> Vec<&TriggerWriteRelation> {
@@ -308,6 +829,9 @@ impl ModuleCatalog {
 
     fn validate_schema_object_owners(&self) -> Result<(), CatalogError> {
         for object in self.objects.iter().filter(|object| object.kind != "table") {
+            if self.excluded_tables.contains(&object.table) {
+                continue;
+            }
             if !self.owners.iter().any(|owner| owner.table == object.table) {
                 return Err(CatalogError::UnknownOwnership(object.table.clone()));
             }
@@ -318,6 +842,14 @@ impl ModuleCatalog {
     pub(crate) fn modules(&self) -> BTreeSet<ModuleId> {
         self.owners.iter().map(|owner| owner.module).collect()
     }
+}
+
+// Durable migration capture protocol tables are inspected as schema objects but excluded from
+// business ownership and native module closure.
+const MIGRATION_METADATA_TABLES: &[&str] = &["migration_change_log", "migration_change_log_state"];
+
+fn is_migration_metadata_table(table: &str) -> bool {
+    MIGRATION_METADATA_TABLES.contains(&table)
 }
 
 fn classify_table(table: String) -> Result<TableOwner, CatalogError> {
@@ -367,6 +899,416 @@ fn classify_table(table: String) -> Result<TableOwner, CatalogError> {
         transaction_group,
         recovery_obligation,
     })
+}
+
+async fn inspect_table_schemas(
+    pool: &SqlitePool,
+    owners: &[TableOwner],
+    objects: &[SchemaObject],
+    foreign_keys: &[ForeignKeyRelation],
+) -> Result<BTreeMap<String, NativeTableSpec>, CatalogError> {
+    let mut schemas = BTreeMap::new();
+    for owner in owners {
+        let escaped_name = owner.table.replace('\'', "''");
+        let columns_query = format!("PRAGMA table_xinfo('{escaped_name}')");
+        let columns = sqlx::query(&columns_query)
+            .fetch_all(pool)
+            .await
+            .map_err(|_| CatalogError::NativeCatalogIncomplete {
+                table: owner.table.clone(),
+                detail: "SQLite column metadata is unavailable".into(),
+            })?
+            .into_iter()
+            .map(|row| {
+                let ordinal = row.try_get::<i64, _>("cid").map_err(|_| {
+                    CatalogError::NativeCatalogIncomplete {
+                        table: owner.table.clone(),
+                        detail: "SQLite column ordinal is invalid".into(),
+                    }
+                })?;
+                let name = row.try_get::<String, _>("name").map_err(|_| {
+                    CatalogError::NativeCatalogIncomplete {
+                        table: owner.table.clone(),
+                        detail: "SQLite column name is invalid".into(),
+                    }
+                })?;
+                let declared_type = row.try_get::<String, _>("type").unwrap_or_default();
+                let primary_key_ordinal = match row.try_get::<i64, _>("pk") {
+                    Ok(value) if value > 0 => Some(value),
+                    Ok(_) => None,
+                    Err(_) => {
+                        return Err(CatalogError::NativeCatalogIncomplete {
+                            table: owner.table.clone(),
+                            detail: format!("SQLite primary-key metadata is invalid for {name}"),
+                        });
+                    }
+                };
+                Ok(NativeColumn {
+                    name,
+                    ordinal,
+                    postgres_type: native_column_type(&declared_type),
+                    declared_type,
+                    nullable: row.try_get::<i64, _>("notnull").unwrap_or(0) == 0,
+                    default_sql: row.try_get("dflt_value").ok().flatten(),
+                    primary_key_ordinal,
+                })
+            })
+            .collect::<Result<Vec<_>, CatalogError>>()?;
+        if columns.is_empty() {
+            return Err(CatalogError::NativeCatalogIncomplete {
+                table: owner.table.clone(),
+                detail: "SQLite table has no columns".into(),
+            });
+        }
+        let mut primary_key = columns
+            .iter()
+            .filter_map(|column| {
+                column
+                    .primary_key_ordinal
+                    .map(|ordinal| (ordinal, column.name.clone()))
+            })
+            .collect::<Vec<_>>();
+        primary_key.sort_by_key(|(ordinal, _)| *ordinal);
+        let primary_key = primary_key
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>();
+        let indexes = inspect_indexes(pool, owner, objects).await?;
+        let unique_constraints = indexes
+            .iter()
+            .filter(|index| index.unique && !index.expression)
+            .map(|index| NativeUniqueConstraint {
+                name: index.name.clone(),
+                columns: index.columns.clone(),
+                partial_predicate: index.partial_predicate.clone(),
+            })
+            .collect::<Vec<_>>();
+        let stable_key_columns = if !primary_key.is_empty() {
+            primary_key.clone()
+        } else {
+            unique_constraints
+                .iter()
+                .find(|constraint| {
+                    constraint.partial_predicate.is_none()
+                        && constraint.columns.iter().all(|name| {
+                            columns
+                                .iter()
+                                .find(|column| &column.name == name)
+                                .is_some_and(|column| !column.nullable)
+                        })
+                })
+                .map(|constraint| constraint.columns.clone())
+                .unwrap_or_default()
+        };
+        let resource_references = columns
+            .iter()
+            .filter_map(|column| {
+                native_resource_reference(&column.name).map(|kind| NativeResourceReference {
+                    column: column.name.clone(),
+                    kind,
+                })
+            })
+            .collect();
+        let table_definition = objects
+            .iter()
+            .find(|object| object.kind == "table" && object.table == owner.table)
+            .and_then(|object| object.definition.clone());
+        let checks = extract_check_constraints(table_definition.as_deref());
+        let business_source_version_column = columns
+            .iter()
+            .find(|column| column.name == "source_version")
+            .map(|column| column.name.clone());
+        schemas.insert(
+            owner.table.clone(),
+            NativeTableSpec {
+                owner: owner.clone(),
+                columns,
+                primary_key,
+                unique_constraints,
+                indexes,
+                foreign_keys: foreign_keys
+                    .iter()
+                    .filter(|foreign_key| foreign_key.table == owner.table)
+                    .cloned()
+                    .collect(),
+                checks,
+                resource_references,
+                source_watermark: NativeSourceWatermark {
+                    business_source_version_column,
+                    stable_key_columns,
+                    capture: native_capture_metadata(),
+                },
+            },
+        );
+    }
+    Ok(schemas)
+}
+
+async fn inspect_indexes(
+    pool: &SqlitePool,
+    owner: &TableOwner,
+    objects: &[SchemaObject],
+) -> Result<Vec<NativeIndex>, CatalogError> {
+    let escaped_name = owner.table.replace('\'', "''");
+    let query = format!("PRAGMA index_list('{escaped_name}')");
+    let mut indexes = Vec::new();
+    for row in sqlx::query(&query).fetch_all(pool).await.map_err(|_| {
+        CatalogError::NativeCatalogIncomplete {
+            table: owner.table.clone(),
+            detail: "SQLite index metadata is unavailable".into(),
+        }
+    })? {
+        let name = row.try_get::<String, _>("name").map_err(|_| {
+            CatalogError::NativeCatalogIncomplete {
+                table: owner.table.clone(),
+                detail: "SQLite index name is invalid".into(),
+            }
+        })?;
+        let index_query = format!("PRAGMA index_info('{}')", name.replace('\'', "''"));
+        let index_rows = sqlx::query(&index_query)
+            .fetch_all(pool)
+            .await
+            .map_err(|_| CatalogError::NativeCatalogIncomplete {
+                table: owner.table.clone(),
+                detail: format!("SQLite columns for index {name} are unavailable"),
+            })?;
+        let mut columns = Vec::new();
+        let mut expression = false;
+        for index_row in index_rows {
+            match index_row.try_get::<Option<String>, _>("name") {
+                Ok(Some(column)) => columns.push(column),
+                Ok(None) => expression = true,
+                Err(_) => expression = true,
+            }
+        }
+        let definition = objects
+            .iter()
+            .find(|object| object.kind == "index" && object.name == name)
+            .and_then(|object| object.definition.as_deref());
+        indexes.push(NativeIndex {
+            name,
+            columns,
+            unique: row.try_get::<i64, _>("unique").unwrap_or(0) != 0,
+            partial_predicate: definition.and_then(index_predicate),
+            expression,
+        });
+    }
+    Ok(indexes)
+}
+
+fn native_column_type(declared_type: &str) -> NativeColumnType {
+    let upper = declared_type.to_ascii_uppercase();
+    if upper == "BOOLEAN" || upper == "BOOL" {
+        NativeColumnType::Boolean
+    } else if upper.contains("INT") {
+        NativeColumnType::BigInt
+    } else if upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB") {
+        NativeColumnType::DoublePrecision
+    } else if upper.contains("BLOB") {
+        NativeColumnType::Bytea
+    } else {
+        NativeColumnType::Text
+    }
+}
+
+fn native_resource_reference(column: &str) -> Option<NativeResourceReferenceKind> {
+    let column = column.to_ascii_lowercase();
+    if column == "raw_path" || column.ends_with("_raw_path") {
+        Some(NativeResourceReferenceKind::Raw)
+    } else if column == "archive_file_path" {
+        Some(NativeResourceReferenceKind::ArchiveFile)
+    } else if column == "file_path"
+        || column == "staged_file_path"
+        || column == "replacement_staged_path"
+    {
+        Some(NativeResourceReferenceKind::StagedFile)
+    } else {
+        None
+    }
+}
+
+fn index_predicate(definition: &str) -> Option<String> {
+    let upper = definition.to_ascii_uppercase();
+    upper.find(" WHERE ").map(|position| {
+        definition[position + " WHERE ".len()..]
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_owned()
+    })
+}
+
+fn extract_check_constraints(definition: Option<&str>) -> Vec<String> {
+    let Some(definition) = definition else {
+        return Vec::new();
+    };
+    let upper = definition.to_ascii_uppercase();
+    let mut checks = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative) = upper[search_from..].find("CHECK") {
+        let start = search_from + relative;
+        let Some(open_relative) = definition[start + "CHECK".len()..].find('(') else {
+            break;
+        };
+        let open = start + "CHECK".len() + open_relative;
+        let Some(close) = matching_parenthesis(definition, open) else {
+            break;
+        };
+        checks.push(definition[open + 1..close].trim().to_owned());
+        search_from = close + 1;
+    }
+    checks
+}
+
+fn matching_parenthesis(value: &str, open: usize) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut depth = 0;
+    let mut index = open;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[index];
+                skip_quoted(value, &mut index, quote);
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn normalize_native_default(value: &str) -> Option<String> {
+    let mut value = value.trim();
+    loop {
+        let bytes = value.as_bytes();
+        if bytes.first() == Some(&b'(') && bytes.last() == Some(&b')') {
+            value = value[1..value.len() - 1].trim();
+        } else {
+            break;
+        }
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower == "datetime('now')" || lower == "current_timestamp" {
+        return Some("CURRENT_TIMESTAMP".into());
+    }
+    let compact = value.split_whitespace().collect::<String>();
+    if compact.eq_ignore_ascii_case("strftime('%Y-%m-%dT%H:%M:%fZ','now')") {
+        return Some(
+            "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
+                .into(),
+        );
+    }
+    if sqlite_expression_detail(value).is_some() {
+        return None;
+    }
+    if lower == "true" || lower == "false" || lower == "null" {
+        return Some(value.to_owned());
+    }
+    if value.parse::<i64>().is_ok() || value.parse::<f64>().is_ok() {
+        return Some(value.to_owned());
+    }
+    if value.starts_with('\'') && value.ends_with('\'') {
+        return Some(value.to_owned());
+    }
+    None
+}
+
+fn native_capture_metadata() -> NativeCaptureMetadata {
+    NativeCaptureMetadata {
+        log_table: "migration_change_log".into(),
+        state_table: "migration_change_log_state".into(),
+        table_name_column: "table_name".into(),
+        stable_key_column: "stable_key".into(),
+        operation_column: "kind".into(),
+        source_identity_column: "source_identity".into(),
+        source_version_column: "source_version".into(),
+        generation_column: "capture_generation".into(),
+        delete: NativeCaptureDeleteSemantics {
+            operation_column: "kind".into(),
+            delete_value: "delete".into(),
+        },
+    }
+}
+
+fn ensure_native_expression_supported(
+    table: &str,
+    context: &str,
+    expression: &str,
+) -> Result<(), CatalogError> {
+    if let Some(expression_name) = sqlite_expression_detail(expression) {
+        return Err(CatalogError::NativeCatalogIncomplete {
+            table: table.into(),
+            detail: format!("unsupported SQLite-only expression {expression_name} in {context}"),
+        });
+    }
+    Ok(())
+}
+
+fn sqlite_expression_detail(value: &str) -> Option<&'static str> {
+    const SQLITE_ONLY_EXPRESSIONS: &[(&str, &str)] = &[
+        ("DATETIME(", "datetime()"),
+        ("STRFTIME(", "strftime()"),
+        ("JSON_VALID(", "json_valid()"),
+        ("JSON_EXTRACT(", "json_extract()"),
+        ("INSTR(", "instr()"),
+        ("JULIANDAY(", "julianday()"),
+        (" GLOB ", "GLOB"),
+        ("INSERT OR REPLACE", "INSERT OR REPLACE"),
+    ];
+    let upper = value.to_ascii_uppercase();
+    SQLITE_ONLY_EXPRESSIONS
+        .iter()
+        .find_map(|(marker, name)| upper.contains(marker).then_some(*name))
+}
+
+fn normalize_fk_action(action: &str) -> &'static str {
+    match action.to_ascii_uppercase().as_str() {
+        "CASCADE" => "CASCADE",
+        "SET NULL" => "SET NULL",
+        "SET DEFAULT" => "SET DEFAULT",
+        "RESTRICT" => "RESTRICT",
+        _ => "NO ACTION",
+    }
+}
+
+fn postgres_fk_action_code(action: &str) -> &'static str {
+    match action {
+        "CASCADE" => "c",
+        "SET NULL" => "n",
+        "SET DEFAULT" => "d",
+        "RESTRICT" => "r",
+        _ => "a",
+    }
+}
+
+fn native_text_array(values: &[String]) -> String {
+    format!(
+        "ARRAY[{}]::text[]",
+        values
+            .iter()
+            .map(|value| quote_native_literal(value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn quote_native_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_native_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn closure_contains_table(tables: &[NativeTableSpec], table: &str) -> bool {
+    tables.iter().any(|spec| spec.table_name() == table)
 }
 
 fn trigger_write_tables(definition: &str) -> Vec<String> {
@@ -613,6 +1555,7 @@ fn analytics_table(name: &str) -> bool {
             | "prompt_cache_conversations"
             | "prompt_cache_conversation_stats_refresh_queue"
             | "prompt_cache_conversation_stats_generation_clock"
+            | "prompt_cache_conversation_stats_freshness"
             | "prompt_cache_conversation_stats_refresh_staging"
             | "prompt_cache_conversation_migration_progress"
             | "prompt_cache_conversation_materialization_runs"
@@ -672,6 +1615,7 @@ fn account_table(name: &str) -> bool {
             | "pool_upstream_account_model_catalogs"
             | "pool_upstream_account_model_routes"
             | "pool_upstream_account_selected_touch_outbox"
+            | "pool_upstream_account_long_term_projection_outbox"
             | "pool_upstream_account_tags"
             | "pool_upstream_accounts"
             | "prompt_cache_conversation_bindings"

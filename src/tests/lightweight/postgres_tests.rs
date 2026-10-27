@@ -18,6 +18,8 @@ use crate::storage::core::{
     StorageModule, StoragePools, TaskOperationsTransaction, TrafficArchiveTransaction,
     combine_admission_decisions, validate_transaction_leases,
 };
+use crate::storage::migration_sqlx::{MigrationTableSpec, SqliteMigrationSource};
+use crate::storage::native::{NativeRow, NativeValue, PostgresNativeSchemaAdapter};
 
 struct TestAuthorityStore {
     compare_and_publish: Mutex<()>,
@@ -332,6 +334,352 @@ async fn current_sqlite_schema_has_closed_ownership_catalog() {
 }
 
 #[tokio::test]
+async fn sqlite_catalog_excludes_migration_capture_metadata_from_native_tables() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query("CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-01",
+        "test-source",
+        "migration_change_log",
+        vec![
+            MigrationTableSpec::canonical(StorageModule::TrafficArchive, "codex_invocations")
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    source.ensure_capture_schema().await.unwrap();
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    assert!(catalog.excluded_tables().contains("migration_change_log"));
+    assert!(
+        catalog
+            .excluded_tables()
+            .contains("migration_change_log_state")
+    );
+    assert!(
+        !catalog
+            .owners()
+            .iter()
+            .any(|owner| owner.table == "migration_change_log")
+    );
+    assert!(
+        !catalog
+            .owners()
+            .iter()
+            .any(|owner| owner.table == "migration_change_log_state")
+    );
+
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    assert!(native.table("codex_invocations").is_some());
+    assert!(native.table("migration_change_log").is_none());
+    assert!(native.table("migration_change_log_state").is_none());
+}
+
+#[tokio::test]
+async fn current_sqlite_schema_builds_native_traffic_analytics_catalog() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    crate::schema::ensure_schema(&pool).await.unwrap();
+    crate::prompt_cache_conversations::ensure_prompt_cache_conversations_schema(&pool)
+        .await
+        .unwrap();
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let selected_modules = [ModuleId::TrafficArchive, ModuleId::Analytics];
+    let native = catalog
+        .native_migration_catalog(selected_modules)
+        .expect("TrafficArchive and Analytics native closure");
+    let expected_table_count = catalog
+        .owners()
+        .iter()
+        .filter(|owner| selected_modules.contains(&owner.module))
+        .count();
+    assert_eq!(native.tables.len(), expected_table_count);
+    assert!(native.table("codex_invocations").is_some());
+    assert!(native.table("invocation_rollup_hourly").is_some());
+    assert!(
+        native
+            .table("prompt_cache_conversation_stats_freshness")
+            .is_some()
+    );
+    assert!(
+        catalog
+            .cross_module_trigger_writes()
+            .iter()
+            .all(|relation| {
+                let source_module = catalog
+                    .owners()
+                    .iter()
+                    .find(|owner| owner.table == relation.source_table)
+                    .map(|owner| owner.module);
+                let target_module = catalog
+                    .owners()
+                    .iter()
+                    .find(|owner| owner.table == relation.target_table)
+                    .map(|owner| owner.module);
+                source_module == target_module
+                    || (source_module.is_some_and(|module| selected_modules.contains(&module))
+                        && target_module.is_some_and(|module| selected_modules.contains(&module)))
+            })
+    );
+
+    let invocations = native.table("codex_invocations").unwrap();
+    assert_eq!(invocations.stable_key_columns(), &["id"]);
+    assert!(
+        invocations
+            .columns
+            .iter()
+            .any(|column| column.name == "payload")
+    );
+    assert!(
+        invocations
+            .resource_references
+            .iter()
+            .any(|reference| reference.column == "request_raw_path")
+    );
+    assert_eq!(
+        invocations.source_watermark.business_source_version_column,
+        None
+    );
+    assert_eq!(
+        invocations.source_watermark.capture.table_name_column,
+        "table_name"
+    );
+    assert_eq!(
+        invocations.source_watermark.capture.stable_key_column,
+        "stable_key"
+    );
+    assert_eq!(
+        invocations.source_watermark.capture.delete.delete_value,
+        "delete"
+    );
+    assert_eq!(
+        invocations.source_watermark.capture.generation_column,
+        "capture_generation"
+    );
+    let invocation_ddl = invocations.postgres_create_table_sql().unwrap();
+    assert!(invocation_ddl.contains("\"payload\""));
+    assert!(invocation_ddl.contains("PRIMARY KEY (\"id\")"));
+    assert!(!invocation_ddl.contains("payload BYTEA NOT NULL"));
+
+    let wide_row = NativeRow::from_values(
+        invocations,
+        invocations
+            .columns
+            .iter()
+            .map(|column| match column.name.as_str() {
+                "id" => NativeValue::BigInt(7),
+                "payload" => NativeValue::Text("{\"wide\":true}".into()),
+                "cost" => NativeValue::Double(1.25),
+                "request_raw_path" => NativeValue::Text("raw/request.bin".into()),
+                _ if !column.nullable => match column.postgres_type {
+                    crate::storage::catalog::NativeColumnType::BigInt => NativeValue::BigInt(0),
+                    crate::storage::catalog::NativeColumnType::DoublePrecision => {
+                        NativeValue::Double(0.0)
+                    }
+                    crate::storage::catalog::NativeColumnType::Boolean => {
+                        NativeValue::Boolean(false)
+                    }
+                    crate::storage::catalog::NativeColumnType::Bytea => {
+                        NativeValue::Bytes(Vec::new())
+                    }
+                    crate::storage::catalog::NativeColumnType::Text => {
+                        NativeValue::Text(String::new())
+                    }
+                },
+                _ => NativeValue::Null,
+            }),
+    )
+    .unwrap();
+    assert_eq!(wide_row.table_name(), "codex_invocations");
+    assert_eq!(wide_row.values().len(), invocations.columns.len());
+    assert!(wide_row.values().iter().any(|(column, value)| {
+        column == "payload" && value == &NativeValue::Text("{\"wide\":true}".into())
+    }));
+}
+
+#[tokio::test]
+async fn native_catalog_preserves_wide_rows_and_constraints() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for statement in [
+        "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, cost REAL NOT NULL DEFAULT 0, raw_payload BLOB, request_raw_path TEXT, source TEXT NOT NULL)",
+        "CREATE TABLE proxy_raw_payload_blobs (raw_path TEXT PRIMARY KEY, payload BLOB NOT NULL)",
+        "CREATE TABLE proxy_raw_payload_blob_links (raw_path TEXT NOT NULL REFERENCES proxy_raw_payload_blobs(raw_path) ON DELETE CASCADE, owner_id INTEGER NOT NULL, owner_kind TEXT NOT NULL, raw_role TEXT NOT NULL, PRIMARY KEY (raw_path, owner_id, owner_kind, raw_role))",
+        "CREATE TABLE invocation_rollup_hourly (bucket_start_epoch INTEGER PRIMARY KEY, total_cost REAL NOT NULL DEFAULT 0, source_version INTEGER NOT NULL DEFAULT 1)",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+        .unwrap();
+    assert_eq!(native.table_names().count(), 4);
+
+    let invocations = native.table("codex_invocations").unwrap();
+    assert_eq!(invocations.stable_key_columns(), &["id"]);
+    assert_eq!(
+        invocations.source_watermark.business_source_version_column,
+        None
+    );
+    assert!(
+        !invocations
+            .columns
+            .iter()
+            .any(|column| column.name == "source_version")
+    );
+    assert!(
+        invocations
+            .resource_references
+            .iter()
+            .any(|reference| { reference.column == "request_raw_path" })
+    );
+    let invocation_ddl = invocations.postgres_create_table_sql().unwrap();
+    assert!(invocation_ddl.contains("\"payload\" TEXT NOT NULL"));
+    assert!(invocation_ddl.contains("\"raw_payload\" BYTEA"));
+    assert!(invocation_ddl.contains("PRIMARY KEY (\"id\")"));
+
+    let wide_row = NativeRow::from_values(
+        invocations,
+        [
+            NativeValue::BigInt(7),
+            NativeValue::Text("{\"wide\":true}".into()),
+            NativeValue::Double(1.25),
+            NativeValue::Bytes(vec![1, 2, 3]),
+            NativeValue::Text("raw/request.bin".into()),
+            NativeValue::Text("proxy".into()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(wide_row.table_name(), "codex_invocations");
+    assert_eq!(wide_row.values().len(), invocations.columns.len());
+    assert!(wide_row.values().iter().any(|(column, value)| {
+        column == "raw_payload" && value == &NativeValue::Bytes(vec![1, 2, 3])
+    }));
+
+    let links = native.table("proxy_raw_payload_blob_links").unwrap();
+    let foreign_key_ddl = links.postgres_foreign_key_sql().unwrap();
+    let repeated_foreign_key_ddl = links.postgres_foreign_key_sql().unwrap();
+    assert_eq!(foreign_key_ddl, repeated_foreign_key_ddl);
+    assert!(foreign_key_ddl.iter().any(|statement| {
+        statement.contains("IF NOT EXISTS")
+            && statement.contains("FROM pg_constraint AS pc")
+            && statement.contains("REFERENCES \"proxy_raw_payload_blobs\" (\"raw_path\")")
+            && statement.contains("ON DELETE CASCADE")
+    }));
+
+    let rollup = native.table("invocation_rollup_hourly").unwrap();
+    assert_eq!(
+        rollup
+            .source_watermark
+            .business_source_version_column
+            .as_deref(),
+        Some("source_version")
+    );
+
+    let adapter = PostgresNativeSchemaAdapter::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres@localhost/postgres").unwrap(),
+        native.clone(),
+    );
+    let adapter_ddl = adapter.ddl_statements().unwrap();
+    let repeated_adapter_ddl = adapter.ddl_statements().unwrap();
+    assert_eq!(adapter_ddl, repeated_adapter_ddl);
+    assert!(adapter_ddl.iter().any(|statement| {
+        statement.contains("ALTER TABLE \"proxy_raw_payload_blob_links\"")
+            && statement.contains("FROM pg_constraint AS pc")
+    }));
+}
+
+#[tokio::test]
+async fn native_ddl_translates_known_defaults_and_rejects_sqlite_only_expressions() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for statement in [
+        "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')))",
+        "CREATE TABLE invocation_rollup_hourly (bucket_start_epoch INTEGER PRIMARY KEY, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        "CREATE TABLE prompt_cache_conversations (conversation_id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')), CHECK (json_valid(payload)))",
+        "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, status TEXT NOT NULL, coverage_start_at TEXT, CHECK (julianday(coverage_start_at) >= 0))",
+        "CREATE INDEX archive_batches_completed_at ON archive_batches(status) WHERE datetime(coverage_start_at) IS NOT NULL",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+        .unwrap();
+
+    let invocation_ddl = native
+        .table("codex_invocations")
+        .unwrap()
+        .postgres_create_table_sql()
+        .unwrap();
+    assert!(invocation_ddl.contains("to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'"));
+    assert!(!invocation_ddl.to_ascii_uppercase().contains("STRFTIME("));
+
+    let rollup_ddl = native
+        .table("invocation_rollup_hourly")
+        .unwrap()
+        .postgres_create_table_sql()
+        .unwrap();
+    assert!(rollup_ddl.contains("CURRENT_TIMESTAMP"));
+    assert!(!rollup_ddl.to_ascii_uppercase().contains("DATETIME("));
+
+    let prompt_cache_error = native
+        .table("prompt_cache_conversations")
+        .unwrap()
+        .postgres_create_table_sql()
+        .unwrap_err();
+    assert!(matches!(
+        prompt_cache_error,
+        CatalogError::NativeCatalogIncomplete { detail, .. }
+            if detail.contains("json_valid()")
+    ));
+
+    let archive = native.table("archive_batches").unwrap();
+    let archive_table_error = archive.postgres_create_table_sql().unwrap_err();
+    assert!(matches!(
+        archive_table_error,
+        CatalogError::NativeCatalogIncomplete { detail, .. }
+            if detail.contains("julianday()")
+    ));
+    let archive_index_error = archive.postgres_index_sql().unwrap_err();
+    assert!(matches!(
+        archive_index_error,
+        CatalogError::NativeCatalogIncomplete { detail, .. }
+            if detail.contains("datetime()")
+    ));
+}
+
+#[tokio::test]
+async fn native_catalog_rejects_unapproved_cross_module_trigger_edges() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for statement in [
+        "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE invocation_rollup_hourly (id INTEGER PRIMARY KEY)",
+        "CREATE TRIGGER invocation_cross_module AFTER INSERT ON codex_invocations BEGIN UPDATE invocation_rollup_hourly SET id = NEW.id WHERE id = NEW.id; END",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    assert!(matches!(
+        catalog.native_migration_catalog([ModuleId::TrafficArchive]),
+        Err(CatalogError::NativeCrossModuleEdge {
+            edge_kind: "trigger",
+            source_table,
+            target_table,
+        }) if source_table == "codex_invocations" && target_table == "invocation_rollup_hourly"
+    ));
+}
+
+#[tokio::test]
 async fn sqlite_catalog_classifies_transaction_closure_and_retained_controls() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for table in [
@@ -380,6 +728,12 @@ async fn sqlite_catalog_classifies_transaction_closure_and_retained_controls() {
     catalog
         .validate_transaction(["archive_batches", "summary_source_change_journal"])
         .unwrap();
+    assert!(matches!(
+        catalog.native_migration_catalog([ModuleId::TrafficArchive]),
+        Err(CatalogError::NativeCatalogIncomplete { table, detail })
+            if table == "proxy_raw_payload_blob_links"
+                && detail.contains("deterministic primary or non-null unique key")
+    ));
     assert!(matches!(
         catalog.validate_transaction(["codex_invocations", "invocation_rollup_hourly"]),
         Err(CatalogError::CrossModuleTransaction { .. })

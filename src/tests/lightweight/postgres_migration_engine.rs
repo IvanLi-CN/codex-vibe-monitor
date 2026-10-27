@@ -2238,6 +2238,154 @@ async fn sqlite_capture_persists_continuity_loss_and_requires_a_new_generation()
 }
 
 #[tokio::test]
+async fn sqlite_capture_mutation_seam_commits_with_source_rows_and_handles_replace() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            stable_key TEXT PRIMARY KEY,
+            natural_key TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    let source = SqliteMigrationSource::new(
+        pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+
+    let mut rolled_back = pool.begin().await?;
+    sqlx::query("INSERT INTO events (stable_key, natural_key, payload) VALUES (?, ?, ?)")
+        .bind("rolled-back")
+        .bind("rolled-back")
+        .bind("discarded")
+        .execute(&mut *rolled_back)
+        .await?;
+    source
+        .capture_mutation_tx(
+            &mut rolled_back,
+            ChangeInput::insert("events", "rolled-back", b"discarded".to_vec()),
+        )
+        .await?;
+    rolled_back.rollback().await?;
+    assert_eq!(source.capture_checkpoint().await?.next_version, 0);
+    assert!(
+        source
+            .changes_after(0, replay_limits(1, DEFAULT_COPY_MAX_BYTES))
+            .await?
+            .is_empty()
+    );
+
+    let mut inserted = pool.begin().await?;
+    sqlx::query("INSERT INTO events (stable_key, natural_key, payload) VALUES (?, ?, ?)")
+        .bind("a")
+        .bind("a")
+        .bind("one")
+        .execute(&mut *inserted)
+        .await?;
+    let first = source
+        .capture_mutation_tx(
+            &mut inserted,
+            ChangeInput::insert("events", "a", b"one".to_vec()),
+        )
+        .await?;
+    inserted.commit().await?;
+
+    let mut updated = pool.begin().await?;
+    sqlx::query("UPDATE events SET payload = ? WHERE stable_key = ?")
+        .bind("two")
+        .bind("a")
+        .execute(&mut *updated)
+        .await?;
+    let second = source
+        .capture_mutation_tx(
+            &mut updated,
+            ChangeInput::update("events", "a", b"two".to_vec()),
+        )
+        .await?;
+    updated.commit().await?;
+
+    let mut deleted = pool.begin().await?;
+    sqlx::query("DELETE FROM events WHERE stable_key = ?")
+        .bind("a")
+        .execute(&mut *deleted)
+        .await?;
+    let third = source
+        .capture_mutation_tx(&mut deleted, ChangeInput::delete("events", "a"))
+        .await?;
+    deleted.commit().await?;
+
+    let mut replaced = pool.begin().await?;
+    sqlx::query("INSERT INTO events (stable_key, natural_key, payload) VALUES (?, ?, ?)")
+        .bind("old")
+        .bind("same")
+        .bind("old")
+        .execute(&mut *replaced)
+        .await?;
+    let fourth = source
+        .capture_mutation_tx(
+            &mut replaced,
+            ChangeInput::insert("events", "old", b"old".to_vec()),
+        )
+        .await?;
+    sqlx::query(
+        "INSERT OR REPLACE INTO events (stable_key, natural_key, payload) VALUES (?, ?, ?)",
+    )
+    .bind("new")
+    .bind("same")
+    .bind("new")
+    .execute(&mut *replaced)
+    .await?;
+    let fifth = source
+        .capture_mutation_tx(
+            &mut replaced,
+            ChangeInput::replace("events", "old", "new", b"new".to_vec()),
+        )
+        .await?;
+    replaced.commit().await?;
+
+    assert_eq!(first.source_version, 1);
+    assert_eq!(second.source_version, 2);
+    assert_eq!(third.source_version, 3);
+    assert_eq!(fourth.source_version, 4);
+    assert_eq!(fifth.source_version, 5);
+    assert_eq!(third.kind, ChangeKind::Delete);
+    assert_eq!(fifth.kind, ChangeKind::Replace);
+    assert_eq!(fifth.previous_key.as_deref(), Some("old"));
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT stable_key FROM events WHERE natural_key = 'same'")
+            .fetch_one(&pool)
+            .await?,
+        "new"
+    );
+
+    source.fence_source_writes(1, 2).await?;
+    let mut stale = pool.begin().await?;
+    assert!(
+        source
+            .capture_mutation_tx_for_generation(
+                &mut stale,
+                1,
+                ChangeInput::insert("events", "stale", b"stale".to_vec()),
+            )
+            .await
+            .is_err()
+    );
+    stale.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn sqlite_capture_persists_source_fence_and_rejects_stale_generations() -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
