@@ -998,23 +998,24 @@ impl AnalyticsProjectionStore {
             .await?;
         let result = match source_backend {
             BackendKind::Sqlite => {
-                read_traffic_stats_page_sqlite(transaction.sqlite_transaction()?.as_mut(), request)
-                    .await
+                read_traffic_stats_page_sqlite(
+                    transaction.sqlite_transaction()?.as_mut(),
+                    request,
+                    source_generation,
+                )
+                .await
             }
             BackendKind::Postgres => {
                 read_traffic_stats_page_postgres(
                     transaction.postgres_transaction()?.as_mut(),
                     request,
+                    source_generation,
                 )
                 .await
             }
         };
         let rollback_result = transaction.rollback().await;
-        finish_authority_read(result, rollback_result).map(|mut page| {
-            page.source_backend = source_backend;
-            page.source_generation = source_generation;
-            page
-        })
+        finish_authority_read(result, rollback_result)
     }
 
     /// Aggregate a bounded traffic-fact selection through the current traffic authority. The
@@ -1281,8 +1282,14 @@ pub(crate) struct AnalyticsProjectionCommit {
 }
 
 impl AnalyticsProjectionCommit {
-    pub(crate) fn transaction_mut(&mut self) -> &mut AnalyticsProjectionTransaction {
-        &mut self.transaction
+    pub(crate) fn transaction_mut(&mut self) -> Result<&mut AnalyticsProjectionTransaction> {
+        if !self.decision.advanced() {
+            bail!(
+                "analytics projection {} payload writes require a publish decision",
+                self.projection.name()
+            );
+        }
+        Ok(&mut self.transaction)
     }
 
     /// Persist the cursor, last-good baseline, quality and remaining-obligation marker through
@@ -1917,6 +1924,7 @@ fn rollup_read_from_row(
 async fn read_traffic_stats_page_sqlite(
     connection: &mut SqliteConnection,
     request: TrafficStatsReadRequest,
+    source_generation: u64,
 ) -> Result<TrafficStatsPage> {
     let source_watermark =
         traffic_source_watermark_sqlite(connection, request.source_scope).await?;
@@ -1945,13 +1953,14 @@ async fn read_traffic_stats_page_sqlite(
         source_watermark,
         upper_bound_id,
         BackendKind::Sqlite,
-        SQLITE_TRAFFIC_AUTHORITY_GENERATION,
+        source_generation,
     ))
 }
 
 async fn read_traffic_stats_page_postgres(
     connection: &mut PgConnection,
     request: TrafficStatsReadRequest,
+    source_generation: u64,
 ) -> Result<TrafficStatsPage> {
     let source_watermark =
         traffic_source_watermark_postgres(connection, request.source_scope).await?;
@@ -1980,7 +1989,7 @@ async fn read_traffic_stats_page_postgres(
         source_watermark,
         upper_bound_id,
         BackendKind::Postgres,
-        0,
+        source_generation,
     ))
 }
 
@@ -2625,6 +2634,33 @@ mod tests {
         assert!(sqlite_sql.contains("json_valid(payload)"));
     }
 
+    #[test]
+    fn postgres_traffic_page_carries_generation_into_projection_commit() {
+        let page = traffic_page_from_rows(
+            vec![TrafficStatsFactRow {
+                id: 1,
+                status: Some("completed".to_string()),
+                error_message: Some(String::new()),
+                failure_kind: None,
+                failure_class: Some("none".to_string()),
+                payload: None,
+                total_tokens: Some(10),
+                cost: Some(0.5),
+            }],
+            TrafficStatsReadRequest::default(),
+            1,
+            1,
+            BackendKind::Postgres,
+            7,
+        );
+        assert_eq!(page.source_backend, BackendKind::Postgres);
+        assert_eq!(page.source_generation, 7);
+        let batch = page.projection_batch();
+        batch.validate().unwrap();
+        assert_eq!(batch.source_generation, 7);
+        assert!(plan_projection_commit(3, None, batch).unwrap().advanced());
+    }
+
     #[tokio::test]
     async fn malformed_payload_is_ignored_while_valid_payload_is_classified() -> Result<()> {
         let (store, pool) = sqlite_store().await?;
@@ -2696,7 +2732,7 @@ mod tests {
             .plan_projection_commit(&expected, batch(ProjectionDataQuality::Fresh, 1, false))?;
         let mut commit = transaction.prepare_projection_commit(expected, decision)?;
         sqlx::query("INSERT INTO projection_rows (id) VALUES (1)")
-            .execute(commit.transaction_mut().sqlite_connection()?)
+            .execute(commit.transaction_mut()?.sqlite_connection()?)
             .await?;
         commit.persist_checkpoint().await?;
         let receipt = commit.commit().await?;
@@ -2722,6 +2758,89 @@ mod tests {
             .await?,
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn non_publish_projection_commit_cannot_mutate_payload() -> Result<()> {
+        let (store, pool) = sqlite_store().await?;
+        sqlx::query("CREATE TABLE projection_rows (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await?;
+
+        let expected = store
+            .load_projection_state(AnalyticsProjection::Timeseries)
+            .await?;
+        let transaction = store
+            .begin_projection(AnalyticsProjection::Timeseries)
+            .await?;
+        let decision = transaction.plan_projection_commit(
+            &expected,
+            batch(ProjectionDataQuality::Unavailable, 1, true),
+        )?;
+        assert!(matches!(
+            decision,
+            ProjectionCommitDecision::Unavailable { .. }
+        ));
+        let mut commit = transaction.prepare_projection_commit(expected, decision)?;
+        let error = match commit.transaction_mut() {
+            Ok(_) => bail!("non-publish projection unexpectedly exposed a writable transaction"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("payload writes require a publish decision")
+        );
+        commit.persist_checkpoint().await?;
+        commit.commit().await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM projection_rows")
+                .fetch_one(&pool)
+                .await?,
+            0
+        );
+        let unavailable = store
+            .load_projection_state(AnalyticsProjection::Timeseries)
+            .await?;
+        assert_eq!(unavailable.quality, ProjectionDataQuality::Unavailable);
+        assert!(unavailable.last_good_cursor.is_none());
+
+        let expected = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        let transaction = store.begin_projection(AnalyticsProjection::Summary).await?;
+        let decision = transaction
+            .plan_projection_commit(&expected, batch(ProjectionDataQuality::Fresh, 1, false))?;
+        let mut commit = transaction.prepare_projection_commit(expected, decision)?;
+        commit.persist_checkpoint().await?;
+        commit.commit().await?;
+
+        let expected = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        let transaction = store.begin_projection(AnalyticsProjection::Summary).await?;
+        let decision = transaction
+            .plan_projection_commit(&expected, batch(ProjectionDataQuality::Partial, 2, true))?;
+        assert!(matches!(
+            decision,
+            ProjectionCommitDecision::RetainLastGood { .. }
+        ));
+        let mut commit = transaction.prepare_projection_commit(expected, decision)?;
+        assert!(commit.transaction_mut().is_err());
+        commit.persist_checkpoint().await?;
+        commit.commit().await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM projection_rows")
+                .fetch_one(&pool)
+                .await?,
+            0
+        );
+        let retained = store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        assert_eq!(retained.quality, ProjectionDataQuality::Partial);
+        assert_eq!(retained.last_good_cursor.unwrap().row_id, 1);
         Ok(())
     }
 
