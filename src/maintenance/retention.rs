@@ -34,10 +34,12 @@ pub(crate) use task_batches::{
     archive_old_invocations, invocation_archive_candidate_selection_for_test,
 };
 pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_details};
-pub(crate) use task_transaction_resources::RetentionTransactionResources;
 #[cfg(test)]
 pub(crate) use task_transaction_resources::{
     RETENTION_CLEANUP_WAITER_READY, RETENTION_TEST_RETURN_TO_POOL, RetentionReturnToPoolProbe,
+};
+pub(crate) use task_transaction_resources::{
+    RetentionTransactionResources, RetentionTransactionSettlement,
 };
 
 use chrono::{TimeZone, Timelike};

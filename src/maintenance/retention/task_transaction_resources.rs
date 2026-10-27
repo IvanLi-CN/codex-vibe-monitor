@@ -4,15 +4,46 @@ use super::{
 };
 use anyhow::{Result, anyhow};
 use sqlx::{Sqlite, SqliteConnection, pool::PoolConnection};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::{Arc, atomic::AtomicUsize};
 use std::time::Duration;
+
+pub(crate) struct RetentionTransactionSettlement {
+    done: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl RetentionTransactionSettlement {
+    pub(crate) fn new() -> Self {
+        Self {
+            done: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn complete(&self) {
+        self.done.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    pub(crate) async fn wait(&self) {
+        while !self.done.load(Ordering::Acquire) {
+            let notified = self.notify.notified();
+            if self.done.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+}
 
 pub(crate) struct RetentionTransactionResources {
     connection: Option<PoolConnection<Sqlite>>,
     admission: Option<RetentionWriteAdmission>,
     archive_lock: Option<RetentionArchiveFileLock>,
     transaction_started: bool,
+    settlement: Option<std::sync::Arc<RetentionTransactionSettlement>>,
     #[cfg(test)]
     return_probe_operation: Option<&'static str>,
 }
@@ -22,6 +53,7 @@ struct RetentionCleanupParts {
     admission: Option<RetentionWriteAdmission>,
     archive_lock: Option<RetentionArchiveFileLock>,
     transaction_started: bool,
+    settlement: Option<std::sync::Arc<RetentionTransactionSettlement>>,
     write_commit: Option<RetentionWriteCommit>,
 }
 
@@ -64,6 +96,7 @@ impl RetentionTransactionResources {
             admission: Some(admission),
             archive_lock: Some(archive_lock),
             transaction_started: false,
+            settlement: None,
             #[cfg(test)]
             return_probe_operation: None,
         }
@@ -78,9 +111,18 @@ impl RetentionTransactionResources {
             admission: Some(admission),
             archive_lock: None,
             transaction_started: false,
+            settlement: None,
             #[cfg(test)]
             return_probe_operation: None,
         }
+    }
+
+    pub(crate) fn with_settlement(
+        mut self,
+        settlement: std::sync::Arc<RetentionTransactionSettlement>,
+    ) -> Self {
+        self.settlement = Some(settlement);
+        self
     }
 
     pub(crate) fn connection_mut(&mut self) -> &mut SqliteConnection {
@@ -126,6 +168,7 @@ impl RetentionTransactionResources {
                 admission: self.admission.take(),
                 archive_lock: self.archive_lock.take(),
                 transaction_started: self.transaction_started,
+                settlement: self.settlement.take(),
                 write_commit,
             })
     }
@@ -138,6 +181,9 @@ impl RetentionTransactionResources {
     ) -> Result<RetentionCleanupResult> {
         let Some(parts) = self.take_cleanup_parts(write_commit) else {
             self.release_resources();
+            if let Some(settlement) = self.settlement.take() {
+                settlement.complete();
+            }
             return Ok(RetentionCleanupResult {
                 archive_lock: None,
                 write_hold_elapsed: None,
@@ -281,6 +327,9 @@ async fn cleanup_retention_transaction(
         record_retention_write_commit(commit)
     });
     drop(parts.admission);
+    if let Some(settlement) = parts.settlement {
+        settlement.complete();
+    }
     cleanup_error.map_or(
         Ok(RetentionCleanupResult {
             archive_lock,

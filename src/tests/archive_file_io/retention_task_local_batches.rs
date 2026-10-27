@@ -3225,7 +3225,6 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_shutdown
 }
 
 #[tokio::test]
-#[allow(unused_mut)]
 async fn retention_task_local_partial_timestamped_archive_repairs_after_direct_cancellation() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-partial-timestamped-direct-cancel").await;
@@ -3253,6 +3252,9 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_direct_c
 
     let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
     let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    probe
+        .pause_after_commit_before_record
+        .store(true, std::sync::atomic::Ordering::Release);
     let select_sql = "SELECT id, occurred_at AS timestamp_value
                       FROM pool_upstream_request_attempts
                       WHERE occurred_at < ?1
@@ -3275,10 +3277,11 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_direct_c
             ),
         ),
     ));
+    let mut work_pin = work.as_mut();
     tokio::time::timeout(Duration::from_secs(30), async {
         tokio::select! {
-            _ = probe.committed.notified() => {}
-            result = &mut work => panic!("timestamped work completed before direct cancellation: {result:?}"),
+            _ = probe.commit_receipt.notified() => {}
+            result = &mut work_pin => panic!("timestamped work completed before direct cancellation: {result:?}"),
         }
     })
         .await
@@ -3351,7 +3354,6 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_direct_c
 }
 
 #[tokio::test]
-#[allow(unused_mut)]
 async fn retention_task_local_snapshot_query_cancellation_keeps_file_phase_until_drain() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-summary-query-cancel").await;
@@ -3368,10 +3370,11 @@ async fn retention_task_local_snapshot_query_cancellation_keeps_file_phase_until
             archive_old_invocations(&pool, &config, config.database_path.parent(), false),
         ),
     );
+    let mut work_pin = work.as_mut();
     tokio::time::timeout(Duration::from_secs(30), async {
         tokio::select! {
             _ = probe.started.notified() => {}
-            result = &mut work => panic!("snapshot work completed before native query pause: {result:?}"),
+            result = &mut work_pin => panic!("snapshot work completed before native query pause: {result:?}"),
         }
     })
         .await

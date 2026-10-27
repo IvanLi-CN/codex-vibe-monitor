@@ -1260,6 +1260,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
         ArchiveReplacement {
             row_count: Some(result),
             sha256: &sha256,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
         },
     )
     .await
@@ -1508,6 +1509,53 @@ struct TaskSnapshotArchivePoolCleanupGuard {
     file_phase: Option<crate::maintenance::FilePhasePermit>,
 }
 
+struct TaskSnapshotArchivePoolHandoff {
+    pool: Option<Pool<Sqlite>>,
+    cleanup_path: Option<PathBuf>,
+    file_phase: Option<crate::maintenance::FilePhasePermit>,
+}
+
+impl TaskSnapshotArchivePoolHandoff {
+    fn into_drain(mut self) -> TaskSnapshotArchivePoolDrain {
+        let pool = self
+            .pool
+            .take()
+            .expect("snapshot archive pool handoff owns a connected pool");
+        let cleanup_path = self
+            .cleanup_path
+            .take()
+            .expect("snapshot archive pool handoff owns its cleanup path");
+        drop(self.file_phase.take());
+        TaskSnapshotArchivePoolDrain::new(pool, cleanup_path)
+    }
+}
+
+impl Drop for TaskSnapshotArchivePoolHandoff {
+    fn drop(&mut self) {
+        let (Some(pool), Some(cleanup_path), Some(file_phase)) = (
+            self.pool.take(),
+            self.cleanup_path.take(),
+            self.file_phase.take(),
+        ) else {
+            return;
+        };
+        let mut guard = TaskSnapshotArchivePoolCleanupGuard {
+            pool: Some(pool),
+            cleanup_path: Some(cleanup_path),
+            file_phase: Some(file_phase),
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                finish_task_snapshot_archive_pool_cleanup(&mut guard).await;
+            }));
+        } else {
+            // Runtime teardown cannot acknowledge native drain. Keep every ownership part until
+            // process exit rather than advertising that the file operation is released.
+            drop(guard);
+        }
+    }
+}
+
 impl Drop for TaskSnapshotArchivePoolCleanupGuard {
     fn drop(&mut self) {
         // A cancelled cleanup task has not acknowledged SQLite worker drain. Retain the pool,
@@ -1596,7 +1644,7 @@ impl Drop for TaskSnapshotArchivePoolDrain {
 async fn connect_task_snapshot_archive_pool(
     options: SqliteConnectOptions,
     cleanup_path: PathBuf,
-) -> Result<Pool<Sqlite>> {
+) -> Result<TaskSnapshotArchivePoolHandoff> {
     let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let worker = tokio::spawn(async move {
@@ -1611,17 +1659,16 @@ async fn connect_task_snapshot_archive_pool(
             .await
             .map_err(anyhow::Error::from);
         match result {
-            Ok(pool) => match sender.send(Ok(pool)) {
-                Ok(()) => {
-                    cleanup_guard.cleanup_path.take();
-                    cleanup_guard.file_phase.take();
+            Ok(pool) => {
+                let handoff = TaskSnapshotArchivePoolHandoff {
+                    pool: Some(pool),
+                    cleanup_path: cleanup_guard.cleanup_path.take(),
+                    file_phase: cleanup_guard.file_phase.take(),
+                };
+                if let Err(Ok(handoff)) = sender.send(Ok(handoff)) {
+                    drop(handoff);
                 }
-                Err(Ok(pool)) => {
-                    cleanup_guard.pool = Some(pool);
-                    finish_task_snapshot_archive_pool_cleanup(&mut cleanup_guard).await;
-                }
-                Err(Err(_)) => unreachable!("connect result sender only sends a pool here"),
-            },
+            }
             Err(error) => {
                 let _ = sender.send(Err(error));
                 if let Some(path) = cleanup_guard.cleanup_path.take() {
@@ -1666,9 +1713,9 @@ async fn prepare_task_month_snapshot_pages(
     batch_id: i64,
 ) -> Result<Vec<TaskArchiveSnapshotPage>> {
     let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
-    let archive_pool = connect_task_snapshot_archive_pool(options, work_path.to_path_buf()).await?;
-    let mut archive_pool_drain =
-        TaskSnapshotArchivePoolDrain::new(archive_pool, work_path.to_path_buf());
+    let archive_pool_handoff =
+        connect_task_snapshot_archive_pool(options, work_path.to_path_buf()).await?;
+    let mut archive_pool_drain = archive_pool_handoff.into_drain();
     let result = {
         let archive_pool = archive_pool_drain
             .pool
@@ -2142,6 +2189,29 @@ pub(crate) async fn replace_archive_batch_file_with_cleanup_serialization(
         ArchiveReplacement {
             row_count: Some(outcome.row_count),
             sha256: &outcome.sha256,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn replace_archive_batch_file_with_cleanup_serialization_for_repair(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    temporary_file_path: &Path,
+    expected_existing_sha256: &str,
+) -> Result<()> {
+    replace_legacy_archive_file_with_cleanup_serialization(
+        pool,
+        outcome.dataset,
+        &outcome.month_key,
+        temporary_file_path,
+        Path::new(&outcome.file_path),
+        Some(expected_existing_sha256),
+        ArchiveReplacement {
+            row_count: Some(outcome.row_count),
+            sha256: &outcome.sha256,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_REPAIR_PENDING,
         },
     )
     .await
@@ -2271,6 +2341,26 @@ async fn upsert_archive_batch_manifest_with_status(
     status: &str,
     preserve_existing_artifact_identity: bool,
 ) -> Result<i64> {
+    let repair_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(
+             SELECT 1 FROM archive_batches
+             WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+               AND cleanup_state = ?4
+         )",
+    )
+    .bind(batch.dataset)
+    .bind(&batch.month_key)
+    .bind(&batch.file_path)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .fetch_one(&mut *tx)
+    .await?;
+    if repair_pending != 0 {
+        bail!(
+            "archive batch repair is pending for {} {}",
+            batch.dataset,
+            batch.file_path
+        );
+    }
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -2749,6 +2839,7 @@ mod tests {
             ArchiveReplacement {
                 row_count: None,
                 sha256: "replacement-sha",
+                cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
             },
         )
         .await
@@ -2801,6 +2892,7 @@ mod tests {
             ArchiveReplacement {
                 row_count: None,
                 sha256: "replacement-sha",
+                cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
             },
         )
         .await

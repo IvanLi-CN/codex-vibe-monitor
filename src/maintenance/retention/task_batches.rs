@@ -294,6 +294,51 @@ async fn persist_invocation_segment_summary_pages(
     Ok(true)
 }
 
+async fn mark_partial_archive_repair_pending(
+    pool: &Pool<Sqlite>,
+    batch_id: i64,
+    expected_sha256: &str,
+) -> Result<()> {
+    let result = sqlx::query(
+        "UPDATE archive_batches
+         SET cleanup_state = ?1
+         WHERE id = ?2 AND sha256 = ?3
+           AND cleanup_state IN (?4, ?5)",
+    )
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .bind(batch_id)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() != 1 {
+        bail!("partial archive repair manifest changed before repair admission");
+    }
+    Ok(())
+}
+
+async fn archive_batch_repair_pending(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    month_key: &str,
+) -> Result<bool> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(
+             SELECT 1 FROM archive_batches
+             WHERE dataset = ?1 AND month_key = ?2
+               AND cleanup_state = ?3
+         )",
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .fetch_one(pool)
+    .await
+    .map(|value| value != 0)
+    .context("check pending partial archive repair")
+}
+
 async fn repair_partial_invocation_archive(
     pool: &Pool<Sqlite>,
     outcome: &ArchiveBatchOutcome,
@@ -309,33 +354,38 @@ async fn repair_partial_invocation_archive(
         .skip(committed_rows)
         .map(|candidate| candidate.id)
         .collect::<Vec<_>>();
-    let old_sha256 = outcome.sha256.clone();
-    let batch_id = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM archive_batches
-         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3 AND sha256 = ?4
+    let (batch_id, old_sha256, current_row_count) = sqlx::query_as::<_, (i64, String, i64)>(
+        "SELECT id, sha256, row_count FROM archive_batches
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+           AND cleanup_state IN (?4, ?5)
          ORDER BY id DESC LIMIT 1",
     )
     .bind(outcome.dataset)
     .bind(&outcome.month_key)
     .bind(&outcome.file_path)
-    .bind(&old_sha256)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
     .fetch_optional(pool)
     .await?
     .context("partial invocation archive manifest is missing")?;
-
+    let mut repair_base = outcome.clone();
+    repair_base.sha256 = old_sha256.clone();
+    repair_base.row_count = current_row_count;
+    mark_partial_archive_repair_pending(pool, batch_id, &old_sha256).await?;
     let (temporary_file_path, row_count, sha256) =
-        crate::maintenance::trim_archive_batch_file_by_ids(outcome, &remove_ids).await?;
-    let mut repaired_outcome = outcome.clone();
+        crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, &remove_ids).await?;
+    let mut repaired_outcome = repair_base;
     repaired_outcome.row_count = row_count;
     repaired_outcome.sha256 = sha256;
 
-    if let Err(error) = crate::maintenance::replace_archive_batch_file_with_cleanup_serialization(
-        pool,
-        &repaired_outcome,
-        &temporary_file_path,
-        &old_sha256,
-    )
-    .await
+    if let Err(error) =
+        crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
+            pool,
+            &repaired_outcome,
+            &temporary_file_path,
+            &old_sha256,
+        )
+        .await
     {
         remove_temp_sqlite_artifacts(&temporary_file_path);
         return Err(error.context("publish partial invocation archive repair"));
@@ -412,6 +462,16 @@ async fn repair_partial_invocation_archive(
         )
         .await?;
     }
+    sqlx::query(
+        "UPDATE archive_batches
+         SET cleanup_state = ?1
+         WHERE id = ?2 AND sha256 = ?3",
+    )
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(batch_id)
+    .bind(&repaired_outcome.sha256)
+    .execute(&mut *transaction)
+    .await?;
     transaction.commit().await?;
     Ok(())
 }
@@ -431,24 +491,52 @@ async fn repair_partial_timestamped_archive(
         .skip(committed_rows)
         .map(|candidate| candidate.id)
         .collect::<Vec<_>>();
-    let old_sha256 = outcome.sha256.clone();
+    let (batch_id, old_sha256, current_row_count) = sqlx::query_as::<_, (i64, String, i64)>(
+        "SELECT id, sha256, row_count FROM archive_batches
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+           AND cleanup_state IN (?4, ?5)
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(outcome.dataset)
+    .bind(&outcome.month_key)
+    .bind(&outcome.file_path)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .fetch_optional(pool)
+    .await?
+    .context("partial timestamped archive manifest is missing")?;
+    let mut repair_base = outcome.clone();
+    repair_base.sha256 = old_sha256.clone();
+    repair_base.row_count = current_row_count;
+    mark_partial_archive_repair_pending(pool, batch_id, &old_sha256).await?;
     let (temporary_file_path, row_count, sha256) =
-        crate::maintenance::trim_archive_batch_file_by_ids(outcome, &remove_ids).await?;
-    let mut repaired_outcome = outcome.clone();
+        crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, &remove_ids).await?;
+    let mut repaired_outcome = repair_base;
     repaired_outcome.row_count = row_count;
     repaired_outcome.sha256 = sha256;
 
-    if let Err(error) = crate::maintenance::replace_archive_batch_file_with_cleanup_serialization(
-        pool,
-        &repaired_outcome,
-        &temporary_file_path,
-        &old_sha256,
-    )
-    .await
+    if let Err(error) =
+        crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
+            pool,
+            &repaired_outcome,
+            &temporary_file_path,
+            &old_sha256,
+        )
+        .await
     {
         remove_temp_sqlite_artifacts(&temporary_file_path);
         return Err(error.context("publish partial timestamped archive repair"));
     }
+    sqlx::query(
+        "UPDATE archive_batches
+         SET cleanup_state = ?1
+         WHERE id = ?2 AND sha256 = ?3",
+    )
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(batch_id)
+    .bind(&repaired_outcome.sha256)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -470,6 +558,9 @@ struct PartialArchiveRepairState {
     repair_claimed: std::sync::atomic::AtomicBool,
     cleanup_finished: std::sync::Arc<tokio::sync::Notify>,
     cleanup_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pending_transactions:
+        std::sync::Mutex<Vec<std::sync::Arc<crate::maintenance::RetentionTransactionSettlement>>>,
+    archive_root: std::path::PathBuf,
     plan: PartialArchiveRepairPlan,
 }
 
@@ -480,6 +571,7 @@ struct PartialArchiveRepairOwner {
 impl PartialArchiveRepairOwner {
     fn invocation(
         pool: &Pool<Sqlite>,
+        config: &AppConfig,
         outcome: &ArchiveBatchOutcome,
         selected_group: &[InvocationArchiveCandidate],
         cleanup_signal: (
@@ -494,11 +586,13 @@ impl PartialArchiveRepairOwner {
                 selected_group: selected_group.to_vec(),
             },
             cleanup_signal,
+            resolved_archive_dir(config),
         )
     }
 
     fn timestamped(
         pool: &Pool<Sqlite>,
+        config: &AppConfig,
         outcome: &ArchiveBatchOutcome,
         selected_group: &[TimestampedArchiveCandidate],
         cleanup_signal: (
@@ -513,6 +607,7 @@ impl PartialArchiveRepairOwner {
                 selected_group: selected_group.to_vec(),
             },
             cleanup_signal,
+            resolved_archive_dir(config),
         )
     }
 
@@ -522,6 +617,7 @@ impl PartialArchiveRepairOwner {
             std::sync::Arc<tokio::sync::Notify>,
             std::sync::Arc<std::sync::atomic::AtomicBool>,
         ),
+        archive_root: std::path::PathBuf,
     ) -> Self {
         Self {
             state: std::sync::Arc::new(PartialArchiveRepairState {
@@ -529,9 +625,24 @@ impl PartialArchiveRepairOwner {
                 repair_claimed: std::sync::atomic::AtomicBool::new(false),
                 cleanup_finished,
                 cleanup_done,
+                pending_transactions: std::sync::Mutex::new(Vec::new()),
+                archive_root,
                 plan,
             }),
         }
+    }
+
+    fn register_transaction(
+        &self,
+    ) -> std::sync::Arc<crate::maintenance::RetentionTransactionSettlement> {
+        let settlement =
+            std::sync::Arc::new(crate::maintenance::RetentionTransactionSettlement::new());
+        self.state
+            .pending_transactions
+            .lock()
+            .expect("partial archive repair transaction registry is not poisoned")
+            .push(std::sync::Arc::clone(&settlement));
+        settlement
     }
 
     fn record_committed(&self, rows: usize) {
@@ -547,10 +658,159 @@ impl PartialArchiveRepairOwner {
             .load(std::sync::atomic::Ordering::Acquire);
         match &self.state.plan {
             PartialArchiveRepairPlan::Invocation { selected_group, .. } => {
-                committed_rows > 0 && committed_rows < selected_group.len()
+                committed_rows < selected_group.len()
             }
             PartialArchiveRepairPlan::Timestamped { selected_group, .. } => {
-                committed_rows > 0 && committed_rows < selected_group.len()
+                committed_rows < selected_group.len()
+            }
+        }
+    }
+
+    async fn wait_for_transactions(&self) {
+        let settlements = self
+            .state
+            .pending_transactions
+            .lock()
+            .expect("partial archive repair transaction registry is not poisoned")
+            .clone();
+        for settlement in settlements {
+            settlement.wait().await;
+        }
+    }
+
+    async fn reconcile_committed_rows(&self) -> Result<usize> {
+        self.wait_for_transactions().await;
+        let (pool, dataset, ids, selected_len) = match &self.state.plan {
+            PartialArchiveRepairPlan::Invocation {
+                pool,
+                selected_group,
+                ..
+            } => (
+                pool.clone(),
+                "codex_invocations",
+                selected_group
+                    .iter()
+                    .map(|candidate| candidate.id)
+                    .collect::<Vec<_>>(),
+                selected_group.len(),
+            ),
+            PartialArchiveRepairPlan::Timestamped {
+                pool,
+                outcome,
+                selected_group,
+                ..
+            } => (
+                pool.clone(),
+                outcome.dataset,
+                selected_group
+                    .iter()
+                    .map(|candidate| candidate.id)
+                    .collect::<Vec<_>>(),
+                selected_group.len(),
+            ),
+        };
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let ids_json = serde_json::to_string(&ids).context("encode partial repair source ids")?;
+        let query =
+            format!("SELECT COUNT(*) FROM {dataset} WHERE id IN (SELECT value FROM json_each(?1))");
+        let remaining = sqlx::query_scalar::<_, i64>(&query)
+            .bind(ids_json)
+            .fetch_one(&pool)
+            .await
+            .context("reconcile partial archive committed source rows")?;
+        let remaining =
+            usize::try_from(remaining).context("partial repair source count overflow")?;
+        Ok(selected_len.saturating_sub(remaining))
+    }
+
+    async fn repair_with_retry(&self, committed_rows: usize) -> Result<()> {
+        loop {
+            let result = match &self.state.plan {
+                PartialArchiveRepairPlan::Invocation {
+                    pool,
+                    outcome,
+                    selected_group,
+                } => {
+                    repair_partial_invocation_archive(pool, outcome, selected_group, committed_rows)
+                        .await
+                }
+                PartialArchiveRepairPlan::Timestamped {
+                    pool,
+                    outcome,
+                    selected_group,
+                } => {
+                    repair_partial_timestamped_archive(
+                        pool,
+                        outcome,
+                        selected_group,
+                        committed_rows,
+                    )
+                    .await
+                }
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("archive replacement recovery is still pending") =>
+                {
+                    let (pool, outcome) = match &self.state.plan {
+                        PartialArchiveRepairPlan::Invocation { pool, outcome, .. }
+                        | PartialArchiveRepairPlan::Timestamped { pool, outcome, .. } => {
+                            (pool, outcome)
+                        }
+                    };
+                    let recovery_result =
+                        crate::maintenance::reconcile_staged_archive_replacements_for_archive_root(
+                            pool,
+                            &self.state.archive_root,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "reconcile pending archive replacement for {} {}",
+                                outcome.dataset, outcome.file_path
+                            )
+                        });
+                    match recovery_result {
+                        Ok(()) => {}
+                        Err(recovery_error)
+                            if is_retention_write_deferred(&recovery_error)
+                                || crate::is_sqlite_lock_error(&recovery_error) =>
+                        {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                        Err(recovery_error) => return Err(recovery_error),
+                    }
+                    let still_pending = sqlx::query_scalar::<_, i64>(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM archive_batches
+                             WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+                               AND replacement_staged_path IS NOT NULL
+                         )",
+                    )
+                    .bind(outcome.dataset)
+                    .bind(&outcome.month_key)
+                    .bind(&outcome.file_path)
+                    .fetch_one(pool)
+                    .await
+                    .context("check reconciled archive replacement journal")?
+                        != 0;
+                    if still_pending {
+                        return Err(error);
+                    }
+                }
+                Err(error)
+                    if is_retention_write_deferred(&error)
+                        || crate::is_sqlite_lock_error(&error) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -577,46 +837,26 @@ impl PartialArchiveRepairOwner {
         }
         let state = std::sync::Arc::clone(&self.state);
         Some(runtime.spawn(async move {
-            while !state
-                .cleanup_done
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                state.cleanup_finished.notified().await;
-            }
-            let committed_rows = state
-                .committed_rows
-                .load(std::sync::atomic::Ordering::Acquire);
-            crate::maintenance::retention_run_cleanup_scope(async move {
-                match &state.plan {
-                    PartialArchiveRepairPlan::Invocation {
-                        pool,
-                        outcome,
-                        selected_group,
-                    } => {
-                        repair_partial_invocation_archive(
-                            pool,
-                            outcome,
-                            selected_group,
-                            committed_rows,
-                        )
-                        .await
-                    }
-                    PartialArchiveRepairPlan::Timestamped {
-                        pool,
-                        outcome,
-                        selected_group,
-                    } => {
-                        repair_partial_timestamped_archive(
-                            pool,
-                            outcome,
-                            selected_group,
-                            committed_rows,
-                        )
-                        .await
-                    }
+            loop {
+                if state
+                    .cleanup_done
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    break;
                 }
-            })
-            .await
+                let notified = state.cleanup_finished.notified();
+                if state
+                    .cleanup_done
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    break;
+                }
+                notified.await;
+            }
+            let owner = Self { state };
+            let committed_rows = owner.reconcile_committed_rows().await?;
+            crate::maintenance::retention_run_cleanup_scope(owner.repair_with_retry(committed_rows))
+                .await
         }))
     }
 
@@ -1976,6 +2216,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 }
                 break;
             }
+            if archive_batch_repair_pending(pool, spec.dataset, &group_key).await? {
+                recovery_diagnostic.mark_stop();
+                break;
+            }
             let mut batch_observation =
                 batch_plan::BatchObservation::begin(spec.dataset, &group_key, group.len());
             let Some(mut source_connection) =
@@ -2245,6 +2489,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let selected_group = group;
             let repair_owner = PartialArchiveRepairOwner::invocation(
                 pool,
+                config,
                 &archive_outcome,
                 &selected_group,
                 archive_identity_proof.cleanup_signal(),
@@ -2317,8 +2562,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     let admission_mode = admission.admission_mode();
                     let lock_wait = admission.lock_wait();
                     let p1_waiter_count = admission.p1_waiter_count();
+                    let transaction_settlement = repair_owner.register_transaction();
                     let mut transaction_resources =
-                        RetentionTransactionResources::new(source_connection, admission, archive_lock);
+                        RetentionTransactionResources::new(source_connection, admission, archive_lock)
+                            .with_settlement(transaction_settlement);
                     #[cfg(test)]
                     transaction_resources.observe_return_for_test("invocation_archive");
                     drop(admission_wait_phase);
@@ -2530,6 +2777,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         return Err(error);
                     }
                     transaction_resources.mark_transaction_finished();
+                    #[cfg(test)]
+                    batch_admission::pause_after_commit_before_record().await;
                     prompt_cache_keys.extend(commit.prompt_cache_keys);
                     let raw_deletion_plan = commit.raw_deletion_plan;
                     workload::record_processed_count(group.len());
@@ -2784,6 +3033,10 @@ pub(crate) async fn archive_timestamped_dataset(
                 }
                 break;
             }
+            if archive_batch_repair_pending(pool, spec.dataset, &month_key).await? {
+                recovery_diagnostic.mark_stop();
+                break;
+            }
             let recreated_pool_upstream_month_archive = if spec.dataset
                 == "pool_upstream_request_attempts"
             {
@@ -2918,6 +3171,7 @@ pub(crate) async fn archive_timestamped_dataset(
             let selected_group = group;
             let repair_owner = PartialArchiveRepairOwner::timestamped(
                 pool,
+                config,
                 &archive_outcome,
                 &selected_group,
                 archive_identity_proof.cleanup_signal(),
@@ -2988,8 +3242,10 @@ pub(crate) async fn archive_timestamped_dataset(
                 let admission_mode = admission.admission_mode();
                 let lock_wait = admission.lock_wait();
                 let p1_waiter_count = admission.p1_waiter_count();
+                let transaction_settlement = repair_owner.register_transaction();
                 let mut transaction_resources =
-                    RetentionTransactionResources::new(source_connection, admission, archive_lock);
+                    RetentionTransactionResources::new(source_connection, admission, archive_lock)
+                        .with_settlement(transaction_settlement);
                 drop(admission_wait_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
@@ -3218,6 +3474,8 @@ pub(crate) async fn archive_timestamped_dataset(
                     return Err(error);
                 }
                 transaction_resources.mark_transaction_finished();
+                #[cfg(test)]
+                batch_admission::pause_after_commit_before_record().await;
                 let Some(commit) = commit else {
                     drop(transaction_phase);
                     let cleanup_error = transaction_resources.return_to_pool().await;

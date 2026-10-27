@@ -2124,6 +2124,21 @@ pub(crate) async fn reconcile_staged_archive_replacements(
     pool: &Pool<Sqlite>,
     config: Option<&AppConfig>,
 ) -> Result<()> {
+    let archive_root = config.map(resolved_archive_dir);
+    reconcile_staged_archive_replacements_with_root(pool, archive_root.as_deref()).await
+}
+
+pub(crate) async fn reconcile_staged_archive_replacements_for_archive_root(
+    pool: &Pool<Sqlite>,
+    archive_root: &Path,
+) -> Result<()> {
+    reconcile_staged_archive_replacements_with_root(pool, Some(archive_root)).await
+}
+
+async fn reconcile_staged_archive_replacements_with_root(
+    pool: &Pool<Sqlite>,
+    archive_root: Option<&Path>,
+) -> Result<()> {
     let rows = sqlx::query_as::<_, (i64, String)>(
         "SELECT id, file_path
          FROM archive_batches
@@ -2187,9 +2202,9 @@ pub(crate) async fn reconcile_staged_archive_replacements(
             );
             continue;
         };
-        if config.is_some_and(|config| {
-            !retention_archive_path_is_within_archive_root(config, path)
-                || !retention_archive_path_is_within_archive_root(config, staged_path)
+        if archive_root.is_some_and(|root| {
+            !retention_archive_path_is_within(root, path)
+                || !retention_archive_path_is_within(root, staged_path)
         }) || !replacement_staging_path_is_owned(path, staged_path)
         {
             retention_recovery_record_failure(

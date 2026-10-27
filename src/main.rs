@@ -359,6 +359,7 @@ const ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1: &str = "legacy_month_v1";
 const ARCHIVE_WRITER_VERSION_SEGMENT_V1: &str = "segment_v1";
 const ARCHIVE_CLEANUP_STATE_ACTIVE: &str = "active";
 const ARCHIVE_CLEANUP_STATE_DELETE_PENDING: &str = "delete_pending";
+const ARCHIVE_CLEANUP_STATE_REPAIR_PENDING: &str = "repair_pending";
 const DEFAULT_ARCHIVE_TEMP_MIN_AGE_SECS: u64 = 6 * 60 * 60;
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";

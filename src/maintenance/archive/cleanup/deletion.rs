@@ -659,6 +659,11 @@ pub(crate) async fn cleanup_expired_archive_batches(
             eligible_candidates.push(candidate);
             continue;
         }
+        if candidate.cleanup_state != ARCHIVE_CLEANUP_STATE_ACTIVE
+            && candidate.cleanup_state != ARCHIVE_CLEANUP_STATE_DELETE_PENDING
+        {
+            continue;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
                 && !summary_archive_snapshot_cleanup_gate_satisfied(
@@ -770,6 +775,11 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut deleted = 0usize;
     for candidate in eligible_candidates {
+        if candidate.cleanup_state != ARCHIVE_CLEANUP_STATE_ACTIVE
+            && candidate.cleanup_state != ARCHIVE_CLEANUP_STATE_DELETE_PENDING
+        {
+            continue;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if finalize_archive_batch_file_deletion(
                 pool,
@@ -1043,6 +1053,11 @@ pub(crate) async fn prune_legacy_archive_batches(
     };
 
     for candidate in candidates {
+        if candidate.cleanup_state != ARCHIVE_CLEANUP_STATE_ACTIVE
+            && candidate.cleanup_state != ARCHIVE_CLEANUP_STATE_DELETE_PENDING
+        {
+            continue;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             let deleted = if dry_run {
                 true

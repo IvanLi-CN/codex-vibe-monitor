@@ -9,6 +9,9 @@ pub(crate) struct BatchCommitProbe {
     pub(crate) committed: Notify,
     pub(crate) resume: Notify,
     pub(crate) force_commit_busy_timeout_zero: std::sync::atomic::AtomicBool,
+    pub(crate) commit_receipt: Notify,
+    pub(crate) resume_commit_receipt: Notify,
+    pub(crate) pause_after_commit_before_record: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -80,6 +83,20 @@ pub(super) async fn prepare_commit_for_test(connection: &mut SqliteConnection) {
             .execute(connection)
             .await
             .expect("set deterministic commit lock timeout");
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn pause_after_commit_before_record() {
+    let Ok(probe) = RETENTION_TEST_BATCH_COMMIT.try_with(Arc::clone) else {
+        return;
+    };
+    if probe
+        .pause_after_commit_before_record
+        .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        probe.commit_receipt.notify_one();
+        probe.resume_commit_receipt.notified().await;
     }
 }
 
