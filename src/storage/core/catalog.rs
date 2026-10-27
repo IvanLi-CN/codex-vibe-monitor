@@ -581,7 +581,8 @@ fn traffic_table(name: &str) -> bool {
 fn analytics_table(name: &str) -> bool {
     matches!(
         name,
-        "invocation_rollup_daily"
+        "analytics_projection_checkpoints"
+            | "invocation_rollup_daily"
             | "invocation_rollup_hourly"
             | "invocation_failure_rollup_hourly"
             | "proxy_perf_stage_hourly"

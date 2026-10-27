@@ -2,6 +2,8 @@ use super::*;
 use anyhow::anyhow;
 use sqlx::Executor;
 
+use crate::storage::analytics::AnalyticsProjection;
+
 pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PromptCacheConversationsQuery>,
@@ -25,6 +27,18 @@ pub(crate) async fn fetch_prompt_cache_conversations(
         build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
     };
     Ok(Json(response))
+}
+
+/// Prompt-cache HTTP reads carry the materializer's last-good state through the shared analytics
+/// contract. The detailed payload remains owned by the existing materializer until pg08 wiring.
+pub(crate) async fn read_prompt_cache_analytics_projection(
+    projection: AnalyticsApiProjection<'_>,
+) -> Result<AnalyticsApiProjectionSnapshot, ApiError> {
+    projection
+        .require_projection(AnalyticsProjection::PromptCache)?
+        .read_state_snapshot()
+        .await
+        .map_err(ApiError::from)
 }
 
 pub(crate) fn normalize_prompt_cache_conversation_limit(raw: Option<i64>) -> i64 {

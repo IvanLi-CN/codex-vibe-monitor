@@ -1,6 +1,7 @@
 use super::*;
 use crate::observability::contention::{StatsQuery, observe_query};
 use crate::runtime_mutation_bus::{RuntimeMutation, SequencedRuntimeMutation};
+use crate::storage::analytics::{AnalyticsProjection, TrafficStatsAggregateRequest};
 use crate::{
     EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
     RESPONSE_TIER_PRICE_VERSION_SUFFIX, estimate_proxy_cost_breakdown, has_billable_usage,
@@ -58,6 +59,22 @@ pub(crate) use summary_observability::{
     fetch_summary, record_summary_projection_publication_metrics,
     summary_projection_pending_source_gaps,
 };
+
+/// Route-facing contract for the summary handler. AppState injection is intentionally deferred to
+/// pg08; once injected, this seam is the only analytics dependency the handler needs.
+pub(crate) async fn read_summary_analytics_projection(
+    projection: AnalyticsApiProjection<'_>,
+    start_epoch: i64,
+    end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    live_request: Option<TrafficStatsAggregateRequest>,
+) -> Result<AnalyticsApiProjectionSnapshot, ApiError> {
+    projection
+        .require_projection(AnalyticsProjection::Summary)?
+        .read_historical_snapshot(start_epoch, end_epoch, source_scope, live_request)
+        .await
+        .map_err(ApiError::from)
+}
 
 pub(crate) use invocation_workflow_detail::{
     INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD, INVOCATION_COST_AUDIT_REASON_MODEL_MISSING,

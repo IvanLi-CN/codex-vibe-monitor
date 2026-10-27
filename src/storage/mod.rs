@@ -1,3 +1,4 @@
+pub(crate) mod analytics;
 pub(crate) mod archive;
 #[path = "core/catalog.rs"]
 pub(crate) mod catalog;

@@ -1,4 +1,7 @@
 use super::*;
+use crate::storage::analytics::{
+    AnalyticsProjection, AnalyticsProjectionAdapter, AnalyticsProjectionStore,
+};
 
 pub(crate) mod invocation_ranges;
 
@@ -17,6 +20,20 @@ const PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME: &str = "prompt_cache_conversatio
 const PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME: &str = "prompt_cache_conversations_stats_v2";
 pub(crate) const PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME: &str =
     "prompt_cache_conversations_materialization_v1";
+pub(crate) const PROMPT_CACHE_ANALYTICS_PROJECTION: AnalyticsProjection =
+    AnalyticsProjection::PromptCache;
+
+pub(crate) fn prompt_cache_analytics_adapter<'a>(
+    store: &'a AnalyticsProjectionStore,
+) -> AnalyticsProjectionAdapter<'a> {
+    AnalyticsProjectionAdapter::new(store, PROMPT_CACHE_ANALYTICS_PROJECTION)
+}
+
+pub(crate) fn prompt_cache_analytics_api_projection<'a>(
+    store: &'a AnalyticsProjectionStore,
+) -> crate::api::AnalyticsApiProjection<'a> {
+    crate::api::AnalyticsApiProjection::from_adapter(prompt_cache_analytics_adapter(store))
+}
 const PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE: &str =
     "prompt_cache_conversation_stats_refresh_queue";
 const PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE: &str =
