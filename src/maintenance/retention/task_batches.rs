@@ -519,13 +519,17 @@ async fn recover_partial_archive_source_ids(
     dataset: &str,
     expected_sha256: &str,
 ) -> Result<Vec<i64>> {
-    let archive_lock = retention_archive_file_lock_async(archive_path).await?;
     let spec = archive_table_spec(match dataset {
         HOURLY_ROLLUP_DATASET_INVOCATIONS => HOURLY_ROLLUP_DATASET_INVOCATIONS,
         "forward_proxy_attempts" => "forward_proxy_attempts",
         "pool_upstream_request_attempts" => "pool_upstream_request_attempts",
         _ => bail!("unsupported partial archive repair dataset: {dataset}"),
     });
+    // The proof loader creates a task-local work file and briefly takes the same directory
+    // fence. Load it before taking the recovery fence, then revalidate the final artifact under
+    // that fence before trusting the copied proof.
+    let archive_identity_proof = ArchiveSourceIdentityProof::load(archive_path, spec).await?;
+    let archive_lock = retention_archive_file_lock_async(archive_path).await?;
     let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_verify").await?;
     let actual_sha256 = with_file_phase_permit(file_phase, async {
         sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())
@@ -533,10 +537,15 @@ async fn recover_partial_archive_source_ids(
     .await?;
     if actual_sha256 != expected_sha256 {
         drop(archive_lock);
-        bail!("pending partial archive repair artifact identity changed");
+        return finish_archive_identity_proof(
+            archive_identity_proof,
+            Err(anyhow::anyhow!(
+                "pending partial archive repair artifact identity changed"
+            )),
+        )
+        .await;
     }
 
-    let archive_identity_proof = ArchiveSourceIdentityProof::load(archive_path, spec).await?;
     let result = async {
         let archive_ids = archive_identity_proof.row_ids().await?;
         if archive_ids.is_empty() {
@@ -1134,7 +1143,11 @@ impl PartialArchiveRepairOwner {
     }
 
     async fn repair_with_retry(&self, committed_rows: usize) -> Result<()> {
+        let retry_deadline = Instant::now() + RETENTION_PRESSURE_RETRY_BUDGET;
         loop {
+            if retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled()) {
+                return Err(retention_write_deferred("partial_archive_repair"));
+            }
             let result = match &self.state.plan {
                 PartialArchiveRepairPlan::Invocation {
                     pool,
@@ -1185,7 +1198,7 @@ impl PartialArchiveRepairOwner {
                             if is_retention_write_deferred(&recovery_error)
                                 || crate::is_sqlite_lock_error(&recovery_error) =>
                         {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            wait_for_partial_archive_repair_retry(retry_deadline).await?;
                             continue;
                         }
                         Err(recovery_error) => return Err(recovery_error),
@@ -1212,7 +1225,7 @@ impl PartialArchiveRepairOwner {
                     if is_retention_write_deferred(&error)
                         || crate::is_sqlite_lock_error(&error) =>
                 {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    wait_for_partial_archive_repair_retry(retry_deadline).await?;
                 }
                 Err(error) => return Err(error),
             }
@@ -1247,28 +1260,36 @@ impl PartialArchiveRepairOwner {
         }
         let state = std::sync::Arc::clone(&self.state);
         let repair_key = state.repair_key.clone();
+        let shutdown = retention_run_shutdown_token();
         Some(runtime.spawn(async move {
-            let _activity = PartialArchiveRepairActivity { key: repair_key };
-            loop {
-                if state
-                    .cleanup_done
-                    .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    break;
+            let cleanup = async move {
+                let _activity = PartialArchiveRepairActivity { key: repair_key };
+                loop {
+                    if state
+                        .cleanup_done
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        break;
+                    }
+                    let notified = state.cleanup_finished.notified();
+                    if state
+                        .cleanup_done
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        break;
+                    }
+                    notified.await;
                 }
-                let notified = state.cleanup_finished.notified();
-                if state
-                    .cleanup_done
-                    .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    break;
-                }
-                notified.await;
+                let owner = Self { state };
+                let committed_rows = owner.reconcile_committed_rows().await?;
+                owner.repair_with_retry(committed_rows).await
+            };
+            if let Some(shutdown) = shutdown {
+                crate::maintenance::retention_run_cleanup_scope_with_shutdown(shutdown, cleanup)
+                    .await
+            } else {
+                crate::maintenance::retention_run_cleanup_scope(cleanup).await
             }
-            let owner = Self { state };
-            let committed_rows = owner.reconcile_committed_rows().await?;
-            crate::maintenance::retention_run_cleanup_scope(owner.repair_with_retry(committed_rows))
-                .await
         }))
     }
 
@@ -1279,6 +1300,24 @@ impl PartialArchiveRepairOwner {
         worker
             .await
             .context("partial archive repair worker failed")?
+    }
+}
+
+async fn wait_for_partial_archive_repair_retry(deadline: Instant) -> Result<()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(retention_write_deferred("partial_archive_repair"));
+    }
+    let sleep = tokio::time::sleep(remaining.min(Duration::from_millis(100)));
+    if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => Err(retention_write_deferred("partial_archive_repair")),
+            _ = sleep => Ok(()),
+        }
+    } else {
+        sleep.await;
+        Ok(())
     }
 }
 

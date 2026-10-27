@@ -622,36 +622,13 @@ async fn promote_verified_summary_snapshot_page_sets(
             Ok(proof) => proof,
             Err(error) => return Err(error),
         };
-        if let Some(proof) = proof {
-            let Some(admission) = super::super::retention::acquire_retention_write_admission(
-                "summary_snapshot_proof_promotion",
-            )
-            .await
-            else {
-                return Err(super::super::retention::retention_write_deferred(
-                    "summary_snapshot_proof_promotion",
-                ));
-            };
-            if crate::publish_verified_summary_archive_snapshot(pool, &proof).await? {
-                crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
-                sqlx::query(
-                    "INSERT INTO summary_archive_snapshot_backfill_outcome \
-                 (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
-                  next_page_index, next_row_id, cursor_version, retry_attempt) \
-                 VALUES (?1, ?2, 'complete', '', datetime('now'), 0, 0, ?3, 0) \
-                 ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
-                   disposition = 'complete', failure_kind = '', next_probe_at = datetime('now'), \
-                   updated_at = datetime('now')",
-                )
-                .bind(archive_batch_id)
-                .bind(&manifest_sha256)
-                .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION)
-                .execute(pool)
-                .await
-                .context("record promoted Summary Snapshot V2 outcome")?;
-                promoted += 1;
-            }
-            drop(admission);
+        if let Some(proof) = proof
+            && crate::publish_verified_summary_archive_snapshot(pool, &proof).await?
+        {
+            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
+            record_promoted_summary_snapshot_outcome(pool, archive_batch_id, &manifest_sha256)
+                .await?;
+            promoted += 1;
         }
         processed_any = true;
         processed_cursor_id = archive_batch_id;
@@ -673,6 +650,57 @@ async fn promote_verified_summary_snapshot_page_sets(
         next_cursor_id
     };
     Ok((promoted, cursor_id))
+}
+
+async fn record_promoted_summary_snapshot_outcome(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<()> {
+    let Some((connection, admission)) =
+        super::super::retention::acquire_retention_write_connection(
+            pool,
+            "summary_snapshot_proof_promotion_outcome",
+        )
+        .await?
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_proof_promotion_outcome",
+        ));
+    };
+    let mut resources =
+        super::super::retention::RetentionTransactionResources::without_archive_fence(
+            connection, admission,
+        );
+    let result = sqlx::query(
+        "INSERT INTO summary_archive_snapshot_backfill_outcome \
+         (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
+          next_page_index, next_row_id, cursor_version, retry_attempt) \
+         VALUES (?1, ?2, 'complete', '', datetime('now'), 0, 0, ?3, 0) \
+         ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
+           disposition = 'complete', failure_kind = '', next_probe_at = datetime('now'), \
+           updated_at = datetime('now')",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION)
+    .execute(resources.connection_mut())
+    .await
+    .context("record promoted Summary Snapshot V2 outcome");
+    if let Err(error) = result {
+        let cleanup_error = resources.return_to_pool().await;
+        if let Err(cleanup_error) = cleanup_error {
+            return Err(error.context(format!(
+                "return promoted Summary Snapshot outcome connection after failure: {cleanup_error}"
+            )));
+        }
+        return Err(error);
+    }
+    resources
+        .return_to_pool()
+        .await
+        .context("return promoted Summary Snapshot outcome connection to pool")?;
+    Ok(())
 }
 
 pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates(
@@ -1756,17 +1784,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             }
             Err(error) => return Err(error),
         };
-        let Some(admission) = super::super::retention::acquire_retention_write_admission(
-            "summary_archive_snapshot_backfill",
-        )
-        .await
-        else {
-            return Err(super::super::retention::retention_write_deferred(
-                "summary_archive_snapshot_backfill",
-            ));
-        };
         if !crate::publish_verified_summary_archive_snapshot(pool, &proof).await? {
-            drop(admission);
             return Err(anyhow::Error::new(
                 SummaryArchiveSnapshotVerificationError::new(
                     "verification_failed",
@@ -1774,7 +1792,6 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 ),
             ));
         }
-        drop(admission);
         Ok("complete")
     }
     .await;

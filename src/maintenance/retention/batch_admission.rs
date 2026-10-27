@@ -535,6 +535,7 @@ pub(super) async fn acquire_write_connection(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let nested_pressure_slot = super::retention_db_pressure_slot_held();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
     loop {
@@ -556,7 +557,7 @@ pub(super) async fn acquire_write_connection(
                 }
                 continue;
             }
-            if !wait_for_busy {
+            if !wait_for_busy && !nested_pressure_slot {
                 retention_record_defer(operation, reason);
                 return Ok(None);
             }

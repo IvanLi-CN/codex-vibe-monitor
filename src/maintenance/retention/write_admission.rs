@@ -880,6 +880,13 @@ pub(crate) async fn retention_run_cleanup_scope<F: std::future::Future>(work: F)
         .await
 }
 
+pub(crate) async fn retention_run_cleanup_scope_with_shutdown<F: std::future::Future>(
+    shutdown: CancellationToken,
+    work: F,
+) -> F::Output {
+    RETENTION_SHUTDOWN.scope(shutdown, work).await
+}
+
 pub(crate) fn retention_run_defer_reason() -> Option<String> {
     RETENTION_RUN_DEFER_REASON
         .try_with(|reason| reason.borrow().clone())
