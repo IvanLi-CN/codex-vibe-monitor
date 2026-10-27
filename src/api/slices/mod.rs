@@ -1,5 +1,6 @@
 use super::*;
 
+mod analytics_projection_seam;
 #[expect(
     clippy::too_many_arguments,
     reason = "Existing internal response adapters preserve established call-site and payload contracts."
@@ -19,6 +20,7 @@ mod subscriptions;
 mod summary_delta_gap;
 mod system_routes_and_tasks;
 
+pub(crate) use analytics_projection_seam::*;
 pub(crate) use error_distribution_and_sse::*;
 pub(crate) use invocations_and_summary::*;
 pub(crate) use model_management::*;

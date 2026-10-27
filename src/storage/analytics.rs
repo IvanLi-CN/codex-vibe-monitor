@@ -6,14 +6,22 @@
 //! one analytics transaction. This module intentionally does not install the store in `AppState`;
 //! runtime routing and cutover remain a later lifecycle concern.
 
-use std::fmt;
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use anyhow::{Result, bail};
 use sqlx::{FromRow, PgConnection, Postgres, QueryBuilder, Sqlite, SqliteConnection};
+use tokio::sync::Mutex;
 
 use super::core::{
-    AnalyticsTransaction, BackendKind, ModuleAuthority, ModuleGenerationGate, StorageModule,
-    StoragePools, TrafficArchiveTransaction, TypedStorageTransaction,
+    AnalyticsTransaction, BackendKind, ModuleAuthority, ModuleGenerationGate,
+    ModuleGenerationLease, StorageModule, StoragePools, TrafficArchiveTransaction,
+    TypedStorageTransaction,
 };
 
 const SQLITE_ANALYTICS_AUTHORITY_GENERATION: u64 = 1;
@@ -80,6 +88,16 @@ pub(crate) enum AnalyticsProjection {
     LongTerm,
     PromptCache,
     Subscription,
+}
+
+impl AnalyticsProjection {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Summary,
+        Self::Timeseries,
+        Self::LongTerm,
+        Self::PromptCache,
+        Self::Subscription,
+    ];
 }
 
 impl AnalyticsProjection {
@@ -295,6 +313,46 @@ pub(crate) struct ProjectionReadState {
     pub(crate) quality: ProjectionDataQuality,
     pub(crate) has_more: bool,
     checkpoint_exists: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnalyticsSchemaAuthority {
+    backend: BackendKind,
+    generation: u64,
+}
+
+#[derive(Debug)]
+struct AnalyticsSchemaState {
+    initialized_authority: Mutex<Option<AnalyticsSchemaAuthority>>,
+    initialization_lock: Mutex<()>,
+    initialization_count: AtomicUsize,
+}
+
+impl AnalyticsSchemaState {
+    fn new() -> Self {
+        Self {
+            initialized_authority: Mutex::new(None),
+            initialization_lock: Mutex::new(()),
+            initialization_count: AtomicUsize::new(0),
+        }
+    }
+
+    async fn is_initialized(&self, authority: AnalyticsSchemaAuthority) -> bool {
+        *self.initialized_authority.lock().await == Some(authority)
+    }
+
+    async fn mark_initialized(&self, authority: AnalyticsSchemaAuthority) {
+        let mut initialized_authority = self.initialized_authority.lock().await;
+        if *initialized_authority != Some(authority) {
+            *initialized_authority = Some(authority);
+            self.initialization_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(test)]
+    fn initialization_count(&self) -> usize {
+        self.initialization_count.load(Ordering::Relaxed)
+    }
 }
 
 impl ProjectionReadState {
@@ -560,6 +618,7 @@ pub(crate) struct AnalyticsProjectionStore {
     pools: StoragePools,
     analytics_gate: ModuleGenerationGate,
     traffic_gate: ModuleGenerationGate,
+    schema: Arc<AnalyticsSchemaState>,
 }
 
 impl fmt::Debug for AnalyticsProjectionStore {
@@ -582,6 +641,7 @@ impl AnalyticsProjectionStore {
             pools,
             analytics_gate,
             traffic_gate,
+            schema: Arc::new(AnalyticsSchemaState::new()),
         }
     }
 
@@ -605,6 +665,11 @@ impl AnalyticsProjectionStore {
         )
     }
 
+    #[cfg(test)]
+    fn schema_initialization_count(&self) -> usize {
+        self.schema.initialization_count()
+    }
+
     pub(crate) async fn projection_owner(
         &self,
         projection: AnalyticsProjection,
@@ -617,15 +682,41 @@ impl AnalyticsProjectionStore {
         Ok(owner)
     }
 
-    /// Ensure the shared checkpoint table exists on the current analytics authority. The write
-    /// path also repeats this as part of its target transaction so first-use initialization and
-    /// projection publication remain atomic.
+    pub(crate) fn projection_adapter(
+        &self,
+        projection: AnalyticsProjection,
+    ) -> AnalyticsProjectionAdapter<'_> {
+        AnalyticsProjectionAdapter::new(self, projection)
+    }
+
+    /// Ensure the shared checkpoint table exists on the current analytics authority.
+    ///
+    /// Initialization is cached per backend generation. The lease used for schema setup is held
+    /// until the setup transaction completes, so an authority switch cannot publish a new
+    /// generation between the DDL and the cache update.
     pub(crate) async fn ensure_projection_checkpoint_schema(&self) -> Result<()> {
         let lease = self
             .analytics_gate
             .acquire(StorageModule::Analytics)
             .await?;
-        let backend = lease.lease.authority.backend;
+        self.ensure_projection_checkpoint_schema_on_lease(lease)
+            .await
+    }
+
+    async fn ensure_projection_checkpoint_schema_on_lease(
+        &self,
+        lease: ModuleGenerationLease,
+    ) -> Result<()> {
+        let authority = AnalyticsSchemaAuthority {
+            backend: lease.lease.authority.backend,
+            generation: lease.lease.authority.generation,
+        };
+        let _initialization = self.schema.initialization_lock.lock().await;
+        if self.schema.is_initialized(authority).await {
+            return Ok(());
+        }
+
+        let backend = authority.backend;
         let mut transaction = self
             .pools
             .begin_typed::<AnalyticsTransaction>(lease)
@@ -645,7 +736,11 @@ impl AnalyticsProjectionStore {
             }
         };
         match result {
-            Ok(()) => transaction.commit().await,
+            Ok(()) => {
+                transaction.commit().await?;
+                self.schema.mark_initialized(authority).await;
+                Ok(())
+            }
             Err(error) => match transaction.rollback().await {
                 Ok(()) => Err(error),
                 Err(rollback_error) => Err(anyhow::anyhow!(
@@ -662,17 +757,110 @@ impl AnalyticsProjectionStore {
         &self,
         projection: AnalyticsProjection,
     ) -> Result<ProjectionReadState> {
-        self.ensure_projection_checkpoint_schema().await?;
         let lease = self
             .analytics_gate
             .acquire(StorageModule::Analytics)
             .await?;
-        let backend = lease.lease.authority.backend;
+        let authority = AnalyticsSchemaAuthority {
+            backend: lease.lease.authority.backend,
+            generation: lease.lease.authority.generation,
+        };
+        if !self.schema.is_initialized(authority).await {
+            let _initialization = self.schema.initialization_lock.lock().await;
+            if !self.schema.is_initialized(authority).await {
+                return self
+                    .load_projection_state_with_schema_initialization(lease, projection, authority)
+                    .await;
+            }
+        }
+        let checkpoint = self
+            .load_projection_checkpoint_on_lease(lease, projection)
+            .await?;
         let owner = AnalyticsProjectionOwner {
             projection,
-            target_generation: lease.lease.authority.generation,
+            target_generation: authority.generation,
+        };
+        match checkpoint {
+            Some(checkpoint) => ProjectionReadState::from_checkpoint(owner, checkpoint),
+            None => ProjectionReadState::new(owner),
+        }
+    }
+
+    async fn load_projection_state_with_schema_initialization(
+        &self,
+        lease: ModuleGenerationLease,
+        projection: AnalyticsProjection,
+        authority: AnalyticsSchemaAuthority,
+    ) -> Result<ProjectionReadState> {
+        let owner = AnalyticsProjectionOwner {
+            projection,
+            target_generation: authority.generation,
         };
         owner.validate()?;
+        let backend = authority.backend;
+        let mut transaction = self
+            .pools
+            .begin_typed::<AnalyticsTransaction>(lease)
+            .await?;
+        let schema_result = match backend {
+            BackendKind::Sqlite => {
+                ensure_projection_checkpoint_schema_sqlite(
+                    transaction.sqlite_transaction()?.as_mut(),
+                )
+                .await
+            }
+            BackendKind::Postgres => {
+                ensure_projection_checkpoint_schema_postgres(
+                    transaction.postgres_transaction()?.as_mut(),
+                )
+                .await
+            }
+        };
+        if let Err(error) = schema_result {
+            let rollback_result = transaction.rollback().await;
+            return match finish_authority_read::<()>(Err(error), rollback_result) {
+                Ok(()) => {
+                    unreachable!("failed analytics schema setup cannot complete successfully")
+                }
+                Err(error) => Err(error),
+            };
+        }
+
+        let result = match backend {
+            BackendKind::Sqlite => {
+                load_projection_checkpoint_sqlite(
+                    transaction.sqlite_transaction()?.as_mut(),
+                    projection,
+                )
+                .await
+            }
+            BackendKind::Postgres => {
+                load_projection_checkpoint_postgres(
+                    transaction.postgres_transaction()?.as_mut(),
+                    projection,
+                )
+                .await
+            }
+        };
+        let completion = if result.is_ok() {
+            transaction.commit().await
+        } else {
+            transaction.rollback().await
+        };
+        let checkpoint = finish_authority_read(result, completion)?;
+        self.schema.mark_initialized(authority).await;
+        match checkpoint {
+            Some(checkpoint) => ProjectionReadState::from_checkpoint(owner, checkpoint),
+            None => ProjectionReadState::new(owner),
+        }
+    }
+
+    async fn load_projection_checkpoint_on_lease(
+        &self,
+        lease: ModuleGenerationLease,
+        projection: AnalyticsProjection,
+    ) -> Result<Option<DurableProjectionCheckpoint>> {
+        let backend = lease.lease.authority.backend;
         let mut transaction = self
             .pools
             .begin_typed::<AnalyticsTransaction>(lease)
@@ -694,18 +882,25 @@ impl AnalyticsProjectionStore {
             }
         };
         let rollback_result = transaction.rollback().await;
-        let checkpoint = finish_authority_read(result, rollback_result)?;
-        match checkpoint {
-            Some(checkpoint) => ProjectionReadState::from_checkpoint(owner, checkpoint),
-            None => ProjectionReadState::new(owner),
-        }
+        finish_authority_read(result, rollback_result)
     }
 
     pub(crate) async fn begin(&self) -> Result<AnalyticsProjectionTransaction> {
-        let lease = self
-            .analytics_gate
-            .acquire(StorageModule::Analytics)
-            .await?;
+        let lease = loop {
+            let lease = self
+                .analytics_gate
+                .acquire(StorageModule::Analytics)
+                .await?;
+            let authority = AnalyticsSchemaAuthority {
+                backend: lease.lease.authority.backend,
+                generation: lease.lease.authority.generation,
+            };
+            if self.schema.is_initialized(authority).await {
+                break lease;
+            }
+            self.ensure_projection_checkpoint_schema_on_lease(lease)
+                .await?;
+        };
         let target_generation = lease.lease.authority.generation;
         let backend = lease.lease.authority.backend;
         let transaction = self
@@ -874,6 +1069,62 @@ impl AnalyticsProjectionStore {
                 quality,
             }
         })
+    }
+}
+
+/// Common authority adapter used by stats, long-term, prompt-cache, and subscription consumers.
+/// It carries the projection identity through owner, cursor/quality reads, and named write
+/// transactions without installing any runtime or `AppState` routing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AnalyticsProjectionAdapter<'a> {
+    store: &'a AnalyticsProjectionStore,
+    projection: AnalyticsProjection,
+}
+
+impl<'a> AnalyticsProjectionAdapter<'a> {
+    pub(crate) const fn new(
+        store: &'a AnalyticsProjectionStore,
+        projection: AnalyticsProjection,
+    ) -> Self {
+        Self { store, projection }
+    }
+
+    pub(crate) const fn projection(self) -> AnalyticsProjection {
+        self.projection
+    }
+
+    pub(crate) async fn initialize(self) -> Result<()> {
+        self.store.ensure_projection_checkpoint_schema().await
+    }
+
+    pub(crate) async fn owner(self) -> Result<AnalyticsProjectionOwner> {
+        self.store.projection_owner(self.projection).await
+    }
+
+    pub(crate) async fn projection_state(self) -> Result<ProjectionReadState> {
+        self.store.load_projection_state(self.projection).await
+    }
+
+    pub(crate) async fn begin(self) -> Result<AnalyticsProjectionTransaction> {
+        self.store.begin_projection(self.projection).await
+    }
+
+    pub(crate) async fn rollup_totals(
+        self,
+        start_epoch: i64,
+        end_epoch: i64,
+        source_scope: crate::InvocationSourceScope,
+    ) -> Result<AnalyticsRollupRead> {
+        self.store
+            .query_rollup_totals(start_epoch, end_epoch, source_scope)
+            .await
+    }
+
+    pub(crate) async fn bounded_live_totals(
+        self,
+        request: TrafficStatsAggregateRequest,
+    ) -> Result<TrafficStatsAggregateRead> {
+        self.store.query_bounded_traffic_stats(request).await
     }
 }
 
@@ -1272,7 +1523,6 @@ async fn persist_projection_checkpoint_sqlite(
     checkpoint: DurableProjectionCheckpoint,
     expected: ProjectionCheckpointExpectation,
 ) -> Result<()> {
-    ensure_projection_checkpoint_schema_sqlite(connection).await?;
     let values = projection_checkpoint_values(checkpoint)?;
     expected.checkpoint.validate()?;
     let result = if expected.exists {
@@ -1326,7 +1576,6 @@ async fn persist_projection_checkpoint_postgres(
     checkpoint: DurableProjectionCheckpoint,
     expected: ProjectionCheckpointExpectation,
 ) -> Result<()> {
-    ensure_projection_checkpoint_schema_postgres(connection).await?;
     let values = projection_checkpoint_values(checkpoint)?;
     expected.checkpoint.validate()?;
     let result = if expected.exists {
@@ -2007,6 +2256,7 @@ fn finish_authority_read<T>(result: Result<T>, rollback_result: Result<()>) -> R
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use super::*;
     use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
@@ -2116,7 +2366,7 @@ mod tests {
         sqlite_store_with_max_connections(1).await
     }
 
-    async fn sqlite_store_with_max_connections(
+    async fn uninitialized_sqlite_store_with_max_connections(
         max_connections: u32,
     ) -> Result<(AnalyticsProjectionStore, SqlitePool)> {
         let database_url = if max_connections == 1 {
@@ -2140,6 +2390,81 @@ mod tests {
         .execute(&pool)
         .await?;
         Ok((AnalyticsProjectionStore::sqlite(pool.clone()), pool))
+    }
+
+    async fn sqlite_store_with_max_connections(
+        max_connections: u32,
+    ) -> Result<(AnalyticsProjectionStore, SqlitePool)> {
+        let (store, pool) =
+            uninitialized_sqlite_store_with_max_connections(max_connections).await?;
+        store.ensure_projection_checkpoint_schema().await?;
+        Ok((store, pool))
+    }
+
+    #[tokio::test]
+    async fn projection_state_initializes_checkpoint_schema_once() -> Result<()> {
+        let (store, _pool) = uninitialized_sqlite_store_with_max_connections(1).await?;
+        assert_eq!(store.schema_initialization_count(), 0);
+
+        store
+            .load_projection_state(AnalyticsProjection::Summary)
+            .await?;
+        assert_eq!(store.schema_initialization_count(), 1);
+
+        for projection in [
+            AnalyticsProjection::Summary,
+            AnalyticsProjection::Timeseries,
+            AnalyticsProjection::LongTerm,
+            AnalyticsProjection::PromptCache,
+            AnalyticsProjection::Subscription,
+        ] {
+            store.load_projection_state(projection).await?;
+        }
+        assert_eq!(
+            store.schema_initialization_count(),
+            1,
+            "hot projection reads must not execute checkpoint DDL"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cold_projection_read_uses_one_authority_lease_for_schema_and_read() -> Result<()> {
+        let (store, _pool) = uninitialized_sqlite_store_with_max_connections(1).await?;
+        let gate = store.analytics_gate.clone();
+        gate.pause_acquire_after_check_for_test();
+        let task = tokio::spawn(async move {
+            store
+                .load_projection_state(AnalyticsProjection::Summary)
+                .await
+        });
+
+        gate.wait_for_acquire_check_for_test().await;
+        gate.release_acquire_check_for_test();
+        let state = tokio::time::timeout(Duration::from_secs(2), task).await??;
+        state?;
+        assert_eq!(
+            gate.active_leases_for_test(),
+            0,
+            "the lease must cover initialization and the read before it is released"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projection_adapters_preserve_owner_and_checkpoint_contracts() -> Result<()> {
+        let (store, _pool) = sqlite_store().await?;
+        for projection in AnalyticsProjection::ALL {
+            let adapter = store.projection_adapter(projection);
+            adapter.initialize().await?;
+            assert_eq!(adapter.projection(), projection);
+            assert_eq!(adapter.owner().await?.projection, projection);
+            assert_eq!(
+                adapter.projection_state().await?.owner.projection,
+                projection
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]
