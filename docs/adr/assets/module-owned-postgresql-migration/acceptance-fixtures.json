@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "postgresql-module-migration-acceptance-fixtures",
+  "status": "pending-live-validation",
+  "source": {
+    "program_version": "4.13.11",
+    "git_tag": "v4.13.11",
+    "commit_sha": "85b46550da5fb04b8a4c39d310a9b04c80824047",
+    "supported_range": "exact-tag-only",
+    "older_binary_policy": "fail-closed-against-migrated-authority"
+  },
+  "candidate_lineage": {
+    "parent_branch": "th/postgresql-migration-design",
+    "base_sha": "3a8252fff35123d9713a827ae445552ee1ca0c5e",
+    "candidate_sha": "recorded-by-acceptance-runner",
+    "candidate_sha_policy": "record-the-tested-commit-in-every-report"
+  },
+  "postgres_service": {
+    "ci_image": "postgres:16.6",
+    "database_name": "codex_vibe_monitor_test",
+    "credentials_policy": "inject-through-environment-only-and-never-record",
+    "required_environment": "POSTGRES_TEST_DATABASE_URL"
+  },
+  "runner_contract": {
+    "entrypoint": "scripts/postgres-acceptance/run.py",
+    "required_mode_environment": "POSTGRES_ACCEPTANCE_REQUIRED=1",
+    "blocked_exit_code": 78,
+    "missing_service_result": "blocked/not-run",
+    "command_failure_result": "failed",
+    "zero_exit_result": "passed"
+  },
+  "evidence": [
+    {
+      "id": "real-postgres-copy-catchup",
+      "scope": "source fixture, bounded copy, concurrent change replay, coverage proof",
+      "status": "not-run"
+    },
+    {
+      "id": "real-postgres-transaction-routing",
+      "scope": "authority generation, transaction lease, native target transaction",
+      "status": "not-run"
+    },
+    {
+      "id": "real-postgres-archive-raw-atomicity",
+      "scope": "archive ownership, Raw links, release and prune recovery",
+      "status": "not-run"
+    },
+    {
+      "id": "crash-restart-fault-matrix",
+      "scope": "target commit, source acknowledgement, fence, authority and journal ambiguity",
+      "status": "not-run",
+      "note": "Deterministic SQLite fault tests are supplementary and cannot close the live PostgreSQL gate."
+    },
+    {
+      "id": "startup-switch-performance",
+      "scope": "startup independence, three-second switch budget, convergence and capacity thresholds",
+      "status": "not-run"
+    },
+    {
+      "id": "backup-restore-deployment",
+      "scope": "source, PostgreSQL, authority manifest and archive/Raw restore drill",
+      "status": "not-run"
+    }
+  ],
+  "recording_policy": [
+    "Keep raw command output and the structured report together as one candidate-bound artifact.",
+    "Redact database credentials and raw business payloads from reports and logs.",
+    "Do not claim passed when the service is absent, unreachable or the command is not executed.",
+    "Do not treat this fixture record as evidence until a report records the tested candidate SHA."
+  ]
+}

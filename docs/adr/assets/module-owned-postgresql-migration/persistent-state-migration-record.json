@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "design-only-implementation-and-validation-pending",
+  "status": "acceptance-harness-implemented-live-validation-pending",
   "migration": {
     "description": "Migrate functional modules from SQLite to PostgreSQL through bounded runtime table copying and change reconciliation, then briefly gate each module and publish its durable authority generation.",
-    "release_unit_description": "Migration-capable application with storage routing, module transaction inventory, task admission overlay, background worker, progress and crash-safe cutover. No implementation or release is included in this design change.",
+    "release_unit_description": "Migration-capable application with storage routing, module transaction inventory, task admission overlay, background worker, progress and crash-safe cutover. The acceptance harness is implemented, but no production migration or release is included.",
     "version_impact": "minor"
   },
   "durable_state": {
     "description": "Business facts, archive publication and Raw-reference proofs, recovery obligations, projections and consumer cursors, stable ID reservations, transactional change capture, per-table copy checkpoints and per-module authority generations.",
     "storage_implementation": "Original SQLite main database, PostgreSQL targets, a small durable authority manifest, existing maintenance/performance SQLite stores and local archive/Raw/terminal/routing files with explicit independent paths.",
     "source_compatibility_range": {
-      "from_program_versions": "4.13.11 at 85b46550da5fb04b8a4c39d310a9b04c80824047 is the initial source contract; runtime fixtures and verification are pending. No broader source range is claimed.",
+      "from_program_versions": "4.13.11 at 85b46550da5fb04b8a4c39d310a9b04c80824047 is the initial source contract; live PostgreSQL runtime verification is pending. No broader source range is claimed.",
       "to_program_version": "Migration-capable candidate; release version has not been selected.",
       "direct_major_skips_supported": false
     }
@@ -80,7 +80,14 @@
     "after_cutover": "Keep PostgreSQL authority, fence stale source writers and restore journal/materializer ownership from the manifest. No automatic fallback to retained SQLite tables."
   },
   "validation": {
-    "status": "pending-implementation",
+    "status": "acceptance-harness-implemented-live-validation-pending",
+    "acceptance_fixture_record": "docs/adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json",
+    "acceptance_runner": {
+      "entrypoint": "scripts/postgres-acceptance/run.py",
+      "missing_database_result": "blocked/not-run",
+      "blocked_exit_code": 78,
+      "required_mode": "POSTGRES_ACCEPTANCE_REQUIRED=1"
+    },
     "required_test_evidence": [
       "4.13.11 source fixture; complete transaction/table/trigger inventory and all-writer generation fence coverage",
       "Concurrent insert/update/delete/key change/replace; retry and restart; no stale overwrite, resurrection or duplicate business effects",

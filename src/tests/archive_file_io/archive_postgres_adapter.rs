@@ -114,7 +114,9 @@ fn raw_change(
 }
 
 async fn adapter() -> Result<Option<(PgPool, ArchiveStorageAdapter)>> {
-    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+    let Some(database_url) =
+        crate::tests::optional_postgres_test_database_url("postgres_archive_adapter")
+    else {
         return Ok(None);
     };
     let pool = PgPoolOptions::new()
@@ -133,7 +135,9 @@ async fn adapter() -> Result<Option<(PgPool, ArchiveStorageAdapter)>> {
 
 async fn legacy_archive_schema_adapter()
 -> Result<Option<(PgPool, PgPool, ArchiveStorageAdapter, String)>> {
-    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+    let Some(database_url) =
+        crate::tests::optional_postgres_test_database_url("postgres_legacy_archive_schema_adapter")
+    else {
         return Ok(None);
     };
     let admin_pool = PgPoolOptions::new()

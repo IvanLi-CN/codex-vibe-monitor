@@ -2866,10 +2866,9 @@ async fn sqlite_capture_oversized_batch_does_not_advance_checkpoint_across_retry
 
 #[tokio::test]
 async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture() -> Result<()> {
-    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
-        eprintln!(
-            "skipping optional PostgreSQL migration engine test: POSTGRES_TEST_DATABASE_URL is unset"
-        );
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "optional_postgres_migration_engine_uses_real_source_and_target_fixture",
+    ) else {
         return Ok(());
     };
     let pool = PgPoolOptions::new()
@@ -3086,10 +3085,9 @@ async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture(
 
 #[tokio::test]
 async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Result<()> {
-    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
-        eprintln!(
-            "skipping optional PostgreSQL migration target test: POSTGRES_TEST_DATABASE_URL is unset"
-        );
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "optional_postgres_migration_target_uses_real_pool_transactions",
+    ) else {
         return Ok(());
     };
     let pool = PgPoolOptions::new()

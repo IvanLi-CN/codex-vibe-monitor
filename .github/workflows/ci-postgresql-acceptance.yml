@@ -1,0 +1,92 @@
+name: PostgreSQL Migration Acceptance
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - edited
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-migration-acceptance:
+    name: PostgreSQL Migration Acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: codex_vibe_monitor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d codex_vibe_monitor_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          pkg-config --exists sqlite3
+          test -r /usr/include/sqlite3.h
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Run live PostgreSQL acceptance
+        env:
+          POSTGRES_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/codex_vibe_monitor_test
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/postgres-migration-acceptance"
+          mkdir -p "$evidence_dir"
+          python3 scripts/postgres-acceptance/run.py \
+            --output "$evidence_dir/report.json" \
+            --evidence-dir "$evidence_dir" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --base-sha "${{ github.event.pull_request.base.sha || github.sha }}" \
+            --candidate-sha "${{ github.sha }}" \
+            --fixture-version 4.13.11 \
+            --timeout-seconds 2400 \
+            -- bash scripts/postgres-acceptance/run-live-suite.sh
+
+      - name: Upload PostgreSQL acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-migration-acceptance-${{ github.run_id }}
+          path: ${{ runner.temp }}/postgres-migration-acceptance
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

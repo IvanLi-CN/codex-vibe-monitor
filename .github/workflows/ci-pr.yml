@@ -289,6 +289,7 @@ jobs:
           bash .github/scripts/test-live-quality-gates.sh
           bash .github/scripts/test-backend-test-contract.sh
           bash .github/scripts/test-representative-scale-contract.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-postgres-acceptance.py
 
       - name: Observability tooling and performance evidence checks
         env:

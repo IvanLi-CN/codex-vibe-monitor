@@ -729,7 +729,9 @@ async fn native_module_tables_copy_historical_parents_before_children() {
 #[tokio::test]
 async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_available()
 -> Result<()> {
-    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "archive_native_insert_path_uses_owner_target_columns_when_postgres_is_available",
+    ) else {
         return Ok(());
     };
     let pool = PgPoolOptions::new()
@@ -2709,7 +2711,9 @@ fn storage_config_defaults_keep_postgres_optional_and_switch_budget_bounded() {
 
 #[tokio::test]
 async fn optional_postgres_storage_transaction_smoke_test() {
-    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "optional_postgres_storage_transaction_smoke_test",
+    ) else {
         return;
     };
     let config = StorageConfig {
