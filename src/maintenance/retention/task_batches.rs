@@ -329,6 +329,37 @@ async fn mark_partial_archive_repair_pending(
     .await
 }
 
+async fn set_archive_batch_cleanup_state_tx(
+    connection: &mut sqlx::SqliteConnection,
+    dataset: &str,
+    month_key: &str,
+    file_path: &str,
+    expected_sha256: &str,
+    cleanup_state: &str,
+) -> Result<()> {
+    let result = sqlx::query(
+        "UPDATE archive_batches
+         SET cleanup_state = ?1
+         WHERE dataset = ?2 AND month_key = ?3 AND file_path = ?4 AND sha256 = ?5
+           AND cleanup_state IN (?6, ?7)",
+    )
+    .bind(cleanup_state)
+    .bind(dataset)
+    .bind(month_key)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .execute(&mut *connection)
+    .await?;
+    if result.rows_affected() != 1 {
+        bail!(
+            "archive batch cleanup state changed before partial repair checkpoint: {dataset} {file_path}"
+        );
+    }
+    Ok(())
+}
+
 fn partial_archive_repair_key(dataset: &str, month_key: &str, file_path: &str) -> String {
     format!("{dataset}\0{month_key}\0{file_path}")
 }
@@ -718,7 +749,12 @@ async fn repair_partial_invocation_archive_with_ids(
     let mut repaired_outcome = repair_base.clone();
     if !remove_ids.is_empty() {
         let (temporary_file_path, row_count, sha256) =
-            crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, remove_ids).await?;
+            crate::maintenance::trim_archive_batch_file_by_ids(
+                &repair_base,
+                remove_ids,
+                retention_run_shutdown_token(),
+            )
+            .await?;
         repaired_outcome.row_count = row_count;
         repaired_outcome.sha256 = sha256;
         if let Err(error) =
@@ -909,7 +945,12 @@ async fn repair_partial_timestamped_archive_with_ids(
     let mut repaired_outcome = repair_base.clone();
     if !remove_ids.is_empty() {
         let (temporary_file_path, row_count, sha256) =
-            crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, remove_ids).await?;
+            crate::maintenance::trim_archive_batch_file_by_ids(
+                &repair_base,
+                remove_ids,
+                retention_run_shutdown_token(),
+            )
+            .await?;
         repaired_outcome.row_count = row_count;
         repaired_outcome.sha256 = sha256;
         if let Err(error) =
@@ -3016,6 +3057,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                             .map_or(256, |payload| payload.len())
                     },
                 );
+                let partial_repair_required = !pending_group.is_empty();
                 let ids = group
                     .iter()
                     .map(|candidate| candidate.id)
@@ -3223,6 +3265,19 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         // final marker only after that state transition has completed.
                         store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
                     }
+                    set_archive_batch_cleanup_state_tx(
+                        tx.as_mut(),
+                        archive_outcome.dataset,
+                        &archive_outcome.month_key,
+                        &archive_outcome.file_path,
+                        &archive_outcome.sha256,
+                        if partial_repair_required {
+                            ARCHIVE_CLEANUP_STATE_REPAIR_PENDING
+                        } else {
+                            ARCHIVE_CLEANUP_STATE_ACTIVE
+                        },
+                    )
+                    .await?;
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
                     let raw_deletion_plan = filter_unreferenced_proxy_raw_paths(
@@ -3698,6 +3753,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     "timestamped_archive",
                     |candidate| row_sizes.get(&candidate.id).copied().unwrap_or(512),
                 );
+                let partial_repair_required = !pending_group.is_empty();
                 let ids = group
                     .iter()
                     .map(|candidate| candidate.id)
@@ -3792,7 +3848,9 @@ pub(crate) async fn archive_timestamped_dataset(
             .flatten();
                 if cleanup_state
                     .as_deref()
-                    .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
+                    .is_some_and(|state| {
+                        state != ARCHIVE_CLEANUP_STATE_ACTIVE && committed_rows == 0
+                    })
                 {
                     return Ok(None);
                 }
@@ -3804,7 +3862,9 @@ pub(crate) async fn archive_timestamped_dataset(
                     bail!("timestamped task-local archive source changed before conversion");
                 }
                 drop(source_verify_phase);
-                upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+                if committed_rows == 0 {
+                    upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+                }
                 if spec.dataset == "pool_upstream_request_attempts" {
                     let archive_batch_id = load_archive_batch_id_for_file_tx(
                         tx.as_mut(),
@@ -3939,6 +3999,19 @@ pub(crate) async fn archive_timestamped_dataset(
                 } else {
                     (ProxyRawDeletionPlan::empty(), None)
                 };
+                set_archive_batch_cleanup_state_tx(
+                    tx.as_mut(),
+                    archive_outcome.dataset,
+                    &archive_outcome.month_key,
+                    &archive_outcome.file_path,
+                    &archive_outcome.sha256,
+                    if partial_repair_required {
+                        ARCHIVE_CLEANUP_STATE_REPAIR_PENDING
+                    } else {
+                        ARCHIVE_CLEANUP_STATE_ACTIVE
+                    },
+                )
+                .await?;
                 let commit_started = Instant::now();
                 Ok(Some(RetentionBatchCommit {
                     raw_deletion_plan,

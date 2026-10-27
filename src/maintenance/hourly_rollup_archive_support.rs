@@ -520,20 +520,30 @@ pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget(
     source: &Path,
     destination: &Path,
 ) -> Result<()> {
-    inflate_gzip_sqlite_file_with_operation_budget_mode(source, destination, false).await
+    inflate_gzip_sqlite_file_with_operation_budget_mode(source, destination, false, None).await
 }
 
 pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget_for_cleanup(
     source: &Path,
     destination: &Path,
 ) -> Result<()> {
-    inflate_gzip_sqlite_file_with_operation_budget_mode(source, destination, true).await
+    inflate_gzip_sqlite_file_with_operation_budget_mode(source, destination, true, None).await
+}
+
+pub(crate) async fn inflate_gzip_sqlite_file_with_operation_budget_for_cleanup_with_shutdown(
+    source: &Path,
+    destination: &Path,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    inflate_gzip_sqlite_file_with_operation_budget_mode(source, destination, true, Some(shutdown))
+        .await
 }
 
 async fn inflate_gzip_sqlite_file_with_operation_budget_mode(
     source: &Path,
     destination: &Path,
     allow_shutdown_cleanup: bool,
+    shutdown: Option<CancellationToken>,
 ) -> Result<()> {
     let source = source.to_path_buf();
     let destination = destination.to_path_buf();
@@ -543,7 +553,10 @@ async fn inflate_gzip_sqlite_file_with_operation_budget_mode(
         vec![source.clone()],
         vec![destination.clone()],
         vec![destination.clone()],
-        allow_shutdown_cleanup,
+        ArchiveFileWorkMode {
+            allow_shutdown_cleanup,
+            caller_shutdown: shutdown,
+        },
         move |deadline, shutdown, cancellation, progress| {
             inflate_gzip_sqlite_file_with_limits(
                 &source,
@@ -677,20 +690,35 @@ pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget(
     source: &Path,
     destination: &Path,
 ) -> Result<()> {
-    deflate_sqlite_file_to_gzip_with_operation_budget_mode(source, destination, false).await
+    deflate_sqlite_file_to_gzip_with_operation_budget_mode(source, destination, false, None).await
 }
 
 pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup(
     source: &Path,
     destination: &Path,
 ) -> Result<()> {
-    deflate_sqlite_file_to_gzip_with_operation_budget_mode(source, destination, true).await
+    deflate_sqlite_file_to_gzip_with_operation_budget_mode(source, destination, true, None).await
+}
+
+pub(crate) async fn deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup_with_shutdown(
+    source: &Path,
+    destination: &Path,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    deflate_sqlite_file_to_gzip_with_operation_budget_mode(
+        source,
+        destination,
+        true,
+        Some(shutdown),
+    )
+    .await
 }
 
 async fn deflate_sqlite_file_to_gzip_with_operation_budget_mode(
     source: &Path,
     destination: &Path,
     allow_shutdown_cleanup: bool,
+    shutdown: Option<CancellationToken>,
 ) -> Result<()> {
     let source = source.to_path_buf();
     let destination = destination.to_path_buf();
@@ -700,7 +728,10 @@ async fn deflate_sqlite_file_to_gzip_with_operation_budget_mode(
         Vec::new(),
         vec![destination.clone()],
         vec![source.clone(), destination.clone()],
-        allow_shutdown_cleanup,
+        ArchiveFileWorkMode {
+            allow_shutdown_cleanup,
+            caller_shutdown: shutdown,
+        },
         move |deadline, shutdown, cancellation, progress| {
             deflate_sqlite_file_to_gzip_with_limits(
                 &source,
@@ -756,13 +787,18 @@ fn deflate_sqlite_file_to_gzip_with_limits(
     Ok(())
 }
 
+struct ArchiveFileWorkMode {
+    allow_shutdown_cleanup: bool,
+    caller_shutdown: Option<CancellationToken>,
+}
+
 async fn run_archive_file_work_with_operation_budget_mode<T, F>(
     operation: &'static str,
     protected_paths: Vec<PathBuf>,
     shared_read_paths: Vec<PathBuf>,
     failure_cleanup_paths: Vec<PathBuf>,
     timeout_cleanup_paths: Vec<PathBuf>,
-    allow_shutdown_cleanup: bool,
+    mode: ArchiveFileWorkMode,
     work: F,
 ) -> Result<T>
 where
@@ -776,11 +812,17 @@ where
         + Send
         + 'static,
 {
-    let shutdown = if allow_shutdown_cleanup {
-        Some(CancellationToken::new())
-    } else {
-        super::retention::retention_run_shutdown_token()
-    };
+    let ArchiveFileWorkMode {
+        allow_shutdown_cleanup,
+        caller_shutdown,
+    } = mode;
+    let shutdown = caller_shutdown.or_else(|| {
+        if allow_shutdown_cleanup {
+            Some(CancellationToken::new())
+        } else {
+            super::retention::retention_run_shutdown_token()
+        }
+    });
     // Production compression is governed by cancellation and the no-progress guard. The
     // legacy fixed operation budget remains available only to deterministic unit tests.
     #[cfg(test)]
@@ -1151,18 +1193,26 @@ pub(crate) fn sha256_hex_file_with_deadline(path: &Path, deadline: Instant) -> R
 }
 
 pub(crate) async fn sha256_hex_file_with_operation_budget(path: &Path) -> Result<String> {
-    sha256_hex_file_with_operation_budget_mode(path, false).await
+    sha256_hex_file_with_operation_budget_mode(path, false, None).await
 }
 
 pub(crate) async fn sha256_hex_file_with_operation_budget_for_cleanup(
     path: &Path,
 ) -> Result<String> {
-    sha256_hex_file_with_operation_budget_mode(path, true).await
+    sha256_hex_file_with_operation_budget_mode(path, true, None).await
+}
+
+pub(crate) async fn sha256_hex_file_with_operation_budget_for_cleanup_with_shutdown(
+    path: &Path,
+    shutdown: CancellationToken,
+) -> Result<String> {
+    sha256_hex_file_with_operation_budget_mode(path, true, Some(shutdown)).await
 }
 
 async fn sha256_hex_file_with_operation_budget_mode(
     path: &Path,
     allow_shutdown_cleanup: bool,
+    shutdown: Option<CancellationToken>,
 ) -> Result<String> {
     let path = path.to_path_buf();
     run_archive_file_work_with_operation_budget_mode(
@@ -1171,7 +1221,10 @@ async fn sha256_hex_file_with_operation_budget_mode(
         vec![path.clone()],
         Vec::new(),
         Vec::new(),
-        allow_shutdown_cleanup,
+        ArchiveFileWorkMode {
+            allow_shutdown_cleanup,
+            caller_shutdown: shutdown,
+        },
         move |deadline, shutdown, cancellation, progress| {
             sha256_hex_file_with_progress_guard(
                 &path,

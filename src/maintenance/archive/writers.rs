@@ -2068,6 +2068,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
 pub(crate) async fn trim_archive_batch_file_by_ids(
     outcome: &ArchiveBatchOutcome,
     remove_ids: &[i64],
+    shutdown: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(PathBuf, i64, String)> {
     if remove_ids.is_empty() {
         bail!("partial archive repair requires rows to remove");
@@ -2084,7 +2085,8 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     let remove_ids = remove_ids.to_vec();
     tokio::spawn(async move {
         let result =
-            trim_archive_batch_file_by_ids_owned(final_path, remove_ids, archive_table).await;
+            trim_archive_batch_file_by_ids_owned(final_path, remove_ids, archive_table, shutdown)
+                .await;
         if let Err(result) = sender.send(result)
             && let Ok((temporary_file_path, _, _)) = result
         {
@@ -2102,6 +2104,7 @@ async fn trim_archive_batch_file_by_ids_owned(
     final_path: PathBuf,
     remove_ids: Vec<i64>,
     archive_table: &'static str,
+    shutdown: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(PathBuf, i64, String)> {
     let final_path = final_path.as_path();
     let suffix = retention_temp_suffix();
@@ -2119,11 +2122,38 @@ async fn trim_archive_batch_file_by_ids_owned(
     let cleanup_temp_gzip_path = temp_gzip_path.clone();
 
     let result = async {
-        inflate_gzip_sqlite_file_with_operation_budget_for_cleanup(final_path, &work_path).await?;
+        if shutdown
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            return Err(super::super::retention::retention_write_deferred(
+                "partial_archive_repair",
+            ));
+        }
+        if let Some(shutdown) = shutdown.as_ref() {
+            inflate_gzip_sqlite_file_with_operation_budget_for_cleanup_with_shutdown(
+                final_path,
+                &work_path,
+                shutdown.clone(),
+            )
+            .await?;
+        } else {
+            inflate_gzip_sqlite_file_with_operation_budget_for_cleanup(final_path, &work_path)
+                .await?;
+        }
         let ids_json = serde_json::to_string(&remove_ids)
             .context("encode partial archive repair source ids")?;
         let row_count = {
             let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            if shutdown
+                .as_ref()
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+            {
+                drop(file_phase);
+                return Err(super::super::retention::retention_write_deferred(
+                    "partial_archive_repair",
+                ));
+            }
             let mut connection = open_archive_sqlite_connection(&work_path).await?;
             let result: Result<i64> = async {
                 let delete_sql = format!(
@@ -2150,13 +2180,41 @@ async fn trim_archive_batch_file_by_ids_owned(
             }
             result
         }?;
+        if shutdown
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            return Err(super::super::retention::retention_write_deferred(
+                "partial_archive_repair",
+            ));
+        }
         {
             let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
             finalize_archive_sqlite_file(&work_path).await?;
         }
-        deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup(&work_path, &temp_gzip_path)
+        if let Some(shutdown) = shutdown.as_ref() {
+            deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup_with_shutdown(
+                &work_path,
+                &temp_gzip_path,
+                shutdown.clone(),
+            )
             .await?;
-        let sha256 = sha256_hex_file_with_operation_budget_for_cleanup(&temp_gzip_path).await?;
+        } else {
+            deflate_sqlite_file_to_gzip_with_operation_budget_for_cleanup(
+                &work_path,
+                &temp_gzip_path,
+            )
+            .await?;
+        }
+        let sha256 = if let Some(shutdown) = shutdown.as_ref() {
+            sha256_hex_file_with_operation_budget_for_cleanup_with_shutdown(
+                &temp_gzip_path,
+                shutdown.clone(),
+            )
+            .await?
+        } else {
+            sha256_hex_file_with_operation_budget_for_cleanup(&temp_gzip_path).await?
+        };
         Ok::<_, anyhow::Error>((temp_gzip_path, row_count, sha256))
     }
     .await;

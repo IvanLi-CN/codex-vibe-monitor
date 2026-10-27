@@ -3247,7 +3247,7 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_source_e
 }
 
 #[tokio::test]
-async fn retention_task_local_partial_timestamped_archive_repairs_after_shutdown() {
+async fn retention_task_local_partial_timestamped_archive_leaves_repair_pending_after_shutdown() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-partial-timestamped-shutdown").await;
     config.retention_batch_rows = 1_000;
@@ -3318,34 +3318,16 @@ async fn retention_task_local_partial_timestamped_archive_repairs_after_shutdown
     let archive_path =
         archive_batch_file_path(&config, "pool_upstream_request_attempts", &occurred_at[..7])
             .expect("shutdown archive path");
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
-        )
-        .bind(archive_path.to_string_lossy().to_string())
-        .fetch_one(&pool)
-        .await
-        .expect("shutdown-repaired archive manifest"),
-        64
-    );
-    let inflated_path = temp_dir.join("partial-timestamped-shutdown.sqlite");
-    inflate_gzip_sqlite_file_with_operation_budget(&archive_path, &inflated_path)
-        .await
-        .expect("inflate shutdown-repaired archive");
-    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
-        .await
-        .expect("open shutdown-repaired archive");
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
-            .fetch_one(&mut archive_connection)
-            .await
-            .expect("count shutdown-repaired rows"),
-        64
-    );
-    archive_connection
-        .close()
-        .await
-        .expect("close shutdown-repaired archive");
+    let manifest = sqlx::query_as::<_, (i64, String)>(
+        "SELECT row_count, cleanup_state FROM archive_batches
+         WHERE dataset='pool_upstream_request_attempts' AND file_path=?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("shutdown partial archive manifest");
+    assert_eq!(manifest.0, 1_000);
+    assert_eq!(manifest.1, ARCHIVE_CLEANUP_STATE_REPAIR_PENDING);
     assert_no_task_work_files(&config.archive_dir);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
