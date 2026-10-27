@@ -1646,9 +1646,11 @@ impl NativeTargetContract {
                 });
                 Ok::<(), anyhow::Error>(())
             };
-            // The archive owner deliberately exposes a different PostgreSQL identity and part
-            // column. Keep every conversion in this contract so INSERT, replay, and verification
-            // cannot silently fall back to SQLite names.
+            // The archive owner deliberately exposes a different PostgreSQL identity. Keep every
+            // conversion in this contract so INSERT, replay, and verification cannot silently
+            // fall back to SQLite names. The native integer `part` column remains owned by
+            // ArchiveManifest writes; migrated source values use the nullable text `part_key`
+            // column so segment identifiers and legacy NULLs remain lossless.
             add(
                 &mut columns,
                 "id",
@@ -1680,7 +1682,7 @@ impl NativeTargetContract {
             ] {
                 add(&mut columns, name, name, source_column(name)?.postgres_type)?;
             }
-            add(&mut columns, "part_key", "part", NativeColumnType::BigInt)?;
+            add(&mut columns, "part_key", "part_key", NativeColumnType::Text)?;
             add(
                 &mut columns,
                 "sha256",

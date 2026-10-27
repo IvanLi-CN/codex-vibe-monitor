@@ -66,6 +66,7 @@ const ARCHIVE_STORAGE_SCHEMA: &[&str] = &[
         month_key TEXT NOT NULL,
         day_key TEXT,
         part INTEGER NOT NULL DEFAULT 0,
+        part_key TEXT,
         file_path TEXT NOT NULL,
         sha256 TEXT NOT NULL,
         source_identity_sha256 TEXT NOT NULL,
@@ -310,6 +311,7 @@ const ARCHIVE_STORAGE_SCHEMA: &[&str] = &[
 
 const ARCHIVE_STORAGE_SCHEMA_UPGRADES: &[&str] = &[
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'completed'",
+    "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS part_key TEXT",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS writer_version TEXT NOT NULL DEFAULT 'legacy_month_v1'",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS cleanup_source_safe_start_date TEXT",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS replacement_staged_path TEXT",
