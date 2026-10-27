@@ -8,41 +8,77 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
+import signal
 import socket
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, quote, quote_plus, unquote, urlsplit
 
 
 BLOCKED_EXIT_CODE = 78
 DEFAULT_FIXTURE_VERSION = "4.13.11"
+POSTGRES_URL_PATTERN = re.compile(
+    r"(?i)(?<![a-z0-9+.-])postgres(?:ql)?(?:\+[a-z0-9_.-]+)?://[^\s\"'<>`]+"
+)
 
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def resolve_sha(repo_root: Path, requested: str | None) -> str | None:
-    if requested:
-        return requested
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
+def text_output(value: object | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def database_redaction_tokens(database_url: str) -> set[str]:
+    tokens = {database_url}
+
+    def add_secret(secret: str | None) -> None:
+        if not secret:
+            return
+        decoded = unquote(secret)
+        tokens.update(
+            {
+                secret,
+                decoded,
+                quote(decoded, safe=""),
+                quote_plus(decoded),
+            }
         )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return result.stdout.strip() or None
+
+    try:
+        parsed = urlsplit(database_url)
+        raw_userinfo = parsed.netloc.rsplit("@", 1)[0]
+        if ":" in raw_userinfo:
+            add_secret(raw_userinfo.rsplit(":", 1)[1])
+        if parsed.password:
+            add_secret(parsed.password)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key.lower() in {"password", "passwd", "pass", "pwd", "secret"}:
+                add_secret(value)
+    except ValueError:
+        pass
+    return {token for token in tokens if token}
 
 
-def redact_text(value: str, database_url: str | None) -> str:
-    if database_url:
-        value = value.replace(database_url, "<redacted-postgres-url>")
-    return value
+def redact_text(value: object | None, database_url: str | None) -> str:
+    text = text_output(value)
+    if not database_url:
+        return text
+    text = text.replace(database_url, "<redacted-postgres-url>")
+    text = POSTGRES_URL_PATTERN.sub("<redacted-postgres-url>", text)
+    for token in sorted(database_redaction_tokens(database_url), key=len, reverse=True):
+        token_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_/-]){re.escape(token)}(?![A-Za-z0-9_/-])"
+        )
+        text = token_pattern.sub("<redacted-postgres-credential>", text)
+    return text
 
 
 def redacted_database_url(database_url: str) -> str:
@@ -104,7 +140,7 @@ def base_report(args: argparse.Namespace, database_url: str | None) -> dict[str,
         },
         "repository": {
             "base_sha": args.base_sha,
-            "candidate_sha": resolve_sha(repo_root, args.candidate_sha),
+            "candidate_sha": args.candidate_sha,
             "repo_root": str(repo_root),
         },
         "database": {
@@ -145,14 +181,34 @@ def finish_report(
     return 1
 
 
+def terminate_acceptance_process(process: subprocess.Popen[bytes], sig: int) -> None:
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        return
+    try:
+        if sig == getattr(signal, "SIGKILL", signal.SIGTERM):
+            process.kill()
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        return
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
-    parser.add_argument("--base-sha")
-    parser.add_argument("--candidate-sha")
-    parser.add_argument("--fixture-version", default=DEFAULT_FIXTURE_VERSION)
+    parser.add_argument("--base-sha", required=True)
+    parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument(
+        "--fixture-version",
+        default=DEFAULT_FIXTURE_VERSION,
+        choices=(DEFAULT_FIXTURE_VERSION,),
+    )
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -208,21 +264,30 @@ def main() -> int:
     command_env["POSTGRES_ACCEPTANCE_REQUIRED"] = "1"
     started = time.monotonic()
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             args.command,
             cwd=args.repo_root,
             env=command_env,
-            capture_output=True,
-            text=True,
-            timeout=args.timeout_seconds,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            start_new_session=os.name == "posix",
         )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        exit_code = completed.returncode
+        stdout, stderr = process.communicate(timeout=args.timeout_seconds)
+        exit_code = process.returncode
     except subprocess.TimeoutExpired as error:
-        stdout = error.stdout or ""
-        stderr = error.stderr or ""
+        terminate_acceptance_process(process, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired as still_running:
+            terminate_acceptance_process(
+                process, getattr(signal, "SIGKILL", signal.SIGTERM)
+            )
+            stdout, stderr = process.communicate()
+            stdout = stdout or still_running.stdout or error.stdout
+            stderr = stderr or still_running.stderr or error.stderr
+        stdout = stdout or error.stdout
+        stderr = stderr or error.stderr
         exit_code = 124
         report["duration_seconds"] = round(time.monotonic() - started, 3)
         stdout_file.write_text(redact_text(stdout, database_url), encoding="utf-8")

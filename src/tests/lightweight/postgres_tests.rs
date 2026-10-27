@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use axum::extract::{Path, Query, State};
+use serde::Deserialize;
 use sqlx::{SqlitePool, postgres::PgPoolOptions};
 use tokio::sync::{Mutex, Semaphore};
 
@@ -36,6 +37,51 @@ use crate::{
     fetch_invocation_response_body, fetch_invocation_suggestions, fetch_invocation_summary,
     fetch_invocation_workflow_detail, list_invocations, locate_invocation_page,
 };
+
+const POSTGRES_ACCEPTANCE_FIXTURE: &str = include_str!(
+    "../../../docs/adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json"
+);
+
+#[derive(Debug, Deserialize)]
+struct PostgresAcceptanceFixture {
+    source: PostgresAcceptanceSource,
+    source_fixture: PostgresSourceFixture,
+}
+
+#[derive(Debug, Deserialize)]
+struct PostgresAcceptanceSource {
+    program_version: String,
+    commit_sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PostgresSourceFixture {
+    archive_batches: Vec<PostgresArchiveBatchFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PostgresArchiveBatchFixture {
+    alias: String,
+    dataset: String,
+    month_key: String,
+    day_key: Option<String>,
+    source_row_ids: Vec<i64>,
+    part_key: Option<String>,
+    file_path_suffix: String,
+    sha256: String,
+    row_count: i64,
+    status: String,
+    layout: String,
+    codec: String,
+    writer_version: String,
+    cleanup_state: String,
+    summary_source_kind: String,
+}
+
+fn postgres_acceptance_fixture() -> PostgresAcceptanceFixture {
+    serde_json::from_str(POSTGRES_ACCEPTANCE_FIXTURE)
+        .expect("PostgreSQL acceptance fixture must remain valid JSON")
+}
 
 struct TestAuthorityStore {
     compare_and_publish: Mutex<()>,
@@ -787,30 +833,66 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
         .native_migration_catalog([ModuleId::TrafficArchive])
         .unwrap();
     let spec = native.table("archive_batches").unwrap();
-    let payload_for = |id: i64, part_key: Option<&str>| {
+    let fixture = postgres_acceptance_fixture();
+    assert_eq!(fixture.source.program_version, "4.13.11");
+    assert_eq!(
+        fixture.source.commit_sha,
+        "85b46550da5fb04b8a4c39d310a9b04c80824047"
+    );
+    let segment_fixture = fixture
+        .source_fixture
+        .archive_batches
+        .iter()
+        .find(|row| row.alias == "segment")
+        .expect("4.13.11 fixture must include the segment archive row");
+    let monthly_fixture = fixture
+        .source_fixture
+        .archive_batches
+        .iter()
+        .find(|row| row.alias == "monthly")
+        .expect("4.13.11 fixture must include the monthly archive row");
+    assert_eq!(
+        segment_fixture.part_key.as_deref(),
+        Some(
+            crate::maintenance::archive_segment_part_key_for_ids(&segment_fixture.source_row_ids)
+                .expect("segment fixture IDs must produce a part key")
+                .as_str()
+        )
+    );
+    assert!(monthly_fixture.source_row_ids.is_empty());
+    let payload_for = |id: i64, row: &PostgresArchiveBatchFixture| {
         let values = spec
             .columns
             .iter()
             .map(|column| match column.postgres_type {
                 crate::storage::catalog::NativeColumnType::BigInt => {
-                    NativeValue::BigInt(if column.name == "id" { id } else { 1 })
+                    NativeValue::BigInt(match column.name.as_str() {
+                        "id" => id,
+                        "row_count" => row.row_count,
+                        _ => 1,
+                    })
                 }
-                crate::storage::catalog::NativeColumnType::Text => {
-                    if column.name == "part_key" {
-                        part_key.map_or(NativeValue::Null, |value| {
-                            NativeValue::Text(value.to_owned())
-                        })
-                    } else if column.name == "sha256" {
-                        NativeValue::Text(
-                            "0000000000000000000000000000000000000000000000000000000000000000"
-                                .to_owned(),
-                        )
-                    } else if column.name == "file_path" {
-                        NativeValue::Text(format!("pg09r-test-{id}"))
-                    } else {
-                        NativeValue::Text("pg09r-test".to_owned())
+                crate::storage::catalog::NativeColumnType::Text => match column.name.as_str() {
+                    "dataset" => NativeValue::Text(row.dataset.clone()),
+                    "month_key" => NativeValue::Text(row.month_key.clone()),
+                    "day_key" => row.day_key.as_deref().map_or(NativeValue::Null, |value| {
+                        NativeValue::Text(value.to_owned())
+                    }),
+                    "part_key" => row.part_key.as_deref().map_or(NativeValue::Null, |value| {
+                        NativeValue::Text(value.to_owned())
+                    }),
+                    "file_path" => {
+                        NativeValue::Text(format!("pg09r-test-{id}-{}", row.file_path_suffix))
                     }
-                }
+                    "sha256" => NativeValue::Text(row.sha256.clone()),
+                    "status" => NativeValue::Text(row.status.clone()),
+                    "layout" => NativeValue::Text(row.layout.clone()),
+                    "codec" => NativeValue::Text(row.codec.clone()),
+                    "writer_version" => NativeValue::Text(row.writer_version.clone()),
+                    "cleanup_state" => NativeValue::Text(row.cleanup_state.clone()),
+                    "summary_source_kind" => NativeValue::Text(row.summary_source_kind.clone()),
+                    _ => NativeValue::Text("pg09r-test".to_owned()),
+                },
                 crate::storage::catalog::NativeColumnType::DoublePrecision => {
                     NativeValue::Double(1.0)
                 }
@@ -823,8 +905,8 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
             .encode_payload()
             .unwrap()
     };
-    let segment_payload = payload_for(segment_id, Some("part-000001"));
-    let monthly_payload = payload_for(monthly_id, None);
+    let segment_payload = payload_for(segment_id, segment_fixture);
+    let monthly_payload = payload_for(monthly_id, monthly_fixture);
     let target = PostgresMigrationTarget::new_native(
         pool.clone(),
         &prefix,
@@ -892,11 +974,13 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, segment_id);
         assert_eq!(rows[0].1, 0);
-        assert_eq!(rows[0].2.as_deref(), Some("part-000001"));
+        assert_eq!(rows[0].2.as_deref(), segment_fixture.part_key.as_deref());
+        assert_eq!(rows[0].3, segment_fixture.sha256.as_str());
         assert_eq!(rows[0].3, rows[0].4);
         assert_eq!(rows[1].0, monthly_id);
         assert_eq!(rows[1].1, 0);
-        assert_eq!(rows[1].2, None);
+        assert_eq!(rows[1].2.as_deref(), monthly_fixture.part_key.as_deref());
+        assert_eq!(rows[1].3, monthly_fixture.sha256.as_str());
         assert_eq!(rows[1].3, rows[1].4);
         Ok(())
     }

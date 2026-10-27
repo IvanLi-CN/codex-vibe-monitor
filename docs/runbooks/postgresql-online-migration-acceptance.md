@@ -17,9 +17,14 @@ Confirm all of the following before a live run:
 The CI workflow starts `postgres:16.6` and runs both the lightweight PostgreSQL migration tests and the archive/file-I/O PostgreSQL tests:
 
 ```bash
+: "${BASE_SHA:?set BASE_SHA to the exact parent commit SHA before running acceptance}"
+: "${CANDIDATE_SHA:?set CANDIDATE_SHA to the exact candidate commit SHA before running acceptance}"
+
 python3 scripts/postgres-acceptance/run.py \
   --output "$EVIDENCE_DIR/report.json" \
   --evidence-dir "$EVIDENCE_DIR" \
+  --base-sha "$BASE_SHA" \
+  --candidate-sha "$CANDIDATE_SHA" \
   --fixture-version 4.13.11 \
   -- bash scripts/postgres-acceptance/run-live-suite.sh
 ```

@@ -6,11 +6,11 @@ This contract defines the evidence needed before an online module migration can 
 
 The initial compatibility fixture is the deployed `4.13.11` tag at commit `85b46550da5fb04b8a4c39d310a9b04c80824047`. The supported source range is exact-tag-only until another source version has its own fixture and report. An older binary must fail closed against a migrated authority.
 
-The canonical fixture record is [acceptance-fixtures.json](../../adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json). It records the source commit, PostgreSQL service contract, runner exit semantics and candidate-bound evidence requirements without credentials or business payloads.
+The canonical fixture record is [acceptance-fixtures.json](../../adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json). It records the source commit, representative archive rows, PostgreSQL service contract, runner exit semantics and candidate-bound evidence requirements without credentials or business payloads. The live archive mapping test loads and consumes those representative `4.13.11` rows.
 
 ## Runner contract
 
-Use `scripts/postgres-acceptance/run.py` around the acceptance command. The runner requires `POSTGRES_TEST_DATABASE_URL` and sets `POSTGRES_ACCEPTANCE_REQUIRED=1` for the child process.
+Use `scripts/postgres-acceptance/run.py` around the acceptance command with explicit `--base-sha` and `--candidate-sha` values. The runner requires `POSTGRES_TEST_DATABASE_URL` and sets `POSTGRES_ACCEPTANCE_REQUIRED=1` for the child process; it never infers either SHA from the checked-out `HEAD`.
 
 | Runner result                   | Meaning                                                                       | Gate result               |
 | ------------------------------- | ----------------------------------------------------------------------------- | ------------------------- |

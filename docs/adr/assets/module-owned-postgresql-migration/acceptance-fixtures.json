@@ -9,9 +9,47 @@
     "supported_range": "exact-tag-only",
     "older_binary_policy": "fail-closed-against-migrated-authority"
   },
+  "source_fixture": {
+    "archive_batches": [
+      {
+        "alias": "segment",
+        "dataset": "codex_invocations",
+        "month_key": "2024-01",
+        "day_key": "2024-01-31",
+        "source_row_ids": [3, 5, 7],
+        "part_key": "part-0000000000000003-0000000000000007-1ebc014f4941b874",
+        "file_path_suffix": "part-0000000000000003-0000000000000007-1ebc014f4941b874.sqlite.gz",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "row_count": 2,
+        "status": "completed",
+        "layout": "segment_v1",
+        "codec": "gzip",
+        "writer_version": "segment_v1",
+        "cleanup_state": "active",
+        "summary_source_kind": "unknown"
+      },
+      {
+        "alias": "monthly",
+        "dataset": "codex_invocations",
+        "month_key": "2024-01",
+        "day_key": null,
+        "source_row_ids": [],
+        "part_key": null,
+        "file_path_suffix": "2024-01.sqlite.gz",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "row_count": 3,
+        "status": "completed",
+        "layout": "legacy_month",
+        "codec": "gzip",
+        "writer_version": "legacy_month_v1",
+        "cleanup_state": "active",
+        "summary_source_kind": "authoritative"
+      }
+    ]
+  },
   "candidate_lineage": {
     "parent_branch": "th/postgresql-migration-design",
-    "base_sha": "3a8252fff35123d9713a827ae445552ee1ca0c5e",
+    "base_sha": "7d6aeb89c8936b371edd2626858b640e6b630df6",
     "candidate_sha": "recorded-by-acceptance-runner",
     "candidate_sha_policy": "record-the-tested-commit-in-every-report"
   },
