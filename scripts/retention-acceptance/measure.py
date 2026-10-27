@@ -16,7 +16,7 @@ import tempfile
 import time
 import traceback
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from contract import (
     BASELINE_SHA,
@@ -1360,6 +1360,66 @@ def add_observed_input_identity_digests(
             )
 
 
+def verify_baseline_trial_with_negative_controls(
+    main_db: Path,
+    archive_root: Path,
+    added: dict[str, list[str]],
+    attempt_states: list[dict[str, Any]],
+    template_database: Path,
+    cutoff: str,
+    scratch_root: Path,
+    budget_check: Callable[[], float],
+) -> dict[str, Any]:
+    """Verify all baseline datasets while recording each known duplicate control."""
+    skipped_datasets: set[str] = set()
+    negative_controls: list[dict[str, Any]] = []
+    verified_datasets: dict[str, Any] = {}
+    while skipped_datasets != set(DATASETS):
+        scratch = scratch_root if not skipped_datasets else scratch_root / f"remaining-{len(negative_controls)}"
+        try:
+            result = verify_trial(
+                main_db,
+                archive_root,
+                added,
+                attempt_states,
+                template_database,
+                cutoff,
+                scratch,
+                require_summary_proof=False,
+                budget_check=budget_check,
+                skip_datasets=skipped_datasets,
+            )
+        except AcceptanceError as error:
+            negative_control = baseline_negative_control_oracle(error)
+            if negative_control is None:
+                raise
+            controls = negative_control["negative_controls"]
+            if not isinstance(controls, list) or len(controls) != 1:
+                raise AcceptanceError("baseline negative-control parser returned malformed evidence")
+            control = controls[0]
+            dataset_name = next(
+                name
+                for name, definition in DATASETS.items()
+                if definition["manifest_dataset"] == control["dataset"]
+            )
+            if dataset_name in skipped_datasets:
+                raise AcceptanceError("baseline negative-control dataset was reported more than once")
+            skipped_datasets.add(dataset_name)
+            negative_controls.append(control)
+            continue
+        verified_datasets.update(result["datasets"])
+        break
+
+    if not negative_controls:
+        return {"verified": True, "datasets": verified_datasets}
+    return {
+        "verified": False,
+        "failure_class": "source_artifact_conservation",
+        "negative_controls": negative_controls,
+        "datasets": verified_datasets,
+    }
+
+
 def run_trial(
     version: str,
     index: int,
@@ -1502,7 +1562,18 @@ def run_trial(
             log_path=evidence_dir / "logs" / f"{version}-{index}.log",
         )
         container_stopped = True
-        try:
+        if version == "baseline":
+            oracle = verify_baseline_trial_with_negative_controls(
+                main_db,
+                trial_dir / "archives",
+                added,
+                attempt_states,
+                template / "codex_vibe_monitor.db",
+                cutoff,
+                root / f"oracle-{version}-{index}",
+                lambda: remaining_budget(phase_started),
+            )
+        else:
             oracle = verify_trial(
                 main_db,
                 trial_dir / "archives",
@@ -1511,36 +1582,9 @@ def run_trial(
                 template / "codex_vibe_monitor.db",
                 cutoff,
                 root / f"oracle-{version}-{index}",
-                require_summary_proof=version == "candidate",
+                require_summary_proof=True,
                 budget_check=lambda: remaining_budget(phase_started),
             )
-        except AcceptanceError as error:
-            negative_control = (
-                baseline_negative_control_oracle(error)
-                if version == "baseline"
-                else None
-            )
-            if negative_control is None:
-                raise
-            negative_dataset_name = next(
-                name
-                for name, definition in DATASETS.items()
-                if definition["manifest_dataset"] == negative_control["dataset"]
-            )
-            remaining_oracle = verify_trial(
-                main_db,
-                trial_dir / "archives",
-                added,
-                attempt_states,
-                template / "codex_vibe_monitor.db",
-                cutoff,
-                root / f"oracle-{version}-{index}-remaining",
-                require_summary_proof=version == "candidate",
-                budget_check=lambda: remaining_budget(phase_started),
-                skip_datasets={negative_dataset_name},
-            )
-            negative_control["datasets"] = remaining_oracle["datasets"]
-            oracle = negative_control
     except BaseException as error:
         trial_error = error
     finally:

@@ -45,6 +45,7 @@ from measure import (
     start_container,
     task_state_snapshot,
     validate_task_snapshot,
+    verify_baseline_trial_with_negative_controls,
     wait_for_task_evidence,
 )
 
@@ -59,6 +60,42 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_baseline_verification_collects_each_duplicate_control(self) -> None:
+        calls: list[set[str]] = []
+
+        def fake_verify_trial(*args: object, **kwargs: object) -> dict[str, object]:
+            skipped = set(kwargs["skip_datasets"])
+            calls.append(skipped)
+            if not skipped:
+                raise AcceptanceError(
+                    "codex_invocations source/artifact conservation failed: lost=0, duplicates=3"
+                )
+            if skipped == {"invocations"}:
+                raise AcceptanceError(
+                    "pool_upstream_request_attempts source/artifact conservation failed: "
+                    "lost=0, duplicates=4"
+                )
+            return {"verified": True, "datasets": {}}
+
+        with patch("measure.verify_trial", side_effect=fake_verify_trial):
+            oracle = verify_baseline_trial_with_negative_controls(
+                Path("main.sqlite"),
+                Path("archives"),
+                {"invocations": [], "pool_upstream_attempts": []},
+                [],
+                Path("template.sqlite"),
+                "2026-10-01T00:00:00Z",
+                Path("scratch"),
+                lambda: 1.0,
+            )
+
+        self.assertEqual(calls, [set(), {"invocations"}])
+        self.assertEqual(
+            [control["dataset"] for control in oracle["negative_controls"]],
+            ["codex_invocations", "pool_upstream_request_attempts"],
+        )
+        self.assertEqual(oracle["datasets"], {})
+
     def test_negative_control_oracle_binds_remaining_dataset_input_digests(self) -> None:
         oracle = {
             "verified": False,

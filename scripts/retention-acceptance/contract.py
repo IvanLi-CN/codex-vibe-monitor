@@ -30,6 +30,12 @@ DATASETS = {
         "task_key": "pool_upstream_attempt_archive",
     },
 }
+# The fixed baseline is known to duplicate-publish these two source datasets. Keep this
+# allowlist explicit so adding a future dataset cannot silently become a tolerated defect.
+BASELINE_NEGATIVE_CONTROL_DATASETS = frozenset({
+    "codex_invocations",
+    "pool_upstream_request_attempts",
+})
 COMPETITOR_TASK = "raw_orphan_sweep"
 SUMMARY_RECOVERY_TASK = "summary_coverage_recovery"
 COMPETITOR_FILE_COUNT = 512
@@ -42,7 +48,7 @@ MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
 CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
 CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
@@ -69,7 +75,7 @@ BASELINE_NEGATIVE_CONTROL_FAILURE = "source_artifact_conservation"
 
 
 def baseline_negative_control_oracle(error: BaseException) -> dict[str, Any] | None:
-    """Classify the known baseline duplicate-publication defect without weakening candidate gates."""
+    """Classify one known baseline duplicate-publication defect without weakening candidate gates."""
     message = str(error)
     match = re.fullmatch(
         r"(?P<dataset>[a-z_]+) source/artifact conservation failed: "
@@ -79,20 +85,19 @@ def baseline_negative_control_oracle(error: BaseException) -> dict[str, Any] | N
     if match is None:
         return None
     dataset = match.group("dataset")
-    allowed_datasets = {
-        definition["manifest_dataset"] for definition in DATASETS.values()
-    }
     lost_rows = int(match.group("lost"))
     duplicate_rows = int(match.group("duplicates"))
-    if dataset not in allowed_datasets or lost_rows != 0 or duplicate_rows <= 0:
+    if dataset not in BASELINE_NEGATIVE_CONTROL_DATASETS or lost_rows != 0 or duplicate_rows <= 0:
         return None
     return {
         "verified": False,
         "failure_class": BASELINE_NEGATIVE_CONTROL_FAILURE,
-        "dataset": dataset,
-        "lost_rows": lost_rows,
-        "duplicate_rows": duplicate_rows,
-        "error": message,
+        "negative_controls": [{
+            "dataset": dataset,
+            "lost_rows": lost_rows,
+            "duplicate_rows": duplicate_rows,
+            "error": message,
+        }],
     }
 
 
@@ -760,47 +765,59 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
 
             oracle = trial.get("oracle")
             _require(isinstance(oracle, dict), "source/artifact oracle evidence is missing")
-            negative_dataset_name: str | None = None
+            negative_dataset_names: set[str] = set()
             if version == "baseline" and oracle.get("verified") is False:
                 _require(
                     oracle.get("failure_class") == BASELINE_NEGATIVE_CONTROL_FAILURE,
                     "baseline negative-control failure class is invalid",
                 )
-                dataset = oracle.get("dataset")
+                controls = oracle.get("negative_controls")
                 _require(
-                    dataset in {definition["manifest_dataset"] for definition in DATASETS.values()},
-                    "baseline negative-control dataset is invalid",
+                    isinstance(controls, list) and controls,
+                    "baseline negative-control evidence is missing",
                 )
-                lost_rows = oracle.get("lost_rows")
-                duplicate_rows = oracle.get("duplicate_rows")
-                _require(
-                    lost_rows == 0
-                    and isinstance(duplicate_rows, int)
-                    and not isinstance(duplicate_rows, bool)
-                    and duplicate_rows > 0,
-                    "baseline negative-control counts are invalid",
-                )
-                _require(
-                    oracle.get("error")
-                    == f"{dataset} source/artifact conservation failed: "
-                    f"lost=0, duplicates={duplicate_rows}",
-                    "baseline negative-control error is not bound to its counts",
-                )
-                negative_dataset_name = next(
-                    name
-                    for name, definition in DATASETS.items()
-                    if definition["manifest_dataset"] == dataset
-                )
+                for control in controls:
+                    _require(isinstance(control, dict), "baseline negative-control entry is malformed")
+                    dataset = control.get("dataset")
+                    _require(
+                        dataset in BASELINE_NEGATIVE_CONTROL_DATASETS,
+                        "baseline negative-control dataset is invalid",
+                    )
+                    lost_rows = control.get("lost_rows")
+                    duplicate_rows = control.get("duplicate_rows")
+                    _require(
+                        lost_rows == 0
+                        and isinstance(duplicate_rows, int)
+                        and not isinstance(duplicate_rows, bool)
+                        and duplicate_rows > 0,
+                        "baseline negative-control counts are invalid",
+                    )
+                    _require(
+                        control.get("error")
+                        == f"{dataset} source/artifact conservation failed: "
+                        f"lost=0, duplicates={duplicate_rows}",
+                        "baseline negative-control error is not bound to its counts",
+                    )
+                    negative_dataset_name = next(
+                        name
+                        for name, definition in DATASETS.items()
+                        if definition["manifest_dataset"] == dataset
+                    )
+                    _require(
+                        negative_dataset_name not in negative_dataset_names,
+                        "baseline negative-control dataset is repeated",
+                    )
+                    negative_dataset_names.add(negative_dataset_name)
             else:
                 _require(oracle.get("verified") is True, "source/artifact oracle evidence is missing")
             datasets = oracle.get("datasets")
-            expected_dataset_names = set(DATASETS) - ({negative_dataset_name} if negative_dataset_name else set())
+            expected_dataset_names = set(DATASETS) - negative_dataset_names
             _require(
                 isinstance(datasets, dict) and set(datasets) == expected_dataset_names,
                 "oracle dataset evidence is incomplete",
             )
             for name in DATASETS:
-                if name == negative_dataset_name:
+                if name in negative_dataset_names:
                     continue
                 result = datasets[name]
                 _require(isinstance(result, dict), f"oracle result for {name} is malformed")

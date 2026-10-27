@@ -32,17 +32,29 @@ from contract import (
 RUN_ID = "123456abcdef"
 
 
-def baseline_negative_control_oracle(evidence: dict, *, lost_rows: int = 0, duplicate_rows: int = 132) -> dict:
+def baseline_negative_control_oracle(
+    evidence: dict,
+    *,
+    lost_rows: int = 0,
+    duplicate_rows: int = 132,
+    dataset_names: tuple[str, ...] = ("invocations",),
+) -> dict:
     datasets = evidence["versions"]["baseline"]["trials"][0]["oracle"]["datasets"]
+    controls = []
+    for name in dataset_names:
+        dataset = DATASETS[name]["manifest_dataset"]
+        controls.append({
+            "dataset": dataset,
+            "lost_rows": lost_rows,
+            "duplicate_rows": duplicate_rows,
+            "error": f"{dataset} source/artifact conservation failed: lost={lost_rows}, duplicates={duplicate_rows}",
+        })
     return {
         "verified": False,
         "failure_class": "source_artifact_conservation",
-        "dataset": "codex_invocations",
-        "lost_rows": lost_rows,
-        "duplicate_rows": duplicate_rows,
-        "error": f"codex_invocations source/artifact conservation failed: lost={lost_rows}, duplicates={duplicate_rows}",
+        "negative_controls": controls,
         "datasets": {
-            name: result for name, result in datasets.items() if name != "invocations"
+            name: result for name, result in datasets.items() if name not in dataset_names
         },
     }
 
@@ -779,6 +791,14 @@ class ContractTests(unittest.TestCase):
     def test_baseline_duplicate_publication_is_recorded_as_negative_control(self) -> None:
         evidence = valid_evidence()
         evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(evidence)
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+    def test_baseline_duplicate_publication_controls_cover_each_failed_dataset(self) -> None:
+        evidence = valid_evidence()
+        evidence["versions"]["baseline"]["trials"][0]["oracle"] = baseline_negative_control_oracle(
+            evidence,
+            dataset_names=("invocations", "pool_upstream_attempts"),
+        )
         self.assertEqual(validate_evidence(evidence)["status"], "passed")
 
     def test_baseline_negative_control_requires_remaining_dataset_evidence(self) -> None:
