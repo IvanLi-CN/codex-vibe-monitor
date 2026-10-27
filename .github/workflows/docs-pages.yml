@@ -1,13 +1,6 @@
 name: Docs Pages
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'docs-site/**'
-      - 'web/**'
-      - '.github/workflows/docs-pages.yml'
-      - '.github/scripts/assemble-pages-site.sh'
   push:
     branches: [main]
     paths:
