@@ -71,8 +71,9 @@ mod write_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
 pub(crate) use batch_admission::{
-    ArchiveArtifactProbe, ArchiveFileVerifyProbe, ArchiveIdentityProofProbe, BatchCommitProbe,
-    GateGenerationProbe, RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
+    ArchiveArtifactProbe, ArchiveFileFenceProbe, ArchiveFileVerifyProbe, ArchiveIdentityProofProbe,
+    BatchCommitProbe, GateGenerationProbe, RETENTION_TEST_ARCHIVE_ARTIFACT,
+    RETENTION_TEST_ARCHIVE_FILE_FENCE, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
     RETENTION_TEST_ARCHIVE_IDENTITY_PROOF, RETENTION_TEST_BATCH_COMMIT,
     RETENTION_TEST_GATE_GENERATION, RETENTION_TEST_TRANSACTION_BEGIN, TransactionBeginProbe,
 };

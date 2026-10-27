@@ -51,6 +51,12 @@ pub(crate) struct GateGenerationProbe {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ArchiveFileFenceProbe {
+    pub(crate) busy: Notify,
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_BATCH_COMMIT: Arc<BatchCommitProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_ARTIFACT: Arc<ArchiveArtifactProbe>;
@@ -58,6 +64,7 @@ tokio::task_local! {
     pub(crate) static RETENTION_TEST_ARCHIVE_FILE_VERIFY: Arc<ArchiveFileVerifyProbe>;
     pub(crate) static RETENTION_TEST_TRANSACTION_BEGIN: Arc<TransactionBeginProbe>;
     pub(crate) static RETENTION_TEST_GATE_GENERATION: Arc<GateGenerationProbe>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_FILE_FENCE: Arc<ArchiveFileFenceProbe>;
 }
 
 #[cfg(test)]
@@ -143,6 +150,13 @@ pub(super) async fn pause_after_gate_generation() {
     }
 }
 
+#[cfg(test)]
+fn notify_archive_file_fence_busy() {
+    if let Ok(probe) = RETENTION_TEST_ARCHIVE_FILE_FENCE.try_with(Arc::clone) {
+        probe.busy.notify_one();
+    }
+}
+
 pub(crate) async fn acquire_retention_batch_write_connection(
     pool: &Pool<Sqlite>,
     operation: &'static str,
@@ -198,11 +212,18 @@ where
     let requested_at = Instant::now();
     let pressure_retry_started = Instant::now();
     let mut pressure_retry_attempts = 0;
+    let admission_retry_started = Instant::now();
+    let had_run_defer_reason = retention_run_defer_reason().is_some();
+    let mut retried_after_admission_defer = false;
 
     loop {
         // Confirm pool readiness before taking the archive fence. This readiness notification is
         // also the synchronization point used by the admission tests to inject competition.
         let Some(mut connection) = acquire_retention_pool_connection(pool, operation).await? else {
+            if wait_for_retention_admission_retry(operation, admission_retry_started).await {
+                retried_after_admission_defer = true;
+                continue;
+            }
             return Ok(None);
         };
         let release = connection.return_to_pool();
@@ -257,6 +278,12 @@ where
                 }
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
                     if !wait_for_background_change(gate, operation, gate_generation).await {
+                        if wait_for_retention_admission_retry(operation, admission_retry_started)
+                            .await
+                        {
+                            retried_after_admission_defer = true;
+                            continue;
+                        }
                         return Ok(None);
                     }
                     continue;
@@ -280,7 +307,20 @@ where
         // The shared file permit and directory fence cover only artifact verification. If either
         // resource is unavailable, release both before waiting for database admission.
         let file_phase = acquire_file_phase_permit(operation).await?;
-        let archive_lock = retention_archive_file_try_lock(archive_path)?;
+        let archive_lock = match retention_archive_file_try_lock(archive_path) {
+            Ok(lock) => lock,
+            Err(error) if is_retention_write_deferred(&error) => {
+                drop(file_phase);
+                #[cfg(test)]
+                notify_archive_file_fence_busy();
+                if wait_for_retention_admission_retry(operation, admission_retry_started).await {
+                    retried_after_admission_defer = true;
+                    continue;
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         #[cfg(test)]
         pause_before_archive_file_verify().await;
         let file_verify_phase = observe_file_verify();
@@ -332,6 +372,9 @@ where
                     return Ok(None);
                 }
                 if let Some(connection) = pool.try_acquire() {
+                    if retried_after_admission_defer && !had_run_defer_reason {
+                        retention_clear_run_defer_reason();
+                    }
                     return Ok(Some((connection, admission, archive_lock)));
                 }
                 admission.write_permit.revoke_fairness_admission();
@@ -358,6 +401,15 @@ where
                     }
                     crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
                         if !wait_for_background_change(gate, operation, generation).await {
+                            if wait_for_retention_admission_retry(
+                                operation,
+                                admission_retry_started,
+                            )
+                            .await
+                            {
+                                retried_after_admission_defer = true;
+                                continue;
+                            }
                             return Ok(None);
                         }
                         continue;
@@ -367,6 +419,11 @@ where
             Err(RetentionWriteAdmissionRejection::CoordinatorBusy) => {
                 drop(archive_lock);
                 if !wait_for_maintenance_eligibility(operation, requested_at).await {
+                    if wait_for_retention_admission_retry(operation, admission_retry_started).await
+                    {
+                        retried_after_admission_defer = true;
+                        continue;
+                    }
                     return Ok(None);
                 }
             }
@@ -787,6 +844,32 @@ async fn wait_for_background_change(
         return false;
     }
     true
+}
+
+async fn wait_for_retention_admission_retry(operation: &'static str, started: Instant) -> bool {
+    if retention_run_budget_expired()
+        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+    {
+        return false;
+    }
+    let remaining = RETENTION_PRESSURE_RETRY_BUDGET.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return false;
+    }
+    let sleep = tokio::time::sleep(remaining.min(Duration::from_millis(100)));
+    if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                false
+            }
+            _ = sleep => !retention_run_budget_expired(),
+        }
+    } else {
+        sleep.await;
+        !retention_run_budget_expired()
+    }
 }
 
 #[cfg(test)]

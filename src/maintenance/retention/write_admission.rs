@@ -894,6 +894,12 @@ pub(crate) fn retention_run_defer_reason() -> Option<String> {
         .flatten()
 }
 
+pub(crate) fn retention_clear_run_defer_reason() {
+    let _ = RETENTION_RUN_DEFER_REASON.try_with(|reason| {
+        reason.borrow_mut().take();
+    });
+}
+
 #[cfg(test)]
 pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
     budget: Duration,

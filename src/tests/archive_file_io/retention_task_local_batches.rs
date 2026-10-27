@@ -103,6 +103,68 @@ async fn retention_archive_exports_transaction_and_complete_write_hold_separatel
 }
 
 #[tokio::test]
+async fn retention_archive_retries_after_archive_file_fence_busy() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-file-fence-retry").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month)
+        .expect("canonical archive target");
+    fs::create_dir_all(target.parent().expect("archive target parent"))
+        .expect("create archive target parent");
+    let held_fence = crate::maintenance::retention_archive_file_lock(&target)
+        .expect("hold archive directory fence");
+    let probe = Arc::new(crate::maintenance::ArchiveFileFenceProbe::default());
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let work = crate::maintenance::retention_test_with_recorded_defer_reason(
+        RETENTION_TEST_WRITE_COORDINATOR.scope(
+            coordinator,
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                gate,
+                crate::maintenance::RETENTION_TEST_ARCHIVE_FILE_FENCE.scope(
+                    probe.clone(),
+                    archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = probe.busy.notified() => {}
+            result = &mut work => panic!("archive completed before file fence retry: {result:?}"),
+        }
+    })
+    .await
+    .expect("archive attempted while file fence was busy");
+    drop(held_fence);
+
+    let (result, defer_reason) = tokio::time::timeout(Duration::from_secs(10), &mut work)
+        .await
+        .expect("archive retry completes after file fence release");
+    let result = result.expect("archive retry succeeds");
+    assert_eq!(defer_reason, None);
+    assert_eq!(result.0, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("count source rows after retry"),
+        0
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_rejects_source_change_after_archive_artifact_proof() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-artifact-source-change").await;
