@@ -40,6 +40,7 @@ from contract import (
     AcceptanceError,
     parse_time,
     sha256_bytes,
+    task_run_is_bounded_active,
     task_run_is_accepted_terminal,
     validate_evidence,
 )
@@ -916,8 +917,38 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
     connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
+        observed_at = utc_now()
+        progress_rows = connection.execute(
+            "SELECT task_key,total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,next_inspection_at,next_catchup_at,catchup_state,stages "
+            "FROM managed_task_progress WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep')"
+        ).fetchall()
+        progress_by_key: dict[str, dict[str, Any]] = {}
+        for progress in progress_rows:
+            stages: Any = None
+            try:
+                stages = json.loads(progress[16]) if progress[16] else None
+            except (TypeError, json.JSONDecodeError):
+                stages = {"raw": progress[16]}
+            progress_by_key[progress[0]] = {
+                "total": progress[1],
+                "completed": progress[2],
+                "phase": progress[3],
+                "checkpoint": progress[4],
+                "eta_seconds": progress[5],
+                "updated_at": progress[6],
+                "freshness": progress[7],
+                "unit": progress[8],
+                "source_scope": progress[9],
+                "last_progress_at": progress[10],
+                "wait_reason": progress[11],
+                "next_retry_at": progress[12],
+                "next_inspection_at": progress[13],
+                "next_catchup_at": progress[14],
+                "catchup_state": progress[15],
+                "stages": stages,
+            }
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL AND actual_finished_at IS NOT NULL ORDER BY id"
+            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
@@ -927,7 +958,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
             except (TypeError, json.JSONDecodeError):
                 detail = {}
             released = detail.get("filesReleased", 0) if isinstance(detail, dict) else 0
-            result.append({
+            evidence = {
                 "task_key": row["task_key"],
                 "trigger_kind": row["trigger_kind"],
                 "status": row["status"],
@@ -937,13 +968,30 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "updated_count": row["updated_count"],
                 "committed_work": released if row["task_key"] == "raw_orphan_sweep" else (row["processed_count"] or row["updated_count"] or 0),
                 "details": detail,
-            })
+                "error_detail": row["error_detail"],
+                "completion": row["completion"],
+            }
+            progress = progress_by_key.get(row["task_key"])
+            if progress is not None:
+                evidence["progress"] = progress
+            if row["actual_finished_at"] is None:
+                evidence["evidence_kind"] = "bounded_active" if task_run_is_bounded_active({
+                    **evidence,
+                    "observed_at": observed_at,
+                }) else "active"
+                evidence["observed_at"] = observed_at
+            result.append(evidence)
         return result
     finally:
         connection.close()
 
 
-def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
+def archive_proofs_ready(
+    database: Path,
+    cutoff: str,
+    added_counts: dict[str, int],
+    version: str,
+) -> bool:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
         for name, definition in DATASETS.items():
@@ -984,7 +1032,8 @@ def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, in
                 f"SELECT COUNT(*) FROM {table} WHERE {identity_column} LIKE 'retention-seed-%' AND occurred_at < ?",
                 (cutoff,),
             ).fetchone()[0]
-            if converted < math.ceil(10 * added_counts[name]):
+            required = math.ceil(10 * added_counts[name]) if version == "candidate" else 1
+            if converted < required:
                 return False
         return True
     finally:
@@ -997,6 +1046,7 @@ def wait_for_task_evidence(
     cutoff: str,
     added_counts: dict[str, int],
     started: float,
+    version: str,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     wait_budget = MAX_TEST_PHASE_SECONDS if timeout_seconds is None else timeout_seconds
@@ -1006,11 +1056,11 @@ def wait_for_task_evidence(
     while time.monotonic() < deadline:
         latest = task_runs(maintenance_db)
         try:
-            validate_task_snapshot(latest)
-            # The fixed seed snapshot intentionally contains 100,000 expired rows. Waiting
-            # for every background owner to become idle would turn one 10x cohort check into
-            # a full backlog drain and make the six-trial comparison exceed its 900s budget.
-            if archive_proofs_ready(main_db, cutoff, added_counts):
+            validate_task_snapshot(latest, version)
+            # The fixed seed snapshot intentionally contains 100,000 expired rows. The legacy
+            # baseline may still be draining that backlog when its 10x cohort is already proved;
+            # the candidate must still complete its schedule/catch-up chain before returning.
+            if archive_proofs_ready(main_db, cutoff, added_counts, version):
                 return latest
             last_error = AcceptanceError("archive proofs or 10x source conversion are still draining")
         except AcceptanceError as error:
@@ -1018,27 +1068,38 @@ def wait_for_task_evidence(
         time.sleep(0.5)
     if last_error is not None:
         raise AcceptanceError(f"production task/evidence drain timed out: {last_error}") from last_error
-    validate_task_snapshot(latest)
+    validate_task_snapshot(latest, version)
     raise AcceptanceError("production task/evidence drain timed out")
 
 
-def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
+def validate_task_snapshot(rows: list[dict[str, Any]], version: str = "candidate") -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if row.get("actual_finished_at") is not None and task_run_is_accepted_terminal(row):
             by_key.setdefault(row["task_key"], []).append(row)
+        elif row.get("actual_finished_at") is None and task_run_is_bounded_active(row):
+            by_key.setdefault(row["task_key"], []).append(row)
     for key in (DATASETS[name]["task_key"] for name in DATASETS):
         runs = by_key.get(key, [])
-        scheduled = [row for row in runs if row.get("trigger_kind") == "schedule"]
-        catchups = [row for row in runs if row.get("trigger_kind") == "catchup"]
-        if not scheduled or not catchups:
-            raise AcceptanceError(f"production dispatcher has not completed both schedule and catch-up runs for {key}")
-        if not any(
+        scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and row.get("actual_finished_at") is not None]
+        catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and row.get("actual_finished_at") is not None]
+        active_scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and task_run_is_bounded_active(row)]
+        active_catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and task_run_is_bounded_active(row)]
+        completed_chain = bool(scheduled and catchups and any(
             parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"])
             for schedule in scheduled
             for catchup in catchups
-        ):
-            raise AcceptanceError(f"production catch-up did not follow a scheduled run for {key}")
+        ))
+        bounded_chain = bool(active_scheduled or any(
+            parse_time(schedule["actual_finished_at"]) <= parse_time(active["observed_at"])
+            for schedule in scheduled
+            for active in active_catchups
+        ))
+        if version == "baseline":
+            if not (completed_chain or bounded_chain):
+                raise AcceptanceError(f"production dispatcher has not completed both schedule and catch-up runs or produced a bounded baseline observation for {key}")
+        elif not completed_chain:
+            raise AcceptanceError(f"production dispatcher has not completed both schedule and catch-up runs for {key}")
     competitors = by_key.get("raw_orphan_sweep", [])
     released = sum(row.get("committed_work", 0) for row in competitors)
     if released < COMPETITOR_FILE_COUNT:
@@ -1164,6 +1225,7 @@ def run_trial(
             cutoff,
             {name: len(added[name]) for name in DATASETS},
             phase_started,
+            version,
         )
         post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})

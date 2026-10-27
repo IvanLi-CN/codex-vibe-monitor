@@ -106,6 +106,43 @@ class MeasurementBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
             validate_task_snapshot(rows)
 
+    def test_baseline_bounded_active_owner_is_accepted_only_with_progress(self) -> None:
+        progress = {
+            "phase": "running",
+            "checkpoint": "admitted",
+            "last_progress_at": "2026-10-25T00:00:02Z",
+        }
+        rows = [
+            {
+                "task_key": task_key,
+                "trigger_kind": "schedule",
+                "status": "running",
+                "actual_started_at": "2026-10-25T00:00:01Z",
+                "actual_finished_at": None,
+                "committed_work": 0,
+                "evidence_kind": "bounded_active",
+                "observed_at": "2026-10-25T00:00:10Z",
+                "progress": progress,
+            }
+            for task_key in ("retention_archive", "pool_upstream_attempt_archive")
+        ]
+        rows.append({
+            "task_key": COMPETITOR_TASK,
+            "trigger_kind": "schedule",
+            "status": "success",
+            "actual_started_at": "2026-10-25T00:00:03Z",
+            "actual_finished_at": "2026-10-25T00:00:04Z",
+            "committed_work": 512,
+        })
+
+        validate_task_snapshot(rows, "baseline")
+        with self.assertRaisesRegex(AcceptanceError, "schedule and catch-up"):
+            validate_task_snapshot(rows)
+
+        rows[0]["progress"] = None
+        with self.assertRaisesRegex(AcceptanceError, "schedule and catch-up"):
+            validate_task_snapshot(rows, "baseline")
+
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

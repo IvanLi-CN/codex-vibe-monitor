@@ -452,6 +452,45 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "inter-run gap was omitted"):
             validate_evidence(evidence)
 
+    def test_evidence_validator_accepts_bounded_active_baseline_owners(self) -> None:
+        evidence = valid_evidence()
+        for trial in evidence["versions"]["baseline"]["trials"]:
+            input_end = datetime.fromisoformat(trial["window"]["input_finished_at"].replace("Z", "+00:00"))
+            observed_at = input_end - timedelta(seconds=1)
+            progress_at = observed_at - timedelta(seconds=1)
+            retained = []
+            for row in trial["task_runs"]:
+                if row["task_key"] not in {definition["task_key"] for definition in DATASETS.values()}:
+                    retained.append(row)
+                    continue
+                if row["trigger_kind"] != "schedule":
+                    continue
+                row.update(
+                    {
+                        "status": "running",
+                        "actual_finished_at": None,
+                        "committed_work": 0,
+                        "evidence_kind": "bounded_active",
+                        "observed_at": timestamp(observed_at),
+                        "progress": {
+                            "phase": "running",
+                            "checkpoint": "admitted",
+                            "last_progress_at": timestamp(progress_at),
+                        },
+                    }
+                )
+                retained.append(row)
+            trial["task_runs"] = retained
+
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+        evidence = valid_evidence()
+        trial = evidence["versions"]["baseline"]["trials"][0]
+        active = next(row for row in trial["task_runs"] if row["task_key"] == "retention_archive")
+        active.update({"status": "running", "actual_finished_at": None, "evidence_kind": "bounded_active"})
+        with self.assertRaisesRegex(AcceptanceError, "bounded progress snapshot"):
+            validate_evidence(evidence)
+
     def test_live_write_count_cannot_be_replaced_with_a_reported_count(self) -> None:
         evidence = valid_evidence()
         result = evidence["versions"]["candidate"]["trials"][0]["oracle"]["datasets"]["invocations"]

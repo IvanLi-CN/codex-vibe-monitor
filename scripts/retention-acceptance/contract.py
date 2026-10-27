@@ -132,6 +132,21 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
     )
 
 
+def task_run_is_bounded_active(row: dict[str, Any]) -> bool:
+    """Accept only a measured baseline owner that is still running at the window bound."""
+    progress = row.get("progress")
+    return (
+        row.get("evidence_kind") == "bounded_active"
+        and row.get("status") == "running"
+        and row.get("actual_finished_at") is None
+        and isinstance(row.get("observed_at"), str)
+        and isinstance(progress, dict)
+        and progress.get("phase") in {"running", "processing"}
+        and progress.get("checkpoint") in {"admitted", "processing"}
+        and isinstance(progress.get("last_progress_at"), str)
+    )
+
+
 def _number(value: Any, message: str) -> float:
     _require(
         isinstance(value, (int, float))
@@ -292,6 +307,7 @@ def _validate_task_runs(
     input_end: datetime,
     cleanup_end: datetime,
     require_competitor_overlap: bool,
+    version: str,
 ) -> int:
     rows = trial.get("task_runs")
     _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
@@ -301,13 +317,25 @@ def _validate_task_runs(
         key = row.get("task_key")
         _require(isinstance(key, str) and key, "task run has no owner key")
         started = parse_time(row.get("actual_started_at"))
-        finished = parse_time(row.get("actual_finished_at"))
-        _require(finished >= started, "task run has an inverted execution interval")
-        _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
-        _require(
-            task_run_is_accepted_terminal(row),
-            f"background task {key} did not finish successfully or fully commit its selected batch",
-        )
+        active = row.get("actual_finished_at") is None
+        if active:
+            _require(
+                version == "baseline" and key in {DATASETS[name]["task_key"] for name in DATASETS},
+                f"background task {key} remained active outside the baseline observation contract",
+            )
+            _require(task_run_is_bounded_active(row), f"active background task {key} lacks a bounded progress snapshot")
+            observed = parse_time(row.get("observed_at"))
+            progress_at = parse_time(row["progress"]["last_progress_at"])
+            _require(setup_start <= started <= input_end, f"active task {key} did not start during the foreground window")
+            _require(started <= progress_at <= observed <= cleanup_end, f"active task {key} progress fell outside the measured trial")
+        else:
+            finished = parse_time(row.get("actual_finished_at"))
+            _require(finished >= started, "task run has an inverted execution interval")
+            _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
+            _require(
+                task_run_is_accepted_terminal(row),
+                f"background task {key} did not finish successfully or fully commit its selected batch",
+            )
         work = row.get("committed_work")
         _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
@@ -315,17 +343,32 @@ def _validate_task_runs(
     targets = [DATASETS[name]["task_key"] for name in DATASETS]
     for key in targets:
         runs = by_key.get(key, [])
-        scheduled = [row for row in runs if row.get("trigger_kind") == "schedule"]
-        catchups = [row for row in runs if row.get("trigger_kind") == "catchup"]
-        _require(scheduled and catchups, f"production dispatcher did not complete both schedule and catch-up runs for {key}")
-        _require(
-            any(parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"]) for schedule in scheduled for catchup in catchups),
-            f"production catch-up did not follow a scheduled run for {key}",
-        )
+        scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and row.get("actual_finished_at") is not None]
+        catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and row.get("actual_finished_at") is not None]
+        active_scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and task_run_is_bounded_active(row)]
+        active_catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and task_run_is_bounded_active(row)]
+        completed_chain = bool(scheduled and catchups and any(
+            parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"])
+            for schedule in scheduled
+            for catchup in catchups
+        ))
+        bounded_chain = bool(active_scheduled or any(
+            parse_time(scheduled_row["actual_finished_at"]) <= parse_time(active_row["observed_at"])
+            for scheduled_row in scheduled
+            for active_row in active_catchups
+        ))
+        if version == "baseline":
+            _require(
+                completed_chain or bounded_chain,
+                f"production dispatcher did not complete both schedule and catch-up runs or provide a bounded baseline observation for {key}",
+            )
+        else:
+            _require(completed_chain, f"production dispatcher did not complete both schedule and catch-up runs for {key}")
         _require(
             any(
-                row["committed_work"] > 0
-                and parse_time(row["actual_finished_at"]) <= input_end
+                (row["committed_work"] > 0 and parse_time(row["actual_finished_at"]) <= input_end)
+                if row.get("actual_finished_at") is not None
+                else task_run_is_bounded_active(row)
                 for row in runs
             ),
             f"production owner {key} made no progress during foreground input",
@@ -336,9 +379,12 @@ def _validate_task_runs(
     competitor_work = sum(row["committed_work"] for row in competitor)
     _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
     target_rows = [row for key in targets for row in by_key.get(key, [])]
+    def interval_end(row: dict[str, Any]) -> datetime:
+        return parse_time(row["actual_finished_at"] or row["observed_at"])
+
     overlap = any(
         max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
-        < min(parse_time(left["actual_finished_at"]), parse_time(right["actual_finished_at"]))
+        < min(interval_end(left), interval_end(right))
         for left in target_rows
         for right in competitor
     )
@@ -570,6 +616,7 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     input_end,
                     cleanup_end,
                     require_competitor_overlap=version == "candidate",
+                version=version,
                 )
             )
             scrape_rows = trial.get("write_hold_samples")
