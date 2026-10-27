@@ -54,6 +54,7 @@ pub(crate) struct GateGenerationProbe {
 #[derive(Default)]
 pub(crate) struct ArchiveFileFenceProbe {
     pub(crate) busy: Notify,
+    pub(crate) force_busy: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -155,6 +156,17 @@ fn notify_archive_file_fence_busy() {
     if let Ok(probe) = RETENTION_TEST_ARCHIVE_FILE_FENCE.try_with(Arc::clone) {
         probe.busy.notify_one();
     }
+}
+
+#[cfg(test)]
+fn force_archive_file_fence_busy() -> bool {
+    RETENTION_TEST_ARCHIVE_FILE_FENCE
+        .try_with(|probe| {
+            probe
+                .force_busy
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) async fn acquire_retention_batch_write_connection(
@@ -307,7 +319,20 @@ where
         // The shared file permit and directory fence cover only artifact verification. If either
         // resource is unavailable, release both before waiting for database admission.
         let file_phase = acquire_file_phase_permit(operation).await?;
-        let archive_lock = match retention_archive_file_try_lock(archive_path) {
+        let archive_lock_result = {
+            #[cfg(test)]
+            if force_archive_file_fence_busy() {
+                retention_record_defer("archive_file_fence", "archive_directory_lock_busy");
+                Err(retention_write_deferred("archive_file_fence"))
+            } else {
+                retention_archive_file_try_lock(archive_path)
+            }
+            #[cfg(not(test))]
+            {
+                retention_archive_file_try_lock(archive_path)
+            }
+        };
+        let archive_lock = match archive_lock_result {
             Ok(lock) => lock,
             Err(error) if is_retention_write_deferred(&error) => {
                 drop(file_phase);

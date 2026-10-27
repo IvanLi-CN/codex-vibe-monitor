@@ -119,6 +119,9 @@ async fn retention_archive_retries_after_archive_file_fence_busy() {
     let held_fence = crate::maintenance::retention_archive_file_lock(&target)
         .expect("hold archive directory fence");
     let probe = Arc::new(crate::maintenance::ArchiveFileFenceProbe::default());
+    probe
+        .force_busy
+        .store(true, std::sync::atomic::Ordering::Release);
     let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
     let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
         1,
