@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use axum::extract::{Path, Query, State};
@@ -736,7 +737,16 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
         .connect(&database_url)
         .await
         .unwrap();
-    let prefix = format!("pg09r_archive_insert_{}", std::process::id());
+    let unique_id = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos(),
+    )
+    .expect("test timestamp fits in a PostgreSQL BIGINT");
+    let segment_id = unique_id;
+    let monthly_id = unique_id + 1;
+    let prefix = format!("pg09r_archive_insert_{}_{}", std::process::id(), unique_id);
     let sqlite = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query(
         "CREATE TABLE archive_batches (
@@ -811,8 +821,8 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
             .encode_payload()
             .unwrap()
     };
-    let segment_payload = payload_for(900_001, Some("part-000001"));
-    let monthly_payload = payload_for(900_002, None);
+    let segment_payload = payload_for(segment_id, Some("part-000001"));
+    let monthly_payload = payload_for(monthly_id, None);
     let target = PostgresMigrationTarget::new_native(
         pool.clone(),
         &prefix,
@@ -828,8 +838,8 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
             installation_id: "installation-test".into(),
             source_identity: "sqlite-test".into(),
             target_identity: "postgres-test".into(),
-            scan_lower_bound: Some("900001".into()),
-            scan_upper_bound: Some("900002".into()),
+            scan_lower_bound: Some(segment_id.to_string()),
+            scan_upper_bound: Some(monthly_id.to_string()),
             capture_start: 0,
         };
         target.save_plan(&plan).await?;
@@ -839,17 +849,17 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
                 &SourcePage {
                     rows: vec![
                         VersionedRow {
-                            stable_key: "900001".into(),
+                            stable_key: segment_id.to_string(),
                             source_version: 0,
                             payload: segment_payload,
                         },
                         VersionedRow {
-                            stable_key: "900002".into(),
+                            stable_key: monthly_id.to_string(),
                             source_version: 0,
                             payload: monthly_payload,
                         },
                     ],
-                    next_cursor: Some("900002".into()),
+                    next_cursor: Some(monthly_id.to_string()),
                     complete: true,
                 },
                 &EngineCheckpoint {
@@ -858,7 +868,7 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
                     installation_id: plan.installation_id.clone(),
                     source_identity: plan.source_identity.clone(),
                     target_identity: plan.target_identity.clone(),
-                    cursor: Some("900002".into()),
+                    cursor: Some(monthly_id.to_string()),
                     scan_upper_bound: plan.scan_upper_bound.clone(),
                     capture_start: 0,
                     captured_through: 0,
@@ -873,16 +883,16 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
             "SELECT archive_batch_id, part, part_key, sha256, source_identity_sha256 \
              FROM archive_batches WHERE archive_batch_id IN ($1, $2) ORDER BY archive_batch_id",
         )
-        .bind(900_001_i64)
-        .bind(900_002_i64)
+        .bind(segment_id)
+        .bind(monthly_id)
         .fetch_all(&pool)
         .await?;
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, 900_001);
+        assert_eq!(rows[0].0, segment_id);
         assert_eq!(rows[0].1, 0);
         assert_eq!(rows[0].2.as_deref(), Some("part-000001"));
         assert_eq!(rows[0].3, rows[0].4);
-        assert_eq!(rows[1].0, 900_002);
+        assert_eq!(rows[1].0, monthly_id);
         assert_eq!(rows[1].1, 0);
         assert_eq!(rows[1].2, None);
         assert_eq!(rows[1].3, rows[1].4);
@@ -891,8 +901,8 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
     .await;
     let cleanup = async {
         sqlx::query("DELETE FROM archive_batches WHERE archive_batch_id IN ($1, $2)")
-            .bind(900_001_i64)
-            .bind(900_002_i64)
+            .bind(segment_id)
+            .bind(monthly_id)
             .execute(&pool)
             .await?;
         for table in [
