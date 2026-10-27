@@ -164,6 +164,7 @@ async fn legacy_archive_schema_adapter()
     sqlx::query(
         "CREATE TABLE archive_batches (
             archive_batch_id BIGINT PRIMARY KEY,
+            part INTEGER NOT NULL DEFAULT 0,
             file_path TEXT NOT NULL
         )",
     )
@@ -258,9 +259,10 @@ async fn postgres_archive_ownership_is_cross_batch_and_release_retry_monotonic()
     let (suffix, base_batch_id) = fixture_identity();
     let raw_path = format!("pg-raw-tests/{suffix}/shared.bin");
     let raw_identity = digest(&format!("raw:{raw_path}"));
-    let manifests = (0..6)
+    let mut manifests = (0..6)
         .map(|offset| manifest(base_batch_id + offset, &suffix, "delete_pending"))
         .collect::<Vec<_>>();
+    manifests[0].part = 7;
     let file_paths = manifests
         .iter()
         .map(|item| item.file_path.clone())
@@ -283,6 +285,14 @@ async fn postgres_archive_ownership_is_cross_batch_and_release_retry_monotonic()
                 )],
             ))
             .await?;
+        let native_manifest = sqlx::query_as::<_, (i32, Option<String>)>(
+            "SELECT part, part_key FROM archive_batches WHERE archive_batch_id = $1",
+        )
+        .bind(manifests[0].archive_batch_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(native_manifest.0, 7);
+        assert_eq!(native_manifest.1, None);
         archive
             .publish(&operation(
                 manifests[1].clone(),
@@ -594,6 +604,24 @@ async fn postgres_archive_prune_ledger_upgrade_backfills_only_recoverable_paths(
 
         archive.ensure_schema().await?;
         archive.ensure_schema().await?;
+
+        let archive_part_columns = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT column_name, data_type, is_nullable
+               FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = 'archive_batches'
+                AND column_name IN ('part', 'part_key')
+              ORDER BY ordinal_position",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            archive_part_columns,
+            vec![
+                ("part".to_owned(), "integer".to_owned(), "NO".to_owned()),
+                ("part_key".to_owned(), "text".to_owned(), "YES".to_owned()),
+            ]
+        );
 
         let recovered_path: Option<String> = sqlx::query_scalar(
             "SELECT file_path FROM archive_prune_ledger WHERE archive_batch_id = $1",

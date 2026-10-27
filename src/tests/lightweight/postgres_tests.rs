@@ -605,7 +605,7 @@ async fn native_sqlite_capture_triggers_capture_and_fence_legacy_writes() {
 }
 
 #[tokio::test]
-async fn archive_native_target_contract_maps_sqlite_identity_and_part_columns() {
+async fn archive_native_target_contract_maps_sqlite_identity_and_part_key_columns() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query(
         "CREATE TABLE archive_batches (
@@ -651,13 +651,15 @@ async fn archive_native_target_contract_maps_sqlite_identity_and_part_columns() 
     );
     assert_eq!(
         contract.target_column_for_source("part_key").unwrap(),
-        "part"
+        "part_key"
     );
     assert!(
         contract
             .target_columns()
             .any(|column| column == "source_identity_sha256")
     );
+    assert!(contract.target_columns().any(|column| column == "part_key"));
+    assert!(!contract.target_columns().any(|column| column == "part"));
     assert!(!contract.target_columns().any(|column| column == "id"));
 }
 
@@ -734,7 +736,7 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
         .connect(&database_url)
         .await
         .unwrap();
-    let prefix = format!("pg08_archive_insert_{}", std::process::id());
+    let prefix = format!("pg09r_archive_insert_{}", std::process::id());
     let sqlite = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query(
         "CREATE TABLE archive_batches (
@@ -773,32 +775,44 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
         .native_migration_catalog([ModuleId::TrafficArchive])
         .unwrap();
     let spec = native.table("archive_batches").unwrap();
-    let values = spec
-        .columns
-        .iter()
-        .map(|column| match column.postgres_type {
-            crate::storage::catalog::NativeColumnType::BigInt => {
-                NativeValue::BigInt(if column.name == "id" { 900_001 } else { 1 })
-            }
-            crate::storage::catalog::NativeColumnType::Text => NativeValue::Text(
-                if column.name == "sha256" {
-                    "0000000000000000000000000000000000000000000000000000000000000000"
-                } else if column.name == "part_key" {
-                    "3"
-                } else {
-                    "pg08-test"
+    let payload_for = |id: i64, part_key: Option<&str>| {
+        let values = spec
+            .columns
+            .iter()
+            .map(|column| match column.postgres_type {
+                crate::storage::catalog::NativeColumnType::BigInt => {
+                    NativeValue::BigInt(if column.name == "id" { id } else { 1 })
                 }
-                .to_owned(),
-            ),
-            crate::storage::catalog::NativeColumnType::DoublePrecision => NativeValue::Double(1.0),
-            crate::storage::catalog::NativeColumnType::Boolean => NativeValue::Boolean(true),
-            crate::storage::catalog::NativeColumnType::Bytea => NativeValue::Bytes(vec![1]),
-        })
-        .collect::<Vec<_>>();
-    let payload = NativeRow::from_values(spec, values)
-        .unwrap()
-        .encode_payload()
-        .unwrap();
+                crate::storage::catalog::NativeColumnType::Text => {
+                    if column.name == "part_key" {
+                        part_key.map_or(NativeValue::Null, |value| {
+                            NativeValue::Text(value.to_owned())
+                        })
+                    } else if column.name == "sha256" {
+                        NativeValue::Text(
+                            "0000000000000000000000000000000000000000000000000000000000000000"
+                                .to_owned(),
+                        )
+                    } else if column.name == "file_path" {
+                        NativeValue::Text(format!("pg09r-test-{id}"))
+                    } else {
+                        NativeValue::Text("pg09r-test".to_owned())
+                    }
+                }
+                crate::storage::catalog::NativeColumnType::DoublePrecision => {
+                    NativeValue::Double(1.0)
+                }
+                crate::storage::catalog::NativeColumnType::Boolean => NativeValue::Boolean(true),
+                crate::storage::catalog::NativeColumnType::Bytea => NativeValue::Bytes(vec![1]),
+            })
+            .collect::<Vec<_>>();
+        NativeRow::from_values(spec, values)
+            .unwrap()
+            .encode_payload()
+            .unwrap()
+    };
+    let segment_payload = payload_for(900_001, Some("part-000001"));
+    let monthly_payload = payload_for(900_002, None);
     let target = PostgresMigrationTarget::new_native(
         pool.clone(),
         &prefix,
@@ -814,8 +828,8 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
             installation_id: "installation-test".into(),
             source_identity: "sqlite-test".into(),
             target_identity: "postgres-test".into(),
-            scan_lower_bound: None,
-            scan_upper_bound: Some("900001".into()),
+            scan_lower_bound: Some("900001".into()),
+            scan_upper_bound: Some("900002".into()),
             capture_start: 0,
         };
         target.save_plan(&plan).await?;
@@ -823,12 +837,19 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
             .apply_baseline_page(
                 &plan,
                 &SourcePage {
-                    rows: vec![VersionedRow {
-                        stable_key: "900001".into(),
-                        source_version: 0,
-                        payload,
-                    }],
-                    next_cursor: Some("900001".into()),
+                    rows: vec![
+                        VersionedRow {
+                            stable_key: "900001".into(),
+                            source_version: 0,
+                            payload: segment_payload,
+                        },
+                        VersionedRow {
+                            stable_key: "900002".into(),
+                            source_version: 0,
+                            payload: monthly_payload,
+                        },
+                    ],
+                    next_cursor: Some("900002".into()),
                     complete: true,
                 },
                 &EngineCheckpoint {
@@ -837,33 +858,41 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
                     installation_id: plan.installation_id.clone(),
                     source_identity: plan.source_identity.clone(),
                     target_identity: plan.target_identity.clone(),
-                    cursor: Some("900001".into()),
+                    cursor: Some("900002".into()),
                     scan_upper_bound: plan.scan_upper_bound.clone(),
                     capture_start: 0,
                     captured_through: 0,
                     applied_through: 0,
-                    copied_rows: 1,
-                    copied_bytes: 1,
+                    copied_rows: 2,
+                    copied_bytes: 2,
                     complete: true,
                 },
             )
             .await?;
-        let row = sqlx::query_as::<_, (i64, i64, String, String)>(
-            "SELECT archive_batch_id, part, sha256, source_identity_sha256 \
-             FROM archive_batches WHERE archive_batch_id = $1",
+        let rows = sqlx::query_as::<_, (i64, i32, Option<String>, String, String)>(
+            "SELECT archive_batch_id, part, part_key, sha256, source_identity_sha256 \
+             FROM archive_batches WHERE archive_batch_id IN ($1, $2) ORDER BY archive_batch_id",
         )
         .bind(900_001_i64)
-        .fetch_one(&pool)
+        .bind(900_002_i64)
+        .fetch_all(&pool)
         .await?;
-        assert_eq!(row.0, 900_001);
-        assert_eq!(row.1, 3);
-        assert_eq!(row.2, row.3);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 900_001);
+        assert_eq!(rows[0].1, 0);
+        assert_eq!(rows[0].2.as_deref(), Some("part-000001"));
+        assert_eq!(rows[0].3, rows[0].4);
+        assert_eq!(rows[1].0, 900_002);
+        assert_eq!(rows[1].1, 0);
+        assert_eq!(rows[1].2, None);
+        assert_eq!(rows[1].3, rows[1].4);
         Ok(())
     }
     .await;
     let cleanup = async {
-        sqlx::query("DELETE FROM archive_batches WHERE archive_batch_id = $1")
+        sqlx::query("DELETE FROM archive_batches WHERE archive_batch_id IN ($1, $2)")
             .bind(900_001_i64)
+            .bind(900_002_i64)
             .execute(&pool)
             .await?;
         for table in [
