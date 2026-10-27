@@ -4,7 +4,8 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use sqlx::SqlitePool;
+use axum::extract::{Path, Query, State};
+use sqlx::{SqlitePool, postgres::PgPoolOptions};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId, RecoveryObligation};
@@ -18,8 +19,22 @@ use crate::storage::core::{
     StorageModule, StoragePools, TaskOperationsTransaction, TrafficArchiveTransaction,
     combine_admission_decisions, validate_transaction_leases,
 };
-use crate::storage::migration_sqlx::{MigrationTableSpec, SqliteMigrationSource};
+use crate::storage::migration::{
+    ChangeBatchLimits, ChangeKind, EngineCheckpoint, MigrationSource, MigrationTarget, SourcePage,
+    TableCopyPlan, VersionedRow,
+};
+use crate::storage::migration_sqlx::{
+    MigrationTableSpec, NativeTargetContract, PostgresMigrationTarget, SqliteMigrationSource,
+};
 use crate::storage::native::{NativeRow, NativeValue, PostgresNativeSchemaAdapter};
+use crate::storage::traffic::TrafficFactStore;
+use crate::{
+    ListQuery, LocateInvocationQuery, fetch_invocation_attempt_response_body,
+    fetch_invocation_history_overview_with_runtime_overlay, fetch_invocation_new_records_count,
+    fetch_invocation_pool_attempts, fetch_invocation_record_detail, fetch_invocation_request_body,
+    fetch_invocation_response_body, fetch_invocation_suggestions, fetch_invocation_summary,
+    fetch_invocation_workflow_detail, list_invocations, locate_invocation_page,
+};
 
 struct TestAuthorityStore {
     compare_and_publish: Mutex<()>,
@@ -334,6 +349,126 @@ async fn current_sqlite_schema_has_closed_ownership_catalog() {
 }
 
 #[tokio::test]
+async fn postgres_authority_does_not_fallback_to_sqlite_for_routed_reads() -> Result<()> {
+    let pool = SqlitePool::connect("sqlite::memory:").await?;
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        },
+    );
+    let authority = TrafficFactStore::with_authority(StoragePools::sqlite_only(pool), gate);
+
+    assert_eq!(
+        authority.authority_backend().await,
+        BackendKind::Postgres,
+        "read routing must follow the module authority"
+    );
+    let error = match authority.begin().await {
+        Ok(_) => panic!("a PostgreSQL authority must not use the SQLite pool"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:#}").contains("without a PostgreSQL pool"),
+        "unexpected authority routing error: {error:#}"
+    );
+    Ok(())
+}
+
+fn assert_postgres_authority_error<T, E: std::fmt::Debug>(result: Result<T, E>) {
+    let error = match result {
+        Ok(_) => panic!("Postgres authority unexpectedly completed through SQLite"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:?}").contains("without a PostgreSQL pool"),
+        "unexpected authority routing error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn postgres_authority_invocation_entrypoints_never_use_legacy_sqlite() -> Result<()> {
+    let pool = SqlitePool::connect("sqlite::memory:").await?;
+    let mut state = crate::tests::test_state_from_existing_pool(
+        pool.clone(),
+        crate::tests::test_config(),
+        true,
+    )
+    .await;
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 3,
+        },
+    );
+    Arc::get_mut(&mut state)
+        .expect("test state should be uniquely owned")
+        .traffic_authority = Arc::new(TrafficFactStore::with_authority(
+        StoragePools::sqlite_only(pool),
+        gate,
+    ));
+
+    assert_postgres_authority_error(
+        list_invocations(State(state.clone()), Query(ListQuery::default())).await,
+    );
+    assert_postgres_authority_error(
+        locate_invocation_page(
+            state.clone(),
+            &LocateInvocationQuery {
+                invoke_id: Some("missing-invocation".into()),
+                request_id: None,
+                attempt_id: None,
+                upstream_account_id: None,
+                page_size: None,
+            },
+        )
+        .await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_summary(State(state.clone()), Query(ListQuery::default())).await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_history_overview_with_runtime_overlay(
+            state.clone(),
+            ListQuery::default(),
+            Vec::new(),
+            1,
+        )
+        .await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_new_records_count(State(state.clone()), Query(ListQuery::default())).await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_suggestions(State(state.clone()), Query(ListQuery::default())).await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_pool_attempts(State(state.clone()), Path("missing-invocation".into()))
+            .await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_workflow_detail(State(state.clone()), Path(1_i64)).await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_record_detail(State(state.clone()), Path(1_i64)).await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_response_body(State(state.clone()), Path(1_i64)).await,
+    );
+    assert_postgres_authority_error(
+        fetch_invocation_attempt_response_body(
+            State(state.clone()),
+            Path((1_i64, "missing-attempt".to_string())),
+        )
+        .await,
+    );
+    assert_postgres_authority_error(fetch_invocation_request_body(State(state), Path(1_i64)).await);
+    Ok(())
+}
+
+#[tokio::test]
 async fn sqlite_catalog_excludes_migration_capture_metadata_from_native_tables() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query("CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)")
@@ -382,6 +517,427 @@ async fn sqlite_catalog_excludes_migration_capture_metadata_from_native_tables()
 }
 
 #[tokio::test]
+async fn native_sqlite_capture_triggers_capture_and_fence_legacy_writes() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE codex_invocations (
+            id INTEGER PRIMARY KEY,
+            payload TEXT,
+            raw_payload BLOB
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let source = SqliteMigrationSource::from_native_catalog(
+        pool.clone(),
+        "migration-native-capture",
+        "sqlite:test",
+        "migration_change_log",
+        &native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap();
+    source.ensure_capture_schema().await.unwrap();
+    source.ensure_native_capture_triggers().await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (id, payload, raw_payload)
+         VALUES (1, 'initial', X'00FF')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let changes = source
+        .changes_after(0, ChangeBatchLimits::default())
+        .await
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].kind, ChangeKind::Insert);
+    let row = NativeRow::decode_payload(
+        native.table("codex_invocations").unwrap(),
+        changes[0].payload.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert!(row.values().iter().any(|(name, value)| {
+        name == "payload" && value == &NativeValue::Text("initial".to_string())
+    }));
+    assert!(row.values().iter().any(|(name, value)| {
+        name == "raw_payload" && value == &NativeValue::Bytes(vec![0, 255])
+    }));
+
+    sqlx::query("UPDATE codex_invocations SET payload = 'updated' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM codex_invocations WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    source.fence_source_writes(1, 2).await.unwrap();
+    let legacy_write =
+        sqlx::query("INSERT INTO codex_invocations (id, payload) VALUES (2, 'blocked')")
+            .execute(&pool)
+            .await
+            .expect_err("legacy SQLite writers must fail after the source fence");
+    assert!(
+        legacy_write
+            .to_string()
+            .contains("SQLite source writes are fenced")
+    );
+
+    let changes = source
+        .changes_after(0, ChangeBatchLimits::default())
+        .await
+        .unwrap();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(source.source_write_authority().await.unwrap().generation, 2);
+    assert!(source.source_write_authority().await.unwrap().fenced);
+}
+
+#[tokio::test]
+async fn archive_native_target_contract_maps_sqlite_identity_and_part_columns() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE archive_batches (
+            id INTEGER PRIMARY KEY,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            day_key TEXT,
+            part_key TEXT,
+            file_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            row_count INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            layout TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            writer_version TEXT NOT NULL,
+            cleanup_state TEXT NOT NULL,
+            cleanup_source_safe_start_date TEXT,
+            replacement_staged_path TEXT,
+            superseded_by INTEGER,
+            coverage_start_at TEXT,
+            coverage_end_at TEXT,
+            coverage_start_epoch INTEGER,
+            coverage_end_epoch INTEGER,
+            archive_expires_at TEXT,
+            summary_source_kind TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            upstream_activity_manifest_refreshed_at TEXT,
+            historical_rollups_materialized_at TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let spec = native.table("archive_batches").unwrap();
+    let contract = NativeTargetContract::for_spec(spec).unwrap();
+    assert_eq!(
+        contract.target_column_for_source("id").unwrap(),
+        "archive_batch_id"
+    );
+    assert_eq!(
+        contract.target_column_for_source("part_key").unwrap(),
+        "part"
+    );
+    assert!(
+        contract
+            .target_columns()
+            .any(|column| column == "source_identity_sha256")
+    );
+    assert!(!contract.target_columns().any(|column| column == "id"));
+}
+
+#[tokio::test]
+async fn native_module_tables_copy_historical_parents_before_children() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE archive_batches (
+            id INTEGER PRIMARY KEY
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE archive_batch_upstream_activity (
+            archive_batch_id INTEGER NOT NULL REFERENCES archive_batches(id),
+            account_id INTEGER NOT NULL,
+            last_activity_at TEXT NOT NULL,
+            PRIMARY KEY (archive_batch_id, account_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO archive_batches (id) VALUES (41)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO archive_batch_upstream_activity \
+         (archive_batch_id, account_id, last_activity_at) VALUES (41, 7, '2026-10-27T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let source = SqliteMigrationSource::from_native_catalog(
+        pool,
+        "migration-native-fk-order",
+        "sqlite:test",
+        "migration_change_log",
+        &native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap();
+    let tables = source
+        .module_tables(StorageModule::TrafficArchive)
+        .await
+        .unwrap();
+    let parent = tables
+        .iter()
+        .position(|table| table == "archive_batches")
+        .unwrap();
+    let child = tables
+        .iter()
+        .position(|table| table == "archive_batch_upstream_activity")
+        .unwrap();
+    assert!(parent < child, "parent must precede child: {tables:?}");
+}
+
+#[tokio::test]
+async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_available()
+-> Result<()> {
+    let Ok(database_url) = std::env::var("POSTGRES_TEST_DATABASE_URL") else {
+        return Ok(());
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let prefix = format!("pg08_archive_insert_{}", std::process::id());
+    let sqlite = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE archive_batches (
+            id INTEGER PRIMARY KEY,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            day_key TEXT,
+            part_key TEXT,
+            file_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            row_count INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            layout TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            writer_version TEXT NOT NULL,
+            cleanup_state TEXT NOT NULL,
+            cleanup_source_safe_start_date TEXT,
+            replacement_staged_path TEXT,
+            superseded_by INTEGER,
+            coverage_start_at TEXT,
+            coverage_end_at TEXT,
+            coverage_start_epoch INTEGER,
+            coverage_end_epoch INTEGER,
+            archive_expires_at TEXT,
+            summary_source_kind TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            upstream_activity_manifest_refreshed_at TEXT,
+            historical_rollups_materialized_at TEXT
+        )",
+    )
+    .execute(&sqlite)
+    .await
+    .unwrap();
+    let catalog = ModuleCatalog::inspect_sqlite(&sqlite).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let spec = native.table("archive_batches").unwrap();
+    let values = spec
+        .columns
+        .iter()
+        .map(|column| match column.postgres_type {
+            crate::storage::catalog::NativeColumnType::BigInt => {
+                NativeValue::BigInt(if column.name == "id" { 900_001 } else { 1 })
+            }
+            crate::storage::catalog::NativeColumnType::Text => NativeValue::Text(
+                if column.name == "sha256" {
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                } else if column.name == "part_key" {
+                    "3"
+                } else {
+                    "pg08-test"
+                }
+                .to_owned(),
+            ),
+            crate::storage::catalog::NativeColumnType::DoublePrecision => NativeValue::Double(1.0),
+            crate::storage::catalog::NativeColumnType::Boolean => NativeValue::Boolean(true),
+            crate::storage::catalog::NativeColumnType::Bytea => NativeValue::Bytes(vec![1]),
+        })
+        .collect::<Vec<_>>();
+    let payload = NativeRow::from_values(spec, values)
+        .unwrap()
+        .encode_payload()
+        .unwrap();
+    let target = PostgresMigrationTarget::new_native(
+        pool.clone(),
+        &prefix,
+        native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap();
+    let result: Result<()> = async {
+        target.ensure_schema().await?;
+        let plan = TableCopyPlan {
+            migration_id: "migration-native-archive-insert".into(),
+            table_name: "archive_batches".into(),
+            installation_id: "installation-test".into(),
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            scan_lower_bound: None,
+            scan_upper_bound: Some("900001".into()),
+            capture_start: 0,
+        };
+        target.save_plan(&plan).await?;
+        target
+            .apply_baseline_page(
+                &plan,
+                &SourcePage {
+                    rows: vec![VersionedRow {
+                        stable_key: "900001".into(),
+                        source_version: 0,
+                        payload,
+                    }],
+                    next_cursor: Some("900001".into()),
+                    complete: true,
+                },
+                &EngineCheckpoint {
+                    migration_id: plan.migration_id.clone(),
+                    table_name: plan.table_name.clone(),
+                    installation_id: plan.installation_id.clone(),
+                    source_identity: plan.source_identity.clone(),
+                    target_identity: plan.target_identity.clone(),
+                    cursor: Some("900001".into()),
+                    scan_upper_bound: plan.scan_upper_bound.clone(),
+                    capture_start: 0,
+                    captured_through: 0,
+                    applied_through: 0,
+                    copied_rows: 1,
+                    copied_bytes: 1,
+                    complete: true,
+                },
+            )
+            .await?;
+        let row = sqlx::query_as::<_, (i64, i64, String, String)>(
+            "SELECT archive_batch_id, part, sha256, source_identity_sha256 \
+             FROM archive_batches WHERE archive_batch_id = $1",
+        )
+        .bind(900_001_i64)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(row.0, 900_001);
+        assert_eq!(row.1, 3);
+        assert_eq!(row.2, row.3);
+        Ok(())
+    }
+    .await;
+    let cleanup = async {
+        sqlx::query("DELETE FROM archive_batches WHERE archive_batch_id = $1")
+            .bind(900_001_i64)
+            .execute(&pool)
+            .await?;
+        for table in [
+            format!("{prefix}_plans"),
+            format!("{prefix}_checkpoints"),
+            format!("{prefix}_chunk_proofs"),
+            format!("{prefix}_coverage_checkpoints"),
+            format!("{prefix}_coverage_proofs"),
+        ] {
+            sqlx::query(&format!("DROP TABLE IF EXISTS \"{table}\""))
+                .execute(&pool)
+                .await?;
+        }
+        Result::<()>::Ok(())
+    }
+    .await;
+    result?;
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_capture_capacity_holds_and_releases_without_aborting_business_writes() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE codex_invocations (
+            id INTEGER PRIMARY KEY,
+            payload TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let source = SqliteMigrationSource::from_native_catalog(
+        pool.clone(),
+        "migration-native-capacity",
+        "sqlite:test",
+        "migration_change_log",
+        &native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap()
+    .with_max_capture_bytes(1)
+    .unwrap();
+    source.ensure_capture_schema().await.unwrap();
+    source.ensure_native_capture_triggers().await.unwrap();
+
+    sqlx::query("INSERT INTO codex_invocations (id, payload) VALUES (1, 'held')")
+        .execute(&pool)
+        .await
+        .expect("business write remains successful while capture is held");
+    assert!(source.capture_capacity_held().await.unwrap());
+    let through = source.capture_watermark().await.unwrap();
+    assert!(
+        !source
+            .changes_through(0, through, ChangeBatchLimits::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    source.release_capture_through(through).await.unwrap();
+    assert!(!source.capture_capacity_held().await.unwrap());
+    sqlx::query("INSERT INTO codex_invocations (id, payload) VALUES (2, NULL)")
+        .execute(&pool)
+        .await
+        .expect("business writes resume after capture consumption");
+}
+
+#[tokio::test]
 async fn current_sqlite_schema_builds_native_traffic_analytics_catalog() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -397,6 +953,17 @@ async fn current_sqlite_schema_builds_native_traffic_analytics_catalog() {
     let native = catalog
         .native_migration_catalog(selected_modules)
         .expect("TrafficArchive and Analytics native closure");
+    let source = SqliteMigrationSource::from_native_catalog(
+        pool.clone(),
+        "migration-native-schema",
+        "sqlite:test",
+        "migration_change_log",
+        &native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap();
+    source.ensure_capture_schema().await.unwrap();
+    source.ensure_native_capture_triggers().await.unwrap();
     let expected_table_count = catalog
         .owners()
         .iter()

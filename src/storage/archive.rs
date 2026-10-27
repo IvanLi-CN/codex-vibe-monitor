@@ -318,6 +318,8 @@ const ARCHIVE_STORAGE_SCHEMA_UPGRADES: &[&str] = &[
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS summary_source_kind TEXT NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS upstream_activity_manifest_refreshed_at TEXT",
     "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS historical_rollups_materialized_at TEXT",
+    "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS coverage_start_epoch BIGINT",
+    "ALTER TABLE archive_batches ADD COLUMN IF NOT EXISTS coverage_end_epoch BIGINT",
     "ALTER TABLE archive_prune_ledger ADD COLUMN IF NOT EXISTS file_path TEXT",
     // Legacy rows that still have their manifest can be repaired from the authoritative path.
     // Rows whose metadata was already pruned intentionally remain NULL and fail closed.

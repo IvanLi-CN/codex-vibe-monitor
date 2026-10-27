@@ -899,6 +899,131 @@ impl StorageMigrationRuntime {
             }
         }
     }
+
+    pub(crate) async fn publish_worker_error(
+        &self,
+        error: String,
+    ) -> Result<StorageMigrationResponse> {
+        let (previous, snapshot) = {
+            let mut state = self.state.lock().await;
+            let previous = state.clone();
+            let now = Utc::now();
+            state.response.verification.last_error = Some(error.clone());
+            state.response.switch.failure_reason = Some(error);
+            state.response.heartbeat = StorageMigrationHeartbeat {
+                at: now.to_rfc3339(),
+                healthy: false,
+            };
+            state.status.updated_at_epoch_ms =
+                now.timestamp_millis().max(state.status.updated_at_epoch_ms);
+            refresh_response(&mut state);
+            state.response.heartbeat.healthy = false;
+            state.response.heartbeat.at = now.to_rfc3339();
+            advance_revision(&mut state.response)?;
+            (previous, state.clone())
+        };
+
+        match persist_state_if_current(
+            &self.state,
+            self.persistence.as_ref(),
+            self.pool.as_ref(),
+            &snapshot,
+            #[cfg(test)]
+            self.progress_persisting.as_ref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                let state = self.state.lock().await;
+                if state.response.revision != snapshot.response.revision {
+                    return Ok(state.response.clone());
+                }
+                let response = state.response.clone();
+                self.events.send_replace(StorageMigrationEvent {
+                    kind: "error",
+                    revision: response.revision,
+                    status: response.clone(),
+                });
+                Ok(response)
+            }
+            Ok(false) => Ok(self.snapshot().await),
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision == snapshot.response.revision {
+                    *state = previous;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn recover_postgres(
+        &self,
+        authority_generation: u64,
+        source_watermark: i64,
+    ) -> Result<StorageMigrationResponse> {
+        if authority_generation == 0 || source_watermark < 0 {
+            bail!("recovered PostgreSQL authority has invalid generation or watermark");
+        }
+        let (previous, snapshot) = {
+            let mut state = self.state.lock().await;
+            let previous = state.clone();
+            let now = Utc::now();
+            if state.status.state != MigrationState::Postgres {
+                state
+                    .status
+                    .transition_to(MigrationState::Postgres, now.timestamp_millis())?;
+            }
+            state.status.authority_generation = authority_generation;
+            state.response.progress.captured_through = Some(source_watermark);
+            state.response.progress.applied_through = Some(source_watermark);
+            state.response.progress.converged = Some(true);
+            state.response.progress.phase = StorageMigrationState::Postgres;
+            state.response.switch.result = Some("recovered".to_string());
+            state.response.switch.failure_reason = None;
+            state.response.verification.last_error = None;
+            state.response.heartbeat = StorageMigrationHeartbeat {
+                at: now.to_rfc3339(),
+                healthy: true,
+            };
+            refresh_response(&mut state);
+            advance_revision(&mut state.response)?;
+            (previous, state.clone())
+        };
+
+        match persist_state_if_current(
+            &self.state,
+            self.persistence.as_ref(),
+            self.pool.as_ref(),
+            &snapshot,
+            #[cfg(test)]
+            self.progress_persisting.as_ref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                let state = self.state.lock().await;
+                if state.response.revision != snapshot.response.revision {
+                    return Ok(state.response.clone());
+                }
+                let response = state.response.clone();
+                self.events.send_replace(StorageMigrationEvent {
+                    kind: "recovered",
+                    revision: response.revision,
+                    status: response.clone(),
+                });
+                Ok(response)
+            }
+            Ok(false) => Ok(self.snapshot().await),
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision == snapshot.response.revision {
+                    *state = previous;
+                }
+                Err(error)
+            }
+        }
+    }
 }
 
 async fn persist_state_if_current(
@@ -967,6 +1092,11 @@ fn build_response(
 ) -> StorageMigrationResponse {
     let state = StorageMigrationState::from(status.state);
     let authority_backend = authority_backend(status.state);
+    let queued_modules = if target_configured && status.state == MigrationState::Pending {
+        vec![module_name(status.module).to_string()]
+    } else {
+        Vec::new()
+    };
     let task_hold_active = migration_hold_active(status.state);
     let task_hold_reason = if task_hold_active {
         Some(
@@ -1001,7 +1131,7 @@ fn build_response(
             backend: authority_backend,
             generation: status.authority_generation,
         },
-        queued_modules: Vec::new(),
+        queued_modules,
         completed_modules: if status.state == MigrationState::Postgres {
             vec![module_name(status.module).to_string()]
         } else {

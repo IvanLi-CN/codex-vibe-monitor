@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::Result;
 use sqlx::{PgPool, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
+use tokio_util::sync::CancellationToken;
 
 use crate::storage::{
     core::{
@@ -1190,6 +1191,64 @@ async fn switch_catches_up_source_writes_during_large_pre_fence_verification() -
         .expect("coverage checkpoint");
     assert!(checkpoint.complete);
     assert_eq!(checkpoint.source_row_count, 8);
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_verification_stops_when_shutdown_is_cancelled() -> Result<()> {
+    let (directory, path) = state_path("verification-cancelled");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    source.register_module_table("events").await?;
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let store = Arc::new(FileMigrationStore::new(
+        &path,
+        AuthorityRecoveryContext {
+            migration_id: "migration-engine-test".into(),
+            installation_id: "installation-test".into(),
+            module: StorageModule::TrafficArchive,
+            source_identity: "sqlite-test".into(),
+            target_identity: "postgres-test".into(),
+            source_watermark: 1,
+        },
+    ));
+    let cancellation = CancellationToken::new();
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence,
+    )
+    .with_cancellation_token(cancellation.clone());
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+    source
+        .set_verification_delay_for_test(Duration::from_secs(10))
+        .await;
+
+    let verification = tokio::spawn({
+        let migration = migration.clone();
+        async move { migration.verify_table_coverage_at("events", 1).await }
+    });
+    source.wait_for_verification_for_test().await;
+    cancellation.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(1), verification).await??;
+    let error = result.expect_err("cancelled verification must not complete");
+    assert!(
+        format!("{error:#}").contains("storage migration engine cancelled"),
+        "unexpected cancellation error: {error:#}"
+    );
 
     fs::remove_dir_all(directory)?;
     Ok(())

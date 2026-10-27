@@ -156,6 +156,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
     let state = Arc::new(AppState {
         system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         storage_migration: Arc::new(StorageMigrationRuntime::default()),
+        storage_runtime: None,
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         config,
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),

@@ -114,6 +114,21 @@ impl StorageConfig {
             })
             .map(Some)
     }
+
+    pub(crate) fn connect_postgres_lazy(&self) -> Result<Option<PgPool>> {
+        let Some(database_url) = self.postgres_database_url.as_deref() else {
+            return Ok(None);
+        };
+        PgPoolOptions::new()
+            .max_connections(self.postgres_max_connections)
+            .connect_lazy(database_url)
+            .with_context(|| {
+                format!(
+                    "failed to initialize lazy PostgreSQL storage pool from {ENV_POSTGRES_DATABASE_URL}"
+                )
+            })
+            .map(Some)
+    }
 }
 
 fn parse_non_zero_u32(name: &str, default_value: u32) -> Result<u32> {

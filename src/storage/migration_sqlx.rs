@@ -12,10 +12,13 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use sqlx::{PgPool, Postgres, Row, Sqlite, SqlitePool, Transaction, sqlite::SqliteRow};
+use sqlx::{
+    PgPool, Postgres, Row, Sqlite, SqlitePool, Transaction, postgres::PgArguments, query::Query,
+    sqlite::SqliteRow,
+};
 
 use super::{
-    catalog::{ModuleCatalog, ModuleId},
+    catalog::{ModuleCatalog, ModuleId, NativeColumnType, NativeMigrationCatalog, NativeTableSpec},
     core::StorageModule,
     migration::{
         CaptureCheckpoint, CapturedChange, ChangeBatchLimits, ChangeInput, ChangeKind, ChunkProof,
@@ -24,6 +27,7 @@ use super::{
         SourcePage, SourceRangePage, SourceRangeSnapshot, SourceWriteAuthority, TableCopyPlan,
         TableCoverageProof, VersionedRow, select_change_batch, validate_checkpoint_progress,
     },
+    native::{NativeRow, NativeValue},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +43,7 @@ pub(crate) struct MigrationTableSpec {
     pub(crate) target_version_column: String,
     pub(crate) target_payload_column: String,
     pub(crate) target_schema: MigrationTableSchema,
+    pub(crate) native: Option<NativeTableSpec>,
 }
 
 impl MigrationTableSpec {
@@ -67,6 +72,7 @@ impl MigrationTableSpec {
             target_version_column: target_version_column.into(),
             target_payload_column: target_payload_column.into(),
             target_schema: MigrationTableSchema::default(),
+            native: None,
         };
         for (value, label) in [
             (&spec.logical_table_name, "logical migration table"),
@@ -103,6 +109,27 @@ impl MigrationTableSpec {
             "source_version",
             "payload",
         )
+    }
+
+    pub(crate) fn native(module: StorageModule, native: NativeTableSpec) -> Result<Self> {
+        let table_name = native.table_name().to_owned();
+        if native.stable_key_columns().is_empty() {
+            bail!("native migration table {table_name} has no stable key");
+        }
+        let mut spec = Self::new(
+            module,
+            table_name.clone(),
+            table_name.clone(),
+            table_name,
+            "stable_key",
+            "source_version",
+            "payload",
+            "stable_key",
+            "source_version",
+            "payload",
+        )?;
+        spec.native = Some(native);
+        Ok(spec)
     }
 }
 
@@ -200,6 +227,39 @@ fn module_table_names(
         .collect()
 }
 
+fn ordered_native_module_table_names(
+    specs: &BTreeMap<String, MigrationTableSpec>,
+    module: StorageModule,
+) -> Result<Vec<String>> {
+    let mut remaining = specs
+        .values()
+        .filter(|spec| spec.module == module)
+        .map(|spec| spec.logical_table_name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    while !remaining.is_empty() {
+        let next = remaining.iter().find(|table_name| {
+            let Some(native) = specs.get(*table_name).and_then(|spec| spec.native.as_ref()) else {
+                return true;
+            };
+            native.foreign_keys.iter().all(|foreign_key| {
+                foreign_key.table == (*table_name).as_str()
+                    && (!remaining.contains(&foreign_key.referenced_table)
+                        || foreign_key.referenced_table == (*table_name).as_str())
+            })
+        });
+        let Some(next) = next.cloned() else {
+            bail!(
+                "native migration table set contains a foreign-key cycle: {}",
+                remaining.into_iter().collect::<Vec<_>>().join(", ")
+            );
+        };
+        remaining.remove(&next);
+        ordered.push(next);
+    }
+    Ok(ordered)
+}
+
 fn ensure_catalog_specs(
     catalog: &ModuleCatalog,
     specs: &BTreeMap<String, MigrationTableSpec>,
@@ -249,6 +309,7 @@ struct SqliteCaptureState {
     next_version: i64,
     captured_bytes: u64,
     max_capture_bytes: u64,
+    capture_capacity_held: bool,
     continuity_lost: bool,
     baseline_required: bool,
     authority_generation: u64,
@@ -323,6 +384,41 @@ impl SqliteMigrationSource {
         Ok(source)
     }
 
+    pub(crate) fn from_native_catalog(
+        pool: SqlitePool,
+        migration_id: impl Into<String>,
+        source_identity: impl Into<String>,
+        capture_table_name: impl Into<String>,
+        catalog: &NativeMigrationCatalog,
+        module: StorageModule,
+    ) -> Result<Self> {
+        let specs = catalog
+            .tables
+            .iter()
+            .filter(|spec| {
+                spec.owner.module
+                    == match module {
+                        StorageModule::TrafficArchive => ModuleId::TrafficArchive,
+                        StorageModule::Analytics => ModuleId::Analytics,
+                        StorageModule::AccountRouting => ModuleId::AccountRouting,
+                        StorageModule::TaskOperations => ModuleId::TaskOperations,
+                        StorageModule::Performance => ModuleId::Performance,
+                    }
+            })
+            .map(|spec| MigrationTableSpec::native(module, spec.clone()))
+            .collect::<Result<Vec<_>>>()?;
+        if specs.is_empty() {
+            bail!("native migration catalog has no tables for {module:?}");
+        }
+        Self::new(
+            pool,
+            migration_id,
+            source_identity,
+            capture_table_name,
+            specs,
+        )
+    }
+
     pub(crate) async fn ensure_capture_schema(&self) -> Result<()> {
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
@@ -368,6 +464,7 @@ impl SqliteMigrationSource {
                 next_version INTEGER NOT NULL,
                 captured_bytes INTEGER NOT NULL,
                 max_capture_bytes INTEGER NOT NULL,
+                capture_capacity_held INTEGER NOT NULL DEFAULT 0,
                 continuity_lost INTEGER NOT NULL,
                 baseline_required INTEGER NOT NULL,
                 authority_generation INTEGER NOT NULL,
@@ -379,6 +476,24 @@ impl SqliteMigrationSource {
             .execute(&self.pool)
             .await
             .context("create SQLite migration capture state table")?;
+        let has_capacity_hold_column = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info({}) WHERE name = 'capture_capacity_held'
+            )",
+            sqlite_string_literal(&self.capture_state_table_name),
+        ))
+        .fetch_one(&self.pool)
+        .await?
+            != 0;
+        if !has_capacity_hold_column {
+            sqlx::query(&format!(
+                "ALTER TABLE {capture_state_table}
+                 ADD COLUMN capture_capacity_held INTEGER NOT NULL DEFAULT 0"
+            ))
+            .execute(&self.pool)
+            .await
+            .context("upgrade SQLite migration capture capacity state")?;
+        }
         let query = format!(
             "INSERT OR IGNORE INTO {capture_state_table}
                 (migration_id, source_identity, capture_generation, next_version,
@@ -415,6 +530,140 @@ impl SqliteMigrationSource {
             .execute(&self.pool)
             .await
             .context("initialize SQLite migration capture state")?;
+        Ok(())
+    }
+
+    /// Install database-level capture and fence triggers for every native table owned by this
+    /// source. This closes legacy SQL writers that cannot be changed to call an application
+    /// helper, while retaining the same durable capture checkpoint used by the engine.
+    pub(crate) async fn ensure_native_capture_triggers(&self) -> Result<()> {
+        let capture_table =
+            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        for spec in self.specs.values().filter_map(|spec| spec.native.as_ref()) {
+            let table = quote_identifier(spec.table_name(), "native SQLite source table")?;
+            let trigger_prefix = format!(
+                "migration_capture_{}",
+                spec.table_name()
+                    .chars()
+                    .map(|character| {
+                        if character.is_ascii_alphanumeric() || character == '_' {
+                            character
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect::<String>()
+            );
+            let fence_body = format!(
+                "BEGIN
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM {state_table}
+                         WHERE migration_id = {migration_id}
+                           AND source_identity = {source_identity}
+                           AND source_writes_fenced <> 0
+                    ) THEN RAISE(ABORT, 'SQLite source writes are fenced') END;
+                END",
+                migration_id = sqlite_string_literal(&self.migration_id),
+                source_identity = sqlite_string_literal(&self.source_identity),
+            );
+            for operation in ["INSERT", "UPDATE", "DELETE"] {
+                let trigger = quote_identifier(
+                    &format!("{trigger_prefix}_fence_{}", operation.to_ascii_lowercase()),
+                    "native SQLite fence trigger",
+                )?;
+                let query = format!(
+                    "CREATE TRIGGER IF NOT EXISTS {trigger}
+                     BEFORE {operation} ON {table}
+                     FOR EACH ROW {fence_body}"
+                );
+                sqlx::query(&query)
+                    .execute(&self.pool)
+                    .await
+                    .with_context(|| format!("install native SQLite {operation} fence trigger"))?;
+            }
+
+            let insert_payload = sqlite_native_capture_payload(spec, "NEW");
+            let delete_payload = "NULL".to_string();
+            let insert_key = sqlite_native_key_expression(spec, "NEW");
+            let delete_key = sqlite_native_key_expression(spec, "OLD");
+            let update_key = sqlite_native_key_expression(spec, "NEW");
+            let previous_key = sqlite_native_key_expression(spec, "OLD");
+            let insert_body = native_capture_trigger_body(
+                &capture_table,
+                &state_table,
+                &self.migration_id,
+                &self.source_identity,
+                spec.table_name(),
+                &insert_key,
+                "NULL",
+                "insert",
+                &insert_payload,
+            );
+            let update_body = native_capture_trigger_body(
+                &capture_table,
+                &state_table,
+                &self.migration_id,
+                &self.source_identity,
+                spec.table_name(),
+                &update_key,
+                "NULL",
+                "update",
+                &insert_payload,
+            );
+            let replace_body = native_capture_trigger_body(
+                &capture_table,
+                &state_table,
+                &self.migration_id,
+                &self.source_identity,
+                spec.table_name(),
+                &update_key,
+                &previous_key,
+                "replace",
+                &insert_payload,
+            );
+            let delete_body = native_capture_trigger_body(
+                &capture_table,
+                &state_table,
+                &self.migration_id,
+                &self.source_identity,
+                spec.table_name(),
+                &delete_key,
+                "NULL",
+                "delete",
+                &delete_payload,
+            );
+            let update_predicate = format!(" WHEN ({previous_key}) = ({update_key})");
+            let replace_predicate = format!(" WHEN ({previous_key}) <> ({update_key})");
+            for (suffix, event, predicate, body) in [
+                ("insert", "INSERT", "", insert_body),
+                ("update", "UPDATE", update_predicate.as_str(), update_body),
+                (
+                    "replace",
+                    "UPDATE",
+                    replace_predicate.as_str(),
+                    replace_body,
+                ),
+                ("delete", "DELETE", "", delete_body),
+            ] {
+                let trigger = quote_identifier(
+                    &format!("{trigger_prefix}_{suffix}"),
+                    "native SQLite capture trigger",
+                )?;
+                let query = format!(
+                    "CREATE TRIGGER IF NOT EXISTS {trigger}
+                     AFTER {event} ON {table}
+                     FOR EACH ROW{predicate} {body}"
+                );
+                sqlx::query(&query)
+                    .execute(&self.pool)
+                    .await
+                    .with_context(|| format!("install native SQLite {event} capture trigger"))?;
+            }
+        }
         Ok(())
     }
 
@@ -590,9 +839,6 @@ impl SqliteMigrationSource {
             .captured_bytes
             .checked_add(payload_bytes)
             .ok_or_else(|| anyhow!("SQLite migration capture byte count overflowed"))?;
-        if captured_bytes > state.max_capture_bytes {
-            bail!("SQLite migration capture exceeds its bounded storage capacity");
-        }
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
         let query = format!(
@@ -620,7 +866,11 @@ impl SqliteMigrationSource {
         )?;
         let query = format!(
             "UPDATE {state_table}
-                SET next_version = ?, captured_bytes = ?
+                SET next_version = ?, captured_bytes = ?,
+                    capture_capacity_held = CASE
+                        WHEN ? > max_capture_bytes THEN 1
+                        ELSE capture_capacity_held
+                    END
               WHERE migration_id = ?
                 AND source_identity = ?
                 AND authority_generation = ?
@@ -629,6 +879,10 @@ impl SqliteMigrationSource {
         );
         let result = sqlx::query(&query)
             .bind(state.next_version.max(change.source_version))
+            .bind(
+                i64::try_from(captured_bytes)
+                    .context("SQLite migration capture bytes overflowed")?,
+            )
             .bind(
                 i64::try_from(captured_bytes)
                     .context("SQLite migration capture bytes overflowed")?,
@@ -663,6 +917,61 @@ impl SqliteMigrationSource {
             .context("check SQLite migration capture continuity")
     }
 
+    pub(crate) async fn release_capture_through(&self, through: i64) -> Result<u64> {
+        if through < 0 {
+            bail!("SQLite migration capture release watermark must not be negative");
+        }
+        let mut transaction = self.pool.begin().await?;
+        let capture_table =
+            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
+        let deleted = sqlx::query(&format!(
+            "DELETE FROM {capture_table}
+              WHERE migration_id = ? AND source_identity = ? AND source_version <= ?"
+        ))
+        .bind(&self.migration_id)
+        .bind(&self.source_identity)
+        .bind(through)
+        .execute(&mut *transaction)
+        .await
+        .context("release consumed SQLite migration capture")?
+        .rows_affected();
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        sqlx::query(&format!(
+            "UPDATE {state_table}
+                SET captured_bytes = COALESCE((
+                        SELECT SUM(COALESCE(length(payload), 0))
+                          FROM {capture_table}
+                         WHERE migration_id = ? AND source_identity = ?
+                    ), 0),
+                    capture_capacity_held = CASE
+                        WHEN COALESCE((
+                            SELECT SUM(COALESCE(length(payload), 0))
+                              FROM {capture_table}
+                             WHERE migration_id = ? AND source_identity = ?
+                        ), 0) <= max_capture_bytes THEN 0
+                        ELSE 1
+                    END
+              WHERE migration_id = ? AND source_identity = ?"
+        ))
+        .bind(&self.migration_id)
+        .bind(&self.source_identity)
+        .bind(&self.migration_id)
+        .bind(&self.source_identity)
+        .bind(&self.migration_id)
+        .bind(&self.source_identity)
+        .execute(&mut *transaction)
+        .await
+        .context("release SQLite migration capture capacity")?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration capture release")?;
+        Ok(deleted)
+    }
+
     async fn load_capture_state_tx(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
@@ -673,6 +982,7 @@ impl SqliteMigrationSource {
         )?;
         let query = format!(
             "SELECT capture_generation, next_version, captured_bytes, max_capture_bytes,
+                    capture_capacity_held,
                     continuity_lost, baseline_required, authority_generation,
                     source_writes_fenced
                FROM {state_table}
@@ -692,6 +1002,7 @@ impl SqliteMigrationSource {
                 .context("SQLite migration capture bytes are negative")?,
             max_capture_bytes: u64::try_from(row.try_get::<i64, _>("max_capture_bytes")?)
                 .context("SQLite migration capture capacity is negative")?,
+            capture_capacity_held: row.try_get::<i64, _>("capture_capacity_held")? != 0,
             continuity_lost: row.try_get::<i64, _>("continuity_lost")? != 0,
             baseline_required: row.try_get::<i64, _>("baseline_required")? != 0,
             authority_generation: u64::try_from(row.try_get::<i64, _>("authority_generation")?)
@@ -701,7 +1012,6 @@ impl SqliteMigrationSource {
         if state.capture_generation == 0
             || state.next_version < 0
             || state.max_capture_bytes == 0
-            || state.captured_bytes > state.max_capture_bytes
             || state.authority_generation == 0
         {
             bail!("SQLite migration capture checkpoint is invalid");
@@ -728,6 +1038,16 @@ impl SqliteMigrationSource {
             .await
             .context("commit SQLite migration capture checkpoint read")?;
         Ok(checkpoint)
+    }
+
+    pub(crate) async fn capture_capacity_held(&self) -> Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite migration capture capacity read")?;
+        Ok(state.capture_capacity_held)
     }
 
     pub(crate) async fn mark_continuity_lost(&self) -> Result<()> {
@@ -794,6 +1114,7 @@ impl SqliteMigrationSource {
         let query = format!(
             "UPDATE {state_table}
                 SET capture_generation = ?, captured_bytes = 0,
+                    capture_capacity_held = 0,
                     continuity_lost = 0, baseline_required = 1
               WHERE migration_id = ? AND source_identity = ?"
         );
@@ -1031,6 +1352,699 @@ impl SqliteMigrationSource {
             .context("commit SQLite migration change read")?;
         Ok(selected)
     }
+
+    async fn native_table_bounds(
+        &self,
+        spec: &NativeTableSpec,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let table = quote_identifier(&spec.owner.table, "native source table")?;
+        let key = sqlite_native_key_expression(spec, "source");
+        let query = format!(
+            "SELECT MIN({key}) AS lower_bound, MAX({key}) AS upper_bound FROM {table} AS source"
+        );
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(&query)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read native SQLite source bounds")?;
+        let bounds = (
+            row.try_get::<Option<String>, _>("lower_bound")?,
+            row.try_get::<Option<String>, _>("upper_bound")?,
+        );
+        transaction
+            .commit()
+            .await
+            .context("commit native SQLite source bounds read")?;
+        Ok(bounds)
+    }
+
+    async fn native_scan_range_page(
+        &self,
+        spec: &NativeTableSpec,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourceRangePage> {
+        limits.validate()?;
+        let table = quote_identifier(spec.table_name(), "native source table")?;
+        let columns = native_sqlite_select_columns(spec, "source");
+        let key = sqlite_native_key_expression(spec, "source");
+        let mut predicates = Vec::new();
+        let mut binds = Vec::new();
+        if let Some(start) = cursor.or(lower_bound) {
+            predicates.push(format!(
+                "{key} {} ?",
+                if cursor.is_some() { ">" } else { ">=" }
+            ));
+            binds.push(start);
+        }
+        if let Some(upper_bound) = upper_bound {
+            predicates.push(format!("{key} <= ?"));
+            binds.push(upper_bound);
+        }
+        let where_clause = if predicates.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", predicates.join(" AND "))
+        };
+        let query = format!(
+            "SELECT {columns}, {key} AS __cvm_stable_key
+               FROM {table} AS source{where_clause}
+              ORDER BY {key} ASC LIMIT ?"
+        );
+        let mut sql_query = sqlx::query(&query);
+        for bind in binds {
+            sql_query = sql_query.bind(bind);
+        }
+        sql_query = sql_query.bind(
+            i64::try_from(
+                limits
+                    .max_rows
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("native SQLite page row limit overflowed"))?,
+            )
+            .context("native SQLite page row limit overflowed")?,
+        );
+        let mut transaction = self.pool.begin().await?;
+        let raw_rows = sql_query
+            .fetch_all(&mut *transaction)
+            .await
+            .context("read native SQLite migration page")?;
+        let mut rows = Vec::new();
+        let mut bytes = 0_usize;
+        let mut complete = true;
+        for row in raw_rows {
+            if rows.len() >= limits.max_rows {
+                complete = false;
+                break;
+            }
+            let native_row = NativeRow::from_sqlite_row(spec, &row)?;
+            let payload = native_row.encode_payload()?;
+            if payload.len() > limits.max_bytes && rows.is_empty() {
+                bail!("native SQLite row exceeds the copy byte budget");
+            }
+            let next_bytes = bytes
+                .checked_add(payload.len())
+                .ok_or_else(|| anyhow!("native SQLite page byte count overflowed"))?;
+            if next_bytes > limits.max_bytes {
+                complete = false;
+                break;
+            }
+            bytes = next_bytes;
+            rows.push(VersionedRow {
+                stable_key: row.try_get("__cvm_stable_key")?,
+                source_version: native_source_version(spec, &native_row, 0)?,
+                payload,
+            });
+        }
+        let capture_table =
+            quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
+        let watermark_query = format!(
+            "SELECT COALESCE(MAX(source_version), 0) FROM {capture_table}
+              WHERE migration_id = ? AND source_identity = ?"
+        );
+        let source_watermark = sqlx::query_scalar(&watermark_query)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .fetch_one(&mut *transaction)
+            .await
+            .context("read native SQLite migration watermark")?;
+        transaction
+            .commit()
+            .await
+            .context("commit native SQLite migration page")?;
+        Ok(SourceRangePage {
+            source_watermark,
+            page: SourcePage {
+                next_cursor: rows.last().map(|row| row.stable_key.clone()),
+                complete,
+                rows,
+            },
+        })
+    }
+}
+
+fn sqlite_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn sqlite_native_capture_payload(spec: &NativeTableSpec, alias: &str) -> String {
+    let fields = spec
+        .columns
+        .iter()
+        .map(|column| {
+            let quoted = format!("{alias}.{}", native_quote_identifier(&column.name));
+            let value = format!(
+                "CASE WHEN typeof({quoted}) = 'blob' \
+                 THEN json_object('__cvm_blob_hex', hex({quoted})) \
+                 ELSE {quoted} END"
+            );
+            format!("{}, {value}", sqlite_string_literal(&column.name))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("json_object({fields})")
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The trigger body mirrors the native capture contract fields."
+)]
+fn native_capture_trigger_body(
+    capture_table: &str,
+    state_table: &str,
+    migration_id: &str,
+    source_identity: &str,
+    table_name: &str,
+    stable_key: &str,
+    previous_key: &str,
+    kind: &str,
+    payload: &str,
+) -> String {
+    let migration_id = sqlite_string_literal(migration_id);
+    let source_identity = sqlite_string_literal(source_identity);
+    let table_name = sqlite_string_literal(table_name);
+    let kind = sqlite_string_literal(kind);
+    let payload_length = if payload == "NULL" {
+        "0".to_string()
+    } else {
+        format!("length(CAST({payload} AS BLOB))")
+    };
+    format!(
+        "BEGIN
+            INSERT INTO {capture_table}
+                (migration_id, source_identity, source_version, table_name,
+                 stable_key, previous_key, kind, payload, payload_digest)
+            VALUES (
+                {migration_id}, {source_identity},
+                (SELECT next_version + 1 FROM {state_table}
+                  WHERE migration_id = {migration_id}
+                    AND source_identity = {source_identity}),
+                {table_name}, {stable_key}, {previous_key}, {kind},
+                {payload}, ''
+            );
+            UPDATE {state_table}
+               SET next_version = next_version + 1,
+                   captured_bytes = captured_bytes + {payload_length},
+                   capture_capacity_held = CASE
+                       WHEN captured_bytes + {payload_length} > max_capture_bytes THEN 1
+                       ELSE capture_capacity_held
+                   END
+             WHERE migration_id = {migration_id}
+               AND source_identity = {source_identity};
+        END"
+    )
+}
+
+fn native_quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn sqlite_native_key_expression(spec: &NativeTableSpec, qualifier: &str) -> String {
+    spec.stable_key_columns()
+        .iter()
+        .map(|column| {
+            let column = format!(
+                "CAST({qualifier}.{} AS TEXT)",
+                native_quote_identifier(column)
+            );
+            format!("printf('%08d:%s', length(COALESCE({column}, '')), COALESCE({column}, ''))")
+        })
+        .collect::<Vec<_>>()
+        .join(" || char(31) || ")
+}
+
+fn postgres_native_key_expression(
+    spec: &NativeTableSpec,
+    qualifier: &str,
+    contract: Option<&NativeTargetContract>,
+) -> String {
+    contract
+        .map(|contract| contract.stable_key_columns.as_slice())
+        .unwrap_or_else(|| spec.stable_key_columns())
+        .iter()
+        .map(|column| {
+            let column = format!(
+                "CAST({qualifier}.{} AS TEXT)",
+                native_quote_identifier(column)
+            );
+            format!(
+                "lpad(length(COALESCE({column}, ''))::TEXT, 8, '0') || ':' || COALESCE({column}, '')"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" || chr(31) || ")
+}
+
+fn native_sqlite_select_columns(spec: &NativeTableSpec, qualifier: &str) -> String {
+    spec.columns
+        .iter()
+        .map(|column| {
+            let quoted = native_quote_identifier(&column.name);
+            format!("{qualifier}.{quoted} AS {quoted}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeTargetColumn {
+    source_column: String,
+    target_column: String,
+    source_type: NativeColumnType,
+    target_type: NativeColumnType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeTargetContract {
+    table_name: String,
+    columns: Vec<NativeTargetColumn>,
+    stable_key_columns: Vec<String>,
+}
+
+impl NativeTargetContract {
+    pub(crate) fn for_spec(spec: &NativeTableSpec) -> Result<Self> {
+        let source_column = |name: &str| {
+            spec.columns
+                .iter()
+                .find(|column| column.name == name)
+                .ok_or_else(|| anyhow!("native target contract is missing source column {name}"))
+        };
+        let mut columns = Vec::new();
+        if spec.table_name() == "archive_batches" {
+            let add = |columns: &mut Vec<NativeTargetColumn>,
+                       source: &str,
+                       target: &str,
+                       target_type: NativeColumnType| {
+                let source_definition = source_column(source)?;
+                columns.push(NativeTargetColumn {
+                    source_column: source.to_owned(),
+                    target_column: target.to_owned(),
+                    source_type: source_definition.postgres_type,
+                    target_type,
+                });
+                Ok::<(), anyhow::Error>(())
+            };
+            // The archive owner deliberately exposes a different PostgreSQL identity and part
+            // column. Keep every conversion in this contract so INSERT, replay, and verification
+            // cannot silently fall back to SQLite names.
+            add(
+                &mut columns,
+                "id",
+                "archive_batch_id",
+                NativeColumnType::BigInt,
+            )?;
+            for name in [
+                "dataset",
+                "month_key",
+                "day_key",
+                "file_path",
+                "sha256",
+                "row_count",
+                "status",
+                "layout",
+                "codec",
+                "writer_version",
+                "cleanup_state",
+                "cleanup_source_safe_start_date",
+                "replacement_staged_path",
+                "superseded_by",
+                "coverage_start_at",
+                "coverage_end_at",
+                "coverage_start_epoch",
+                "coverage_end_epoch",
+                "archive_expires_at",
+                "summary_source_kind",
+                "created_at",
+            ] {
+                add(&mut columns, name, name, source_column(name)?.postgres_type)?;
+            }
+            add(&mut columns, "part_key", "part", NativeColumnType::BigInt)?;
+            add(
+                &mut columns,
+                "sha256",
+                "source_identity_sha256",
+                NativeColumnType::Text,
+            )?;
+            // These target columns are newer than the SQLite source schema. The archive digest is
+            // the only durable identity available in the source row, so use it explicitly rather
+            // than relying on a target default that could hide a missing mapping.
+            for name in [
+                "upstream_activity_manifest_refreshed_at",
+                "historical_rollups_materialized_at",
+            ] {
+                if spec.columns.iter().any(|column| column.name == name) {
+                    add(&mut columns, name, name, source_column(name)?.postgres_type)?;
+                }
+            }
+            let source_names = spec
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let mapped_names = columns
+                .iter()
+                .map(|column| column.source_column.as_str())
+                .collect::<BTreeSet<_>>();
+            let unmapped = source_names
+                .difference(&mapped_names)
+                .copied()
+                .collect::<Vec<_>>();
+            if !unmapped.is_empty() {
+                bail!(
+                    "archive_batches native target contract does not map source columns: {}",
+                    unmapped.join(", ")
+                );
+            }
+            Ok(Self {
+                table_name: spec.table_name().to_owned(),
+                columns,
+                stable_key_columns: vec!["archive_batch_id".to_owned()],
+            })
+        } else {
+            for column in &spec.columns {
+                columns.push(NativeTargetColumn {
+                    source_column: column.name.clone(),
+                    target_column: column.name.clone(),
+                    source_type: column.postgres_type,
+                    target_type: column.postgres_type,
+                });
+            }
+            Ok(Self {
+                table_name: spec.table_name().to_owned(),
+                columns,
+                stable_key_columns: spec.stable_key_columns().to_vec(),
+            })
+        }
+    }
+
+    fn column_for_source(&self, source_column: &str) -> Result<&NativeTargetColumn> {
+        self.columns
+            .iter()
+            .find(|column| column.source_column == source_column)
+            .ok_or_else(|| {
+                anyhow!("native target contract is missing source column {source_column}")
+            })
+    }
+
+    pub(crate) fn target_column_for_source(&self, source_column: &str) -> Result<&str> {
+        Ok(&self.column_for_source(source_column)?.target_column)
+    }
+
+    pub(crate) fn target_columns(&self) -> impl Iterator<Item = &str> {
+        self.columns
+            .iter()
+            .map(|column| column.target_column.as_str())
+    }
+}
+
+fn native_postgres_select_columns(
+    spec: &NativeTableSpec,
+    qualifier: &str,
+    contract: &NativeTargetContract,
+) -> Result<String> {
+    spec.columns
+        .iter()
+        .map(|column| {
+            let mapping = contract.column_for_source(&column.name)?;
+            let target = format!(
+                "{qualifier}.{}",
+                native_quote_identifier(&mapping.target_column)
+            );
+            let expression = if mapping.source_type == mapping.target_type {
+                target
+            } else {
+                format!("CAST({target} AS {})", mapping.source_type.postgres_name())
+            };
+            Ok(format!(
+                "{expression} AS {}",
+                native_quote_identifier(&column.name)
+            ))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|columns| columns.join(", "))
+}
+
+fn native_source_version(spec: &NativeTableSpec, row: &NativeRow, fallback: i64) -> Result<i64> {
+    let Some(column) = spec
+        .source_watermark
+        .business_source_version_column
+        .as_deref()
+    else {
+        return Ok(fallback);
+    };
+    match row.values().iter().find(|(name, _)| name == column) {
+        Some((_, NativeValue::BigInt(value))) if *value >= 0 => Ok(*value),
+        Some((_, NativeValue::Null)) => Ok(fallback),
+        Some((_, value)) => bail!("native source watermark column {column} has value {value:?}"),
+        None => bail!("native source watermark column {column} is missing"),
+    }
+}
+
+fn bind_pg_native_value<'q>(
+    query: Query<'q, Postgres, PgArguments>,
+    column_type: NativeColumnType,
+    value: &NativeValue,
+) -> Result<Query<'q, Postgres, PgArguments>> {
+    match (column_type, value) {
+        (NativeColumnType::BigInt, NativeValue::Null) => Ok(query.bind(Option::<i64>::None)),
+        (NativeColumnType::BigInt, NativeValue::BigInt(value)) => Ok(query.bind(*value)),
+        (NativeColumnType::DoublePrecision, NativeValue::Null) => {
+            Ok(query.bind(Option::<f64>::None))
+        }
+        (NativeColumnType::DoublePrecision, NativeValue::Double(value)) => Ok(query.bind(*value)),
+        (NativeColumnType::Boolean, NativeValue::Null) => Ok(query.bind(Option::<bool>::None)),
+        (NativeColumnType::Boolean, NativeValue::Boolean(value)) => Ok(query.bind(*value)),
+        (NativeColumnType::Text, NativeValue::Null) => Ok(query.bind(Option::<String>::None)),
+        (NativeColumnType::Text, NativeValue::Text(value)) => Ok(query.bind(value.clone())),
+        (NativeColumnType::Bytea, NativeValue::Null) => Ok(query.bind(Option::<Vec<u8>>::None)),
+        (NativeColumnType::Bytea, NativeValue::Bytes(value)) => Ok(query.bind(value.clone())),
+        (_, value) => bail!("native row value {value:?} does not match its PostgreSQL type"),
+    }
+}
+
+fn bind_pg_native_target_value<'q>(
+    query: Query<'q, Postgres, PgArguments>,
+    column_type: NativeColumnType,
+    value: &NativeValue,
+) -> Result<Query<'q, Postgres, PgArguments>> {
+    match (column_type, value) {
+        (NativeColumnType::BigInt, NativeValue::Text(value)) => Ok(query.bind(
+            value
+                .parse::<i64>()
+                .with_context(|| format!("native target BIGINT is not numeric: {value}"))?,
+        )),
+        (NativeColumnType::Text, NativeValue::BigInt(value)) => Ok(query.bind(value.to_string())),
+        (NativeColumnType::Text, NativeValue::Boolean(value)) => {
+            Ok(query.bind(if *value { "1" } else { "0" }.to_owned()))
+        }
+        (NativeColumnType::Text, NativeValue::Double(value)) => Ok(query.bind(value.to_string())),
+        (NativeColumnType::DoublePrecision, NativeValue::BigInt(value)) => {
+            Ok(query.bind(*value as f64))
+        }
+        (NativeColumnType::DoublePrecision, NativeValue::Text(value)) => {
+            Ok(query.bind(value.parse::<f64>().with_context(|| {
+                format!("native target DOUBLE PRECISION is not numeric: {value}")
+            })?))
+        }
+        _ => bind_pg_native_value(query, column_type, value),
+    }
+}
+
+async fn upsert_native_row_tx(
+    transaction: &mut Transaction<'_, Postgres>,
+    spec: &NativeTableSpec,
+    row: &VersionedRow,
+) -> Result<()> {
+    let native_row = NativeRow::decode_payload(spec, &row.payload)?;
+    let contract = NativeTargetContract::for_spec(spec)?;
+    let table = native_quote_identifier(&contract.table_name);
+    let columns = contract
+        .columns
+        .iter()
+        .map(|column| native_quote_identifier(&column.target_column))
+        .collect::<Vec<_>>();
+    let key_columns = contract
+        .stable_key_columns
+        .iter()
+        .map(|column| native_quote_identifier(column))
+        .collect::<Vec<_>>();
+    let updates = contract
+        .columns
+        .iter()
+        .filter(|column| !contract.stable_key_columns.contains(&column.target_column))
+        .map(|column| {
+            let quoted = native_quote_identifier(&column.target_column);
+            format!("{quoted} = EXCLUDED.{quoted}")
+        })
+        .collect::<Vec<_>>();
+    let conflict = if updates.is_empty() {
+        "DO NOTHING".to_string()
+    } else {
+        format!("DO UPDATE SET {}", updates.join(", "))
+    };
+    let placeholders = (1..=columns.len())
+        .map(|index| format!("${index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query_sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({placeholders}) ON CONFLICT ({}) {conflict}",
+        columns.join(", "),
+        key_columns.join(", ")
+    );
+    let mut query = sqlx::query(&query_sql);
+    for mapping in &contract.columns {
+        let value = native_row
+            .values()
+            .iter()
+            .find(|(column, _)| column == &mapping.source_column)
+            .map(|(_, value)| value)
+            .ok_or_else(|| {
+                anyhow!(
+                    "native row contains unknown source column {}",
+                    mapping.source_column
+                )
+            })?;
+        query = bind_pg_native_target_value(query, mapping.target_type, value)?;
+    }
+    query
+        .execute(&mut **transaction)
+        .await
+        .with_context(|| format!("upsert native PostgreSQL row {}", row.stable_key))?;
+    Ok(())
+}
+
+async fn delete_native_row_tx(
+    transaction: &mut Transaction<'_, Postgres>,
+    spec: &NativeTableSpec,
+    stable_key: &str,
+    _source_version: i64,
+) -> Result<()> {
+    let contract = NativeTargetContract::for_spec(spec)?;
+    let table = native_quote_identifier(&contract.table_name);
+    let key = postgres_native_key_expression(spec, "target", Some(&contract));
+    let query = format!("DELETE FROM {table} AS target WHERE {key} = $1");
+    sqlx::query(&query)
+        .bind(stable_key)
+        .execute(&mut **transaction)
+        .await
+        .context("delete native PostgreSQL row")?;
+    Ok(())
+}
+
+async fn native_postgres_scan_range_page(
+    pool: &PgPool,
+    spec: &NativeTableSpec,
+    cursor: Option<&str>,
+    lower_bound: Option<&str>,
+    upper_bound: Option<&str>,
+    limits: CopyLimits,
+) -> Result<SourcePage> {
+    limits.validate()?;
+    let contract = NativeTargetContract::for_spec(spec)?;
+    let table = native_quote_identifier(&contract.table_name);
+    let columns = native_postgres_select_columns(spec, "target", &contract)?;
+    let key = postgres_native_key_expression(spec, "target", Some(&contract));
+    let mut predicates = Vec::new();
+    let mut binds = Vec::new();
+    if let Some(start) = cursor.or(lower_bound) {
+        predicates.push(format!(
+            "{key} {} ${}",
+            if cursor.is_some() { ">" } else { ">=" },
+            binds.len() + 1
+        ));
+        binds.push(start);
+    }
+    if let Some(upper_bound) = upper_bound {
+        predicates.push(format!("{key} <= ${}", binds.len() + 1));
+        binds.push(upper_bound);
+    }
+    let where_clause = if predicates.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", predicates.join(" AND "))
+    };
+    let limit_parameter = binds.len() + 1;
+    let query = format!(
+        "SELECT {columns}, {key} AS __cvm_stable_key
+           FROM {table} AS target{where_clause}
+          ORDER BY {key} ASC LIMIT ${limit_parameter}"
+    );
+    let mut sql_query = sqlx::query(&query);
+    for bind in binds {
+        sql_query = sql_query.bind(bind);
+    }
+    sql_query = sql_query.bind(
+        i64::try_from(
+            limits
+                .max_rows
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("native PostgreSQL page row limit overflowed"))?,
+        )
+        .context("native PostgreSQL page row limit overflowed")?,
+    );
+    let mut transaction = pool.begin().await?;
+    let raw_rows = sql_query
+        .fetch_all(&mut *transaction)
+        .await
+        .context("read native PostgreSQL migration page")?;
+    let mut rows = Vec::new();
+    let mut bytes = 0_usize;
+    let mut complete = true;
+    for row in raw_rows {
+        if rows.len() >= limits.max_rows {
+            complete = false;
+            break;
+        }
+        let native_row = NativeRow::from_postgres_row(spec, &row)?;
+        let payload = native_row.encode_payload()?;
+        if payload.len() > limits.max_bytes && rows.is_empty() {
+            bail!("native PostgreSQL row exceeds the copy byte budget");
+        }
+        let next_bytes = bytes
+            .checked_add(payload.len())
+            .ok_or_else(|| anyhow!("native PostgreSQL page byte count overflowed"))?;
+        if next_bytes > limits.max_bytes {
+            complete = false;
+            break;
+        }
+        bytes = next_bytes;
+        rows.push(VersionedRow {
+            stable_key: row.try_get("__cvm_stable_key")?,
+            source_version: native_source_version(spec, &native_row, 0)?,
+            payload,
+        });
+    }
+    transaction
+        .commit()
+        .await
+        .context("commit native PostgreSQL migration page")?;
+    Ok(SourcePage {
+        next_cursor: rows.last().map(|row| row.stable_key.clone()),
+        complete,
+        rows,
+    })
+}
+
+async fn native_postgres_table_bounds(
+    pool: &PgPool,
+    spec: &NativeTableSpec,
+) -> Result<(Option<String>, Option<String>)> {
+    let contract = NativeTargetContract::for_spec(spec)?;
+    let table = native_quote_identifier(&contract.table_name);
+    let key = postgres_native_key_expression(spec, "target", Some(&contract));
+    let query = format!(
+        "SELECT MIN({key}) AS lower_bound, MAX({key}) AS upper_bound FROM {table} AS target"
+    );
+    let row = sqlx::query(&query)
+        .fetch_one(pool)
+        .await
+        .context("read native PostgreSQL target bounds")?;
+    Ok((
+        row.try_get::<Option<String>, _>("lower_bound")?,
+        row.try_get::<Option<String>, _>("upper_bound")?,
+    ))
 }
 
 fn decode_sqlite_change(
@@ -1038,17 +2052,36 @@ fn decode_sqlite_change(
     migration_id: &str,
     source_identity: &str,
 ) -> Result<CapturedChange> {
-    let change = CapturedChange {
+    let kind = parse_change_kind(row.try_get::<String, _>("kind")?.as_str())?;
+    let payload: Option<Vec<u8>> = row.try_get("payload")?;
+    let mut change = CapturedChange {
         migration_id: row.try_get("migration_id")?,
         source_identity: row.try_get("source_identity")?,
         source_version: row.try_get("source_version")?,
         table_name: row.try_get("table_name")?,
         stable_key: row.try_get("stable_key")?,
         previous_key: row.try_get("previous_key")?,
-        kind: parse_change_kind(row.try_get::<String, _>("kind")?.as_str())?,
-        payload: row.try_get("payload")?,
+        kind,
+        payload: payload.clone(),
         payload_digest: row.try_get("payload_digest")?,
     };
+    // Native SQLite triggers cannot compute SHA-256 inside SQL. An empty digest is therefore a
+    // deliberate trigger marker; compute the same digest as application-side capture before
+    // validating the row.
+    if change.payload_digest.is_empty() {
+        change = CapturedChange::from_input(
+            &change.migration_id,
+            &change.source_identity,
+            change.source_version,
+            ChangeInput {
+                table_name: change.table_name.clone(),
+                stable_key: change.stable_key.clone(),
+                previous_key: change.previous_key.clone(),
+                kind,
+                payload,
+            },
+        )?;
+    }
     change.validate_for(migration_id, source_identity)?;
     Ok(change)
 }
@@ -1099,7 +2132,16 @@ impl MigrationSource for SqliteMigrationSource {
     }
 
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>> {
-        let tables = module_table_names(&self.specs, module);
+        let tables = if self
+            .specs
+            .values()
+            .filter(|spec| spec.module == module)
+            .all(|spec| spec.native.is_some())
+        {
+            ordered_native_module_table_names(&self.specs, module)?
+        } else {
+            module_table_names(&self.specs, module)
+        };
         if tables.is_empty() {
             bail!("SQLite migration source has no mapped tables for {module:?}");
         }
@@ -1108,6 +2150,9 @@ impl MigrationSource for SqliteMigrationSource {
 
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
         let spec = self.spec(table_name)?;
+        if let Some(native) = spec.native.as_ref() {
+            return self.native_table_bounds(native).await;
+        }
         let table = quote_identifier(&spec.source_table_name, "source migration table")?;
         let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
         let query = format!(
@@ -1156,6 +2201,11 @@ impl MigrationSource for SqliteMigrationSource {
             bail!("SQLite migration page limits must be positive");
         }
         let spec = self.spec(table_name)?;
+        if let Some(native) = spec.native.as_ref() {
+            return self
+                .native_scan_range_page(native, cursor, lower_bound, upper_bound, limits)
+                .await;
+        }
         let table = quote_identifier(&spec.source_table_name, "source migration table")?;
         let key = quote_identifier(&spec.source_key_column, "source stable-key column")?;
         let version = quote_identifier(&spec.source_version_column, "source version column")?;
@@ -1316,6 +2366,11 @@ impl MigrationSource for SqliteMigrationSource {
         self.read_changes(after, through, limits).await
     }
 
+    async fn release_capture_through(&self, through: i64) -> Result<()> {
+        SqliteMigrationSource::release_capture_through(self, through).await?;
+        Ok(())
+    }
+
     fn migration_id(&self) -> &str {
         &self.migration_id
     }
@@ -1330,6 +2385,7 @@ pub(crate) struct PostgresMigrationTarget {
     pool: PgPool,
     metadata: PostgresMigrationMetadataTables,
     specs: Arc<BTreeMap<String, MigrationTableSpec>>,
+    native_catalog: Option<NativeMigrationCatalog>,
 }
 
 #[derive(Debug, Clone)]
@@ -1364,10 +2420,46 @@ impl PostgresMigrationTarget {
             pool,
             metadata: PostgresMigrationMetadataTables::new(metadata_prefix.as_ref())?,
             specs: Arc::new(spec_map(specs)?),
+            native_catalog: None,
+        })
+    }
+
+    pub(crate) fn new_native(
+        pool: PgPool,
+        metadata_prefix: impl AsRef<str>,
+        catalog: NativeMigrationCatalog,
+        module: StorageModule,
+    ) -> Result<Self> {
+        let specs = catalog
+            .tables
+            .iter()
+            .filter(|spec| {
+                spec.owner.module
+                    == match module {
+                        StorageModule::TrafficArchive => ModuleId::TrafficArchive,
+                        StorageModule::Analytics => ModuleId::Analytics,
+                        StorageModule::AccountRouting => ModuleId::AccountRouting,
+                        StorageModule::TaskOperations => ModuleId::TaskOperations,
+                        StorageModule::Performance => ModuleId::Performance,
+                    }
+            })
+            .map(|spec| MigrationTableSpec::native(module, spec.clone()))
+            .collect::<Result<Vec<_>>>()?;
+        if specs.is_empty() {
+            bail!("native migration catalog has no target tables for {module:?}");
+        }
+        Ok(Self {
+            pool,
+            metadata: PostgresMigrationMetadataTables::new(metadata_prefix.as_ref())?,
+            specs: Arc::new(spec_map(specs)?),
+            native_catalog: Some(catalog),
         })
     }
 
     async fn ensure_target_table_schema(&self, spec: &MigrationTableSpec) -> Result<()> {
+        if spec.native.is_some() {
+            return Ok(());
+        }
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
         let version = quote_identifier(&spec.target_version_column, "target version column")?;
@@ -1434,6 +2526,11 @@ impl PostgresMigrationTarget {
     }
 
     pub(crate) async fn ensure_schema(&self) -> Result<()> {
+        if let Some(catalog) = self.native_catalog.clone() {
+            super::native::PostgresNativeSchemaAdapter::new(self.pool.clone(), catalog)
+                .ensure_schema()
+                .await?;
+        }
         let mut target_tables = BTreeSet::new();
         for spec in self.specs.values() {
             if target_tables.insert(spec.target_table_name.clone()) {
@@ -1590,6 +2687,25 @@ impl PostgresMigrationTarget {
             .ok_or_else(|| anyhow!("PostgreSQL migration table is not mapped: {table_name}"))
     }
 
+    async fn native_scan_range_page(
+        &self,
+        spec: &NativeTableSpec,
+        cursor: Option<&str>,
+        lower_bound: Option<&str>,
+        upper_bound: Option<&str>,
+        limits: CopyLimits,
+    ) -> Result<SourcePage> {
+        native_postgres_scan_range_page(&self.pool, spec, cursor, lower_bound, upper_bound, limits)
+            .await
+    }
+
+    async fn native_table_bounds(
+        &self,
+        spec: &NativeTableSpec,
+    ) -> Result<(Option<String>, Option<String>)> {
+        native_postgres_table_bounds(&self.pool, spec).await
+    }
+
     async fn load_plan_tx(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
@@ -1704,6 +2820,9 @@ impl PostgresMigrationTarget {
         spec: &MigrationTableSpec,
         row: &VersionedRow,
     ) -> Result<()> {
+        if let Some(native) = spec.native.as_ref() {
+            return upsert_native_row_tx(transaction, native, row).await;
+        }
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
         let version = quote_identifier(&spec.target_version_column, "target version column")?;
@@ -1732,6 +2851,9 @@ impl PostgresMigrationTarget {
         stable_key: &str,
         source_version: i64,
     ) -> Result<()> {
+        if let Some(native) = spec.native.as_ref() {
+            return delete_native_row_tx(transaction, native, stable_key, source_version).await;
+        }
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
         let version = quote_identifier(&spec.target_version_column, "target version column")?;
@@ -2000,6 +3122,11 @@ impl MigrationTarget for PostgresMigrationTarget {
     ) -> Result<SourcePage> {
         limits.validate()?;
         let spec = self.spec(table_name)?;
+        if let Some(native) = spec.native.as_ref() {
+            return self
+                .native_scan_range_page(native, cursor, lower_bound, upper_bound, limits)
+                .await;
+        }
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
         let version = quote_identifier(&spec.target_version_column, "target version column")?;
@@ -2119,6 +3246,9 @@ impl MigrationTarget for PostgresMigrationTarget {
 
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)> {
         let spec = self.spec(table_name)?;
+        if let Some(native) = spec.native.as_ref() {
+            return self.native_table_bounds(native).await;
+        }
         let table = quote_identifier(&spec.target_table_name, "target migration table")?;
         let key = quote_identifier(&spec.target_key_column, "target stable-key column")?;
         let query = format!(

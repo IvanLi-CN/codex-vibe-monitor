@@ -7,6 +7,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
+    future::Future,
     io::Write,
     path::{Path, PathBuf},
     sync::{
@@ -21,6 +22,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
+use tokio_util::sync::CancellationToken;
 
 use super::core::{
     AuthorityManifestStore, AuthorityPublication, AuthorityRecoveryContext,
@@ -236,8 +238,8 @@ impl CaptureCheckpoint {
         if self.capture_generation == 0 || self.next_version < 0 {
             bail!("capture checkpoint has an invalid generation or version");
         }
-        if self.max_capture_bytes == 0 || self.captured_bytes > self.max_capture_bytes {
-            bail!("capture checkpoint exceeds its bounded storage capacity");
+        if self.max_capture_bytes == 0 {
+            bail!("capture checkpoint has no bounded storage capacity");
         }
         if self.continuity_lost && !self.baseline_required {
             bail!("a continuity-lost capture checkpoint requires a new baseline");
@@ -1003,6 +1005,7 @@ pub(crate) trait MigrationSource: Send + Sync {
         through: i64,
         limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>>;
+    async fn release_capture_through(&self, through: i64) -> Result<()>;
     fn migration_id(&self) -> &str;
     fn source_identity(&self) -> &str;
 }
@@ -1430,9 +1433,6 @@ impl InMemoryMigrationSource {
             .captured_bytes
             .checked_add(transaction_bytes)
             .ok_or_else(|| anyhow!("source change capture byte count overflowed"))?;
-        if next_bytes > DEFAULT_MAX_CAPTURE_BYTES {
-            bail!("source change capture exceeds its bounded storage capacity");
-        }
         for change in &captured {
             state
                 .module_tables
@@ -1568,6 +1568,27 @@ impl InMemoryMigrationSource {
             bail!("source change capture continuity has been lost");
         }
         select_changes(&state.changes, after, through, limits)
+    }
+
+    pub(crate) async fn release_capture_through(&self, through: i64) -> Result<()> {
+        if through < 0 {
+            bail!("in-memory migration capture release watermark must not be negative");
+        }
+        let mut state = self.state.lock().await;
+        state
+            .changes
+            .retain(|change| change.source_version > through);
+        state.captured_bytes = state.changes.iter().try_fold(0_u64, |total, change| {
+            total
+                .checked_add(
+                    change
+                        .payload
+                        .as_ref()
+                        .map_or(0, |payload| payload.len() as u64),
+                )
+                .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
+        })?;
+        Ok(())
     }
 }
 
@@ -1870,6 +1891,10 @@ impl MigrationSource for InMemoryMigrationSource {
         limits: ChangeBatchLimits,
     ) -> Result<Vec<CapturedChange>> {
         self.read_changes(after, Some(through), limits).await
+    }
+
+    async fn release_capture_through(&self, through: i64) -> Result<()> {
+        InMemoryMigrationSource::release_capture_through(self, through).await
     }
 
     fn migration_id(&self) -> &str {
@@ -3045,6 +3070,7 @@ pub(crate) struct MigrationEngine<S, T, M> {
     fence: SourceWriteFence,
     switching: Arc<Mutex<()>>,
     run_control: MigrationRunControl,
+    cancellation: CancellationToken,
 }
 
 impl<S, T, M> Clone for MigrationEngine<S, T, M> {
@@ -3061,6 +3087,7 @@ impl<S, T, M> Clone for MigrationEngine<S, T, M> {
             fence: self.fence.clone(),
             switching: Arc::clone(&self.switching),
             run_control: self.run_control.clone(),
+            cancellation: self.cancellation.clone(),
         }
     }
 }
@@ -3106,11 +3133,30 @@ where
             fence,
             switching: Arc::new(Mutex::new(())),
             run_control: MigrationRunControl::default(),
+            cancellation: CancellationToken::new(),
         })
     }
 
     pub(crate) fn run_control(&self) -> MigrationRunControl {
         self.run_control.clone()
+    }
+
+    pub(crate) fn with_cancellation_token(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    async fn cancellable<F, R, E>(&self, operation: F) -> Result<R>
+    where
+        F: Future<Output = std::result::Result<R, E>>,
+        E: Into<anyhow::Error>,
+    {
+        tokio::select! {
+            _ = self.cancellation.cancelled() => {
+                Err(anyhow!("storage migration engine cancelled"))
+            }
+            result = operation => result.map_err(Into::into),
+        }
     }
 
     async fn ensure_capture_ready(&self) -> Result<CaptureCheckpoint> {
@@ -3291,17 +3337,18 @@ where
         if checkpoint.complete {
             return self.progress_for(&checkpoint).await;
         }
-        let page = tokio::time::timeout(
-            self.limits.copy.source_read_budget,
-            self.source.scan_page(
-                table_name,
-                checkpoint.cursor.as_deref(),
-                plan.scan_upper_bound.as_deref(),
-                self.limits.copy,
-            ),
-        )
-        .await
-        .context("SQLite migration source page exceeded its read budget")??;
+        let page = self
+            .cancellable(tokio::time::timeout(
+                self.limits.copy.source_read_budget,
+                self.source.scan_page(
+                    table_name,
+                    checkpoint.cursor.as_deref(),
+                    plan.scan_upper_bound.as_deref(),
+                    self.limits.copy,
+                ),
+            ))
+            .await
+            .context("SQLite migration source page exceeded its read budget")??;
         page.validate(
             table_name,
             checkpoint.cursor.as_deref(),
@@ -3328,12 +3375,19 @@ where
             complete: page.complete,
             ..checkpoint
         };
-        self.target
-            .apply_baseline_page(&plan, &page, &next_checkpoint)
+        self.cancellable(
+            self.target
+                .apply_baseline_page(&plan, &page, &next_checkpoint),
+        )
+        .await?;
+        self.cancellable(self.persist_checkpoint(&next_checkpoint))
             .await?;
-        self.persist_checkpoint(&next_checkpoint).await?;
         if !self.limits.copy.batch_yield.is_zero() {
-            tokio::time::sleep(self.limits.copy.batch_yield).await;
+            self.cancellable(async {
+                tokio::time::sleep(self.limits.copy.batch_yield).await;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await?;
         }
         self.progress_for(&next_checkpoint).await
     }
@@ -3342,6 +3396,11 @@ where
         self.ensure_running().await?;
         let watermark = self.source.capture_watermark().await?;
         self.catch_up_through(table_name, watermark).await
+    }
+
+    pub(crate) async fn release_capture_through(&self, through: i64) -> Result<()> {
+        self.ensure_running().await?;
+        self.source.release_capture_through(through).await
     }
 
     async fn catch_up_through(
@@ -3366,12 +3425,11 @@ where
         }
         while checkpoint.applied_through < watermark {
             let changes = self
-                .source
-                .changes_through(
+                .cancellable(self.source.changes_through(
                     checkpoint.applied_through,
                     watermark,
                     self.limits.change_batch,
-                )
+                ))
                 .await?;
             if changes.is_empty() {
                 bail!("source capture skipped a required migration watermark prefix");
@@ -3394,15 +3452,15 @@ where
                 .collect::<Vec<_>>();
             checkpoint.captured_through = through;
             checkpoint.applied_through = through;
-            self.target
-                .apply_change_batch(
-                    self.source.migration_id(),
-                    self.source.source_identity(),
-                    &table_changes,
-                    &checkpoint,
-                )
+            self.cancellable(self.target.apply_change_batch(
+                self.source.migration_id(),
+                self.source.source_identity(),
+                &table_changes,
+                &checkpoint,
+            ))
+            .await?;
+            self.cancellable(self.persist_checkpoint(&checkpoint))
                 .await?;
-            self.persist_checkpoint(&checkpoint).await?;
         }
         // A target can commit the replay and lose the metadata acknowledgement; rewrite the
         // durable metadata checkpoint when a restart observes the committed target checkpoint.
@@ -3417,17 +3475,18 @@ where
     ) -> Result<ChunkVerification> {
         self.ensure_capture_ready().await?;
         let source_snapshot = self
-            .source
-            .rows_in_range_snapshot(table_name, &range)
+            .cancellable(self.source.rows_in_range_snapshot(table_name, &range))
             .await?;
         let source_watermark = source_snapshot.source_watermark;
         let source_rows = source_snapshot.rows;
-        let target_rows = self.target.rows_in_range(table_name, &range).await?;
+        let target_rows = self
+            .cancellable(self.target.rows_in_range(table_name, &range))
+            .await?;
         let source_digest = rows_digest(&source_rows);
         let target_digest = rows_digest(&target_rows);
         if source_rows != target_rows
             || source_digest != target_digest
-            || self.source.capture_watermark().await? != source_watermark
+            || self.cancellable(self.source.capture_watermark()).await? != source_watermark
         {
             return Ok(ChunkVerification::Dirty);
         }
@@ -3443,7 +3502,8 @@ where
             byte_count: source_rows.iter().map(|row| row.payload.len() as u64).sum(),
             digest: source_digest,
         };
-        self.target.save_chunk_proof(&proof).await?;
+        self.cancellable(self.target.save_chunk_proof(&proof))
+            .await?;
         Ok(ChunkVerification::Verified)
     }
 
@@ -3456,8 +3516,12 @@ where
         if source_watermark < 0 {
             bail!("migration coverage watermark must not be negative");
         }
-        let source_bounds = self.source.table_bounds(table_name).await?;
-        let target_bounds = self.target.table_bounds(table_name).await?;
+        let source_bounds = self
+            .cancellable(self.source.table_bounds(table_name))
+            .await?;
+        let target_bounds = self
+            .cancellable(self.target.table_bounds(table_name))
+            .await?;
         let (lower_bound, upper_bound) = union_table_bounds(
             &source_bounds.0,
             &source_bounds.1,
@@ -3470,8 +3534,10 @@ where
             .map(|(first, last)| ChunkRange::new(first, last))
             .transpose()?;
         let checkpoint = self
-            .target
-            .load_coverage_checkpoint(self.source.migration_id(), table_name)
+            .cancellable(
+                self.target
+                    .load_coverage_checkpoint(self.source.migration_id(), table_name),
+            )
             .await?;
         if let Some(checkpoint) = &checkpoint {
             self.validate_coverage_identity(
@@ -3517,18 +3583,20 @@ where
         let mut fixed_watermark = source_watermark;
         let mut watermark_restarts = 0_usize;
         loop {
-            let source_range_page = tokio::time::timeout(
-                self.limits.copy.source_read_budget,
-                self.source.scan_range_page(
-                    table_name,
-                    cursor.as_deref(),
-                    lower_bound.as_deref(),
-                    upper_bound.as_deref(),
-                    self.limits.copy,
-                ),
-            )
-            .await
-            .context("SQLite migration coverage page exceeded its read budget")??;
+            self.ensure_running().await?;
+            let source_range_page = self
+                .cancellable(tokio::time::timeout(
+                    self.limits.copy.source_read_budget,
+                    self.source.scan_range_page(
+                        table_name,
+                        cursor.as_deref(),
+                        lower_bound.as_deref(),
+                        upper_bound.as_deref(),
+                        self.limits.copy,
+                    ),
+                ))
+                .await
+                .context("SQLite migration coverage page exceeded its read budget")??;
             source_range_page.page.validate_range(
                 table_name,
                 cursor.as_deref(),
@@ -3557,22 +3625,23 @@ where
                 continue;
             }
             if let Some(checkpoint) = self
-                .target
-                .load_checkpoint(self.source.migration_id(), table_name)
+                .cancellable(
+                    self.target
+                        .load_checkpoint(self.source.migration_id(), table_name),
+                )
                 .await?
                 && checkpoint.applied_through < fixed_watermark
             {
                 self.catch_up_through(table_name, fixed_watermark).await?;
             }
             let target_page = self
-                .target
-                .scan_range_page(
+                .cancellable(self.target.scan_range_page(
                     table_name,
                     cursor.as_deref(),
                     lower_bound.as_deref(),
                     upper_bound.as_deref(),
                     self.limits.copy,
-                )
+                ))
                 .await?;
             target_page.validate_range(
                 table_name,
@@ -3613,26 +3682,25 @@ where
             source_digest = chain_digest(&source_digest, &source_range_page.page.rows);
             target_digest = chain_digest(&target_digest, &target_page.rows);
             let next_cursor = source_range_page.page.next_cursor.clone();
-            self.target
-                .save_coverage_checkpoint(&CoverageCheckpoint {
-                    migration_id: self.source.migration_id().to_owned(),
-                    table_name: table_name.to_owned(),
-                    installation_id: self.installation_id.clone(),
-                    source_identity: self.source.source_identity().to_owned(),
-                    target_identity: self.target_identity.clone(),
-                    lower_bound: lower_bound.clone(),
-                    upper_bound: upper_bound.clone(),
-                    cursor: next_cursor.clone(),
-                    source_watermark: fixed_watermark,
-                    source_row_count,
-                    target_row_count,
-                    source_byte_count,
-                    target_byte_count,
-                    source_digest: source_digest.clone(),
-                    target_digest: target_digest.clone(),
-                    complete: source_range_page.page.complete,
-                })
-                .await?;
+            self.cancellable(self.target.save_coverage_checkpoint(&CoverageCheckpoint {
+                migration_id: self.source.migration_id().to_owned(),
+                table_name: table_name.to_owned(),
+                installation_id: self.installation_id.clone(),
+                source_identity: self.source.source_identity().to_owned(),
+                target_identity: self.target_identity.clone(),
+                lower_bound: lower_bound.clone(),
+                upper_bound: upper_bound.clone(),
+                cursor: next_cursor.clone(),
+                source_watermark: fixed_watermark,
+                source_row_count,
+                target_row_count,
+                source_byte_count,
+                target_byte_count,
+                source_digest: source_digest.clone(),
+                target_digest: target_digest.clone(),
+                complete: source_range_page.page.complete,
+            }))
+            .await?;
             if source_range_page.page.complete {
                 break;
             }
@@ -3661,7 +3729,8 @@ where
             target_digest,
         };
         proof.validate()?;
-        self.target.save_table_coverage_proof(&proof).await?;
+        self.cancellable(self.target.save_table_coverage_proof(&proof))
+            .await?;
         Ok(proof)
     }
 
@@ -3679,8 +3748,10 @@ where
             return Ok(());
         }
         let changes = self
-            .source
-            .changes_through(after, through, self.limits.change_batch)
+            .cancellable(
+                self.source
+                    .changes_through(after, through, self.limits.change_batch),
+            )
             .await?;
         for change in &changes {
             change.validate_for(self.source.migration_id(), self.source.source_identity())?;
@@ -3695,9 +3766,12 @@ where
             bail!("migration tail delta exceeds the bounded replay budget");
         }
         for table_name in tables {
+            self.ensure_running().await?;
             if let Some(checkpoint) = self
-                .target
-                .load_checkpoint(self.source.migration_id(), table_name)
+                .cancellable(
+                    self.target
+                        .load_checkpoint(self.source.migration_id(), table_name),
+                )
                 .await?
                 && checkpoint.applied_through < through
             {
@@ -3727,18 +3801,19 @@ where
         stable_key: &str,
         through: i64,
     ) -> Result<()> {
-        let source_range_page = tokio::time::timeout(
-            self.limits.copy.source_read_budget,
-            self.source.scan_range_page(
-                table_name,
-                None,
-                Some(stable_key),
-                Some(stable_key),
-                self.limits.copy,
-            ),
-        )
-        .await
-        .context("SQLite migration tail verification exceeded its read budget")??;
+        let source_range_page = self
+            .cancellable(tokio::time::timeout(
+                self.limits.copy.source_read_budget,
+                self.source.scan_range_page(
+                    table_name,
+                    None,
+                    Some(stable_key),
+                    Some(stable_key),
+                    self.limits.copy,
+                ),
+            ))
+            .await
+            .context("SQLite migration tail verification exceeded its read budget")??;
         source_range_page.page.validate_range(
             table_name,
             None,
@@ -3759,14 +3834,13 @@ where
                 .await?;
         }
         let target_page = self
-            .target
-            .scan_range_page(
+            .cancellable(self.target.scan_range_page(
                 table_name,
                 None,
                 Some(stable_key),
                 Some(stable_key),
                 self.limits.copy,
-            )
+            ))
             .await?;
         target_page.validate_range(
             table_name,
@@ -3865,6 +3939,13 @@ where
             .ok_or_else(|| anyhow!("migration authority generation exhausted"))?;
         let mut source_fenced = false;
         let result = async {
+            // The in-memory fence is shared with routed production writers. Persist the same
+            // generation-bound fence before reading the post-fence watermark so direct SQLite
+            // writers are rejected by the trigger before the final capture boundary is chosen.
+            self.source
+                .fence_source_writes(self.authority_generation, next_authority_generation)
+                .await?;
+            source_fenced = true;
             let watermark = self.source.capture_watermark().await?;
             if watermark < pre_fence_watermark {
                 bail!("source capture watermark regressed during the switch fence");
@@ -3881,10 +3962,6 @@ where
             if final_watermark != watermark {
                 bail!("source capture advanced during the switch tail verification");
             }
-            self.source
-                .fence_source_writes(self.authority_generation, next_authority_generation)
-                .await?;
-            source_fenced = true;
             let final_expected = AuthorityRecoveryContext {
                 source_watermark: final_watermark,
                 ..expected.clone()
@@ -3930,6 +4007,9 @@ where
     }
 
     async fn ensure_running(&self) -> Result<()> {
+        if self.cancellation.is_cancelled() {
+            bail!("storage migration engine cancelled");
+        }
         if self.run_control.is_paused() {
             bail!("migration engine is paused");
         }

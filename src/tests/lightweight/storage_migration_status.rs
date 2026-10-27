@@ -46,6 +46,10 @@ async fn controls_follow_monotonic_migration_state_contract() {
         ..StorageConfig::default()
     };
     let runtime = StorageMigrationRuntime::new(&config);
+    assert_eq!(
+        runtime.snapshot().await.queued_modules,
+        vec!["traffic_archive"]
+    );
 
     let started = runtime
         .apply_control(StorageMigrationControlRequest { paused: false })

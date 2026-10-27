@@ -814,6 +814,7 @@ impl RuntimeProjectionHub {
 pub(crate) struct AppState {
     pub(crate) system_storage: Arc<SystemStorageRuntime>,
     pub(crate) storage_migration: Arc<StorageMigrationRuntime>,
+    pub(crate) storage_runtime: Option<Arc<crate::storage::runtime::StorageRuntimeRouter>>,
     pub(crate) config: AppConfig,
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) traffic_authority: Arc<crate::storage::traffic::TrafficFactStore>,

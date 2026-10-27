@@ -4,6 +4,13 @@ pub(crate) async fn fetch_invocation_pool_attempts(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(invoke_id): axum::extract::Path<String>,
 ) -> Result<Json<Vec<ApiPoolUpstreamRequestAttempt>>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::PoolAttempts).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        return Ok(Json(
+            query_pool_attempt_records_from_postgres_with_runtime(&state, &invoke_id).await?,
+        ));
+    }
     Ok(Json(
         query_pool_attempt_records_from_live_with_runtime(
             &state.pool,
@@ -12,6 +19,52 @@ pub(crate) async fn fetch_invocation_pool_attempts(
         )
         .await?,
     ))
+}
+
+async fn query_pool_attempt_records_from_postgres_with_runtime(
+    state: &AppState,
+    invoke_id: &str,
+) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
+    let runtime_snapshots = state
+        .proxy_runtime_attempts
+        .list_for_invocation(invoke_id, None);
+    let mut transaction = state.traffic_authority.begin().await?;
+    let mut records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+        "SELECT id, attempt_public_id AS attempt_id, invoke_id, occurred_at, endpoint, \
+         attempt_index, distinct_account_index, same_account_retry_index, status, \
+         COALESCE(phase, CASE WHEN status = 'pending' THEN 'sending_request' \
+                              WHEN status = 'success' THEN 'completed' ELSE 'failed' END) AS phase, \
+         sticky_key, routing_source, routing_selection_audit_json, upstream_account_id, \
+         requester_ip, started_at, finished_at, http_status, downstream_http_status, \
+         failure_kind, error_message, downstream_error_message, connect_latency_ms, \
+         first_byte_latency_ms, stream_latency_ms, upstream_request_id, \
+         upstream_request_compression_algorithm, upstream_request_compression_mode, \
+         upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, \
+         upstream_request_header_bytes_approx, upstream_response_body_bytes, \
+         upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, \
+         created_at \
+         FROM pool_upstream_request_attempts WHERE invoke_id = $1 \
+         ORDER BY attempt_index ASC, id ASC",
+    )
+    .bind(invoke_id)
+    .fetch_all(transaction.postgres_connection()?)
+    .await?;
+    transaction.commit().await?;
+    sanitize_pool_attempt_timing_fields(&mut records);
+    hydrate_pool_attempt_request_compression_fields(&mut records);
+    hydrate_pool_attempt_routing_selection_audits(&mut records);
+    let persisted_ids = records
+        .iter()
+        .map(|record| record.attempt_id.clone())
+        .collect::<HashSet<_>>();
+    records.extend(
+        runtime_snapshots
+            .into_iter()
+            .filter(|snapshot| !persisted_ids.contains(&snapshot.attempt_public_id))
+            .map(api_attempt_from_runtime_snapshot),
+    );
+    records.sort_by_key(|record| (record.attempt_index, record.id));
+    Ok(records)
 }
 
 #[derive(Debug, FromRow)]
@@ -1525,6 +1578,11 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
     state: &AppState,
     records: &mut [ApiPoolUpstreamRequestAttempt],
 ) -> Result<(), ApiError> {
+    if invocation_read_backend_for(state, InvocationReadEntryPoint::PoolAttempts).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        return hydrate_upstream_account_attempt_workflow_entries_postgres(state, records).await;
+    }
     if records.is_empty() {
         return Ok(());
     }
@@ -1610,6 +1668,100 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
         item.workflow_entry = workflow_entries.get(&item.attempt_id).cloned();
     }
 
+    Ok(())
+}
+
+async fn hydrate_upstream_account_attempt_workflow_entries_postgres(
+    state: &AppState,
+    records: &mut [ApiPoolUpstreamRequestAttempt],
+) -> Result<(), ApiError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let selectors = records
+        .iter()
+        .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+        .collect::<HashSet<_>>();
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    let mut hydrated = HashMap::<
+        (String, String),
+        Option<(
+            ApiInvocation,
+            HashMap<String, InvocationWorkflowTimelineEntry>,
+        )>,
+    >::new();
+    for (invoke_id, occurred_at) in selectors {
+        let loaded = async {
+            let mut transaction = state.traffic_authority.begin().await?;
+            let record = load_persisted_api_invocation_postgres(
+                transaction.postgres_connection()?,
+                &invoke_id,
+                &occurred_at,
+            )
+            .await?
+            .ok_or_else(|| ApiError::bad_request(anyhow!("invocation record not found")))?;
+            let body_row = fetch_invocation_response_body_row_by_id_postgres(
+                transaction.postgres_connection()?,
+                record.id,
+            )
+            .await?;
+            let attempt_rows = query_invocation_workflow_attempt_rows_postgres(
+                transaction.postgres_connection()?,
+                &record.invoke_id,
+                &record.occurred_at,
+            )
+            .await?;
+            transaction.commit().await?;
+            Ok::<_, ApiError>((record, body_row, attempt_rows))
+        }
+        .await;
+        let Ok((record, body_row, attempt_rows)) = loaded else {
+            hydrated.insert((invoke_id, occurred_at), None);
+            continue;
+        };
+        let payload_value = body_row
+            .as_ref()
+            .and_then(|row| parse_optional_json_value(row.payload.as_deref()));
+        let real_attempt_rows = attempt_rows
+            .iter()
+            .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
+            .collect::<Vec<_>>();
+        let final_attempt_row_id = final_real_attempt_row_id(&real_attempt_rows);
+        let last_success_attempt_row_id = last_success_like_attempt_row_id(&real_attempt_rows);
+        let usage_cost_audit = (invocation_status_is_success_like(&record)
+            && invocation_has_usage_evidence(&record))
+        .then(|| build_invocation_cost_audit(&record, &pricing_catalog, true))
+        .flatten();
+        let workflow_entries = real_attempt_rows
+            .into_iter()
+            .filter_map(|attempt_row| {
+                let attempt = build_workflow_attempt_from_row(
+                    &record,
+                    attempt_row,
+                    payload_value.as_ref(),
+                    (last_success_attempt_row_id == Some(attempt_row.attempt_row_id))
+                        .then_some(usage_cost_audit.as_ref())
+                        .flatten(),
+                    final_attempt_row_id == Some(attempt_row.attempt_row_id),
+                );
+                let attempt_id = attempt.attempt_id.clone()?;
+                Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
+            })
+            .collect::<HashMap<_, _>>();
+        hydrated.insert(
+            (record.invoke_id.clone(), record.occurred_at.clone()),
+            Some((record, workflow_entries)),
+        );
+    }
+    for item in records {
+        let Some(Some((record, workflow_entries))) =
+            hydrated.get(&(item.invoke_id.clone(), item.occurred_at.clone()))
+        else {
+            continue;
+        };
+        item.invocation_record = Some(record.clone());
+        item.workflow_entry = workflow_entries.get(&item.attempt_id).cloned();
+    }
     Ok(())
 }
 
@@ -1707,6 +1859,164 @@ async fn query_invocation_workflow_attempt_rows(
     .map_err(ApiError::from)
 }
 
+async fn load_invocation_workflow_identity_postgres(
+    connection: &mut sqlx::PgConnection,
+    id: i64,
+) -> Result<Option<InvocationWorkflowIdentityRow>, ApiError> {
+    sqlx::query_as::<_, InvocationWorkflowIdentityRow>(
+        "SELECT id, invoke_id, occurred_at, timeline_json \
+         FROM codex_invocations WHERE id = $1 LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(ApiError::from)
+}
+
+async fn load_persisted_api_invocation_postgres(
+    connection: &mut sqlx::PgConnection,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<Option<ApiInvocation>, ApiError> {
+    let mut query = build_invocation_select_query_postgres();
+    query
+        .push(" AND invoke_id = ")
+        .push_bind(invoke_id.to_string())
+        .push(" AND occurred_at = ")
+        .push_bind(occurred_at.to_string())
+        .push(" ORDER BY id DESC LIMIT 1");
+    query
+        .build_query_as::<ApiInvocation>()
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(ApiError::from)
+}
+
+async fn query_invocation_workflow_attempt_rows_postgres(
+    connection: &mut sqlx::PgConnection,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<Vec<InvocationWorkflowAttemptRow>, ApiError> {
+    sqlx::query_as::<_, InvocationWorkflowAttemptRow>(
+        "SELECT \
+            attempts.id AS attempt_row_id, \
+            attempts.attempt_public_id AS attempt_id, \
+            attempts.invoke_id, attempts.occurred_at, attempts.endpoint, \
+            attempts.sticky_key, attempts.routing_source, attempts.routing_selection_audit_json, \
+            attempts.upstream_account_id, accounts.display_name AS upstream_account_name, \
+            attempts.upstream_route_key, attempts.proxy_binding_key_snapshot, \
+            attempts.attempt_index, attempts.distinct_account_index, attempts.same_account_retry_index, \
+            attempts.requester_ip, attempts.started_at, attempts.finished_at, attempts.status, \
+            COALESCE(attempts.phase, CASE WHEN attempts.status = 'pending' THEN 'sending_request' \
+                 WHEN attempts.status = 'success' THEN 'completed' ELSE 'failed' END) AS phase, \
+            attempts.http_status, attempts.downstream_http_status, attempts.failure_kind, \
+            attempts.error_message, attempts.downstream_error_message, attempts.connect_latency_ms, \
+            attempts.first_byte_latency_ms, attempts.stream_latency_ms, attempts.upstream_request_id, \
+            attempts.upstream_request_compression_algorithm, attempts.upstream_request_compression_mode, \
+            attempts.upstream_request_logical_body_bytes, attempts.upstream_request_transmitted_body_bytes, \
+            attempts.upstream_request_header_bytes_approx, attempts.upstream_response_body_bytes, \
+            attempts.upstream_response_header_bytes_approx, attempts.compact_support_status, \
+            attempts.compact_support_reason, attempts.request_summary_json, attempts.response_summary_json, \
+            attempts.response_raw_path, attempts.response_raw_codec, attempts.response_raw_size, \
+            attempts.response_raw_truncated, attempts.response_raw_truncated_reason, \
+            attempts.response_content_encoding \
+         FROM pool_upstream_request_attempts AS attempts \
+         LEFT JOIN pool_upstream_accounts AS accounts \
+           ON accounts.id = attempts.upstream_account_id \
+         WHERE attempts.invoke_id = $1 AND attempts.occurred_at = $2 \
+         ORDER BY attempts.attempt_index ASC, attempts.id ASC",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(ApiError::from)
+}
+
+async fn fetch_invocation_response_body_row_by_id_postgres(
+    connection: &mut sqlx::PgConnection,
+    id: i64,
+) -> Result<Option<InvocationResponseBodyRow>, ApiError> {
+    let resolved_failure = postgres_resolved_failure_class_sql_for("codex_invocations");
+    let response_content_encoding =
+        postgres_payload_text_for("codex_invocations", "responseContentEncoding");
+    let sql = format!(
+        "SELECT id, invoke_id, payload, raw_response, request_raw_path, request_raw_size, \
+         request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, \
+         response_raw_truncated, response_raw_truncated_reason, detail_level, detail_prune_reason, \
+         {response_content_encoding} AS response_content_encoding, ({resolved_failure}) AS failure_class, \
+         NULL::TEXT AS upstream_request_id, NULL::TEXT AS attempt_public_id \
+         FROM codex_invocations WHERE id = $1 LIMIT 1"
+    );
+    sqlx::query_as::<_, InvocationResponseBodyRow>(&sql)
+        .bind(id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(ApiError::from)
+}
+
+fn build_postgres_attempt_response_body_query() -> String {
+    let resolved_failure = postgres_resolved_failure_class_sql_for("inv");
+    let response_content_encoding = postgres_payload_text_for("inv", "responseContentEncoding");
+    let final_attempt = "attempts.attempt_index = (\
+        SELECT MAX(final_attempt.attempt_index)\
+        FROM pool_upstream_request_attempts AS final_attempt\
+        WHERE final_attempt.invoke_id = attempts.invoke_id\
+          AND final_attempt.occurred_at = attempts.occurred_at\
+          AND final_attempt.status != 'budget_exhausted_final'\
+    )";
+    let sql = format!(
+        "SELECT inv.id, inv.invoke_id, inv.payload, \
+         CASE WHEN inv.detail_level != 'structured_only' AND {final_attempt} \
+              THEN inv.raw_response ELSE '' END AS raw_response, \
+         inv.request_raw_path, inv.request_raw_size, inv.request_raw_truncated, \
+         inv.request_raw_truncated_reason, \
+         CASE WHEN inv.detail_level != 'structured_only' \
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_path \
+              WHEN inv.detail_level != 'structured_only' AND {final_attempt} \
+                    THEN inv.response_raw_path ELSE NULL END AS response_raw_path, \
+         CASE WHEN inv.detail_level != 'structured_only' \
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_size \
+              WHEN inv.detail_level != 'structured_only' AND {final_attempt} \
+                    THEN inv.response_raw_size ELSE NULL END AS response_raw_size, \
+         CASE WHEN inv.detail_level != 'structured_only' \
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated \
+              WHEN inv.detail_level != 'structured_only' AND {final_attempt} \
+                    THEN inv.response_raw_truncated ELSE NULL END AS response_raw_truncated, \
+         CASE WHEN inv.detail_level != 'structured_only' \
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated_reason \
+              WHEN inv.detail_level != 'structured_only' AND {final_attempt} \
+                    THEN inv.response_raw_truncated_reason ELSE NULL END AS response_raw_truncated_reason, \
+         inv.detail_level, inv.detail_prune_reason, \
+         CASE WHEN inv.detail_level != 'structured_only' \
+                    AND attempts.response_content_encoding IS NOT NULL \
+                    THEN attempts.response_content_encoding \
+              WHEN inv.detail_level != 'structured_only' AND {final_attempt} \
+                    THEN {response_content_encoding} ELSE NULL END AS response_content_encoding, \
+         ({resolved_failure}) AS failure_class, attempts.upstream_request_id, \
+         attempts.attempt_public_id \
+         FROM codex_invocations AS inv \
+         JOIN pool_upstream_request_attempts AS attempts \
+           ON attempts.invoke_id = inv.invoke_id AND attempts.occurred_at = inv.occurred_at \
+         WHERE inv.id = $1 AND attempts.attempt_public_id = $2 LIMIT 1"
+    );
+    sql
+}
+
+async fn fetch_invocation_attempt_response_body_row_postgres(
+    connection: &mut sqlx::PgConnection,
+    invocation_id: i64,
+    attempt_public_id: &str,
+) -> Result<Option<InvocationResponseBodyRow>, ApiError> {
+    let sql = build_postgres_attempt_response_body_query();
+    sqlx::query_as::<_, InvocationResponseBodyRow>(&sql)
+        .bind(invocation_id)
+        .bind(attempt_public_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(ApiError::from)
+}
+
 fn build_final_failure_timeline_entry(
     record: &ApiInvocation,
     body_row: Option<&InvocationResponseBodyRow>,
@@ -1774,6 +2084,11 @@ pub(crate) async fn fetch_invocation_workflow_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<InvocationWorkflowDetailResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::WorkflowDetail).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        return fetch_invocation_workflow_detail_postgres(state, id).await;
+    }
     let identity = load_invocation_workflow_identity(&state.pool, id)
         .await?
         .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
@@ -1876,6 +2191,126 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         partial_reason: partial.then(|| "attempt_rows_missing".to_string()),
     };
     Ok(Json(response))
+}
+
+async fn fetch_invocation_workflow_detail_postgres(
+    state: Arc<AppState>,
+    id: i64,
+) -> Result<Json<InvocationWorkflowDetailResponse>, ApiError> {
+    let (identity, record, body_row, attempt_rows) = {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let identity =
+            load_invocation_workflow_identity_postgres(transaction.postgres_connection()?, id)
+                .await?
+                .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+        let record = load_persisted_api_invocation_postgres(
+            transaction.postgres_connection()?,
+            &identity.invoke_id,
+            &identity.occurred_at,
+        )
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+        let body_row = fetch_invocation_response_body_row_by_id_postgres(
+            transaction.postgres_connection()?,
+            id,
+        )
+        .await?;
+        let attempt_rows = query_invocation_workflow_attempt_rows_postgres(
+            transaction.postgres_connection()?,
+            &identity.invoke_id,
+            &identity.occurred_at,
+        )
+        .await?;
+        transaction.commit().await?;
+        (identity, record, body_row, attempt_rows)
+    };
+    let payload_value = body_row
+        .as_ref()
+        .and_then(|row| parse_optional_json_value(row.payload.as_deref()));
+    let pseudo_attempt_rows = attempt_rows
+        .iter()
+        .filter(|attempt| invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
+        .collect::<Vec<_>>();
+    let real_attempt_rows = attempt_rows
+        .iter()
+        .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
+        .collect::<Vec<_>>();
+    let last_success_attempt_row_id = last_success_like_attempt_row_id(&real_attempt_rows);
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    let usage_cost_audit = (invocation_status_is_success_like(&record)
+        && invocation_has_usage_evidence(&record))
+    .then(|| build_invocation_cost_audit(&record, &pricing_catalog, true))
+    .flatten();
+    let pool_route = normalized_runtime_text(record.route_mode.as_deref()) == "pool";
+    let render_route_only = pool_route
+        && !invocation_status_is_success_like(&record)
+        && real_attempt_rows.is_empty()
+        && (!pseudo_attempt_rows.is_empty() || record.pool_attempt_count.unwrap_or_default() == 0);
+    let route_only_attempt = render_route_only.then(|| {
+        pseudo_attempt_rows
+            .last()
+            .map(|attempt| {
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    payload_value.as_ref(),
+                    None,
+                    false,
+                )
+            })
+            .unwrap_or_else(|| {
+                build_synthetic_workflow_attempt(&record, payload_value.as_ref(), None)
+            })
+    });
+    let attempts = if real_attempt_rows.is_empty() {
+        if route_only_attempt.is_some() {
+            Vec::new()
+        } else {
+            vec![build_synthetic_workflow_attempt(
+                &record,
+                payload_value.as_ref(),
+                usage_cost_audit.as_ref(),
+            )]
+        }
+    } else {
+        let final_attempt_row_id = final_real_attempt_row_id(&real_attempt_rows);
+        real_attempt_rows
+            .iter()
+            .map(|attempt| {
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    payload_value.as_ref(),
+                    (last_success_attempt_row_id == Some(attempt.attempt_row_id))
+                        .then_some(usage_cost_audit.as_ref())
+                        .flatten(),
+                    final_attempt_row_id == Some(attempt.attempt_row_id),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let failure_entry = build_final_failure_timeline_entry(
+        &record,
+        body_row.as_ref(),
+        state.config.database_path.parent(),
+    );
+    let partial = pool_route
+        && record.pool_attempt_count.unwrap_or_default() > 0
+        && real_attempt_rows.is_empty()
+        && pseudo_attempt_rows.is_empty();
+    let timeline_attempt_count = attempts.len();
+    Ok(Json(InvocationWorkflowDetailResponse {
+        hero: build_workflow_hero(&record, payload_value.as_ref(), timeline_attempt_count),
+        timeline: build_workflow_timeline_entries(
+            &record,
+            &attempts,
+            route_only_attempt.as_ref(),
+            failure_entry,
+        ),
+        reconstructed: identity.timeline_json.is_none(),
+        partial,
+        partial_reason: partial.then(|| "attempt_rows_missing".to_string()),
+    }))
 }
 
 #[derive(Debug, FromRow)]
@@ -2342,6 +2777,44 @@ pub(crate) async fn fetch_invocation_record_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<InvocationRecordDetailResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::RecordDetail).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let row = fetch_invocation_response_body_row_by_id_postgres(
+            transaction.postgres_connection()?,
+            id,
+        )
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+        transaction.commit().await?;
+        let abnormal_response_body = if is_abnormal_invocation_failure(row.failure_class.as_deref())
+        {
+            match resolve_response_body_text_from_row(&row, state.config.database_path.parent()) {
+                Ok((text, from_full_body)) => {
+                    let (preview_text, truncated) = truncate_response_preview_text(&text);
+                    Some(InvocationAbnormalResponseBodyPreview {
+                        available: true,
+                        preview_text: Some(preview_text),
+                        has_more: truncated || from_full_body,
+                        unavailable_reason: None,
+                    })
+                }
+                Err(reason) => Some(InvocationAbnormalResponseBodyPreview {
+                    available: false,
+                    preview_text: None,
+                    has_more: false,
+                    unavailable_reason: Some(reason),
+                }),
+            }
+        } else {
+            None
+        };
+        return Ok(Json(InvocationRecordDetailResponse {
+            id: row.id,
+            abnormal_response_body,
+        }));
+    }
     let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
@@ -2378,6 +2851,22 @@ pub(crate) async fn fetch_invocation_response_body(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<InvocationResponseBodyResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::ResponseBody).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let row = fetch_invocation_response_body_row_by_id_postgres(
+            transaction.postgres_connection()?,
+            id,
+        )
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+        transaction.commit().await?;
+        return Ok(Json(build_response_body_response(
+            &row,
+            state.config.database_path.parent(),
+        )));
+    }
     let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
@@ -2391,6 +2880,33 @@ pub(crate) async fn fetch_invocation_attempt_response_body(
     State(state): State<Arc<AppState>>,
     axum::extract::Path((id, attempt_public_id)): axum::extract::Path<(i64, String)>,
 ) -> Result<Json<InvocationResponseBodyResponse>, ApiError> {
+    if invocation_read_backend_for(
+        state.as_ref(),
+        InvocationReadEntryPoint::AttemptResponseBody,
+    )
+    .await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let row = fetch_invocation_attempt_response_body_row_postgres(
+            transaction.postgres_connection()?,
+            id,
+            attempt_public_id.as_str(),
+        )
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("attempt not found")))?;
+        transaction.commit().await?;
+        let source = Some(if row.response_raw_path.is_some() {
+            "attempt_raw_file"
+        } else {
+            "attempt_metrics"
+        });
+        return Ok(Json(build_response_body_response_with_source(
+            &row,
+            state.config.database_path.parent(),
+            source,
+        )));
+    }
     let row =
         fetch_invocation_attempt_response_body_row(&state.pool, id, attempt_public_id.as_str())
             .await?
@@ -2434,6 +2950,22 @@ pub(crate) async fn fetch_invocation_request_body(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<InvocationResponseBodyResponse>, ApiError> {
+    if invocation_read_backend_for(state.as_ref(), InvocationReadEntryPoint::RequestBody).await
+        == crate::storage::core::BackendKind::Postgres
+    {
+        let mut transaction = state.traffic_authority.begin().await?;
+        let row = fetch_invocation_response_body_row_by_id_postgres(
+            transaction.postgres_connection()?,
+            id,
+        )
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+        transaction.commit().await?;
+        return Ok(Json(build_request_body_response(
+            &row,
+            state.config.database_path.parent(),
+        )));
+    }
     let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
@@ -2465,5 +2997,22 @@ mod usage_evidence_tests {
         record.reported_cache_write_tokens = Some(250);
 
         assert!(invocation_has_usage_evidence(&record));
+    }
+}
+
+#[cfg(test)]
+mod postgres_query_contract_tests {
+    use super::*;
+
+    #[test]
+    fn attempt_response_body_query_only_falls_back_to_the_final_captured_attempt() {
+        let query = build_postgres_attempt_response_body_query();
+
+        assert!(query.contains("inv.detail_level != 'structured_only'"));
+        assert!(query.contains("THEN inv.raw_response ELSE '' END AS raw_response"));
+        assert!(query.contains("attempts.response_raw_path IS NOT NULL"));
+        assert!(query.contains("final_attempt.status != 'budget_exhausted_final'"));
+        assert!(query.contains("ELSE NULL END AS response_raw_path"));
+        assert!(!query.contains("COALESCE(attempts.response_content_encoding"));
     }
 }

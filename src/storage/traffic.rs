@@ -10,6 +10,7 @@ use super::core::{
     BackendKind, ModuleAuthority, ModuleGenerationGate, StorageModule, StoragePools,
     TrafficArchiveTransaction, TypedStorageTransaction,
 };
+use super::migration::{SourceWriteFence, SourceWriteLease};
 
 const SQLITE_TRAFFIC_AUTHORITY_GENERATION: u64 = 1;
 
@@ -55,6 +56,7 @@ impl TrafficFactIdentity {
 pub(crate) struct TrafficFactStore {
     pools: StoragePools,
     gate: ModuleGenerationGate,
+    source_fence: Option<SourceWriteFence>,
 }
 
 impl fmt::Debug for TrafficFactStore {
@@ -68,7 +70,23 @@ impl fmt::Debug for TrafficFactStore {
 
 impl TrafficFactStore {
     pub(crate) fn with_authority(pools: StoragePools, gate: ModuleGenerationGate) -> Self {
-        Self { pools, gate }
+        Self {
+            pools,
+            gate,
+            source_fence: None,
+        }
+    }
+
+    pub(crate) fn with_authority_and_fence(
+        pools: StoragePools,
+        gate: ModuleGenerationGate,
+        source_fence: SourceWriteFence,
+    ) -> Self {
+        Self {
+            pools,
+            gate,
+            source_fence: Some(source_fence),
+        }
     }
 
     pub(crate) fn sqlite(pool: Pool<Sqlite>) -> Self {
@@ -89,10 +107,19 @@ impl TrafficFactStore {
         Ok(transaction)
     }
 
+    pub(crate) async fn authority_backend(&self) -> BackendKind {
+        self.gate.current_authority().await.backend
+    }
+
     pub(crate) async fn begin_with_pool_acquisition_duration(
         &self,
     ) -> Result<(TrafficFactTransaction, std::time::Duration)> {
         let lease = self.gate.acquire(StorageModule::TrafficArchive).await?;
+        let source_write_lease = if let Some(source_fence) = &self.source_fence {
+            Some(source_fence.begin_write().await?)
+        } else {
+            None
+        };
         let backend = lease.lease.authority.backend;
         let pool_acquisition_started = Instant::now();
         let transaction = self
@@ -103,6 +130,7 @@ impl TrafficFactStore {
             TrafficFactTransaction {
                 transaction,
                 backend,
+                _source_write_lease: source_write_lease,
             },
             pool_acquisition_started.elapsed(),
         ))
@@ -157,6 +185,7 @@ impl TrafficFactStore {
 pub(crate) struct TrafficFactTransaction {
     transaction: TypedStorageTransaction<TrafficArchiveTransaction>,
     backend: BackendKind,
+    _source_write_lease: Option<SourceWriteLease>,
 }
 
 impl TrafficFactTransaction {

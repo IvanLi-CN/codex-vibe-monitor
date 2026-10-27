@@ -33,13 +33,13 @@ pub(crate) enum BackendKind {
     Postgres,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ModuleAuthority {
     pub(crate) backend: BackendKind,
     pub(crate) generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ModuleAuthorityManifest {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
@@ -50,7 +50,7 @@ pub(crate) struct ModuleAuthorityManifest {
     pub(crate) target_identity: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AuthorityRecoveryContext {
     pub(crate) migration_id: String,
     pub(crate) installation_id: String,
@@ -91,9 +91,9 @@ pub(crate) struct ModuleLease {
     pub(crate) authority: ModuleAuthority,
 }
 
-/// Contract-only storage pools for module-scoped transaction tests and later adapters.
-/// pg01 does not install these pools into the runtime router or migrate production writers.
-#[derive(Clone)]
+/// Shared storage pools for module-scoped transactions. The runtime router owns one instance and
+/// keeps its PostgreSQL handle lazy until the migration worker reaches the target backend.
+#[derive(Debug, Clone)]
 pub(crate) struct StoragePools {
     sqlite: SqlitePool,
     postgres: Option<PgPool>,
@@ -160,6 +160,20 @@ impl StoragePools {
             sqlite,
             postgres: config.connect_postgres().await?,
         })
+    }
+
+    pub(crate) fn from_sqlite_and_config_lazy(
+        sqlite: SqlitePool,
+        config: &StorageConfig,
+    ) -> Result<Self> {
+        Ok(Self {
+            sqlite,
+            postgres: config.connect_postgres_lazy()?,
+        })
+    }
+
+    pub(crate) fn postgres_pool(&self) -> Option<PgPool> {
+        self.postgres.clone()
     }
 
     pub(crate) async fn begin(&self, lease: ModuleGenerationLease) -> Result<StorageTransaction> {
@@ -960,7 +974,7 @@ impl MigrationStatus {
 ///
 /// pg01 validates watermark ordering only; checkpoint persistence and restart recovery
 /// belong to the later migration engine and runtime adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationCheckpoint {
     pub(crate) migration_id: String,
     pub(crate) table_name: String,
@@ -1004,7 +1018,7 @@ impl MigrationCheckpoint {
 ///
 /// pg01 defines the identity and acknowledgement invariants without implementing an
 /// outbox worker or its durable storage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationOutboxItem {
     pub(crate) outbox_id: String,
     pub(crate) migration_id: String,
@@ -1038,7 +1052,7 @@ impl MigrationOutboxItem {
 ///
 /// pg01 validates reservation identity and bounds without implementing a persistent
 /// reservation store or capacity worker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MigrationReservation {
     pub(crate) reservation_id: String,
     pub(crate) migration_id: String,
