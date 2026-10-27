@@ -4625,18 +4625,19 @@ impl MaintenanceStore {
             }
         }
         if enqueued > 0 {
+            // Keep the derived progress projection in the same transaction as admission. If
+            // SQLite is under pressure, rolling back the whole admission lets the dispatcher
+            // retry without leaving a requested run that it cannot claim.
+            for task_key in RETENTION_OWNER_V2_TASKS {
+                Self::sync_retention_progress_schedule_in_transaction(&mut transaction, task_key)
+                    .await?;
+            }
             transaction.commit().await?;
         } else {
             // A preflight candidate may become ineligible before the in-transaction
             // revalidation. Roll back the deferred transaction so this race does not
             // turn into an observable no-op write commit.
             transaction.rollback().await?;
-        }
-        if enqueued > 0 {
-            for task_key in RETENTION_OWNER_V2_TASKS {
-                self.sync_retention_owner_progress_schedule(task_key)
-                    .await?;
-            }
         }
         Ok(enqueued)
     }
@@ -5349,6 +5350,16 @@ impl MaintenanceStore {
     }
 
     async fn sync_retention_progress_schedule_inner(&self, task_key: &str) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        Self::sync_retention_progress_schedule_in_transaction(&mut transaction, task_key).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn sync_retention_progress_schedule_in_transaction(
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        task_key: &str,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO managed_task_progress(
                  task_key,updated_at,freshness,next_inspection_at,next_catchup_at,catchup_state
@@ -5368,7 +5379,7 @@ impl MaintenanceStore {
         )
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
-        .execute(&self.pool)
+        .execute(&mut **transaction)
         .await?;
         Ok(())
     }
@@ -9215,6 +9226,59 @@ mod tests {
                 .await
                 .expect("avoid duplicate catch-up"),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn due_run_admission_rolls_back_when_progress_sync_fails() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention admission rollback fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET next_catchup_at='2000-01-01T00:00:00.000Z',catchup_reason='test'
+             WHERE task_key='retention_archive'",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed due retention catch-up");
+        sqlx::query(
+            "CREATE TRIGGER fail_retention_progress_sync
+             BEFORE INSERT ON managed_task_progress
+             BEGIN SELECT RAISE(ABORT, 'injected progress sync failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install progress sync failure trigger");
+
+        let store = MaintenanceStore::from_pool(pool.clone());
+        assert!(store.enqueue_due_runs().await.is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM managed_task_runs WHERE task_key='retention_archive'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count rolled back retention runs"),
+            0
+        );
+        let schedule: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT next_catchup_at,catchup_reason
+             FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read rolled back retention schedule");
+        assert_eq!(
+            schedule,
+            (
+                Some("2000-01-01T00:00:00.000Z".to_string()),
+                Some("test".to_string())
+            )
         );
     }
 
