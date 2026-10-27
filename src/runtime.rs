@@ -1095,7 +1095,7 @@ pub(crate) async fn run() -> Result<()> {
                 .await
                 .context("failed to recover durable storage migration state")?,
         );
-        initialize_invocation_identity_cleanup_state(&pool).await?;
+        initialize_invocation_identity_cleanup_state(&pool, false).await?;
         let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
                 maintenance_pool = Some(store.pool.clone());
@@ -1216,6 +1216,15 @@ pub(crate) async fn run() -> Result<()> {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
         let shutdown = CancellationToken::new();
+        let storage_runtime =
+            crate::storage::runtime::StorageRuntimeRouter::initialize(
+                pool.clone(),
+                &config.storage,
+                storage_migration.clone(),
+                shutdown.clone(),
+            )
+            .await
+            .context("failed to initialize storage runtime router")?;
         let process_started_at_utc = Utc::now();
         observability
             .initialize_traces(config.observability.traces.clone())
@@ -1251,9 +1260,7 @@ pub(crate) async fn run() -> Result<()> {
         let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
         let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
         let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
-        let traffic_authority = Arc::new(crate::storage::traffic::TrafficFactStore::sqlite(
-            pool.clone(),
-        ));
+        let traffic_authority = storage_runtime.traffic_authority();
         let sqlite_batch_writer = SqliteBatchWriter::spawn_with_traffic_authority(
             pool.clone(),
             traffic_authority.clone(),
@@ -1276,6 +1283,7 @@ pub(crate) async fn run() -> Result<()> {
         let state = Arc::new(AppState {
             system_storage: Arc::new(SystemStorageRuntime::new(&config)),
             storage_migration,
+            storage_runtime: Some(storage_runtime.clone()),
             config: config.clone(),
             pool: pool.clone(),
             traffic_authority: traffic_authority.clone(),
@@ -1336,6 +1344,7 @@ pub(crate) async fn run() -> Result<()> {
             pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             upstream_accounts,
         });
+        storage_runtime.start().await;
         if let Some(store) = crate::maintenance_store::global().cloned() {
             crate::task_timeline::start_recorder(store).await;
         }
@@ -3692,6 +3701,9 @@ pub(crate) async fn drain_runtime_after_shutdown(
     startup_backfill_handle: Option<JoinHandle<()>>,
     startup_hot_read_hydration_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.stop().await;
+    }
     if let Some(server_handle) = server_handle {
         info!("http server graceful drain started");
         if let Err(err) = server_handle.await {

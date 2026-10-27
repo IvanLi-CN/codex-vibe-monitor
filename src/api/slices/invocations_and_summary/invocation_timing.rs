@@ -48,6 +48,39 @@ pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &st
     final_pool_invocation_timing_sql_at_snapshot(invocation_ref, column, None)
 }
 
+pub(crate) fn postgres_final_pool_invocation_timing_sql(
+    invocation_ref: &str,
+    column: &str,
+) -> String {
+    let timing_sql = match column {
+        "first_token_ms" => format!(
+            "{invocation_ref}.first_token_ms IS NOT NULL AND {invocation_ref}.first_token_ms >= 0"
+        ),
+        "t_upstream_stream_ms" => format!(
+            "{invocation_ref}.t_upstream_stream_ms IS NOT NULL AND {invocation_ref}.t_upstream_stream_ms > 0"
+        ),
+        _ => panic!("unsupported pool invocation timing column: {column}"),
+    };
+    let final_attempt_evidence_sql =
+        postgres_final_pool_attempt_timing_evidence_sql("final_attempt", invocation_ref, column);
+    format!(
+        "CASE WHEN NOT EXISTS (SELECT 1 \
+           FROM pool_upstream_request_attempts AS final_attempt \
+          WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
+            AND final_attempt.occurred_at = {invocation_ref}.occurred_at) \
+           OR COALESCE((SELECT CASE \
+             WHEN ({final_attempt_evidence_sql}) THEN 1 \
+             ELSE 0 END \
+           FROM pool_upstream_request_attempts AS final_attempt \
+          WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
+            AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
+            AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
+           ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
+           LIMIT 1), 0) = 1 \
+        THEN CASE WHEN {timing_sql} THEN {invocation_ref}.{column} END END"
+    )
+}
+
 pub(crate) fn final_pool_invocation_timing_sql_at_snapshot(
     invocation_ref: &str,
     column: &str,
@@ -145,6 +178,29 @@ fn final_pool_attempt_timing_evidence_sql(
     } else {
         stream_evidence_sql
     }
+}
+
+fn postgres_final_pool_attempt_timing_evidence_sql(
+    attempt_ref: &str,
+    invocation_ref: &str,
+    column: &str,
+) -> String {
+    let stream_measured_sql = format!(
+        "{attempt_ref}.stream_latency_ms IS NOT NULL AND {attempt_ref}.stream_latency_ms > 0"
+    );
+    let stream_evidence_sql = format!(
+        "({stream_measured_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final'))"
+    );
+    if column != "first_token_ms" {
+        return stream_evidence_sql;
+    }
+    let zero_first_token_sql = format!(
+        " OR ({invocation_ref}.first_token_ms = 0 AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final') AND {attempt_ref}.first_byte_latency_ms IS NOT NULL AND {attempt_ref}.first_byte_latency_ms >= 0 AND {attempt_ref}.first_byte_latency_ms = 0)"
+    );
+    let live_first_token_sql = format!(
+        " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {invocation_ref}.first_token_ms IS NOT NULL AND {invocation_ref}.first_token_ms >= 0 AND (LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) = 'responding' OR LOWER(TRIM(COALESCE({attempt_ref}.phase, ''))) IN ('responding', 'streaming_response')))"
+    );
+    format!("{stream_evidence_sql}{zero_first_token_sql}{live_first_token_sql}")
 }
 
 fn invocation_live_phase_sql_with_first_token_predicate(

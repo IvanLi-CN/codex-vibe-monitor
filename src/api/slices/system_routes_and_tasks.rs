@@ -1976,12 +1976,15 @@ pub(crate) async fn update_storage_migration_control(
     Json(request): Json<StorageMigrationControlRequest>,
 ) -> Result<Json<StorageMigrationResponse>, (StatusCode, String)> {
     authorize_control_request(&headers, &state.config.storage)?;
-    state
+    let response = state
         .storage_migration
         .apply_control(request)
         .await
-        .map(Json)
-        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.wake();
+    }
+    Ok(Json(response))
 }
 
 pub(crate) async fn stream_storage_migration_events(

@@ -489,7 +489,11 @@ pub(crate) async fn execute_owned_maintenance(
 
 pub(crate) async fn initialize_invocation_identity_cleanup_state(
     pool: &Pool<Sqlite>,
+    dry_run: bool,
 ) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
     sqlx::query("INSERT OR IGNORE INTO prompt_cache_conversation_orphan_cleanup_state(scope) VALUES('invocation_hour_prefixes')")
         .execute(pool).await?;
     Ok(())

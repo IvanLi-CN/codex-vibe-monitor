@@ -1,4 +1,5 @@
 use super::*;
+use sqlx::{PgConnection, Postgres};
 
 pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
     let final_first_token_timing_sql =
@@ -722,6 +723,47 @@ pub(crate) async fn build_resolved_invocation_list_request(
     Ok(request)
 }
 
+pub(crate) async fn build_resolved_invocation_list_request_postgres(
+    connection: &mut PgConnection,
+    params: &ListQuery,
+    list_limit_max: i64,
+) -> Result<InvocationListRequest, ApiError> {
+    let mut request = build_invocation_list_request(params, list_limit_max)?;
+    let Some(attempt_id) = normalize_query_text(params.attempt_id.as_deref()) else {
+        return Ok(request);
+    };
+
+    #[derive(Debug, FromRow)]
+    struct AttemptLookupRow {
+        invoke_id: String,
+    }
+
+    let resolved_invoke_id = sqlx::query_as::<_, AttemptLookupRow>(
+        "SELECT invoke_id FROM pool_upstream_request_attempts \
+         WHERE attempt_public_id = $1 LIMIT 1",
+    )
+    .bind(&attempt_id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .map(|row| row.invoke_id);
+
+    let Some(resolved_invoke_id) = resolved_invoke_id else {
+        request.filters.request_id = Some(format!("__missing_attempt__:{attempt_id}"));
+        return Ok(request);
+    };
+    if request
+        .filters
+        .request_id
+        .as_deref()
+        .is_some_and(|invoke_id| !invoke_id.eq_ignore_ascii_case(&resolved_invoke_id))
+    {
+        request.filters.request_id = Some(format!("__invoke_attempt_mismatch__:{attempt_id}"));
+    } else {
+        request.filters.request_id = Some(resolved_invoke_id);
+    }
+    Ok(request)
+}
+
 pub(crate) fn push_exact_text_filter(
     query: &mut QueryBuilder<Sqlite>,
     sql_expr: &str,
@@ -987,6 +1029,513 @@ pub(crate) fn apply_invocation_records_filters(
     }
 }
 
+pub(crate) fn postgres_payload_text(field: &str) -> String {
+    format!("NULLIF(payload, '')::jsonb ->> '{field}'")
+}
+
+pub(crate) fn postgres_payload_text_for(alias: &str, field: &str) -> String {
+    format!("NULLIF({alias}.payload, '')::jsonb ->> '{field}'")
+}
+
+pub(crate) fn postgres_payload_text_any(fields: &[&str]) -> String {
+    let expressions = fields
+        .iter()
+        .map(|field| postgres_payload_text(field))
+        .collect::<Vec<_>>();
+    format!("COALESCE({})", expressions.join(", "))
+}
+
+pub(crate) fn postgres_resolved_failure_class_sql() -> String {
+    let failure_kind = postgres_payload_text("failureKind");
+    let downstream_error = postgres_payload_text("downstreamErrorMessage");
+    format!(
+        "CASE \
+           WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') \
+             THEN LOWER(TRIM(COALESCE(failure_class, ''))) \
+           WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') \
+             AND LOWER(TRIM(COALESCE(error_message, ''))) = '' \
+             AND LOWER(TRIM(COALESCE({downstream_error}, ''))) = '' \
+             AND LOWER(TRIM(COALESCE({failure_kind}, failure_kind, ''))) = '' \
+             THEN 'none' \
+           WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' \
+             AND LOWER(TRIM(COALESCE(error_message, ''))) = '' \
+             AND LOWER(TRIM(COALESCE({failure_kind}, failure_kind, ''))) = 'downstream_closed' \
+             THEN 'none' \
+           WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') \
+             AND LOWER(TRIM(COALESCE(error_message, ''))) = '' \
+             THEN 'none' \
+           WHEN LOWER(TRIM(COALESCE({failure_kind}, failure_kind, ''))) = 'downstream_closed' \
+             OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' \
+             OR LOWER(TRIM(COALESCE({downstream_error}, ''))) LIKE '%downstream closed while streaming upstream response%' \
+             THEN 'client_abort' \
+           WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' \
+             OR LOWER(TRIM(COALESCE({failure_kind}, failure_kind, ''))) = 'upstream_http_429' \
+             OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' \
+             THEN 'service_failure' \
+           WHEN LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' \
+             OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') \
+             THEN 'client_failure' \
+           WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') \
+             THEN 'none' \
+           ELSE 'service_failure' \
+         END",
+    )
+}
+
+pub(crate) fn postgres_resolved_failure_class_sql_for(alias: &str) -> String {
+    let mut sql = postgres_resolved_failure_class_sql();
+    for column in [
+        "failure_class",
+        "failure_kind",
+        "error_message",
+        "payload",
+        "status",
+    ] {
+        sql = sql.replace(column, &format!("{alias}.{column}"));
+    }
+    sql
+}
+
+fn push_postgres_exact_text_filter(
+    query: &mut QueryBuilder<Postgres>,
+    sql_expr: &str,
+    value: &str,
+) {
+    query.push(" AND LOWER(TRIM(COALESCE(");
+    query.push(sql_expr);
+    query.push(", ''))) = ");
+    query.push_bind(value.to_lowercase());
+}
+
+fn push_postgres_exact_text_any_filter(
+    query: &mut QueryBuilder<Postgres>,
+    sql_expr: &str,
+    values: &[String],
+) {
+    if values.is_empty() {
+        return;
+    }
+    query.push(" AND (");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query.push("LOWER(TRIM(COALESCE(");
+        query.push(sql_expr);
+        query.push(", ''))) = ");
+        query.push_bind(value.to_lowercase());
+    }
+    query.push(")");
+}
+
+pub(crate) fn apply_invocation_records_filters_postgres(
+    query: &mut QueryBuilder<Postgres>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+) {
+    let resolved_failure_class = postgres_resolved_failure_class_sql();
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(snapshot_constraint) = snapshot {
+        match snapshot_constraint {
+            SnapshotConstraint::UpTo(snapshot_id) => {
+                query.push(" AND id <= ").push_bind(snapshot_id);
+            }
+            SnapshotConstraint::After(snapshot_id) => {
+                query.push(" AND id > ").push_bind(snapshot_id);
+            }
+        }
+    }
+    if let Some(from_bound) = filters.occurred_from.as_ref() {
+        query
+            .push(" AND occurred_at >= ")
+            .push_bind(from_bound.clone());
+    }
+    if let Some(to_bound) = filters.occurred_to.as_ref() {
+        query
+            .push(" AND occurred_at < ")
+            .push_bind(to_bound.clone());
+    }
+    if !filters.model_values.is_empty() {
+        let target = filters
+            .model_target
+            .unwrap_or(InvocationModelTarget::Request);
+        let field = match target {
+            InvocationModelTarget::Request => "requestModel",
+            InvocationModelTarget::Response => "responseModel",
+        };
+        let expression = format!(
+            "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''))",
+            postgres_payload_text(field)
+        );
+        push_postgres_exact_text_any_filter(query, &expression, &filters.model_values);
+    } else if let Some(model) = filters.model.as_deref() {
+        push_postgres_exact_text_filter(query, "model", model);
+    }
+    if let Some(model_rerouted) = filters.model_rerouted {
+        let request_model = postgres_payload_text("requestModel");
+        let response_model = postgres_payload_text("responseModel");
+        let expression = format!(
+            "NULLIF(TRIM(COALESCE({request_model}, '')), '') IS NOT NULL \
+             AND NULLIF(TRIM(COALESCE({response_model}, '')), '') IS NOT NULL \
+             AND LOWER(TRIM(COALESCE({request_model}, ''))) != LOWER(TRIM(COALESCE({response_model}, '')))",
+        );
+        query.push(" AND ");
+        if matches!(model_rerouted, InvocationModelRerouteFilter::NotRerouted) {
+            query.push("NOT (");
+        }
+        query.push(expression);
+        if matches!(model_rerouted, InvocationModelRerouteFilter::NotRerouted) {
+            query.push(")");
+        }
+    }
+    if let Some(status) = filters.status.as_deref() {
+        let normalized = status.trim().to_ascii_lowercase();
+        if normalized == "failed" {
+            query.push(" AND (").push(&resolved_failure_class).push(
+                ") IN ('service_failure', 'client_failure', 'client_abort') \
+                        AND LOWER(TRIM(COALESCE(status, ''))) != 'interrupted'",
+            );
+        } else if normalized == "success" || normalized == INVOCATION_STATUS_WARNING_SUCCESS {
+            query
+                .push(" AND (")
+                .push(&resolved_failure_class)
+                .push(") = 'none'");
+            push_postgres_exact_text_filter(query, "status", status);
+        } else {
+            push_postgres_exact_text_filter(query, "status", status);
+        }
+    }
+    if let Some(failure_class) = filters.failure_class.as_deref() {
+        push_postgres_exact_text_filter(query, &resolved_failure_class, failure_class);
+    }
+    if let Some(failure_kind) = filters.failure_kind.as_deref() {
+        let expression = format!(
+            "COALESCE({}, failure_kind)",
+            postgres_payload_text("failureKind")
+        );
+        push_postgres_exact_text_filter(query, &expression, failure_kind);
+    }
+    if let Some(endpoint) = filters.endpoint.as_deref() {
+        push_postgres_exact_text_filter(query, &postgres_payload_text("endpoint"), endpoint);
+    }
+    if let Some(request_id) = filters.request_id.as_deref() {
+        push_postgres_exact_text_filter(query, "invoke_id", request_id);
+    }
+    if let Some(prompt_cache_key) = filters.prompt_cache_key.as_deref() {
+        push_postgres_exact_text_filter(
+            query,
+            &postgres_payload_text("promptCacheKey"),
+            prompt_cache_key,
+        );
+    }
+    if let Some(sticky_key) = filters.sticky_key.as_deref() {
+        let expression = format!(
+            "COALESCE({}, {})",
+            postgres_payload_text("stickyKey"),
+            postgres_payload_text("promptCacheKey")
+        );
+        push_postgres_exact_text_filter(query, &expression, sticky_key);
+    }
+    if let Some(upstream_scope) = filters.upstream_scope.as_deref() {
+        let expression = format!(
+            "COALESCE({}, 'external')",
+            postgres_payload_text("upstreamScope")
+        );
+        push_postgres_exact_text_filter(query, &expression, upstream_scope);
+    }
+    if let Some(upstream_account_id) = filters.upstream_account_id {
+        let expression = format!(
+            "NULLIF({}, '')::BIGINT",
+            postgres_payload_text("upstreamAccountId")
+        );
+        query
+            .push(" AND ")
+            .push(expression)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    if let Some(proxy_display_name) = filters.proxy_display_name.as_deref() {
+        push_postgres_exact_text_filter(
+            query,
+            &postgres_payload_text("proxyDisplayName"),
+            proxy_display_name,
+        );
+    }
+    if let Some(transport) = filters.transport.as_deref() {
+        push_postgres_exact_text_filter(query, &postgres_payload_text("transport"), transport);
+    }
+    if let Some(service_tier) = filters.service_tier.as_deref() {
+        push_postgres_exact_text_filter(
+            query,
+            &postgres_payload_text_any(&["serviceTier", "service_tier"]),
+            service_tier,
+        );
+    }
+    if !filters.reasoning_effort_values.is_empty() {
+        push_postgres_exact_text_any_filter(
+            query,
+            &postgres_payload_text("reasoningEffort"),
+            &filters.reasoning_effort_values,
+        );
+    } else if let Some(reasoning_effort) = filters.reasoning_effort.as_deref() {
+        push_postgres_exact_text_filter(
+            query,
+            &postgres_payload_text("reasoningEffort"),
+            reasoning_effort,
+        );
+    }
+    if let Some(requester_ip) = filters.requester_ip.as_deref() {
+        push_postgres_exact_text_filter(query, &postgres_payload_text("requesterIp"), requester_ip);
+    }
+    if let Some(keyword) = filters.keyword.as_deref() {
+        let pattern = format!("%{}%", escape_sql_like(&keyword.to_lowercase()));
+        let proxy_display = postgres_payload_text("proxyDisplayName");
+        let endpoint = postgres_payload_text("endpoint");
+        let failure_kind = format!(
+            "COALESCE({}, failure_kind)",
+            postgres_payload_text("failureKind")
+        );
+        let downstream_error = postgres_payload_text("downstreamErrorMessage");
+        let prompt_cache_key = postgres_payload_text("promptCacheKey");
+        let requester_ip = postgres_payload_text("requesterIp");
+        query
+            .push(" AND (LOWER(invoke_id) LIKE ")
+            .push_bind(pattern.clone());
+        query
+            .push(" OR LOWER(COALESCE(model, '')) LIKE ")
+            .push_bind(pattern.clone());
+        query
+            .push(" OR LOWER(TRIM(COALESCE(")
+            .push(proxy_display)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\'");
+        query
+            .push(" OR LOWER(TRIM(COALESCE(")
+            .push(endpoint)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\'");
+        query
+            .push(" OR LOWER(TRIM(COALESCE(")
+            .push(failure_kind)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\'");
+        query
+            .push(" OR LOWER(COALESCE(error_message, '')) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\'");
+        query
+            .push(" OR LOWER(TRIM(COALESCE(")
+            .push(downstream_error)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\'");
+        query
+            .push(" OR LOWER(TRIM(COALESCE(")
+            .push(prompt_cache_key)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern.clone())
+            .push(" ESCAPE '\\'");
+        query
+            .push(" OR LOWER(TRIM(COALESCE(")
+            .push(requester_ip)
+            .push(", ''))) LIKE ")
+            .push_bind(pattern)
+            .push(" ESCAPE '\\')");
+    }
+    if let Some(min_total_tokens) = filters.min_total_tokens {
+        query
+            .push(" AND total_tokens IS NOT NULL AND total_tokens >= ")
+            .push_bind(min_total_tokens);
+    }
+    if let Some(max_total_tokens) = filters.max_total_tokens {
+        query
+            .push(" AND total_tokens IS NOT NULL AND total_tokens <= ")
+            .push_bind(max_total_tokens);
+    }
+    if let Some(min_total_ms) = filters.min_total_ms {
+        query
+            .push(" AND t_total_ms IS NOT NULL AND t_total_ms >= ")
+            .push_bind(min_total_ms);
+    }
+    if let Some(max_total_ms) = filters.max_total_ms {
+        query
+            .push(" AND t_total_ms IS NOT NULL AND t_total_ms <= ")
+            .push_bind(max_total_ms);
+    }
+}
+
+pub(crate) fn build_invocation_select_query_postgres() -> QueryBuilder<'static, Postgres> {
+    let payload_json = "NULLIF(payload, '')::jsonb";
+    let status_norm = "LOWER(TRIM(COALESCE(status, '')))";
+    let resolved_failure = postgres_resolved_failure_class_sql();
+    let failure_kind = format!(
+        "COALESCE({}, failure_kind)",
+        postgres_payload_text("failureKind")
+    );
+    let upstream_account_id = format!(
+        "NULLIF({}, '')::BIGINT",
+        postgres_payload_text("upstreamAccountId")
+    );
+    let first_token_timing =
+        postgres_final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let stream_timing =
+        postgres_final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms");
+    let attempt_phase = "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
+        FROM pool_upstream_request_attempts AS attempt \
+        WHERE attempt.invoke_id = codex_invocations.invoke_id \
+          AND attempt.occurred_at = codex_invocations.occurred_at \
+        ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+        LIMIT 1)";
+    let live_phase = format!(
+        "CASE \
+           WHEN {status_norm} NOT IN ('running', 'pending') THEN NULL \
+           WHEN {status_norm} = 'pending' THEN 'queued' \
+           WHEN ({first_token_timing}) IS NOT NULL THEN 'responding' \
+           WHEN {attempt_phase} IN ('connecting', 'sending_request', 'waiting_first_byte') \
+             OR {upstream_account_id} IS NOT NULL \
+             OR (t_upstream_connect_ms IS NOT NULL AND t_upstream_connect_ms > 0) \
+             OR (t_req_read_ms IS NOT NULL AND t_req_read_ms > 0) \
+             OR (t_req_parse_ms IS NOT NULL AND t_req_parse_ms > 0) THEN 'requesting' \
+           ELSE 'queued' \
+         END",
+    );
+    let request_compression = format!(
+        "COALESCE({}, (SELECT attempt.upstream_request_compression_algorithm \
+           FROM pool_upstream_request_attempts AS attempt \
+          WHERE attempt.invoke_id = codex_invocations.invoke_id \
+            AND attempt.occurred_at = codex_invocations.occurred_at \
+          ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+          LIMIT 1))",
+        postgres_payload_text("requestCompressionAlgorithm")
+    );
+    let pool_attempt_count = format!(
+        "NULLIF({}, '')::BIGINT",
+        postgres_payload_text("poolAttemptCount")
+    );
+    let pool_distinct_account_count = format!(
+        "NULLIF({}, '')::BIGINT",
+        postgres_payload_text("poolDistinctAccountCount")
+    );
+    QueryBuilder::new(format!(
+        "SELECT \
+         id, invoke_id, occurred_at, source, \
+         {proxy_display} AS proxy_display_name, model, \
+         {request_model} AS request_model, \
+         {response_model} AS response_model, \
+         input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, \
+         {reasoning_effort} AS reasoning_effort, total_tokens, cost, \
+         cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \
+         reported_cache_write_tokens, status, {live_phase} AS live_phase, error_message, \
+         NULLIF({downstream_status_code}, '')::BIGINT AS downstream_status_code, \
+         {failure_kind} AS failure_kind, \
+         ({payload_json} -> 'blockedBinding')::text AS blocked_binding_json, \
+         {stream_terminal_event} AS stream_terminal_event, \
+         {upstream_error_code} AS upstream_error_code, \
+         {upstream_error_message} AS upstream_error_message, \
+         {downstream_error_message} AS downstream_error_message, \
+         {upstream_request_id} AS upstream_request_id, \
+         {resolved_failure} AS failure_class, \
+         CASE WHEN ({resolved_failure}) = 'service_failure' THEN TRUE ELSE FALSE END AS is_actionable, \
+         {endpoint} AS endpoint, {compaction_request_kind} AS compaction_request_kind, \
+         {compaction_response_kind} AS compaction_response_kind, {image_intent} AS image_intent, \
+         {requester_ip} AS requester_ip, {prompt_cache_key} AS prompt_cache_key, \
+         COALESCE({sticky_key}, {prompt_cache_key}) AS sticky_key, \
+         {route_mode} AS route_mode, {upstream_account_id} AS upstream_account_id, \
+         {upstream_account_name} AS upstream_account_name, \
+         {response_content_encoding} AS response_content_encoding, \
+         {request_compression} AS request_compression_algorithm, \
+         {transport} AS transport, {pool_attempt_count} AS pool_attempt_count, \
+         {pool_distinct_account_count} AS pool_distinct_account_count, \
+         {pool_attempt_terminal_reason} AS pool_attempt_terminal_reason, \
+         {requested_service_tier} AS requested_service_tier, \
+         {service_tier} AS service_tier, {billing_service_tier} AS billing_service_tier, \
+         NULLIF({proxy_weight_delta}, '')::DOUBLE PRECISION AS proxy_weight_delta, \
+         cost_estimated, price_version, request_raw_path, request_raw_size, \
+         request_raw_truncated, request_raw_truncated_reason, response_raw_path, \
+         response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
+         detail_level, detail_pruned_at, detail_prune_reason, \
+         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+         {first_token_timing} AS first_token_ms, {stream_timing} AS t_upstream_stream_ms, \
+         t_resp_parse_ms, t_persist_ms, created_at \
+         FROM codex_invocations WHERE 1 = 1",
+        payload_json = payload_json,
+        proxy_display = postgres_payload_text("proxyDisplayName"),
+        request_model = postgres_payload_text("requestModel"),
+        response_model = postgres_payload_text("responseModel"),
+        reasoning_effort = postgres_payload_text("reasoningEffort"),
+        live_phase = live_phase,
+        downstream_status_code = postgres_payload_text("downstreamStatusCode"),
+        failure_kind = failure_kind,
+        stream_terminal_event = postgres_payload_text("streamTerminalEvent"),
+        upstream_error_code = postgres_payload_text("upstreamErrorCode"),
+        upstream_error_message = postgres_payload_text("upstreamErrorMessage"),
+        downstream_error_message = postgres_payload_text("downstreamErrorMessage"),
+        upstream_request_id = postgres_payload_text("upstreamRequestId"),
+        resolved_failure = resolved_failure,
+        endpoint = postgres_payload_text("endpoint"),
+        compaction_request_kind = postgres_payload_text("compactionRequestKind"),
+        compaction_response_kind = postgres_payload_text("compactionResponseKind"),
+        image_intent = postgres_payload_text("imageIntent"),
+        requester_ip = postgres_payload_text("requesterIp"),
+        prompt_cache_key = postgres_payload_text("promptCacheKey"),
+        sticky_key = postgres_payload_text("stickyKey"),
+        route_mode = postgres_payload_text("routeMode"),
+        upstream_account_id = upstream_account_id,
+        upstream_account_name = postgres_payload_text("upstreamAccountName"),
+        response_content_encoding = postgres_payload_text("responseContentEncoding"),
+        request_compression = request_compression,
+        transport = postgres_payload_text("transport"),
+        pool_attempt_count = pool_attempt_count,
+        pool_distinct_account_count = pool_distinct_account_count,
+        pool_attempt_terminal_reason = postgres_payload_text("poolAttemptTerminalReason"),
+        requested_service_tier =
+            postgres_payload_text_any(&["requestedServiceTier", "requested_service_tier",]),
+        service_tier = postgres_payload_text_any(&["serviceTier", "service_tier"]),
+        billing_service_tier =
+            postgres_payload_text_any(&["billingServiceTier", "billing_service_tier",]),
+        proxy_weight_delta = postgres_payload_text("proxyWeightDelta"),
+        first_token_timing = first_token_timing,
+        stream_timing = stream_timing,
+    ))
+}
+
+pub(crate) fn append_invocation_order_clause_postgres(
+    query: &mut QueryBuilder<Postgres>,
+    sort_by: InvocationSortBy,
+    sort_order: InvocationSortOrder,
+) {
+    let direction = match sort_order {
+        InvocationSortOrder::Asc => "ASC",
+        InvocationSortOrder::Desc => "DESC",
+    };
+    let expression = match sort_by {
+        InvocationSortBy::OccurredAt => "occurred_at",
+        InvocationSortBy::TotalTokens => "total_tokens",
+        InvocationSortBy::Cost => "cost",
+        InvocationSortBy::TotalMs => "t_total_ms",
+        InvocationSortBy::TtfbMs => "t_upstream_ttfb_ms",
+        InvocationSortBy::Status => "LOWER(TRIM(COALESCE(status, '')))",
+    };
+    query
+        .push(" ORDER BY ")
+        .push(expression)
+        .push(" IS NULL ASC, ")
+        .push(expression)
+        .push(" ")
+        .push(direction);
+    if matches!(sort_by, InvocationSortBy::OccurredAt) {
+        query.push(", id ").push(direction);
+    } else {
+        query.push(", occurred_at DESC, id DESC");
+    }
+}
+
 pub(crate) async fn resolve_invocation_snapshot_id(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -1045,5 +1594,80 @@ pub(crate) fn append_invocation_order_clause(
         _ => {
             query.push(", occurred_at DESC, id DESC");
         }
+    }
+}
+
+#[cfg(test)]
+mod postgres_query_contract_tests {
+    use super::*;
+    use sqlx::Execute;
+
+    #[test]
+    fn postgres_invocation_read_query_uses_postgres_authority_sql() {
+        let mut query = build_invocation_select_query_postgres();
+        let filters = InvocationRecordsFilters {
+            request_id: Some("contract-request".into()),
+            ..InvocationRecordsFilters::default()
+        };
+        apply_invocation_records_filters_postgres(
+            &mut query,
+            &filters,
+            InvocationSourceScope::All,
+            Some(SnapshotConstraint::UpTo(42)),
+        );
+        let sql = query.build().sql().to_owned();
+        assert!(sql.contains("FROM codex_invocations"));
+        assert!(!sql.contains("SELECT *"));
+        assert!(sql.contains("AS proxy_display_name"));
+        assert!(sql.contains("final_attempt.attempt_index DESC"));
+        assert!(sql.contains("$1"));
+        assert!(sql.contains("$2"));
+        assert!(!sql.contains("?1"));
+    }
+
+    #[test]
+    fn postgres_invocation_filters_resolve_legacy_failure_class() {
+        let mut query =
+            QueryBuilder::<Postgres>::new("SELECT id FROM codex_invocations WHERE 1 = 1");
+        apply_invocation_records_filters_postgres(
+            &mut query,
+            &InvocationRecordsFilters {
+                status: Some("failed".into()),
+                failure_class: Some("client_failure".into()),
+                ..InvocationRecordsFilters::default()
+            },
+            InvocationSourceScope::All,
+            None,
+        );
+        let sql = query.build().sql().to_owned();
+        assert!(sql.matches("CASE").count() >= 2);
+        assert!(!sql.contains("AND failure_class IN"));
+        assert!(!sql.contains("COALESCE(failure_class, 'none') = 'none'"));
+    }
+
+    #[test]
+    fn postgres_invocation_filters_keep_legacy_payload_fields_and_keyword_scope() {
+        let mut query =
+            QueryBuilder::<Postgres>::new("SELECT id FROM codex_invocations WHERE 1 = 1");
+        apply_invocation_records_filters_postgres(
+            &mut query,
+            &InvocationRecordsFilters {
+                failure_kind: Some("upstream_error".into()),
+                service_tier: Some("priority".into()),
+                keyword: Some("needle".into()),
+                ..InvocationRecordsFilters::default()
+            },
+            InvocationSourceScope::All,
+            None,
+        );
+        let sql = query.build().sql().to_owned();
+        assert!(sql.contains("failureKind"));
+        assert!(sql.contains("service_tier"));
+        assert!(sql.contains("proxyDisplayName"));
+        assert!(sql.contains("downstreamErrorMessage"));
+        assert!(sql.contains("promptCacheKey"));
+        assert!(sql.contains("requesterIp"));
+        assert!(!sql.contains("json_valid"));
+        assert!(!sql.contains("?1"));
     }
 }

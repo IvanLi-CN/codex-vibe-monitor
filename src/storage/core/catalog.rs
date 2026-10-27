@@ -1635,6 +1635,11 @@ fn task_table(name: &str) -> bool {
         name,
         "schema_refresh_migrations"
             | "storage_migration_runtime"
+            | "storage_migration_authority"
+            | "storage_migration_engine_checkpoints"
+            | "storage_migration_engine_outbox"
+            | "storage_migration_engine_reservations"
+            | "storage_migration_engine_status"
             | "startup_backfill_progress"
             | "system_task_runs"
             | "maintenance_metadata"

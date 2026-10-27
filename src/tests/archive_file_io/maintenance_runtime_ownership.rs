@@ -1,5 +1,54 @@
 use super::*;
 
+#[tokio::test]
+async fn ownership_retention_dry_run_does_not_initialize_business_cleanup_state() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("maintenance-retention-dry-run").await;
+    let before: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT scope,cursor_key,epoch \
+         FROM prompt_cache_conversation_orphan_cleanup_state ORDER BY scope",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load cleanup state before retention dry-run");
+    assert!(
+        !before
+            .iter()
+            .any(|(scope, _, _)| scope == "invocation_hour_prefixes")
+    );
+    crate::maintenance::initialize_invocation_identity_cleanup_state(&pool, true)
+        .await
+        .expect("skip business cleanup state initialization for retention dry-run");
+    let after: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT scope,cursor_key,epoch \
+         FROM prompt_cache_conversation_orphan_cleanup_state ORDER BY scope",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load cleanup state after retention dry-run");
+    assert_eq!(after, before);
+
+    crate::maintenance::initialize_invocation_identity_cleanup_state(&pool, false)
+        .await
+        .expect("initialize business cleanup state for a real maintenance run");
+    let initialized: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT scope,cursor_key,epoch \
+         FROM prompt_cache_conversation_orphan_cleanup_state ORDER BY scope",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load cleanup state after real maintenance initialization");
+    assert_eq!(initialized.len(), before.len() + 1);
+    assert!(
+        initialized
+            .iter()
+            .any(|(scope, _, _)| scope == "invocation_hour_prefixes")
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn ownership_runtime_sqlite_open_supports_concurrent_vfs_registration() {
