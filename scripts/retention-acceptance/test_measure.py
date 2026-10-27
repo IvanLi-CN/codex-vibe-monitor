@@ -35,6 +35,7 @@ from measure import (
     run_command,
     run_foreground,
     start_container,
+    validate_task_snapshot,
 )
 
 
@@ -48,6 +49,63 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_legacy_partial_status_is_accepted_when_selected_batch_is_complete(self) -> None:
+        archive_details = {
+            "result": "partial",
+            "fatalError": None,
+            "errorChain": None,
+            "timeoutCount": 0,
+            "selectedScope": {"selected": 1000, "committed": 1000},
+            "archiveBatches": [{"batchRows": 1000, "committedRows": 1000, "timeoutCount": 0}],
+        }
+        rows = [
+            {
+                "task_key": task_key,
+                "trigger_kind": trigger_kind,
+                "status": "skipped" if task_key == "retention_archive" and trigger_kind == "schedule" else "success",
+                "completion": "partial" if task_key == "retention_archive" and trigger_kind == "schedule" else "complete",
+                "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                "processed_count": 1000 if task_key != COMPETITOR_TASK else None,
+                "committed_work": 512 if task_key == COMPETITOR_TASK else 1000,
+                "details": archive_details if task_key == "retention_archive" and trigger_kind == "schedule" else {},
+                "error_detail": None,
+            }
+            for index, (task_key, trigger_kind) in enumerate(
+                [
+                    ("retention_archive", "schedule"),
+                    ("retention_archive", "catchup"),
+                    ("pool_upstream_attempt_archive", "schedule"),
+                    ("pool_upstream_attempt_archive", "catchup"),
+                    (COMPETITOR_TASK, "schedule"),
+                ],
+                start=1,
+            )
+        ]
+
+        validate_task_snapshot(rows)
+
+    def test_partial_status_is_rejected_when_selected_batch_is_incomplete(self) -> None:
+        rows = [
+            {
+                "task_key": "retention_archive",
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "details": {
+                    "result": "partial",
+                    "selectedScope": {"selected": 1000, "committed": 999},
+                    "archiveBatches": [{"batchRows": 1000, "committedRows": 999, "timeoutCount": 0}],
+                },
+                "error_detail": None,
+            }
+        ]
+
+        with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
+            validate_task_snapshot(rows)
+
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

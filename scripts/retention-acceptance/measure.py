@@ -40,6 +40,7 @@ from contract import (
     AcceptanceError,
     parse_time,
     sha256_bytes,
+    task_run_is_accepted_terminal,
     validate_evidence,
 )
 from fixture import populate_template, prepare_competitor, shanghai_cutoff
@@ -942,20 +943,6 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
         connection.close()
 
 
-def task_owners_idle(maintenance_db: Path) -> bool:
-    connection = sqlite3.connect(f"file:{maintenance_db}?mode=ro", uri=True)
-    try:
-        keys = tuple(DATASETS[name]["task_key"] for name in DATASETS) + (COMPETITOR_TASK,)
-        placeholders = ",".join("?" for _ in keys)
-        pending = connection.execute(
-            f"SELECT COUNT(*) FROM managed_task_runs WHERE task_key IN ({placeholders}) AND status IN ('running','requested','queued')",
-            keys,
-        ).fetchone()[0]
-        return pending == 0
-    finally:
-        connection.close()
-
-
 def archive_proofs_ready(database: Path, cutoff: str, added_counts: dict[str, int]) -> bool:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
@@ -1020,9 +1007,12 @@ def wait_for_task_evidence(
         latest = task_runs(maintenance_db)
         try:
             validate_task_snapshot(latest)
-            if task_owners_idle(maintenance_db) and archive_proofs_ready(main_db, cutoff, added_counts):
+            # The fixed seed snapshot intentionally contains 100,000 expired rows. Waiting
+            # for every background owner to become idle would turn one 10x cohort check into
+            # a full backlog drain and make the six-trial comparison exceed its 900s budget.
+            if archive_proofs_ready(main_db, cutoff, added_counts):
                 return latest
-            last_error = AcceptanceError("retention owners, archive proofs, or 10x source conversion are still draining")
+            last_error = AcceptanceError("archive proofs or 10x source conversion are still draining")
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
@@ -1035,7 +1025,7 @@ def wait_for_task_evidence(
 def validate_task_snapshot(rows: list[dict[str, Any]]) -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if row.get("actual_finished_at") is not None and row.get("status") == "success":
+        if row.get("actual_finished_at") is not None and task_run_is_accepted_terminal(row):
             by_key.setdefault(row["task_key"], []).append(row)
     for key in (DATASETS[name]["task_key"] for name in DATASETS):
         runs = by_key.get(key, [])

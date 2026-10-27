@@ -20,6 +20,7 @@ from contract import (
     TRIAL_EXECUTION_ORDER,
     AcceptanceError,
     sha256_json,
+    task_run_is_accepted_terminal,
     validate_evidence,
 )
 
@@ -291,6 +292,48 @@ def valid_evidence() -> dict:
 
 
 class ContractTests(unittest.TestCase):
+    def test_legacy_partial_task_run_requires_full_selected_batch(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "partial",
+            "error_detail": None,
+            "details": {
+                "result": "partial",
+                "fatalError": None,
+                "errorChain": None,
+                "timeoutCount": 0,
+                "selectedScope": {"selected": 1000, "committed": 1000},
+                "archiveBatches": [{"batchRows": 1000, "committedRows": 1000, "timeoutCount": 0}],
+            },
+        }
+        self.assertTrue(task_run_is_accepted_terminal(row))
+        row["details"]["selectedScope"]["committed"] = 999
+        self.assertFalse(task_run_is_accepted_terminal(row))
+
+    def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            item
+            for item in evidence["versions"]["baseline"]["trials"][0]["task_runs"]
+            if item["task_key"] == "retention_archive" and item["trigger_kind"] == "schedule"
+        )
+        row.update(
+            {
+                "status": "skipped",
+                "completion": "partial",
+                "error_detail": None,
+                "details": {
+                    "result": "partial",
+                    "fatalError": None,
+                    "errorChain": None,
+                    "timeoutCount": 0,
+                    "selectedScope": {"selected": 1000, "committed": 1000},
+                    "archiveBatches": [{"batchRows": 1000, "committedRows": 1000, "timeoutCount": 0}],
+                },
+            }
+        )
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
     def test_valid_evidence_passes(self) -> None:
         result = validate_evidence(valid_evidence())
         self.assertEqual(result["status"], "passed")
