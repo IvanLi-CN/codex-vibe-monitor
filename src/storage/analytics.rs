@@ -935,6 +935,9 @@ impl AnalyticsProjectionTransaction {
     }
 
     pub(crate) async fn commit(self) -> Result<()> {
+        if self.projection.is_some() {
+            bail!("named analytics projections must commit through AnalyticsProjectionCommit");
+        }
         self.transaction.commit().await
     }
 
@@ -1021,6 +1024,7 @@ struct TrafficStatsFactRow {
     error_message: Option<String>,
     failure_kind: Option<String>,
     failure_class: Option<String>,
+    payload: Option<String>,
     total_tokens: Option<i64>,
     cost: Option<f64>,
 }
@@ -1250,28 +1254,31 @@ async fn persist_projection_checkpoint_postgres(
     Ok(())
 }
 
-const TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
+const TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL_TEMPLATE: &str = concat!(
     "CASE ",
     "  WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') ",
     "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
     "  ELSE CASE ",
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') ",
     "      AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "      AND LOWER(TRIM(COALESCE(failure_kind, ''))) = '' THEN 'none' ",
+    "      AND LOWER(TRIM(COALESCE({failure_kind}, ''))) = '' ",
+    "      AND LOWER(TRIM(COALESCE({downstream_error_message}, ''))) = '' THEN 'none' ",
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' ",
     "      AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "      AND LOWER(TRIM(COALESCE(failure_kind, ''))) = 'downstream_closed' THEN 'none' ",
+    "      AND LOWER(TRIM(COALESCE({failure_kind}, ''))) = 'downstream_closed' THEN 'none' ",
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') ",
     "      AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none' ",
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) = '' ",
     "      AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "      AND LOWER(TRIM(COALESCE(failure_kind, ''))) = '' THEN 'none' ",
-    "    WHEN LOWER(TRIM(COALESCE(failure_kind, ''))) = 'downstream_closed' ",
+    "      AND LOWER(TRIM(COALESCE({failure_kind}, ''))) = '' ",
+    "      AND LOWER(TRIM(COALESCE({downstream_error_message}, ''))) = '' THEN 'none' ",
+    "    WHEN LOWER(TRIM(COALESCE({failure_kind}, ''))) = 'downstream_closed' ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' ",
+    "      OR LOWER(TRIM(COALESCE({downstream_error_message}, ''))) LIKE '%downstream closed while streaming upstream response%' ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' THEN 'client_abort' ",
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' ",
-    "      OR LOWER(TRIM(COALESCE(failure_kind, ''))) = 'upstream_http_429' THEN 'service_failure' ",
-    "    WHEN LOWER(TRIM(COALESCE(failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
+    "      OR LOWER(TRIM(COALESCE({failure_kind}, ''))) = 'upstream_http_429' THEN 'service_failure' ",
+    "    WHEN LOWER(TRIM(COALESCE({failure_kind}, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' ",
@@ -1281,7 +1288,7 @@ const TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' ",
     "      OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) <> 'http_429') ",
     "      OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') THEN 'client_failure' ",
-    "    WHEN LOWER(TRIM(COALESCE(failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout', 'upstream_error') ",
+    "    WHEN LOWER(TRIM(COALESCE({failure_kind}, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout', 'upstream_error') ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
     "      OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
@@ -1296,14 +1303,47 @@ const TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') THEN 'none' ",
     "    WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "      AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
-    "      AND LOWER(TRIM(COALESCE(failure_kind, ''))) = '' THEN 'none' ",
+    "      AND LOWER(TRIM(COALESCE({failure_kind}, ''))) = '' ",
+    "      AND LOWER(TRIM(COALESCE({downstream_error_message}, ''))) = '' THEN 'none' ",
     "    ELSE 'service_failure' ",
     "  END ",
     "END"
 );
 
-fn traffic_stats_aggregate_select_sql() -> String {
-    let resolved_failure_class = TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL;
+const SQLITE_PAYLOAD_FAILURE_KIND_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END";
+const SQLITE_PAYLOAD_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
+const POSTGRES_PAYLOAD_FAILURE_KIND_SQL: &str = "payload::jsonb ->> 'failureKind'";
+const POSTGRES_PAYLOAD_DOWNSTREAM_ERROR_MESSAGE_SQL: &str =
+    "payload::jsonb ->> 'downstreamErrorMessage'";
+
+fn traffic_stats_resolved_failure_class_sql(
+    payload_failure_kind_sql: &str,
+    payload_downstream_error_message_sql: &str,
+) -> String {
+    let failure_kind_sql = format!("COALESCE({payload_failure_kind_sql}, failure_kind, '')");
+    let downstream_error_message_sql =
+        format!("COALESCE({payload_downstream_error_message_sql}, '')");
+    TRAFFIC_STATS_RESOLVED_FAILURE_CLASS_SQL_TEMPLATE
+        .replace("{failure_kind}", &failure_kind_sql)
+        .replace("{downstream_error_message}", &downstream_error_message_sql)
+}
+
+fn traffic_stats_aggregate_select_sql(backend: BackendKind) -> String {
+    let (payload_failure_kind_sql, payload_downstream_error_message_sql) = match backend {
+        BackendKind::Sqlite => (
+            SQLITE_PAYLOAD_FAILURE_KIND_SQL,
+            SQLITE_PAYLOAD_DOWNSTREAM_ERROR_MESSAGE_SQL,
+        ),
+        BackendKind::Postgres => (
+            POSTGRES_PAYLOAD_FAILURE_KIND_SQL,
+            POSTGRES_PAYLOAD_DOWNSTREAM_ERROR_MESSAGE_SQL,
+        ),
+    };
+    let resolved_failure_class = traffic_stats_resolved_failure_class_sql(
+        payload_failure_kind_sql,
+        payload_downstream_error_message_sql,
+    );
     format!(
         "COUNT(*) AS total_count, COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') AND ({resolved_failure_class}) = 'none' THEN 1 ELSE 0 END), 0) AS success_count, COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') AND ({resolved_failure_class}) IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, COALESCE(SUM(cost), 0.0) AS total_cost, COALESCE(SUM(total_tokens), 0) AS total_tokens, COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') AND ({resolved_failure_class}) IN ('service_failure', 'client_failure', 'client_abort') THEN COALESCE(cost, 0.0) ELSE 0.0 END), 0.0) AS non_success_cost"
     )
@@ -1318,7 +1358,7 @@ async fn query_bounded_traffic_stats_sqlite(
     let upper_bound_id = request.upper_bound_id.min(source_watermark);
     let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
     query
-        .push(traffic_stats_aggregate_select_sql())
+        .push(traffic_stats_aggregate_select_sql(BackendKind::Sqlite))
         .push(" FROM ");
     append_traffic_stats_source(&mut query, request, upper_bound_id);
     let row = query
@@ -1337,7 +1377,7 @@ async fn query_bounded_traffic_stats_postgres(
     let upper_bound_id = request.upper_bound_id.min(source_watermark);
     let mut query = QueryBuilder::<Postgres>::new("SELECT ");
     query
-        .push(traffic_stats_aggregate_select_sql())
+        .push(traffic_stats_aggregate_select_sql(BackendKind::Postgres))
         .push(" FROM ");
     append_traffic_stats_source(&mut query, request, upper_bound_id);
     let row = query
@@ -1512,7 +1552,7 @@ async fn read_traffic_stats_page_sqlite(
         .unwrap_or(source_watermark)
         .min(source_watermark);
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, status, error_message, failure_kind, failure_class, total_tokens, cost FROM codex_invocations WHERE id > ",
+        "SELECT id, status, error_message, failure_kind, failure_class, payload, total_tokens, cost FROM codex_invocations WHERE id > ",
     );
     query
         .push_bind(request.after_row_id)
@@ -1547,7 +1587,7 @@ async fn read_traffic_stats_page_postgres(
         .unwrap_or(source_watermark)
         .min(source_watermark);
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT id, status, error_message, failure_kind, failure_class, total_tokens, cost FROM codex_invocations WHERE id > ",
+        "SELECT id, status, error_message, failure_kind, failure_class, payload, total_tokens, cost FROM codex_invocations WHERE id > ",
     );
     query
         .push_bind(request.after_row_id)
@@ -1690,6 +1730,25 @@ fn traffic_row_is_failure(row: &TrafficStatsFactRow) -> bool {
     )
 }
 
+fn traffic_row_payload_fields(row: &TrafficStatsFactRow) -> (Option<String>, Option<String>) {
+    let Some(payload) = row.payload.as_deref() else {
+        return (None, None);
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return (None, None);
+    };
+    (
+        payload
+            .get("failureKind")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        payload
+            .get("downstreamErrorMessage")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+    )
+}
+
 fn traffic_row_resolved_failure_class(row: &TrafficStatsFactRow) -> &'static str {
     let failure_class = row
         .failure_class
@@ -1714,9 +1773,9 @@ fn traffic_row_resolved_failure_class(row: &TrafficStatsFactRow) -> &'static str
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    let failure_kind = row
-        .failure_kind
-        .as_deref()
+    let (payload_failure_kind, payload_downstream_error_message) = traffic_row_payload_fields(row);
+    let failure_kind = payload_failure_kind
+        .or_else(|| row.failure_kind.clone())
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
@@ -1726,9 +1785,17 @@ fn traffic_row_resolved_failure_class(row: &TrafficStatsFactRow) -> &'static str
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    let downstream_error_message = payload_downstream_error_message
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     let error_empty = error_message.is_empty();
+    let downstream_error_empty = downstream_error_message.is_empty();
 
-    if matches!(status.as_str(), "success" | "completed") && error_empty && failure_kind.is_empty()
+    if matches!(status.as_str(), "success" | "completed")
+        && error_empty
+        && failure_kind.is_empty()
+        && downstream_error_empty
     {
         return "none";
     }
@@ -1738,11 +1805,12 @@ fn traffic_row_resolved_failure_class(row: &TrafficStatsFactRow) -> &'static str
     if matches!(status.as_str(), "running" | "pending") && error_empty {
         return "none";
     }
-    if status.is_empty() && error_empty && failure_kind.is_empty() {
+    if status.is_empty() && error_empty && failure_kind.is_empty() && downstream_error_empty {
         return "none";
     }
     if failure_kind == "downstream_closed"
         || error_message.starts_with("[downstream_closed]")
+        || downstream_error_message.contains("downstream closed while streaming upstream response")
         || error_message.contains("downstream closed while streaming upstream response")
     {
         return "client_abort";
@@ -1793,7 +1861,7 @@ fn traffic_row_resolved_failure_class(row: &TrafficStatsFactRow) -> &'static str
     if matches!(status.as_str(), "success" | "completed" | "warning_success") {
         return "none";
     }
-    if status == "http_200" && error_empty && failure_kind.is_empty() {
+    if status == "http_200" && error_empty && failure_kind.is_empty() && downstream_error_empty {
         return "none";
     }
     "service_failure"
@@ -1922,7 +1990,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await?;
         sqlx::query(
-            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, occurred_at TEXT, status TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, total_tokens INTEGER, cost REAL)",
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, occurred_at TEXT, status TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, payload TEXT, total_tokens INTEGER, cost REAL)",
         )
         .execute(&pool)
         .await?;
@@ -2041,6 +2109,42 @@ mod tests {
             .await?;
         assert_eq!(page.aggregate.failure_count, 1);
         assert_eq!(page.aggregate.non_success_cost, 0.5);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn payload_only_failure_fields_are_used_by_aggregate_and_page() -> Result<()> {
+        let (store, pool) = sqlite_store().await?;
+        for (id, payload) in [
+            (1, r#"{"failureKind":"upstream_response_failed"}"#),
+            (
+                2,
+                r#"{"downstreamErrorMessage":"downstream closed while streaming upstream response"}"#,
+            ),
+        ] {
+            sqlx::query("INSERT INTO codex_invocations (id, source, status, error_message, failure_kind, failure_class, payload, total_tokens, cost) VALUES (?1, 'proxy', 'failed', '', NULL, 'none', ?2, 10, 0.5)")
+                .bind(id)
+                .bind(payload)
+                .execute(&pool)
+                .await?;
+        }
+
+        let read = store
+            .query_bounded_traffic_stats(TrafficStatsAggregateRequest {
+                filter: crate::stats::StatsFilter::All,
+                source_scope: crate::InvocationSourceScope::All,
+                upper_bound_id: 2,
+            })
+            .await?;
+        assert_eq!(read.aggregate.failure_count, 2);
+        assert_eq!(read.aggregate.non_success_cost, 1.0);
+
+        let page = store
+            .read_bounded_traffic_stats(TrafficStatsReadRequest::default())
+            .await?;
+        assert_eq!(page.row_count, 2);
+        assert_eq!(page.aggregate.failure_count, 2);
+        assert_eq!(page.aggregate.non_success_cost, 1.0);
         Ok(())
     }
 
