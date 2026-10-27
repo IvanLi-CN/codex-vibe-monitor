@@ -16,3 +16,29 @@ pub(crate) use tokio::sync::Notify;
 mod timing;
 
 pub(crate) use timing::{test_timing_span, test_timing_target, timed_test_phase};
+
+pub(crate) fn optional_postgres_test_database_url(test_name: &str) -> Option<String> {
+    match std::env::var("POSTGRES_TEST_DATABASE_URL") {
+        Ok(value) if !value.trim().is_empty() => Some(value),
+        Ok(_) | Err(std::env::VarError::NotPresent) => {
+            let message = format!(
+                "PostgreSQL acceptance test {test_name} requires POSTGRES_TEST_DATABASE_URL"
+            );
+            if std::env::var("POSTGRES_ACCEPTANCE_REQUIRED").as_deref() == Ok("1") {
+                panic!("{message}; status=blocked result=not-run");
+            }
+            eprintln!("skipping optional PostgreSQL test: {message}");
+            None
+        }
+        Err(error) => {
+            let message = format!(
+                "PostgreSQL acceptance test {test_name} cannot read POSTGRES_TEST_DATABASE_URL: {error}"
+            );
+            if std::env::var("POSTGRES_ACCEPTANCE_REQUIRED").as_deref() == Ok("1") {
+                panic!("{message}; status=blocked result=not-run");
+            }
+            eprintln!("skipping optional PostgreSQL test: {message}");
+            None
+        }
+    }
+}

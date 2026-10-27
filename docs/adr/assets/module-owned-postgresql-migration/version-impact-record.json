@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "kind": "version-impact-record",
-  "status": "design-only-implementation-and-validation-pending",
+  "status": "acceptance-harness-implemented-live-validation-pending",
   "change": {
     "description": "Add module-owned PostgreSQL storage, online background migration and observable bounded cutover while retaining SQLite control modules and existing proxy contracts.",
-    "release_unit_description": "Future migration-capable application; this design-only change does not implement or release the capability.",
+    "release_unit_description": "Migration acceptance harness and compatibility records; this change does not perform or release a production migration.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
   "classification": {
@@ -17,8 +17,12 @@
     "current": {
       "impact": "minor",
       "scope_drift": {"detected": false, "description": "Current design follows module-based runtime migration with per-table progress and a short module switch gate."},
-      "reasoning": "Design classification only; no runtime compatibility or cutover evidence exists yet.",
-      "evidence": ["docs/adr/assets/module-owned-postgresql-migration/persistent-state-migration-record.json"]
+      "reasoning": "Compatibility classification remains provisional; the acceptance harness exists, but no live PostgreSQL compatibility or cutover evidence exists yet.",
+      "evidence": [
+        "docs/adr/assets/module-owned-postgresql-migration/persistent-state-migration-record.json",
+        "docs/adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json",
+        "docs/specs/postgresql-module-migration/ACCEPTANCE.md"
+      ]
     },
     "verified": null
   },
@@ -27,14 +31,17 @@
       "planned_impact": "minor",
       "change": "Compatible progress/control additions; existing proxy, HTTP and SSE semantics retained. Migration-related task deferrals and data quality must be explicit.",
       "supported_consumer_range": "Existing same-Major clients; implementation verification pending.",
-      "evidence": []
+      "evidence": ["docs/specs/postgresql-module-migration/ACCEPTANCE.md"]
     },
     "persistent_state": {
       "applicable": true,
       "planned_impact": "minor",
       "state_description": "SQLite/PostgreSQL module authority, new durable capture/checkpoint state, preserved business and recovery identities; old program writes must be fenced.",
       "source_program_compatibility_range": "Initial source 4.13.11 only; fixtures and runtime verification pending.",
-      "evidence": []
+      "evidence": [
+        "docs/adr/assets/module-owned-postgresql-migration/acceptance-fixtures.json",
+        "docs/runbooks/postgresql-online-migration-acceptance.md"
+      ]
     }
   },
   "release_unit": {
