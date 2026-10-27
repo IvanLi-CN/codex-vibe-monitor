@@ -53,8 +53,8 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The implementation candidate changes no public or persistent representation. Verification is intentionally pending the new candidate's Linux stateful, contention, and empirical acceptance lanes; local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
-      "verified_at": "2026-10-25T00:00:00Z",
+      "reasoning": "The implementation candidate changes no public or persistent representation. This record does not assert final-head CI or review; those facts are read from live PR #1191. Acceptance re-audit concluded that generic observability A/B and hardware comparability are not applicable merge gates because the harness does not seed the Summary recovery workload and this follow-up makes no relative production-performance claim. Exactness, query-plan, representative-scale, SQLite contention, and scheduler-budget evidence remain required. Local macOS Rust test execution remains subject to the existing sqlx_macros dynamic-library toolchain failure.",
+      "verified_at": "2026-10-25T14:52:50Z",
       "evidence": [
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs",
         "src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs::publish_compacted_source_recovery_snapshot",
@@ -97,7 +97,7 @@
   },
   "release_unit": {
     "member_change_records": [
-      "PR #1191: th/summary-recovery-query-fairness@c72088935b13e35807566ad77db70a3b497a6519",
+      "PR #1191: th/summary-recovery-query-fairness@19b657b3662a1613a759ad80242e4ffb18a347ba",
       "assets/persistent-state-migration-record.json"
     ],
     "maximum_verified_impact": "patch",
@@ -107,13 +107,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "c72088935b13e35807566ad77db70a3b497a6519",
-    "candidate_validation_status": "pr-rebased-validation-required",
-    "active_base_sha": "0694732d4e0e2106e3e688510b460c24785d7570",
+    "candidate_head_sha": "19b657b3662a1613a759ad80242e4ffb18a347ba",
+    "candidate_validation_status": "implementation-evidence-carrier-review-pending",
+    "active_base_sha": "0542af458161992d94ecc7d6236ddf9c553202ac",
     "previous_review_base_sha": "b3086216719555dce65b5bdb1ca059d1d465afa8",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0694732d; no merge commit or unrelated base merge is included.",
-    "required_lanes_refresh": "PR #1191 was rebased from implementation head 9cdab0d832a0ef5af71bca8297b0f5c1e57b9e19 to c72088935b13e35807566ad77db70a3b497a6519; prior CI, formal review, and performance evidence is stale and must be refreshed before Step 5C.",
+    "base_sync_scope": "The implementation candidate is linearly rebased onto current main 0542af45; the topic adds no merge commit or unrelated base change.",
+    "required_lanes_refresh": "PR #1191 was linearly rebased from the previous validation base dff0b88dc00681720acfaa9103c8ddbba84d3325 onto current main 0542af458161992d94ecc7d6236ddf9c553202ac, producing implementation candidate commit 19b657b3662a1613a759ad80242e4ffb18a347ba. Final-head PR checks and fresh Tier 4 review are required after the rebase. Acceptance re-audit removed the inapplicable generic observability A/B comparison from the merge gate; a Summary-specific relative-performance load test remains a separate follow-up.",
     "release_compatibility": "Public API and persistent-state impact are both assessed as patch for this follow-up; final release channel and predicted version remain for the Step 5C Agent default release decision card."
   }
 }

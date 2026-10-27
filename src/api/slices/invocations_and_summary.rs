@@ -144,22 +144,18 @@ pub(crate) use summary_recovery::{
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
-};
-
-#[cfg(test)]
-pub(crate) use summary_projection_lifecycle::{
     SummaryLiveTailReconciliationCheckpoint, explain_compacted_source_recovery_key_page_for_test,
-    load_summary_live_tail_reconciliation_checkpoint,
+    hydrate_summary_snapshots, load_summary_live_tail_reconciliation_checkpoint,
     note_summary_projection_boundary_archive_hydration,
-    note_summary_projection_historical_identity_hydration,
+    note_summary_projection_historical_identity_hydration, refresh_summary_snapshots_with_mode,
+    refresh_summary_snapshots_with_test_setup_deadline,
     renew_summary_projection_freshness_if_generation_matches,
     renew_summary_projection_freshness_if_live_tail_matches,
     run_compacted_source_recovery_one_page_for_test,
     run_compacted_source_recovery_until_complete_for_test,
     store_summary_live_tail_reconciliation_checkpoint,
-    summary_all_time_checkpoint_publication_required, summary_coverage_recovery_next_turn_delay,
-    summary_coverage_recovery_requires_second_v2_turn,
+    summary_all_time_checkpoint_publication_required,
+    summary_coverage_recovery_requires_second_v2_turn, summary_coverage_recovery_scheduler_delay,
 };
 
 pub(crate) use invocation_query::{
@@ -244,7 +240,6 @@ static INVOCATION_ANCHOR_SNAPSHOTS: once_cell::sync::Lazy<
 
 #[cfg(test)]
 const SUMMARY_PROJECTION_TEST_INTERLEAVE_TABLE: &str = "summary_projection_test_interleave_gate";
-
 #[cfg(test)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SummaryProjectionTestInterleaveStage {
@@ -252,6 +247,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     AfterAllTimeArchiveDiscovery,
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
+    BeforeArchiveIdentityRevalidation,
     BeforeHistoricalLiveCoverage,
     BeforeLiveTailPublication,
     BeforeProjectionPublication,
@@ -272,7 +268,6 @@ pub(crate) struct SummaryProjectionTestInterleave {
 static SUMMARY_PROJECTION_TEST_INTERLEAVE: once_cell::sync::Lazy<
     StdMutex<Option<SummaryProjectionTestInterleave>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
-
 #[cfg(test)]
 impl SummaryProjectionTestInterleave {
     pub(crate) async fn wait_for_writer(&self) {
@@ -294,21 +289,18 @@ impl SummaryProjectionTestInterleave {
             .clone()
     }
 }
-
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave() -> SummaryProjectionTestInterleave {
     install_summary_projection_test_interleave_at(
         SummaryProjectionTestInterleaveStage::AfterRollupLoad,
     )
 }
-
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave_at(
     stage: SummaryProjectionTestInterleaveStage,
 ) -> SummaryProjectionTestInterleave {
     install_summary_projection_test_interleave_for_stages(&[stage])
 }
-
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave_for_stages(
     stages: &[SummaryProjectionTestInterleaveStage],
@@ -335,14 +327,12 @@ pub(crate) fn install_summary_projection_test_interleave_for_stages(
     *installed = Some(interleave.clone());
     interleave
 }
-
 #[cfg(test)]
 pub(crate) fn clear_summary_projection_test_interleave() {
     *SUMMARY_PROJECTION_TEST_INTERLEAVE
         .lock()
         .expect("summary projection test interleave lock") = None;
 }
-
 #[cfg(test)]
 async fn pause_summary_projection_test_interleave(
     pool: &Pool<Sqlite>,
@@ -380,7 +370,6 @@ async fn pause_summary_projection_test_interleave(
     interleave.resume_build.notified().await;
     Ok(())
 }
-
 fn store_invocation_anchor_snapshot(
     snapshot_id: i64,
     upstream_account_id: Option<i64>,
@@ -15082,6 +15071,13 @@ async fn build_summary_projection_once(
             None,
         )
         .await;
+        #[cfg(test)]
+        pause_summary_projection_test_interleave(
+            pool,
+            mode,
+            SummaryProjectionTestInterleaveStage::BeforeArchiveIdentityRevalidation,
+        )
+        .await?;
         require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         archive_pool.close().await;
         drop(temp_cleanup);
@@ -35561,14 +35557,20 @@ mod request_compression_query_tests {
     }
 
     #[test]
-    fn summary_coverage_recovery_idle_cadence_waits_ten_seconds() {
+    fn summary_coverage_recovery_scheduler_cadence_waits_ten_seconds() {
         assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Immediate),
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Immediate,
+                Duration::from_secs(10),
+            ),
             Duration::from_secs(1),
             "committed recovery pages must yield for one second before the next admission"
         );
         assert_eq!(
-            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Idle),
+            summary_coverage_recovery_scheduler_delay(
+                SummaryCoverageRecoveryNextTurn::Idle,
+                Duration::from_secs(10),
+            ),
             SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
             "idle durable recovery must use the ten-second floor"
         );

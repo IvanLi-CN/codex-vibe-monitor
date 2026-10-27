@@ -1825,7 +1825,7 @@ pub(crate) async fn file_backed_test_state_from_current_schema(
     file_backed_test_state_with_busy_timeout_and_template(
         prefix,
         busy_timeout,
-        current_profile_schema_template_path(),
+        current_stateful_file_fixture_schema_template_path(prefix),
     )
     .await
 }
@@ -1835,9 +1835,11 @@ async fn file_backed_test_state_with_busy_timeout_and_template(
     busy_timeout: Duration,
     schema_template: Option<PathBuf>,
 ) -> (Arc<AppState>, PathBuf, String) {
+    let _timing = test_timing_span("file_state_setup");
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("state.db");
     if let Some(template_path) = &schema_template {
+        let _timing = test_timing_span("file_template_copy");
         assert!(
             template_path.is_file(),
             "current-schema template must exist: {}",
@@ -1848,12 +1850,16 @@ async fn file_backed_test_state_with_busy_timeout_and_template(
     let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options =
         build_sqlite_connect_options(&db_url, busy_timeout).expect("build sqlite options");
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_with(connect_options)
-        .await
-        .expect("connect sqlite pool");
+    let pool = {
+        let _timing = test_timing_span("file_pool_connect");
+        SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool")
+    };
     if schema_template.is_none() {
+        let _schema_timing = test_timing_span("file_schema_initialize");
         ensure_schema(&pool)
             .await
             .expect("schema should initialize");
@@ -1868,6 +1874,7 @@ async fn file_backed_test_state_with_busy_timeout_and_template(
     fs::create_dir_all(&config.proxy_raw_dir).expect("create proxy raw dir");
     fs::create_dir_all(&config.xray_runtime_dir).expect("create xray runtime dir");
 
+    let _state_timing = test_timing_span("fixture_state_build");
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
@@ -1965,9 +1972,11 @@ async fn wait_for_summary_quota_workers(state: &AppState) {
 
 #[tokio::test]
 async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
-    let (state, temp_dir, db_url) =
-        file_backed_test_state_with_busy_timeout("dashboard-read-lock", Duration::from_millis(100))
-            .await;
+    let (state, temp_dir, db_url) = file_backed_test_state_from_current_schema(
+        "dashboard-read-lock",
+        Duration::from_millis(100),
+    )
+    .await;
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     persist_proxy_capture_record(
         &state.pool,
@@ -2273,6 +2282,10 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
 
 #[tokio::test]
 async fn run_backfill_with_retry_succeeds_after_lock_release() {
+    let _target_timing = test_timing_target(
+        "tests::stateful_sqlite::proxy_backfill_and_cost_repairs::run_backfill_with_retry_succeeds_after_lock_release",
+    );
+    let _whole_test = test_timing_span("whole_test");
     let temp_dir = make_temp_test_dir("proxy-backfill-retry-success");
     let db_path = temp_dir.join("lock-success.db");
     let db_url = test_sqlite_url_for_path(&db_path);
@@ -2300,20 +2313,26 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
         .expect("acquire sqlite write lock");
 
     let started = Instant::now();
-    let pool_for_task = pool.clone();
-    let backfill_task =
-        tokio::spawn(async move { run_backfill_with_retry(&pool_for_task, None).await });
+    let summary = crate::test_timed!("production_operation", {
+        let pool_for_task = pool.clone();
+        let backfill_task =
+            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task, None).await });
 
-    tokio::time::sleep(Duration::from_millis(120)).await;
-    sqlx::query("COMMIT")
-        .execute(&mut lock_conn)
-        .await
-        .expect("release sqlite write lock");
+        timed_test_phase(
+            "explicit_wait",
+            tokio::time::sleep(Duration::from_millis(120)),
+        )
+        .await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release sqlite write lock");
 
-    let summary = backfill_task
-        .await
-        .expect("join backfill task")
-        .expect("backfill should succeed after retry");
+        backfill_task
+            .await
+            .expect("join backfill task")
+            .expect("backfill should succeed after retry")
+    });
     assert!(
         started.elapsed() >= Duration::from_millis(50),
         "expected retry delay to be applied"
@@ -2330,7 +2349,7 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
     assert_eq!(total_tokens, Some(110));
 
     pool.close().await;
-    let _ = fs::remove_dir_all(&temp_dir);
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]

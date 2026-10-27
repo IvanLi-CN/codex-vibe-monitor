@@ -11,6 +11,7 @@ mod shutdown_terminal_recovery;
 mod terminal_backfill_contention;
 mod terminal_journal_recovery;
 
+#[allow(unused_imports)]
 pub(crate) use super::*;
 
 mod archive_backfill_test_support;

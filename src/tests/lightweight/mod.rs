@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[allow(unused_imports)]
 pub(crate) use super::*;
 
 mod app_config_and_invocation_index_contracts;

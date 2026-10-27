@@ -12,8 +12,8 @@ tmp_dir="$(mktemp -d)"
 partition_workspace="/tmp/codex-vibe-monitor-backend-test-contract-${PPID}"
 trap 'rm -rf "${tmp_dir}" "${partition_workspace}"' EXIT
 
-backend_test_stage="$(sed -n '/^FROM rust:1.96.0-bookworm AS backend-test$/,/^# Stage 8:/p' "$dockerfile")"
-grep -q '^FROM rust:1.96.0-bookworm AS backend-test$' "$dockerfile"
+backend_test_stage="$(sed -n '/^FROM rust:1.99.1-bookworm AS backend-test$/,/^# Stage 8:/p' "$dockerfile")"
+grep -q '^FROM rust:1.99.1-bookworm AS backend-test$' "$dockerfile"
 grep -q '^  backend-test:$' "$compose_file"
 grep -q 'target: backend-test' "$compose_file"
 grep -q 'CARGO_NEXTEST_VERSION=0.9.138' "$dockerfile"
@@ -51,7 +51,7 @@ for smoke_script in \
   fi
 done
 
-web_builder_section="$(sed -n '/^FROM oven\/bun:.* AS web-builder$/,/^# Stage 2:/p' "$dockerfile")"
+web_builder_section="$(awk '$0 ~ /^FROM .* AS web-builder(-canonical)?$/ { in_stage=1 } in_stage { print } in_stage && /^# Stage 2:/ { exit }' "$dockerfile")"
 web_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$web_builder_section" | cut -d: -f1)"
 web_workdir_line="$(grep -n '^WORKDIR /app/web$' <<<"$web_builder_section" | cut -d: -f1)"
 if (( web_arg_line < web_workdir_line )); then
@@ -64,7 +64,7 @@ if (( web_arg_line != web_copy_line + 1 )); then
   exit 1
 fi
 
-rust_builder_section="$(sed -n '/^FROM rust:.* AS rust-builder$/,/^# Stage 3:/p' "$dockerfile")"
+rust_builder_section="$(awk '$0 ~ /^FROM .* AS rust-builder(-canonical)?$/ { in_stage=1 } in_stage { print } in_stage && /^# Stage 3:/ { exit }' "$dockerfile")"
 rust_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$rust_builder_section" | cut -d: -f1)"
 rust_workdir_line="$(grep -n '^WORKDIR /app$' <<<"$rust_builder_section" | cut -d: -f1)"
 if (( rust_arg_line < rust_workdir_line )); then

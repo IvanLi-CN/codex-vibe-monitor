@@ -40,7 +40,7 @@ pub(crate) fn write_backfill_response_payload_with_service_tier(
 async fn system_status_aggregates_counts_and_file_sizes() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-aggregation",
         StdDuration::from_millis(100),
     )
@@ -328,7 +328,7 @@ async fn system_storage_endpoint_reads_only_the_memory_snapshot_when_sqlite_is_c
 async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_cursor_advanced() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-late-raw-link",
         StdDuration::from_millis(100),
     )
@@ -378,7 +378,11 @@ async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_curso
 async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let _target_timing = test_timing_target(
+        "tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration",
+    );
+    let _whole_test = test_timing_span("whole_test");
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-raw-revalidation",
         StdDuration::from_millis(100),
     )
@@ -397,34 +401,40 @@ async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration
     .await
     .expect("insert invocation with response raw");
 
-    refresh_system_raw_payload_metrics_inventory(state.as_ref())
-        .await
-        .expect("initial inventory refresh");
+    {
+        let _operation = test_timing_span("production_operation");
+        refresh_system_raw_payload_metrics_inventory(state.as_ref())
+            .await
+            .expect("initial inventory refresh");
+    }
     let initial = load_system_status_uncached(state.as_ref())
         .await
         .expect("load initial raw metrics");
     assert_eq!(initial.raw_bodies.bytes, Some(5));
 
     fs::write(&response_path, b"expanded-response").expect("expand response raw");
-    hydrate_raw_capture_circuit(state.as_ref())
-        .await
-        .expect("rehydrate raw circuit");
-    refresh_system_raw_payload_metrics_inventory(state.as_ref())
-        .await
-        .expect("revalidate existing raw path");
+    {
+        let _operation = test_timing_span("production_operation");
+        hydrate_raw_capture_circuit(state.as_ref())
+            .await
+            .expect("rehydrate raw circuit");
+        refresh_system_raw_payload_metrics_inventory(state.as_ref())
+            .await
+            .expect("revalidate existing raw path");
+    }
     let refreshed = load_system_status_uncached(state.as_ref())
         .await
         .expect("load revalidated raw metrics");
     assert_eq!(refreshed.raw_bodies.bytes, Some(17));
 
-    let _ = fs::remove_dir_all(&temp_dir);
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
 async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write() {
     use std::time::Duration as StdDuration;
 
-    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+    let (state, temp_dir, _db_url) = file_backed_test_state_from_current_schema(
         "system-status-raw-metrics-deferred",
         StdDuration::from_millis(100),
     )
@@ -1710,6 +1720,7 @@ pub(crate) async fn test_state_from_config(
 pub(crate) async fn complete_prompt_cache_conversation_materialization_for_test(
     pool: &Pool<Sqlite>,
 ) {
+    let _timing = test_timing_span("fixture_materialization");
     for _ in 0..32 {
         let outcome = run_prompt_cache_conversations_materialization(pool, 2_000, None)
             .await
@@ -1772,6 +1783,7 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
 }
 
 pub(crate) async fn test_current_schema_pool() -> SqlitePool {
+    let _timing = test_timing_span("fixture_pool_connect");
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let db_url =
         format!("sqlite:file:codex-vibe-monitor-test-pool-{db_id}?mode=memory&cache=shared");
@@ -1794,6 +1806,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     pool_no_available_wait: PoolNoAvailableWaitSettings,
     runtime_projection_mode: RuntimeProjectionMode,
 ) -> Arc<AppState> {
+    let _timing = test_timing_span("fixture_setup");
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let config = isolate_stateful_test_config_runtime_paths(config, db_id);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
@@ -1819,6 +1832,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     .await
     .expect("complete the startup recovery baseline for ordinary stateful tests");
 
+    let _state_timing = test_timing_span("fixture_state_build");
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);

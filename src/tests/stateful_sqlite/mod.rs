@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[allow(unused_imports)]
 pub(crate) use super::*;
 
 pub(crate) async fn insert_summary_archive_snapshot_proof(
@@ -119,7 +120,10 @@ mod invocation_timeline_contention;
 mod managed_task_dispatcher_contention;
 mod models_dev_sync_memory;
 mod network_traffic_projection;
-mod oauth_route_body_rewrite_and_timeout;
+mod oauth_failure_diagnostics_and_terminal_streams;
+mod oauth_response_rewrite_and_replay;
+mod oauth_route_support_and_binding;
+mod oauth_timeout_and_stream_lifecycle;
 mod observability_retirement;
 #[expect(
     clippy::type_complexity,
@@ -183,6 +187,7 @@ mod startup_bootstrap_cancellation;
 mod startup_rebuild_and_retention_basics;
 mod startup_recovery_readiness;
 mod statistics_recovery;
+mod sticky_key_queries_and_prompt_cache_views;
 mod summary_terminal_ordering;
 mod system_status_and_account_roster;
 mod task_workload_coverage;

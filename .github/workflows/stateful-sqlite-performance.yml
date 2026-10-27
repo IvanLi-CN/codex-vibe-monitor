@@ -1,0 +1,649 @@
+name: Stateful SQLite Performance Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Candidate commit SHA to measure (exactly 40 lowercase hex characters)
+        required: true
+        type: string
+      trusted_harness_sha:
+        description: Trusted workflow/parser commit SHA; must equal the dispatched main or fixed harness ref SHA
+        required: true
+        type: string
+
+concurrency:
+  group: stateful-sqlite-performance-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Stateful SQLite control/candidate replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Validate candidate revision input
+        id: validate_input
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_HARNESS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$WORKFLOW_REF" in
+            refs/heads/main|refs/heads/th/stateful-sqlite-performance-harness) ;;
+            *) exit 64 ;;
+          esac
+          test "$TRUSTED_HARNESS_SHA" = "$WORKFLOW_SHA"
+          test "$TRUSTED_HARNESS_SHA" != "$CANDIDATE_SHA"
+
+      - name: Checkout trusted acceptance harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.trusted_harness_sha }}
+          path: trusted
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+
+      - name: Verify Rust system dependencies
+        run: |
+          set -euo pipefail
+          command -v pkg-config
+          pkg-config --exists sqlite3
+          test -r /usr/include/sqlite3.h
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.138
+
+      - name: Prepare Cargo dependency cache
+        env:
+          CARGO_HOME: /opt/stateful-sqlite-performance-work/cargo-home
+        run: |
+          set -euo pipefail
+          sudo install -d -m 755 "$CARGO_HOME"
+          sudo chown "$(id -u):$(id -g)" "$CARGO_HOME"
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            /opt/stateful-sqlite-performance-work/cargo-home/registry
+            /opt/stateful-sqlite-performance-work/cargo-home/git
+          key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('candidate/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-stateful-sqlite-performance-registry-
+
+      - name: Resolve immutable revisions and runner identity
+        id: revisions
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          REQUESTED_TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_ROOT"
+          candidate_sha="$(git -C candidate rev-parse HEAD)"
+          trusted_harness_sha="$(git -C trusted rev-parse HEAD)"
+          test "$candidate_sha" = "$REQUESTED_CANDIDATE_SHA"
+          test "$trusted_harness_sha" = "$REQUESTED_TRUSTED_HARNESS_SHA"
+          printf 'requested_candidate_sha=%s\nresolved_candidate_sha=%s\ntrusted_harness_sha=%s\n' \
+            "$REQUESTED_CANDIDATE_SHA" "$candidate_sha" "$trusted_harness_sha" \
+            > "$EVIDENCE_ROOT/revisions.txt"
+          {
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            printf 'runner_name=%s\n' "$RUNNER_NAME"
+            printf 'image_os=%s\n' "${ImageOS:-unknown}"
+            printf 'image_version=%s\n' "${ImageVersion:-unknown}"
+            printf 'cpu_count=%s\n' "$(nproc)"
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'cargo_nextest=%s\n' "$(cargo-nextest --version)"
+          } > "$EVIDENCE_ROOT/runner-context.txt"
+          echo "safe_path=$PATH" >> "$GITHUB_OUTPUT"
+          echo "python_bin=$(command -v python3)" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "trusted_harness_sha=$trusted_harness_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare isolated candidate user
+        id: isolation
+        env:
+          CANDIDATE_USER: stateful-sqlite-test
+        run: |
+          set -euo pipefail
+          if ! id -u "$CANDIDATE_USER" >/dev/null 2>&1; then
+            sudo useradd --create-home --shell /usr/sbin/nologin "$CANDIDATE_USER"
+          fi
+          sudo install -d -m 700 -o "$CANDIDATE_USER" -g "$CANDIDATE_USER" "/home/$CANDIDATE_USER/.config"
+
+      - name: Prepare read-only Rust toolchain for candidate user
+        id: toolchain
+        env:
+          CANDIDATE_USER: stateful-sqlite-test
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          TOOL_ROOT: /opt/stateful-sqlite-performance-tools
+        run: |
+          set -euo pipefail
+          sysroot="$(rustc --print sysroot)"
+          nextest_bin="$(command -v cargo-nextest)"
+          test -x "$sysroot/bin/cargo"
+          test -x "$sysroot/bin/rustc"
+          test -x "$nextest_bin"
+          sudo install -d -m 755 "$TOOL_ROOT"
+          sudo install -d -m 755 "$TOOL_ROOT/bin"
+          sudo cp -a "$sysroot" "$TOOL_ROOT/sysroot"
+          sudo chmod -R a+rX "$TOOL_ROOT/sysroot"
+          sudo install -m 755 "$nextest_bin" "$TOOL_ROOT/bin/cargo-nextest"
+          sudo chown -R root:root "$TOOL_ROOT"
+          echo "path=$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" >> "$GITHUB_OUTPUT"
+          echo "rustc=$TOOL_ROOT/sysroot/bin/rustc" >> "$GITHUB_OUTPUT"
+          {
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
+              PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
+              RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
+              rustc --version
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
+              PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
+              RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
+              cargo --version
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
+              PATH="$TOOL_ROOT/bin:$TOOL_ROOT/sysroot/bin:$PATH" \
+              RUSTC="$TOOL_ROOT/sysroot/bin/rustc" \
+              cargo-nextest --version
+          } > "$EVIDENCE_ROOT/candidate-toolchain.txt"
+
+      - name: Build and extract candidate test archive
+        id: archives
+        continue-on-error: true
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          CARGO_HOME: /opt/stateful-sqlite-performance-work/cargo-home
+          CANDIDATE_WORK_ROOT: /opt/stateful-sqlite-performance-work
+          CANDIDATE_USER: stateful-sqlite-test
+          PATH: ${{ steps.toolchain.outputs.path }}
+          RUSTC: ${{ steps.toolchain.outputs.rustc }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          sudo install -d -m 755 "$CANDIDATE_WORK_ROOT"
+          repo="$CANDIDATE_WORK_ROOT/candidate-source"
+          trusted_repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+          sudo install -d -m 755 "$repo"
+          sudo cp -a "$GITHUB_WORKSPACE/candidate/." "$repo/"
+          sudo rm -rf "$repo/.git"
+          sudo install -d -m 755 "$trusted_repo"
+          sudo cp -a "$GITHUB_WORKSPACE/trusted/." "$trusted_repo/"
+          sudo rm -rf "$trusted_repo/.git"
+          sudo chown -R root:root "$repo" "$trusted_repo"
+          sudo chmod -R a+rX "$repo" "$trusted_repo"
+          ref_root="$EVIDENCE_ROOT/candidate"
+          mkdir -p "$ref_root"
+          artifact_root="$CANDIDATE_WORK_ROOT/archive"
+          sudo install -d -m 755 "$artifact_root"
+          archive="$artifact_root/backend-tests.tar.zst"
+          extract="$artifact_root/archive-extract"
+          build_target="$artifact_root/build-target"
+          sudo install -d -m 755 "$extract" "$build_target" "$CARGO_HOME"
+          sudo touch "$archive"
+          sudo chown "$CANDIDATE_USER" "$artifact_root"
+          sudo chown -R "$CANDIDATE_USER" "$CARGO_HOME" "$build_target" "$archive" "$extract"
+          set +e
+          (
+            cd "$repo"
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
+              PATH="$PATH" \
+              RUSTC="$RUSTC" \
+              CARGO_HOME="$CARGO_HOME" \
+              CARGO_TARGET_DIR="$build_target" \
+              cargo nextest archive --locked --all-features \
+              --archive-file "$archive" --zstd-level 0
+          ) > "$ref_root/archive-build.log" 2>&1
+          status=$?
+          sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
+          set -e
+          test "$status" -eq 0
+          extract_cargo_home="$CANDIDATE_WORK_ROOT/extract-cargo-home"
+          sudo install -d -m 755 "$extract_cargo_home"
+          sudo chown -R "$CANDIDATE_USER" "$extract_cargo_home"
+          sudo chown -R "$CANDIDATE_USER" "$extract" "$extract_cargo_home"
+          set +e
+          (
+            cd "$trusted_repo"
+            sudo -u "$CANDIDATE_USER" env \
+              HOME="/home/$CANDIDATE_USER" \
+              XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config" \
+              PATH="$PATH" \
+              RUSTC="$RUSTC" \
+              CARGO_HOME="$extract_cargo_home" \
+              cargo-nextest nextest run \
+              --archive-file "$archive" \
+              --extract-to "$extract" \
+              --workspace-remap "$trusted_repo" \
+              --no-run
+          ) > "$ref_root/archive-extract.log" 2>&1
+          status=$?
+          sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
+          set -e
+          test "$status" -eq 0
+          sudo chown -R root:root "$archive" "$extract"
+          sudo chown root:root "$artifact_root"
+          sudo chmod 755 "$artifact_root"
+          test ! -L "$archive"
+          if sudo find "$extract" -type l -print -quit | grep -q .; then
+            echo "archive extraction produced a symlink" >&2
+            exit 65
+          fi
+          sudo chmod -R a-w "$archive" "$extract"
+          sudo chmod a+r "$archive"
+          sudo chmod -R a+rX "$extract"
+
+      - name: Refresh trusted harness before replay
+        if: steps.archives.outcome == 'success'
+        env:
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.trusted_harness_sha }}
+          path: trusted
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Prepare read-only replay harness
+        if: steps.archives.outcome == 'success'
+        env:
+          CANDIDATE_WORK_ROOT: /opt/stateful-sqlite-performance-work
+        run: |
+          set -euo pipefail
+          trusted_repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+          sudo cp -a "$GITHUB_WORKSPACE/trusted/." "$trusted_repo/"
+          sudo rm -rf "$trusted_repo/.git"
+          sudo chown -R root:root "$trusted_repo"
+          sudo chmod -R a+rX "$trusted_repo"
+
+      - name: Run cold and warm Stateful SQLite replays
+        id: replays
+        if: steps.archives.outcome == 'success'
+        continue-on-error: true
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          CARGO_HOME: /opt/stateful-sqlite-performance-work/cargo-home
+          CANDIDATE_WORK_ROOT: /opt/stateful-sqlite-performance-work
+          CANDIDATE_USER: stateful-sqlite-test
+          PATH: ${{ steps.toolchain.outputs.path }}
+          RUSTC: ${{ steps.toolchain.outputs.rustc }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          wall_file="$EVIDENCE_ROOT/wall-times.txt"
+          target_wall_file="$EVIDENCE_ROOT/target-wall-times.txt"
+          failure_file="$EVIDENCE_ROOT/replay-failures.txt"
+          : > "$wall_file"
+          : > "$target_wall_file"
+          : > "$failure_file"
+          overall_status=0
+          for replay in cold warm; do
+            for shard in 1 2; do
+              case "$replay/$shard" in
+                cold/1|warm/2) ref_names=(control candidate) ;;
+                *) ref_names=(candidate control) ;;
+              esac
+              for ref_name in "${ref_names[@]}"; do
+                repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+                archive_dir="$CANDIDATE_WORK_ROOT/archive/archive-extract"
+                workspace="$CANDIDATE_WORK_ROOT/$ref_name/test-workspace"
+                replay_target="$CANDIDATE_WORK_ROOT/$ref_name/replay-target"
+                replay_tmp="$CANDIDATE_WORK_ROOT/$ref_name/tmp"
+                sudo install -d -m 755 "$workspace" "$replay_target" "$replay_tmp"
+                sudo chown -R "$CANDIDATE_USER" "$workspace" "$replay_target" "$replay_tmp"
+                log="$EVIDENCE_ROOT/logs/$ref_name/$replay/shard-$shard.log"
+                mkdir -p "$(dirname "$log")"
+                replay_env=(
+                  CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
+                  HOME="/home/$CANDIDATE_USER"
+                  XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config"
+                  PATH="$PATH"
+                  RUSTC="$RUSTC"
+                  BACKEND_TEST_WORKSPACE="$workspace"
+                  CARGO_HOME="$CARGO_HOME"
+                  CARGO_TARGET_DIR="$replay_target"
+                  TMPDIR="$replay_tmp"
+                  NEXTEST_SUCCESS_OUTPUT=final
+                )
+                if [ "$ref_name" = control ]; then
+                  replay_env+=(CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH=1)
+                fi
+                start_ms="$(date +%s%3N)"
+                set +e
+                (
+                  cd "$repo"
+                  sudo -u "$CANDIDATE_USER" env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
+                    --profile stateful-sqlite \
+                    --partition "hash:$shard/2" \
+                    --archive-dir "$archive_dir"
+                ) > "$log" 2>&1
+                status=$?
+                sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
+                set -e
+                end_ms="$(date +%s%3N)"
+                wall_ms=$((end_ms - start_ms))
+                printf 'stateful-performance ref=%s replay=%s shard=%s wall_ms=%s exit_code=%s\n' \
+                  "$ref_name" "$replay" "$shard" "$wall_ms" "$status" | tee -a "$wall_file"
+                if [ "$status" -ne 0 ]; then
+                  overall_status=1
+                  {
+                    printf 'ref=%s replay=%s shard=%s exit_code=%s\n' \
+                      "$ref_name" "$replay" "$shard" "$status"
+                    sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g' "$log" \
+                      | grep -E '(backend_test_profile=|Summary|FAIL|failed|test result:|signal|timeout)' \
+                      | tail -n 120 \
+                      | sed -E 's#(/home/runner/work/|/tmp/)[^[:space:]]+#<path>#g' \
+                      || true
+                  } >> "$failure_file"
+                fi
+              done
+            done
+          done
+          setup_target_indices=(0 1 2 5)
+          setup_target_filters=(
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure)'
+            'test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline)'
+            'test(=tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration)'
+          )
+          setup_target_names=(
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure'
+            'tests::stateful_sqlite::startup_rebuild_and_retention_basics::system_status_startup_hydration_has_a_finite_sqlite_pressure_deadline'
+            'tests::stateful_sqlite::system_status_and_account_roster::system_raw_metrics_inventory_revalidates_existing_paths_after_hydration'
+          )
+          for replay in cold warm; do
+            case "$replay" in
+              cold) ref_names=(control candidate) ;;
+              warm) ref_names=(candidate control) ;;
+            esac
+            for ref_name in "${ref_names[@]}"; do
+              for target_position in "${!setup_target_indices[@]}"; do
+                target_index="${setup_target_indices[$target_position]}"
+                target_filter="${setup_target_filters[$target_position]}"
+                target_name="${setup_target_names[$target_position]}"
+                repo="$CANDIDATE_WORK_ROOT/trusted-replay"
+                archive_dir="$CANDIDATE_WORK_ROOT/archive/archive-extract"
+                workspace="$CANDIDATE_WORK_ROOT/$ref_name/target-workspace/$replay/setup-$target_index"
+                replay_target="$CANDIDATE_WORK_ROOT/$ref_name/target-replay-target"
+                replay_tmp="$CANDIDATE_WORK_ROOT/$ref_name/target-tmp"
+                sudo install -d -m 755 "$workspace" "$replay_target" "$replay_tmp"
+                sudo chown -R "$CANDIDATE_USER" "$workspace" "$replay_target" "$replay_tmp"
+                log="$EVIDENCE_ROOT/logs/$ref_name/$replay/setup-$target_index.log"
+                mkdir -p "$(dirname "$log")"
+                replay_env=(
+                  CODEX_VIBE_MONITOR_STATEFUL_TEST_TIMING=1
+                  HOME="/home/$CANDIDATE_USER"
+                  XDG_CONFIG_HOME="/home/$CANDIDATE_USER/.config"
+                  PATH="$PATH"
+                  RUSTC="$RUSTC"
+                  BACKEND_TEST_WORKSPACE="$workspace"
+                  CARGO_HOME="$CARGO_HOME"
+                  CARGO_TARGET_DIR="$replay_target"
+                  TMPDIR="$replay_tmp"
+                  NEXTEST_SUCCESS_OUTPUT=final
+                )
+                if [ "$ref_name" = control ]; then
+                  replay_env+=(CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_FORCE_FRESH=1)
+                fi
+                start_ms="$(date +%s%3N)"
+                set +e
+                (
+                  cd "$repo"
+                  sudo -u "$CANDIDATE_USER" env "${replay_env[@]}" bash "$repo/.github/scripts/run-backend-tests.sh" \
+                    --profile stateful-sqlite \
+                    --test-filter "$target_filter" \
+                    --archive-dir "$archive_dir"
+                ) > "$log" 2>&1
+                status=$?
+                sudo pkill -KILL -u "$CANDIDATE_USER" >/dev/null 2>&1 || true
+                set -e
+                end_ms="$(date +%s%3N)"
+                wall_ms=$((end_ms - start_ms))
+                target_start_count="$(grep -F -c -- "stateful-test-timing target_start=$target_name" "$log" || true)"
+                target_end_count="$(grep -F -c -- "stateful-test-timing target_end=$target_name" "$log" || true)"
+                printf 'stateful-target-performance ref=%s replay=%s target=%s wall_ms=%s exit_code=%s\n' \
+                  "$ref_name" "$replay" "$target_index" "$wall_ms" "$status" \
+                  | tee -a "$target_wall_file"
+                if [ "$status" -ne 0 ] || [ "$target_start_count" -ne 1 ] || [ "$target_end_count" -ne 1 ]; then
+                  overall_status=1
+                  {
+                    printf 'ref=%s replay=%s target=%s exit_code=%s\n' \
+                      "$ref_name" "$replay" "$target_index" "$status"
+                    printf 'expected_target=%s target_start_count=%s target_end_count=%s\n' \
+                      "$target_name" "$target_start_count" "$target_end_count"
+                    sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g' "$log" \
+                      | grep -E '(backend_test_profile=|Summary|FAIL|failed|test result:|signal|timeout)' \
+                      | tail -n 120 \
+                      | sed -E 's#(/home/runner/work/|/tmp/)[^[:space:]]+#<path>#g' \
+                      || true
+                  } >> "$failure_file"
+                fi
+              done
+            done
+          done
+          exit "$overall_status"
+
+      - name: Sanitize timing evidence
+        if: ${{ always() && steps.validate_input.outcome == 'success' }}
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          sanitized_root="$EVIDENCE_ROOT/sanitized"
+          rm -rf "$sanitized_root"
+          mkdir -p "$sanitized_root/logs"
+          for file in revisions.txt runner-context.txt candidate-toolchain.txt wall-times.txt target-wall-times.txt replay-failures.txt; do
+            if [ -f "$EVIDENCE_ROOT/$file" ]; then
+              cp "$EVIDENCE_ROOT/$file" "$sanitized_root/$file"
+            fi
+          done
+          for file in archive-build.log archive-extract.log; do
+            source="$EVIDENCE_ROOT/candidate/$file"
+            if [ -f "$source" ]; then
+              sed -E 's#(/home/runner/work/|/tmp/)[^[:space:]]+#<path>#g' "$source" \
+                | tail -n 200 > "$sanitized_root/$file" || true
+            fi
+          done
+          if [ -d "$EVIDENCE_ROOT/logs" ]; then
+            while IFS= read -r -d '' source; do
+              relative="${source#"$EVIDENCE_ROOT/logs/"}"
+              destination="$sanitized_root/logs/$relative"
+              mkdir -p "$(dirname "$destination")"
+              grep -E 'stateful-test-timing (target_start=|target_end=|phase=[a-z0-9_]+ elapsed_ms=[0-9]+)' "$source" \
+                > "$destination" || true
+            done < <(find "$EVIDENCE_ROOT/logs" -type f -print0)
+          fi
+
+      - name: Upload replay evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stateful-sqlite-performance-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stateful-sqlite-performance/sanitized
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            /opt/stateful-sqlite-performance-work/cargo-home/registry
+            /opt/stateful-sqlite-performance-work/cargo-home/git
+          key: ${{ runner.os }}-stateful-sqlite-performance-registry-${{ hashFiles('candidate/Cargo.lock') }}
+
+      - name: Report replay outcome
+        if: always()
+        env:
+          ARCHIVES_OUTCOME: ${{ steps.archives.outcome }}
+          REPLAYS_OUTCOME: ${{ steps.replays.outcome }}
+          PATH: ${{ steps.revisions.outputs.safe_path }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          test "$ARCHIVES_OUTCOME" = success
+          test "$REPLAYS_OUTCOME" = success
+
+  acceptance:
+    name: Trusted Stateful SQLite empirical acceptance
+    needs: measure
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate trusted acceptance inputs
+        id: validate_input
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_HARNESS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$WORKFLOW_REF" in
+            refs/heads/main|refs/heads/th/stateful-sqlite-performance-harness) ;;
+            *) exit 64 ;;
+          esac
+          test "$TRUSTED_HARNESS_SHA" = "$WORKFLOW_SHA"
+          test "$TRUSTED_HARNESS_SHA" != "$CANDIDATE_SHA"
+
+      - name: Checkout trusted acceptance harness
+        if: steps.validate_input.outcome == 'success'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.trusted_harness_sha }}
+          path: trusted
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download replay evidence
+        if: ${{ always() && steps.validate_input.outcome == 'success' }}
+        uses: actions/download-artifact@v7
+        with:
+          name: stateful-sqlite-performance-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stateful-sqlite-performance
+
+      - name: Generate empirical acceptance card
+        id: acceptance
+        if: ${{ always() && steps.validate_input.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/stateful-sqlite-performance
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TRUSTED_HARNESS_SHA: ${{ inputs.trusted_harness_sha }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_ROOT/evidence"
+          python3 -I trusted/.github/scripts/stateful-sqlite-performance.py \
+            --root "$EVIDENCE_ROOT" \
+            --wall-file "$EVIDENCE_ROOT/wall-times.txt" \
+            --target-wall-file "$EVIDENCE_ROOT/target-wall-times.txt" \
+            --control-source-sha "$CANDIDATE_SHA" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --trusted-harness-sha "$TRUSTED_HARNESS_SHA" \
+            --output-dir "$EVIDENCE_ROOT/evidence" \
+            | tee "$EVIDENCE_ROOT/evidence/acceptance-card.stdout"
+          status=${PIPESTATUS[0]}
+          if [ -f "$EVIDENCE_ROOT/evidence/acceptance-card.md" ]; then
+            cat "$EVIDENCE_ROOT/evidence/acceptance-card.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Upload acceptance card
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stateful-sqlite-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.json
+            ${{ runner.temp }}/stateful-sqlite-performance/evidence/acceptance-card.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce empirical acceptance
+        if: always()
+        env:
+          MEASURE_RESULT: ${{ needs.measure.result }}
+          ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          PYTHONPATH: ""
+          PYTHONHOME: ""
+          NODE_OPTIONS: ""
+          LD_PRELOAD: ""
+        run: |
+          set -euo pipefail
+          test "$MEASURE_RESULT" = success
+          test "$ACCEPTANCE_OUTCOME" = success

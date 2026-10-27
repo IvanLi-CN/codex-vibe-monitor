@@ -639,20 +639,12 @@ async fn invocation_ranges_protected_cache_saturation_has_bounded_admission() {
     for number in 0..4096 {
         let key = format!("protected-{number}");
         manager.retain_key(&key);
-        // This prepares the protected working set, not the measured saturated
-        // request. A cold admission may legitimately time out under parallel
-        // profile load while its independent initialization keeps running.
-        let mut initialized = false;
-        for _ in 0..5 {
-            match manager.allocate(&pool, Some(&key)).await {
-                Ok(_) => {
-                    initialized = true;
-                    break;
-                }
-                Err(error) => assert!(error.to_string().contains("timed out"), "{error}"),
-            }
-        }
-        assert!(initialized, "fixture owner {number} did not initialize");
+        // Prepare the protected working set independently of the measured
+        // production admission deadline below.
+        manager
+            .test_prepare_keyed_range(&pool, &key)
+            .await
+            .unwrap_or_else(|error| panic!("fixture owner {number} did not initialize: {error}"));
     }
     assert_eq!(manager.test_resize(0).1, 4096);
     pool.close().await;
