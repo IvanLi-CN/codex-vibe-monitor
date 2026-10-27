@@ -561,11 +561,12 @@ async fn recover_partial_archive_source_ids(
     // that fence before trusting the copied proof.
     let archive_identity_proof = ArchiveSourceIdentityProof::load(archive_path, spec).await?;
     let archive_lock = retention_archive_file_lock_async(archive_path).await?;
-    let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_verify").await?;
-    let actual_sha256 = with_file_phase_permit(file_phase, async {
-        sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())
-    })
-    .await?;
+    let actual_sha256 = if let Some(shutdown) = retention_run_shutdown_token() {
+        sha256_hex_file_with_operation_budget_for_cleanup_with_shutdown(archive_path, shutdown)
+            .await?
+    } else {
+        sha256_hex_file_with_operation_budget_for_cleanup(archive_path).await?
+    };
     if actual_sha256 != expected_sha256 {
         drop(archive_lock);
         return finish_archive_identity_proof(
@@ -748,15 +749,15 @@ async fn repair_partial_invocation_archive_with_ids(
     mark_partial_archive_repair_pending(pool, batch_id, old_sha256).await?;
     let mut repaired_outcome = repair_base.clone();
     if !remove_ids.is_empty() {
-        let (temporary_file_path, row_count, sha256) =
-            crate::maintenance::trim_archive_batch_file_by_ids(
-                &repair_base,
-                remove_ids,
-                retention_run_shutdown_token(),
-            )
-            .await?;
-        repaired_outcome.row_count = row_count;
-        repaired_outcome.sha256 = sha256;
+        let mut repair_artifact = crate::maintenance::trim_archive_batch_file_by_ids(
+            &repair_base,
+            remove_ids,
+            retention_run_shutdown_token(),
+        )
+        .await?;
+        let temporary_file_path = repair_artifact.temporary_file_path().to_path_buf();
+        repaired_outcome.row_count = repair_artifact.row_count();
+        repaired_outcome.sha256 = repair_artifact.sha256().to_string();
         if let Err(error) =
             crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
                 pool,
@@ -766,9 +767,9 @@ async fn repair_partial_invocation_archive_with_ids(
             )
             .await
         {
-            remove_temp_sqlite_artifacts(&temporary_file_path);
             return Err(error.context("publish partial invocation archive repair"));
         }
+        repair_artifact.disarm();
     }
 
     // The file replacement changes the manifest identity. Remove the old page/proof set before
@@ -944,15 +945,15 @@ async fn repair_partial_timestamped_archive_with_ids(
     mark_partial_archive_repair_pending(pool, batch_id, old_sha256).await?;
     let mut repaired_outcome = repair_base.clone();
     if !remove_ids.is_empty() {
-        let (temporary_file_path, row_count, sha256) =
-            crate::maintenance::trim_archive_batch_file_by_ids(
-                &repair_base,
-                remove_ids,
-                retention_run_shutdown_token(),
-            )
-            .await?;
-        repaired_outcome.row_count = row_count;
-        repaired_outcome.sha256 = sha256;
+        let mut repair_artifact = crate::maintenance::trim_archive_batch_file_by_ids(
+            &repair_base,
+            remove_ids,
+            retention_run_shutdown_token(),
+        )
+        .await?;
+        let temporary_file_path = repair_artifact.temporary_file_path().to_path_buf();
+        repaired_outcome.row_count = repair_artifact.row_count();
+        repaired_outcome.sha256 = repair_artifact.sha256().to_string();
         if let Err(error) =
             crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
                 pool,
@@ -962,9 +963,9 @@ async fn repair_partial_timestamped_archive_with_ids(
             )
             .await
         {
-            remove_temp_sqlite_artifacts(&temporary_file_path);
             return Err(error.context("publish partial timestamped archive repair"));
         }
+        repair_artifact.disarm();
     }
     let repaired_sha256 = repaired_outcome.sha256.clone();
     run_partial_repair_metadata_transaction(

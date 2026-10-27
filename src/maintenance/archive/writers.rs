@@ -2062,6 +2062,48 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     })
 }
 
+pub(crate) struct PartialArchiveRepairArtifact {
+    temporary_file_path: Option<PathBuf>,
+    row_count: i64,
+    sha256: String,
+}
+
+impl PartialArchiveRepairArtifact {
+    fn new((temporary_file_path, row_count, sha256): (PathBuf, i64, String)) -> Self {
+        Self {
+            temporary_file_path: Some(temporary_file_path),
+            row_count,
+            sha256,
+        }
+    }
+
+    pub(crate) fn temporary_file_path(&self) -> &Path {
+        self.temporary_file_path
+            .as_deref()
+            .expect("partial archive repair artifact is still owned")
+    }
+
+    pub(crate) fn row_count(&self) -> i64 {
+        self.row_count
+    }
+
+    pub(crate) fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.temporary_file_path.take();
+    }
+}
+
+impl Drop for PartialArchiveRepairArtifact {
+    fn drop(&mut self) {
+        if let Some(path) = self.temporary_file_path.take() {
+            remove_temp_sqlite_artifacts_unchecked(&path);
+        }
+    }
+}
+
 /// Rebuild a prepared archive after a source transaction committed only a prefix of its
 /// selected rows. The caller supplies IDs that must be removed from the already published
 /// artifact; predecessor rows in a legacy monthly archive therefore remain intact.
@@ -2069,7 +2111,7 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     outcome: &ArchiveBatchOutcome,
     remove_ids: &[i64],
     shutdown: Option<tokio_util::sync::CancellationToken>,
-) -> Result<(PathBuf, i64, String)> {
+) -> Result<PartialArchiveRepairArtifact> {
     if remove_ids.is_empty() {
         bail!("partial archive repair requires rows to remove");
     }
@@ -2086,18 +2128,114 @@ pub(crate) async fn trim_archive_batch_file_by_ids(
     tokio::spawn(async move {
         let result =
             trim_archive_batch_file_by_ids_owned(final_path, remove_ids, archive_table, shutdown)
-                .await;
-        if let Err(result) = sender.send(result)
-            && let Ok((temporary_file_path, _, _)) = result
-        {
-            // The caller no longer owns the result after cancellation. The worker has drained
-            // all native file operations, so it can safely remove the unpublished output.
-            remove_temp_sqlite_artifacts_unchecked(&temporary_file_path);
-        }
+                .await
+                .map(PartialArchiveRepairArtifact::new);
+        let _ = sender.send(result);
     });
     receiver
         .await
         .context("partial archive repair worker exited before reporting its result")?
+}
+
+async fn delete_and_count_partial_archive_rows(
+    work_path: &Path,
+    archive_table: &str,
+    ids_json: &str,
+    shutdown: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<i64> {
+    if shutdown.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+    let mut connection = open_archive_sqlite_connection(work_path).await?;
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let interrupted = std::sync::Arc::clone(&interrupted);
+        let shutdown = shutdown.cloned();
+        let mut handle = connection.lock_handle().await?;
+        handle.set_progress_handler(1_000, move || {
+            let keep_running = shutdown
+                .as_ref()
+                .is_none_or(|shutdown| !shutdown.is_cancelled());
+            if !keep_running {
+                interrupted.store(true, std::sync::atomic::Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    let result: Result<i64> = async {
+        let delete_sql =
+            format!("DELETE FROM {archive_table} WHERE id IN (SELECT value FROM json_each(?1))");
+        sqlx::query(&delete_sql)
+            .bind(ids_json)
+            .execute(&mut connection)
+            .await
+            .context("remove uncommitted rows from partial archive repair")?;
+        let count_sql = format!("SELECT COUNT(*) FROM {archive_table}");
+        sqlx::query_scalar(&count_sql)
+            .fetch_one(&mut connection)
+            .await
+            .context("count rows after partial archive repair")
+    }
+    .await;
+    let cleanup = connection.lock_handle().await.map(|mut handle| {
+        handle.remove_progress_handler();
+    });
+    let close = connection.close().await;
+    drop(file_phase);
+    cleanup?;
+    close?;
+    if interrupted.load(std::sync::atomic::Ordering::Acquire)
+        || shutdown.is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    result
+}
+
+pub(crate) async fn finalize_archive_sqlite_file_with_shutdown(
+    path: &Path,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if shutdown.is_cancelled() {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    let mut connection = open_archive_sqlite_connection(path).await?;
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let interrupted = std::sync::Arc::clone(&interrupted);
+        let shutdown = shutdown.clone();
+        let mut handle = connection.lock_handle().await?;
+        handle.set_progress_handler(1_000, move || {
+            let keep_running = !shutdown.is_cancelled();
+            if !keep_running {
+                interrupted.store(true, std::sync::atomic::Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    let result = sqlx::query("PRAGMA optimize")
+        .execute(&mut connection)
+        .await
+        .with_context(|| format!("failed to finalize archive sqlite file {}", path.display()));
+    let cleanup = connection.lock_handle().await.map(|mut handle| {
+        handle.remove_progress_handler();
+    });
+    let close = connection.close().await;
+    cleanup?;
+    close?;
+    if interrupted.load(std::sync::atomic::Ordering::Acquire) || shutdown.is_cancelled() {
+        return Err(super::super::retention::retention_write_deferred(
+            "partial_archive_repair",
+        ));
+    }
+    result.map(|_| ())
 }
 
 async fn trim_archive_batch_file_by_ids_owned(
@@ -2143,43 +2281,13 @@ async fn trim_archive_batch_file_by_ids_owned(
         }
         let ids_json = serde_json::to_string(&remove_ids)
             .context("encode partial archive repair source ids")?;
-        let row_count = {
-            let file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
-            if shutdown
-                .as_ref()
-                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-            {
-                drop(file_phase);
-                return Err(super::super::retention::retention_write_deferred(
-                    "partial_archive_repair",
-                ));
-            }
-            let mut connection = open_archive_sqlite_connection(&work_path).await?;
-            let result: Result<i64> = async {
-                let delete_sql = format!(
-                    "DELETE FROM {archive_table} WHERE id IN (SELECT value FROM json_each(?1))"
-                );
-                sqlx::query(&delete_sql)
-                    .bind(&ids_json)
-                    .execute(&mut connection)
-                    .await
-                    .context("remove uncommitted rows from partial archive repair")?;
-                let count_sql = format!("SELECT COUNT(*) FROM {archive_table}");
-                sqlx::query_scalar(&count_sql)
-                    .fetch_one(&mut connection)
-                    .await
-                    .context("count rows after partial archive repair")
-            }
-            .await;
-            let close_result = connection.close().await;
-            drop(file_phase);
-            if let Err(error) = close_result {
-                return Err(
-                    anyhow::Error::new(error).context("close partial archive repair SQLite file")
-                );
-            }
-            result
-        }?;
+        let row_count = delete_and_count_partial_archive_rows(
+            &work_path,
+            archive_table,
+            &ids_json,
+            shutdown.as_ref(),
+        )
+        .await?;
         if shutdown
             .as_ref()
             .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
@@ -2188,7 +2296,10 @@ async fn trim_archive_batch_file_by_ids_owned(
                 "partial_archive_repair",
             ));
         }
-        {
+        if let Some(shutdown) = shutdown.as_ref() {
+            let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
+            finalize_archive_sqlite_file_with_shutdown(&work_path, shutdown.clone()).await?;
+        } else {
             let _file_phase = super::super::acquire_file_phase_permit_for_cleanup().await;
             finalize_archive_sqlite_file(&work_path).await?;
         }
