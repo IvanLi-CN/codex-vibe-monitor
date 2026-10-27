@@ -3024,6 +3024,125 @@ async fn retention_task_local_partial_timestamped_archive_reselects_without_dupl
 }
 
 #[tokio::test]
+async fn retention_task_local_recovers_pending_partial_archive_after_restart() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-pending-partial-recovery").await;
+    config.retention_batch_rows = 1_000;
+    config.pool_upstream_request_attempts_retention_days = config.invocation_max_days;
+    let occurred_at = shanghai_local_days_ago(
+        (config.pool_upstream_request_attempts_retention_days + 2) as i64,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<100)
+         INSERT INTO pool_upstream_request_attempts
+             (id, attempt_public_id, invoke_id, occurred_at, finished_at, endpoint, route_mode,
+              attempt_index, distinct_account_index, same_account_retry_index, status)
+         SELECT i, 'restart-attempt-'||i, 'restart-invocation-'||i, ?1, ?1,
+                '/v1/responses', 'pool', 0, 0, 0, 'success'
+         FROM n",
+    )
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("seed restart recovery timestamped archive candidates");
+
+    let month_key = &occurred_at[..7];
+    let ids = (1..=100).collect::<Vec<_>>();
+    let outcome = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        month_key,
+        &ids,
+    )
+    .await
+    .expect("prepare interrupted timestamped archive artifact");
+    sqlx::query("DELETE FROM pool_upstream_request_attempts WHERE id <= 36")
+        .execute(&pool)
+        .await
+        .expect("simulate committed source prefix before restart");
+    sqlx::query(
+        "INSERT INTO archive_batches
+             (dataset, month_key, file_path, sha256, row_count, status, layout, codec,
+              writer_version, cleanup_state, summary_source_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?7, ?8, ?9, ?10)",
+    )
+    .bind(outcome.dataset)
+    .bind(&outcome.month_key)
+    .bind(&outcome.file_path)
+    .bind(&outcome.sha256)
+    .bind(outcome.row_count)
+    .bind(outcome.layout)
+    .bind(outcome.codec)
+    .bind(outcome.writer_version)
+    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .bind(outcome.summary_source_kind)
+    .execute(&pool)
+    .await
+    .expect("persist interrupted partial repair manifest");
+
+    let select_sql = "SELECT id, occurred_at AS timestamp_value
+                      FROM pool_upstream_request_attempts
+                      WHERE occurred_at < ?1
+                      ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let recovered = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_timestamped_dataset(
+            &pool,
+            &config,
+            archive_table_spec("pool_upstream_request_attempts"),
+            select_sql,
+            "9999-01-01 00:00:00".to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("recover and finish pending partial archive");
+    assert_eq!(recovered.0, 64);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining source rows after restart recovery"),
+        0
+    );
+    let archive_path = outcome.file_path.clone();
+    let manifest = sqlx::query_as::<_, (i64, String)>(
+        "SELECT row_count, cleanup_state FROM archive_batches WHERE file_path=?1",
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered archive manifest");
+    assert_eq!(manifest, (100, ARCHIVE_CLEANUP_STATE_ACTIVE.to_string()));
+    let inflated_path = temp_dir.join("pending-partial-recovery.sqlite");
+    inflate_gzip_sqlite_file_with_operation_budget(Path::new(&archive_path), &inflated_path)
+        .await
+        .expect("inflate recovered archive");
+    let mut archive_connection = open_archive_sqlite_connection(&inflated_path)
+        .await
+        .expect("open recovered archive");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&mut archive_connection)
+            .await
+            .expect("count recovered archive rows"),
+        100
+    );
+    archive_connection
+        .close()
+        .await
+        .expect("close recovered archive");
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_partial_timestamped_archive_repairs_after_source_error() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-partial-timestamped-error").await;

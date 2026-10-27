@@ -299,44 +299,374 @@ async fn mark_partial_archive_repair_pending(
     batch_id: i64,
     expected_sha256: &str,
 ) -> Result<()> {
-    let result = sqlx::query(
-        "UPDATE archive_batches
-         SET cleanup_state = ?1
-         WHERE id = ?2 AND sha256 = ?3
-           AND cleanup_state IN (?4, ?5)",
+    let expected_sha256 = expected_sha256.to_string();
+    run_partial_repair_metadata_transaction(
+        pool,
+        "archive_partial_repair_mark_pending",
+        move |connection| {
+            Box::pin(async move {
+                let result = sqlx::query(
+                    "UPDATE archive_batches
+                     SET cleanup_state = ?1
+                     WHERE id = ?2 AND sha256 = ?3
+                       AND cleanup_state IN (?4, ?5, ?6)",
+                )
+                .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+                .bind(batch_id)
+                .bind(&expected_sha256)
+                .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+                .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+                .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+                .execute(&mut *connection)
+                .await?;
+                if result.rows_affected() != 1 {
+                    bail!("partial archive repair manifest changed before repair admission");
+                }
+                Ok(())
+            })
+        },
     )
-    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
-    .bind(batch_id)
-    .bind(expected_sha256)
-    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
-    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
-    .execute(pool)
-    .await?;
-    if result.rows_affected() != 1 {
-        bail!("partial archive repair manifest changed before repair admission");
-    }
-    Ok(())
+    .await
 }
 
-async fn archive_batch_repair_pending(
+fn partial_archive_repair_key(dataset: &str, month_key: &str, file_path: &str) -> String {
+    format!("{dataset}\0{month_key}\0{file_path}")
+}
+
+fn active_partial_archive_repairs() -> &'static std::sync::Mutex<std::collections::HashSet<String>>
+{
+    static ACTIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    ACTIVE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn partial_archive_repair_is_active(key: &str) -> bool {
+    active_partial_archive_repairs()
+        .lock()
+        .expect("partial archive repair registry is not poisoned")
+        .contains(key)
+}
+
+fn claim_partial_archive_repair(key: &str) -> bool {
+    active_partial_archive_repairs()
+        .lock()
+        .expect("partial archive repair registry is not poisoned")
+        .insert(key.to_string())
+}
+
+fn release_partial_archive_repair(key: &str) {
+    active_partial_archive_repairs()
+        .lock()
+        .expect("partial archive repair registry is not poisoned")
+        .remove(key);
+}
+
+struct PartialArchiveRepairActivity {
+    key: String,
+}
+
+impl Drop for PartialArchiveRepairActivity {
+    fn drop(&mut self) {
+        release_partial_archive_repair(&self.key);
+    }
+}
+
+async fn recover_archive_batch_repair_pending(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dataset: &str,
+    group_key: &str,
+) -> Result<bool> {
+    let segment_layout = dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+        && archive_layout_for_dataset(config, dataset) == ArchiveBatchLayout::SegmentV1;
+    let month_key = if segment_layout {
+        archive_month_key_from_day_key(group_key)?
+    } else {
+        group_key.to_string()
+    };
+    let pending = if segment_layout {
+        sqlx::query_as::<_, (i64, String, String, i64, Option<String>)>(
+            "SELECT id, file_path, COALESCE(sha256, ''), row_count, replacement_staged_path
+             FROM archive_batches
+             WHERE dataset = ?1 AND month_key = ?2 AND day_key = ?3
+               AND cleanup_state = ?4
+             ORDER BY id ASC",
+        )
+        .bind(dataset)
+        .bind(&month_key)
+        .bind(group_key)
+        .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, (i64, String, String, i64, Option<String>)>(
+            "SELECT id, file_path, COALESCE(sha256, ''), row_count, replacement_staged_path
+             FROM archive_batches
+             WHERE dataset = ?1 AND month_key = ?2 AND day_key IS NULL
+               AND cleanup_state = ?3
+             ORDER BY id ASC",
+        )
+        .bind(dataset)
+        .bind(&month_key)
+        .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+        .fetch_all(pool)
+        .await?
+    };
+    for (batch_id, file_path, sha256, current_row_count, replacement_staged_path) in pending {
+        let repair_key = partial_archive_repair_key(dataset, &month_key, &file_path);
+        if partial_archive_repair_is_active(&repair_key) || replacement_staged_path.is_some() {
+            return Ok(true);
+        }
+        let path = Path::new(&file_path);
+        if !retention_archive_path_is_within_archive_root(config, path) {
+            bail!("pending partial archive repair path is outside the archive root");
+        }
+        if sha256.is_empty() {
+            bail!("pending partial archive repair has no manifest digest");
+        }
+        let remove_ids = recover_partial_archive_source_ids(pool, path, dataset, &sha256).await?;
+        let repair_outcome = partial_archive_repair_outcome(
+            config,
+            dataset,
+            &month_key,
+            segment_layout.then_some(group_key),
+            file_path,
+            sha256.clone(),
+            current_row_count,
+        )?;
+        if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+            repair_partial_invocation_archive_with_ids(
+                pool,
+                &repair_outcome,
+                batch_id,
+                &sha256,
+                current_row_count,
+                &remove_ids,
+            )
+            .await?;
+        } else {
+            repair_partial_timestamped_archive_with_ids(
+                pool,
+                &repair_outcome,
+                batch_id,
+                &sha256,
+                current_row_count,
+                &remove_ids,
+            )
+            .await?;
+        }
+    }
+    Ok(false)
+}
+
+fn partial_archive_repair_outcome(
+    config: &AppConfig,
     dataset: &str,
     month_key: &str,
-) -> Result<bool> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(
-             SELECT 1 FROM archive_batches
-             WHERE dataset = ?1 AND month_key = ?2
-               AND cleanup_state = ?3
-         )",
-    )
-    .bind(dataset)
-    .bind(month_key)
-    .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
-    .fetch_one(pool)
-    .await
-    .map(|value| value != 0)
-    .context("check pending partial archive repair")
+    day_key: Option<&str>,
+    file_path: String,
+    sha256: String,
+    row_count: i64,
+) -> Result<ArchiveBatchOutcome> {
+    let dataset = match dataset {
+        HOURLY_ROLLUP_DATASET_INVOCATIONS => HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        "forward_proxy_attempts" => "forward_proxy_attempts",
+        "pool_upstream_request_attempts" => "pool_upstream_request_attempts",
+        _ => bail!("unsupported partial archive repair dataset: {dataset}"),
+    };
+    let (layout, writer_version, part_key) = if day_key.is_some() {
+        (
+            ARCHIVE_LAYOUT_SEGMENT_V1,
+            ARCHIVE_WRITER_VERSION_SEGMENT_V1,
+            None,
+        )
+    } else {
+        (
+            ARCHIVE_LAYOUT_LEGACY_MONTH,
+            ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            None,
+        )
+    };
+    Ok(ArchiveBatchOutcome {
+        dataset,
+        month_key: month_key.to_string(),
+        day_key: day_key.map(str::to_string),
+        part_key,
+        file_path,
+        sha256,
+        source_identity_sha256: None,
+        row_count,
+        upstream_last_activity: Vec::new(),
+        coverage_start_at: None,
+        coverage_end_at: None,
+        archive_expires_at: None,
+        summary_source_kind: if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+            SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+        } else {
+            SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN
+        },
+        layout,
+        codec: config.invocation_archive_codec.as_str(),
+        writer_version,
+        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        superseded_by: None,
+    })
+}
+
+async fn recover_partial_archive_source_ids(
+    pool: &Pool<Sqlite>,
+    archive_path: &Path,
+    dataset: &str,
+    expected_sha256: &str,
+) -> Result<Vec<i64>> {
+    let archive_lock = retention_archive_file_lock_async(archive_path).await?;
+    let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_verify").await?;
+    let actual_sha256 =
+        sha256_hex_file_with_deadline(archive_path, retention_archive_file_operation_deadline())?;
+    drop(file_phase);
+    if actual_sha256 != expected_sha256 {
+        bail!("pending partial archive repair artifact identity changed");
+    }
+
+    let temporary_file_path = PathBuf::from(format!(
+        "{}.partial-repair-recovery-{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    let _temporary_file_cleanup = TempSqliteCleanup::new(temporary_file_path.clone());
+    inflate_gzip_sqlite_file_with_operation_budget(archive_path, &temporary_file_path).await?;
+
+    let spec = archive_table_spec(match dataset {
+        HOURLY_ROLLUP_DATASET_INVOCATIONS => HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        "forward_proxy_attempts" => "forward_proxy_attempts",
+        "pool_upstream_request_attempts" => "pool_upstream_request_attempts",
+        _ => bail!("unsupported partial archive repair dataset: {dataset}"),
+    });
+    let archive_ids = {
+        let file_phase = acquire_file_phase_permit("archive_partial_repair_recovery_read").await?;
+        let mut connection = open_archive_sqlite_connection(&temporary_file_path).await?;
+        let query = format!("SELECT id FROM {} ORDER BY id ASC", spec.dataset);
+        let ids = sqlx::query_scalar::<_, i64>(&query)
+            .fetch_all(&mut connection)
+            .await?;
+        connection.close().await?;
+        drop(file_phase);
+        ids
+    };
+    drop(archive_lock);
+    if archive_ids.is_empty() {
+        bail!("pending partial archive repair artifact contains no rows");
+    }
+    let ids_json = serde_json::to_string(&archive_ids).context("encode pending repair ids")?;
+    let Some(mut source_connection) =
+        acquire_retention_pool_connection(pool, "archive_partial_repair_source_ids").await?
+    else {
+        return Err(retention_write_deferred(
+            "archive_partial_repair_source_ids",
+        ));
+    };
+    let source_ids = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT id FROM {} WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id ASC",
+        spec.dataset
+    ))
+    .bind(&ids_json)
+    .fetch_all(&mut *source_connection)
+    .await?;
+    if source_ids.is_empty() {
+        return Ok(source_ids);
+    }
+    let archive_identity = {
+        let file_phase =
+            acquire_file_phase_permit("archive_partial_repair_recovery_identity").await?;
+        let mut archive_connection = open_archive_sqlite_connection(&temporary_file_path).await?;
+        let identity = archive_table_source_identity_sha256(
+            &mut archive_connection,
+            spec,
+            "main",
+            &source_ids,
+        )
+        .await?;
+        archive_connection.close().await?;
+        drop(file_phase);
+        identity
+    };
+    let source_identity =
+        archive_table_source_identity_sha256(&mut source_connection, spec, "main", &source_ids)
+            .await?;
+    if archive_identity != source_identity {
+        bail!("pending partial archive repair source identity changed");
+    }
+    Ok(source_ids)
+}
+
+fn is_archive_replacement_recovery_pending(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains("archive replacement recovery is still pending")
+    })
+}
+
+async fn run_partial_repair_metadata_transaction<F>(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    work: F,
+) -> Result<()>
+where
+    F: for<'connection> FnOnce(
+        &'connection mut sqlx::SqliteConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<()>> + Send + 'connection>,
+    >,
+{
+    let Some((connection, admission)) = acquire_retention_write_connection(pool, operation).await?
+    else {
+        return Err(retention_write_deferred(operation));
+    };
+    let mut resources = RetentionTransactionResources::without_archive_fence(connection, admission);
+    resources.mark_transaction_started();
+    if let Err(error) = sqlx::query("BEGIN IMMEDIATE")
+        .execute(resources.connection_mut())
+        .await
+    {
+        let cleanup_error = resources.rollback_and_close().await;
+        let mut error: anyhow::Error = error.into();
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "failed to rollback partial archive repair metadata transaction: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    if let Err(error) = work(resources.connection_mut()).await {
+        let cleanup_error = resources.rollback_and_close().await;
+        let mut error = error;
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "partial archive repair metadata transaction rollback failed: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    if let Err(error) = sqlx::query("COMMIT")
+        .execute(resources.connection_mut())
+        .await
+    {
+        let cleanup_error = resources.rollback_and_close().await;
+        let mut error: anyhow::Error = error.into();
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "partial archive repair metadata transaction commit failed: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    resources.mark_transaction_finished();
+    resources
+        .return_to_pool()
+        .await
+        .context("return partial archive repair metadata connection to pool")?;
+    Ok(())
 }
 
 async fn repair_partial_invocation_archive(
@@ -357,7 +687,7 @@ async fn repair_partial_invocation_archive(
     let (batch_id, old_sha256, current_row_count) = sqlx::query_as::<_, (i64, String, i64)>(
         "SELECT id, sha256, row_count FROM archive_batches
          WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
-           AND cleanup_state IN (?4, ?5)
+           AND cleanup_state IN (?4, ?5, ?6)
          ORDER BY id DESC LIMIT 1",
     )
     .bind(outcome.dataset)
@@ -365,58 +695,90 @@ async fn repair_partial_invocation_archive(
     .bind(&outcome.file_path)
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
     .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
     .fetch_optional(pool)
     .await?
     .context("partial invocation archive manifest is missing")?;
-    let mut repair_base = outcome.clone();
-    repair_base.sha256 = old_sha256.clone();
-    repair_base.row_count = current_row_count;
-    mark_partial_archive_repair_pending(pool, batch_id, &old_sha256).await?;
-    let (temporary_file_path, row_count, sha256) =
-        crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, &remove_ids).await?;
-    let mut repaired_outcome = repair_base;
-    repaired_outcome.row_count = row_count;
-    repaired_outcome.sha256 = sha256;
+    repair_partial_invocation_archive_with_ids(
+        pool,
+        outcome,
+        batch_id,
+        &old_sha256,
+        current_row_count,
+        &remove_ids,
+    )
+    .await
+}
 
-    if let Err(error) =
-        crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
-            pool,
-            &repaired_outcome,
-            &temporary_file_path,
-            &old_sha256,
-        )
-        .await
-    {
-        remove_temp_sqlite_artifacts(&temporary_file_path);
-        return Err(error.context("publish partial invocation archive repair"));
+async fn repair_partial_invocation_archive_with_ids(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    batch_id: i64,
+    old_sha256: &str,
+    current_row_count: i64,
+    remove_ids: &[i64],
+) -> Result<()> {
+    let mut repair_base = outcome.clone();
+    repair_base.sha256 = old_sha256.to_string();
+    repair_base.row_count = current_row_count;
+    mark_partial_archive_repair_pending(pool, batch_id, old_sha256).await?;
+    let mut repaired_outcome = repair_base.clone();
+    if !remove_ids.is_empty() {
+        let (temporary_file_path, row_count, sha256) =
+            crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, remove_ids).await?;
+        repaired_outcome.row_count = row_count;
+        repaired_outcome.sha256 = sha256;
+        if let Err(error) =
+            crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
+                pool,
+                &repaired_outcome,
+                &temporary_file_path,
+                old_sha256,
+            )
+            .await
+        {
+            remove_temp_sqlite_artifacts(&temporary_file_path);
+            return Err(error.context("publish partial invocation archive repair"));
+        }
     }
 
     // The file replacement changes the manifest identity. Remove the old page/proof set before
     // rebuilding it from the repaired artifact, so a stale proof can never authorize the new
     // source boundary.
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query("DELETE FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id = ?1")
-        .bind(batch_id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query("DELETE FROM summary_archive_snapshot WHERE archive_batch_id = ?1")
-        .bind(batch_id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query("DELETE FROM summary_coverage_obligation WHERE archive_batch_id = ?1")
-        .bind(batch_id)
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query(
-        "UPDATE archive_batches
-         SET coverage_start_at = NULL, coverage_end_at = NULL
-         WHERE id = ?1 AND sha256 = ?2",
+    let repaired_sha256 = repaired_outcome.sha256.clone();
+    run_partial_repair_metadata_transaction(
+        pool,
+        "archive_partial_repair_metadata",
+        move |connection| {
+            Box::pin(async move {
+                sqlx::query(
+                    "DELETE FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id = ?1",
+                )
+                .bind(batch_id)
+                .execute(&mut *connection)
+                .await?;
+                sqlx::query("DELETE FROM summary_archive_snapshot WHERE archive_batch_id = ?1")
+                    .bind(batch_id)
+                    .execute(&mut *connection)
+                    .await?;
+                sqlx::query("DELETE FROM summary_coverage_obligation WHERE archive_batch_id = ?1")
+                    .bind(batch_id)
+                    .execute(&mut *connection)
+                    .await?;
+                sqlx::query(
+                    "UPDATE archive_batches
+                     SET coverage_start_at = NULL, coverage_end_at = NULL
+                     WHERE id = ?1 AND sha256 = ?2",
+                )
+                .bind(batch_id)
+                .bind(&repaired_sha256)
+                .execute(&mut *connection)
+                .await?;
+                Ok(())
+            })
+        },
     )
-    .bind(batch_id)
-    .bind(&repaired_outcome.sha256)
-    .execute(&mut *transaction)
     .await?;
-    transaction.commit().await?;
 
     let pages = crate::maintenance::rebuild_task_month_snapshot_pages_for_archive(
         pool,
@@ -430,19 +792,30 @@ async fn repair_partial_invocation_archive(
     let last_page = pages
         .last()
         .context("partial archive repair produced no Summary pages")?;
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query(
-        "UPDATE archive_batches
-         SET coverage_start_at = ?1, coverage_end_at = ?2
-         WHERE id = ?3 AND sha256 = ?4",
+    let coverage_start = first_page.coverage_start.clone();
+    let coverage_end = last_page.coverage_end.clone();
+    let repaired_sha256 = repaired_outcome.sha256.clone();
+    run_partial_repair_metadata_transaction(
+        pool,
+        "archive_partial_repair_coverage",
+        move |connection| {
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE archive_batches
+                     SET coverage_start_at = ?1, coverage_end_at = ?2
+                     WHERE id = ?3 AND sha256 = ?4",
+                )
+                .bind(&coverage_start)
+                .bind(&coverage_end)
+                .bind(batch_id)
+                .bind(&repaired_sha256)
+                .execute(&mut *connection)
+                .await?;
+                Ok(())
+            })
+        },
     )
-    .bind(&first_page.coverage_start)
-    .bind(&last_page.coverage_end)
-    .bind(batch_id)
-    .bind(&repaired_outcome.sha256)
-    .execute(&mut *transaction)
     .await?;
-    transaction.commit().await?;
 
     let proof =
         crate::prepare_verified_summary_archive_snapshot(pool, batch_id, &repaired_outcome.sha256)
@@ -452,27 +825,38 @@ async fn repair_partial_invocation_archive(
     // Partial repair replaces the published file and therefore changes its manifest SHA. Refresh
     // every replay marker after that replacement so the rollup proof stays bound to the repaired
     // artifact rather than the pre-repair file identity.
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
-    for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
-        mark_hourly_rollup_archive_replayed_tx(
-            &mut transaction,
-            target,
-            repaired_outcome.dataset,
-            &repaired_outcome.file_path,
-        )
-        .await?;
-    }
-    sqlx::query(
-        "UPDATE archive_batches
-         SET cleanup_state = ?1
-         WHERE id = ?2 AND sha256 = ?3",
+    let repaired_dataset = repaired_outcome.dataset;
+    let repaired_file_path = repaired_outcome.file_path.clone();
+    let repaired_sha256 = repaired_outcome.sha256.clone();
+    run_partial_repair_metadata_transaction(
+        pool,
+        "archive_partial_repair_finalize",
+        move |connection| {
+            Box::pin(async move {
+                for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+                    mark_hourly_rollup_archive_replayed_tx(
+                        connection,
+                        target,
+                        repaired_dataset,
+                        &repaired_file_path,
+                    )
+                    .await?;
+                }
+                sqlx::query(
+                    "UPDATE archive_batches
+                     SET cleanup_state = ?1
+                     WHERE id = ?2 AND sha256 = ?3",
+                )
+                .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+                .bind(batch_id)
+                .bind(&repaired_sha256)
+                .execute(&mut *connection)
+                .await?;
+                Ok(())
+            })
+        },
     )
-    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
-    .bind(batch_id)
-    .bind(&repaired_outcome.sha256)
-    .execute(&mut *transaction)
     .await?;
-    transaction.commit().await?;
     Ok(())
 }
 
@@ -494,7 +878,7 @@ async fn repair_partial_timestamped_archive(
     let (batch_id, old_sha256, current_row_count) = sqlx::query_as::<_, (i64, String, i64)>(
         "SELECT id, sha256, row_count FROM archive_batches
          WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
-           AND cleanup_state IN (?4, ?5)
+           AND cleanup_state IN (?4, ?5, ?6)
          ORDER BY id DESC LIMIT 1",
     )
     .bind(outcome.dataset)
@@ -502,40 +886,72 @@ async fn repair_partial_timestamped_archive(
     .bind(&outcome.file_path)
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
     .bind(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
     .fetch_optional(pool)
     .await?
     .context("partial timestamped archive manifest is missing")?;
-    let mut repair_base = outcome.clone();
-    repair_base.sha256 = old_sha256.clone();
-    repair_base.row_count = current_row_count;
-    mark_partial_archive_repair_pending(pool, batch_id, &old_sha256).await?;
-    let (temporary_file_path, row_count, sha256) =
-        crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, &remove_ids).await?;
-    let mut repaired_outcome = repair_base;
-    repaired_outcome.row_count = row_count;
-    repaired_outcome.sha256 = sha256;
-
-    if let Err(error) =
-        crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
-            pool,
-            &repaired_outcome,
-            &temporary_file_path,
-            &old_sha256,
-        )
-        .await
-    {
-        remove_temp_sqlite_artifacts(&temporary_file_path);
-        return Err(error.context("publish partial timestamped archive repair"));
-    }
-    sqlx::query(
-        "UPDATE archive_batches
-         SET cleanup_state = ?1
-         WHERE id = ?2 AND sha256 = ?3",
+    repair_partial_timestamped_archive_with_ids(
+        pool,
+        outcome,
+        batch_id,
+        &old_sha256,
+        current_row_count,
+        &remove_ids,
     )
-    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
-    .bind(batch_id)
-    .bind(&repaired_outcome.sha256)
-    .execute(pool)
+    .await
+}
+
+async fn repair_partial_timestamped_archive_with_ids(
+    pool: &Pool<Sqlite>,
+    outcome: &ArchiveBatchOutcome,
+    batch_id: i64,
+    old_sha256: &str,
+    current_row_count: i64,
+    remove_ids: &[i64],
+) -> Result<()> {
+    let mut repair_base = outcome.clone();
+    repair_base.sha256 = old_sha256.to_string();
+    repair_base.row_count = current_row_count;
+    mark_partial_archive_repair_pending(pool, batch_id, old_sha256).await?;
+    let mut repaired_outcome = repair_base.clone();
+    if !remove_ids.is_empty() {
+        let (temporary_file_path, row_count, sha256) =
+            crate::maintenance::trim_archive_batch_file_by_ids(&repair_base, remove_ids).await?;
+        repaired_outcome.row_count = row_count;
+        repaired_outcome.sha256 = sha256;
+        if let Err(error) =
+            crate::maintenance::replace_archive_batch_file_with_cleanup_serialization_for_repair(
+                pool,
+                &repaired_outcome,
+                &temporary_file_path,
+                old_sha256,
+            )
+            .await
+        {
+            remove_temp_sqlite_artifacts(&temporary_file_path);
+            return Err(error.context("publish partial timestamped archive repair"));
+        }
+    }
+    let repaired_sha256 = repaired_outcome.sha256.clone();
+    run_partial_repair_metadata_transaction(
+        pool,
+        "archive_partial_repair_finalize",
+        move |connection| {
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE archive_batches
+                     SET cleanup_state = ?1
+                     WHERE id = ?2 AND sha256 = ?3",
+                )
+                .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+                .bind(batch_id)
+                .bind(&repaired_sha256)
+                .execute(&mut *connection)
+                .await?;
+                Ok(())
+            })
+        },
+    )
     .await?;
     Ok(())
 }
@@ -561,6 +977,7 @@ struct PartialArchiveRepairState {
     pending_transactions:
         std::sync::Mutex<Vec<std::sync::Arc<crate::maintenance::RetentionTransactionSettlement>>>,
     archive_root: std::path::PathBuf,
+    repair_key: String,
     plan: PartialArchiveRepairPlan,
 }
 
@@ -619,6 +1036,12 @@ impl PartialArchiveRepairOwner {
         ),
         archive_root: std::path::PathBuf,
     ) -> Self {
+        let repair_key = match &plan {
+            PartialArchiveRepairPlan::Invocation { outcome, .. }
+            | PartialArchiveRepairPlan::Timestamped { outcome, .. } => {
+                partial_archive_repair_key(outcome.dataset, &outcome.month_key, &outcome.file_path)
+            }
+        };
         Self {
             state: std::sync::Arc::new(PartialArchiveRepairState {
                 committed_rows: std::sync::atomic::AtomicUsize::new(0),
@@ -627,6 +1050,7 @@ impl PartialArchiveRepairOwner {
                 cleanup_done,
                 pending_transactions: std::sync::Mutex::new(Vec::new()),
                 archive_root,
+                repair_key,
                 plan,
             }),
         }
@@ -752,11 +1176,7 @@ impl PartialArchiveRepairOwner {
             };
             match result {
                 Ok(()) => return Ok(()),
-                Err(error)
-                    if error
-                        .to_string()
-                        .contains("archive replacement recovery is still pending") =>
-                {
+                Err(error) if is_archive_replacement_recovery_pending(&error) => {
                     let (pool, outcome) = match &self.state.plan {
                         PartialArchiveRepairPlan::Invocation { pool, outcome, .. }
                         | PartialArchiveRepairPlan::Timestamped { pool, outcome, .. } => {
@@ -835,8 +1255,16 @@ impl PartialArchiveRepairOwner {
         {
             return None;
         }
+        if !claim_partial_archive_repair(&self.state.repair_key) {
+            self.state
+                .repair_claimed
+                .store(false, std::sync::atomic::Ordering::Release);
+            return None;
+        }
         let state = std::sync::Arc::clone(&self.state);
+        let repair_key = state.repair_key.clone();
         Some(runtime.spawn(async move {
+            let _activity = PartialArchiveRepairActivity { key: repair_key };
             loop {
                 if state
                     .cleanup_done
@@ -2216,7 +2644,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 }
                 break;
             }
-            if archive_batch_repair_pending(pool, spec.dataset, &group_key).await? {
+            if recover_archive_batch_repair_pending(pool, config, spec.dataset, &group_key).await? {
                 recovery_diagnostic.mark_stop();
                 break;
             }
@@ -3033,7 +3461,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 }
                 break;
             }
-            if archive_batch_repair_pending(pool, spec.dataset, &month_key).await? {
+            if recover_archive_batch_repair_pending(pool, config, spec.dataset, &month_key).await? {
                 recovery_diagnostic.mark_stop();
                 break;
             }
