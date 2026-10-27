@@ -360,6 +360,14 @@ async fn set_archive_batch_cleanup_state_tx(
     Ok(())
 }
 
+fn archive_cleanup_state_allows_chunk(cleanup_state: Option<&str>, committed_rows: usize) -> bool {
+    match cleanup_state {
+        None | Some(ARCHIVE_CLEANUP_STATE_ACTIVE) => true,
+        Some(ARCHIVE_CLEANUP_STATE_REPAIR_PENDING) => committed_rows > 0,
+        Some(_) => false,
+    }
+}
+
 fn partial_archive_repair_key(dataset: &str, month_key: &str, file_path: &str) -> String {
     format!("{dataset}\0{month_key}\0{file_path}")
 }
@@ -3135,8 +3143,22 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     }
                     #[cfg(test)]
                     batch_admission::pause_after_transaction_begin().await;
-                    let transaction_result: Result<RetentionBatchCommit> = async {
+                    let transaction_result: Result<Option<RetentionBatchCommit>> = async {
                     let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
+                    let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT cleanup_state FROM archive_batches
+                         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+                    )
+                    .bind(spec.dataset)
+                    .bind(&archive_outcome.month_key)
+                    .bind(&archive_outcome.file_path)
+                    .fetch_optional(tx.as_mut())
+                    .await?
+                    .flatten();
+                    if !archive_cleanup_state_allows_chunk(cleanup_state.as_deref(), committed_rows)
+                    {
+                        return Ok(None);
+                    }
                     // P2 normally advances this cursor before retention. Rows beyond it would be
                     // deleted before the regular replay can observe them, so materialize just those
                     // rows in this same archive transaction before claiming the archive is covered.
@@ -3290,12 +3312,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     let raw_reference_check_elapsed =
                         had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                     let commit_started = Instant::now();
-                    Ok(RetentionBatchCommit {
+                    Ok(Some(RetentionBatchCommit {
                         raw_deletion_plan,
                         raw_reference_check_elapsed,
                         commit_started,
                         prompt_cache_keys: archived_prompt_cache_keys,
-                    })
+                    }))
                     }
                     .await;
                     let commit = match transaction_result {
@@ -3339,6 +3361,17 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     transaction_resources.mark_transaction_finished();
                     #[cfg(test)]
                     batch_admission::pause_after_commit_before_record().await;
+                    let Some(commit) = commit else {
+                        drop(transaction_phase);
+                        let cleanup_error = transaction_resources.return_to_pool().await;
+                        if let Err(cleanup_error) = cleanup_error {
+                            return Err(anyhow!(
+                                "failed to return retention transaction connection to pool: {cleanup_error}"
+                            ));
+                        }
+                        recovery_diagnostic.mark_stop();
+                        break;
+                    };
                     prompt_cache_keys.extend(commit.prompt_cache_keys);
                     let raw_deletion_plan = commit.raw_deletion_plan;
                     workload::record_processed_count(group.len());
@@ -3847,12 +3880,7 @@ pub(crate) async fn archive_timestamped_dataset(
             .fetch_optional(tx.as_mut())
             .await?
             .flatten();
-                if cleanup_state
-                    .as_deref()
-                    .is_some_and(|state| {
-                        state != ARCHIVE_CLEANUP_STATE_ACTIVE && committed_rows == 0
-                    })
-                {
+                if !archive_cleanup_state_allows_chunk(cleanup_state.as_deref(), committed_rows) {
                     return Ok(None);
                 }
                 let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
