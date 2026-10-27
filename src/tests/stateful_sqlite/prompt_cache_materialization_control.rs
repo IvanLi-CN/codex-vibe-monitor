@@ -1487,8 +1487,8 @@ async fn prompt_cache_queue_event_wake_converges_past_idle_deadline() {
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations \
-             WHERE migration_name='prompt_cache_conversations_stats_v2')",
+            "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversation_stats_freshness \
+             WHERE marker_name='prompt_cache_conversations_stats_v2' AND state='fresh')",
         )
         .fetch_one(&pool)
         .await
