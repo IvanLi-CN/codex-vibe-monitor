@@ -339,6 +339,13 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(cached_upload.get("with", {}).get("name") == "observability-cached-image-${{ github.run_id }}" and cached_upload.get("with", {}).get("overwrite") is True, f"{workflow_path} cached image artifacts must replace the prior attempt")
     producer_upload = uses_step_config(producer, "Upload verified producer artifact", PERF_ACTION_UPLOAD_ARTIFACT, workflow_path)
     require(producer_upload.get("with", {}).get("name") == "observability-build-${{ github.run_id }}-${{ matrix.component }}" and producer_upload.get("with", {}).get("overwrite") is True, f"{workflow_path} producer artifacts must be run/component scoped and replace the prior attempt")
+    require(
+        str(producer_upload.get("with", {}).get("path", "")).splitlines() == [
+            "${{ runner.temp }}/observability-build/${{ matrix.component }}/component.json",
+            "${{ runner.temp }}/observability-build/${{ matrix.component }}/component.tar.gz",
+        ],
+        f"{workflow_path} producer artifacts must contain only the manifest and archive",
+    )
 
     require(image.get("needs") == ["observability-performance-resolve", "observability-performance-producer"] and "always()" in str(image.get("if", "")) and "effective_build_path == 'canonical'" in str(image.get("if", "")) and "complete_image_cache_hit == 'true'" in str(image.get("if", "")) and image.get("runs-on") == RUNNER_X64 and image.get("timeout-minutes") == 15, f"{workflow_path} image join must distinguish canonical skip, complete-image hit and producer failure")
     image_checkout = performance_checkout_step(image, "Checkout candidate assembly sources", f"{workflow_path}.jobs.observability-performance-image")
@@ -1408,8 +1415,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     assert_event_types(merge_group_config, {"checks_requested"}, "ci-pr.yml.on.merge_group")
 
     concurrency = require_mapping(workflow.get("concurrency"), "ci-pr.yml.concurrency")
-    require(concurrency.get("group") == "ci-pr-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.ref }}", "ci-pr.yml.concurrency.group drifted")
-    require(concurrency.get("cancel-in-progress") is True, "ci-pr.yml.concurrency.cancel-in-progress must stay true")
+    require(concurrency.get("group") == "ci-pr-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('merge-group-{0}', github.ref) }}", "ci-pr.yml.concurrency.group drifted")
+    require(concurrency.get("cancel-in-progress") == "${{ github.event_name == 'pull_request' }}", "ci-pr.yml.concurrency.cancel-in-progress must only cancel pull_request runs")
 
     permissions = require_mapping(workflow.get("permissions"), "ci-pr.yml.permissions")
     require(permissions.get("contents") == "read", "ci-pr.yml.permissions.contents must stay read")
