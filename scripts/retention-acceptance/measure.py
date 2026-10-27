@@ -948,7 +948,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "stages": stages,
             }
         rows = connection.execute(
-            "SELECT task_key,trigger_kind,status,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND actual_started_at IS NOT NULL ORDER BY id"
+            "SELECT task_key,trigger_kind,status,started_at,actual_started_at,actual_finished_at,processed_count,updated_count,details,summary,error_detail,completion FROM managed_task_runs WHERE task_key IN ('retention_archive','pool_upstream_attempt_archive','raw_orphan_sweep') AND (actual_started_at IS NOT NULL OR status='running') ORDER BY id"
         ).fetchall()
         result = []
         for row in rows:
@@ -962,6 +962,7 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
                 "task_key": row["task_key"],
                 "trigger_kind": row["trigger_kind"],
                 "status": row["status"],
+                "started_at": row["started_at"],
                 "actual_started_at": row["actual_started_at"],
                 "actual_finished_at": row["actual_finished_at"],
                 "processed_count": row["processed_count"],
@@ -974,6 +975,9 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
             progress = progress_by_key.get(row["task_key"])
             if progress is not None:
                 evidence["progress"] = progress
+            evidence["activity_started_at"] = row["actual_started_at"] or (
+                progress.get("last_progress_at") if progress is not None else None
+            )
             if row["actual_finished_at"] is None:
                 evidence["evidence_kind"] = "bounded_active" if task_run_is_bounded_active({
                     **evidence,

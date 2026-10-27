@@ -139,6 +139,8 @@ def task_run_is_bounded_active(row: dict[str, Any]) -> bool:
         row.get("evidence_kind") == "bounded_active"
         and row.get("status") == "running"
         and row.get("actual_finished_at") is None
+        and isinstance(row.get("started_at"), str)
+        and isinstance(row.get("activity_started_at"), str)
         and isinstance(row.get("observed_at"), str)
         and isinstance(progress, dict)
         and progress.get("phase") in {"running", "processing"}
@@ -316,7 +318,7 @@ def _validate_task_runs(
         _require(isinstance(row, dict), "malformed production task-run evidence")
         key = row.get("task_key")
         _require(isinstance(key, str) and key, "task run has no owner key")
-        started = parse_time(row.get("actual_started_at"))
+        started = parse_time(row.get("activity_started_at") or row.get("actual_started_at"))
         active = row.get("actual_finished_at") is None
         if active:
             _require(
@@ -324,9 +326,11 @@ def _validate_task_runs(
                 f"background task {key} remained active outside the baseline observation contract",
             )
             _require(task_run_is_bounded_active(row), f"active background task {key} lacks a bounded progress snapshot")
+            requested = parse_time(row.get("started_at"))
             observed = parse_time(row.get("observed_at"))
             progress_at = parse_time(row["progress"]["last_progress_at"])
-            _require(setup_start <= started <= input_end, f"active task {key} did not start during the foreground window")
+            _require(requested <= started, f"active task {key} activity predates its requested run")
+            _require(setup_start <= requested <= input_end, f"active task {key} was not requested during the foreground window")
             _require(started <= progress_at <= observed <= cleanup_end, f"active task {key} progress fell outside the measured trial")
         else:
             finished = parse_time(row.get("actual_finished_at"))
@@ -382,8 +386,11 @@ def _validate_task_runs(
     def interval_end(row: dict[str, Any]) -> datetime:
         return parse_time(row["actual_finished_at"] or row["observed_at"])
 
+    def interval_start(row: dict[str, Any]) -> datetime:
+        return parse_time(row.get("activity_started_at") or row["actual_started_at"])
+
     overlap = any(
-        max(parse_time(left["actual_started_at"]), parse_time(right["actual_started_at"]))
+        max(interval_start(left), interval_start(right))
         < min(interval_end(left), interval_end(right))
         for left in target_rows
         for right in competitor

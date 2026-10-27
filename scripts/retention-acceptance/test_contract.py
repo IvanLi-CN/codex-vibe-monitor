@@ -471,6 +471,8 @@ class ContractTests(unittest.TestCase):
                         "actual_finished_at": None,
                         "committed_work": 0,
                         "evidence_kind": "bounded_active",
+                        "started_at": timestamp(observed_at - timedelta(seconds=3)),
+                        "activity_started_at": timestamp(observed_at - timedelta(seconds=2)),
                         "observed_at": timestamp(observed_at),
                         "progress": {
                             "phase": "running",
@@ -487,7 +489,7 @@ class ContractTests(unittest.TestCase):
         evidence = valid_evidence()
         trial = evidence["versions"]["baseline"]["trials"][0]
         active = next(row for row in trial["task_runs"] if row["task_key"] == "retention_archive")
-        active.update({"status": "running", "actual_finished_at": None, "evidence_kind": "bounded_active"})
+        active.update({"status": "running", "actual_finished_at": None, "evidence_kind": "bounded_active", "started_at": active["actual_started_at"], "activity_started_at": active["actual_started_at"]})
         with self.assertRaisesRegex(AcceptanceError, "bounded progress snapshot"):
             validate_evidence(evidence)
 

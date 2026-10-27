@@ -35,6 +35,7 @@ from measure import (
     run_command,
     run_foreground,
     start_container,
+    task_runs,
     validate_task_snapshot,
 )
 
@@ -49,6 +50,68 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_task_runs_keeps_running_owner_without_persisted_actual_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "maintenance.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "CREATE TABLE managed_task_progress (task_key TEXT, total INTEGER, completed INTEGER, phase TEXT, checkpoint TEXT, eta_seconds REAL, updated_at TEXT, freshness TEXT, unit TEXT, source_scope TEXT, last_progress_at TEXT, wait_reason TEXT, next_retry_at TEXT, next_inspection_at TEXT, next_catchup_at TEXT, catchup_state TEXT, stages TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE managed_task_runs (id INTEGER PRIMARY KEY, task_key TEXT, trigger_kind TEXT, status TEXT, started_at TEXT, actual_started_at TEXT, actual_finished_at TEXT, processed_count INTEGER, updated_count INTEGER, details TEXT, summary TEXT, error_detail TEXT, completion TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO managed_task_runs VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "retention_archive",
+                        "schedule",
+                        "running",
+                        "2026-10-25T00:00:00Z",
+                        None,
+                        None,
+                        0,
+                        0,
+                        "{}",
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO managed_task_progress VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "retention_archive",
+                        1000,
+                        0,
+                        "running",
+                        "admitted",
+                        None,
+                        "2026-10-25T00:00:02Z",
+                        "fresh",
+                        "invocation rows",
+                        "expired_invocations:retention_policy",
+                        "2026-10-25T00:00:02Z",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            rows = task_runs(database)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "running")
+        self.assertIsNone(rows[0]["actual_started_at"])
+        self.assertEqual(rows[0]["started_at"], "2026-10-25T00:00:00Z")
+        self.assertEqual(rows[0]["activity_started_at"], "2026-10-25T00:00:02Z")
+
     def test_legacy_partial_status_is_accepted_when_selected_batch_is_complete(self) -> None:
         archive_details = {
             "result": "partial",
@@ -117,10 +180,12 @@ class MeasurementBudgetTests(unittest.TestCase):
                 "task_key": task_key,
                 "trigger_kind": "schedule",
                 "status": "running",
+                "started_at": "2026-10-25T00:00:00Z",
                 "actual_started_at": "2026-10-25T00:00:01Z",
                 "actual_finished_at": None,
                 "committed_work": 0,
                 "evidence_kind": "bounded_active",
+                "activity_started_at": "2026-10-25T00:00:01Z",
                 "observed_at": "2026-10-25T00:00:10Z",
                 "progress": progress,
             }
