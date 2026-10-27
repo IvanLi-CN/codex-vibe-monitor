@@ -871,6 +871,29 @@ fn sqlite_busy_and_locked_are_actual_backfill_failures() {
 }
 
 #[test]
+fn resource_defer_preserves_committed_partial_progress() {
+    let progress = StartupBackfillProgress {
+        cursor_id: 10,
+        last_scanned: 4,
+        last_updated: 3,
+        ..StartupBackfillProgress::pending("partial-resource-defer")
+    };
+    let error = anyhow::Error::new(BackfillPartialFailure {
+        source: anyhow::anyhow!("file phase busy"),
+        next_cursor_id: 12,
+        scanned: 7,
+        updated: 6,
+    });
+
+    let deferred =
+        super::task_runner::startup_backfill_progress_after_partial_failure(&progress, &error);
+
+    assert_eq!(deferred.cursor_id, 12);
+    assert_eq!(deferred.last_scanned, 7);
+    assert_eq!(deferred.last_updated, 6);
+}
+
+#[test]
 fn coverage_repair_health_is_independent_from_historical_rollups() {
     let scheduler = StartupBackfillScheduler::default();
     scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);

@@ -63,6 +63,19 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_store_for_test(
         .map(|(outcome, _)| outcome)
 }
 
+pub(crate) fn startup_backfill_progress_after_partial_failure(
+    progress: &StartupBackfillProgress,
+    err: &anyhow::Error,
+) -> StartupBackfillProgress {
+    let mut failure_progress = progress.clone();
+    if let Some(partial) = err.downcast_ref::<BackfillPartialFailure>() {
+        failure_progress.cursor_id = partial.next_cursor_id.max(progress.cursor_id);
+        failure_progress.last_scanned = partial.scanned;
+        failure_progress.last_updated = partial.updated;
+    }
+    failure_progress
+}
+
 async fn run_startup_backfill_task_if_due_outcome_with_store(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
@@ -608,8 +621,13 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 == StartupBackfillFailureKind::ArchiveLockBusy =>
         {
             drop(write_permit.take());
+            let defer_progress = startup_backfill_progress_after_partial_failure(&progress, &err);
             let outcome = persist_startup_backfill_archive_lock_defer(
-                state, task, &task_name, &progress, started_at,
+                state,
+                task,
+                &task_name,
+                &defer_progress,
+                started_at,
             )
             .await?;
             (outcome, None)
@@ -618,20 +636,20 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             if startup_backfill_failure_kind(&err) == StartupBackfillFailureKind::FilePhaseBusy =>
         {
             drop(write_permit.take());
+            let defer_progress = startup_backfill_progress_after_partial_failure(&progress, &err);
             let outcome = persist_startup_backfill_file_phase_defer(
-                state, task, &task_name, &progress, started_at,
+                state,
+                task,
+                &task_name,
+                &defer_progress,
+                started_at,
             )
             .await?;
             (outcome, None)
         }
         Err(err) => {
             let partial_progress = err.downcast_ref::<BackfillPartialFailure>();
-            let mut failure_progress = progress.clone();
-            if let Some(partial) = partial_progress {
-                failure_progress.cursor_id = partial.next_cursor_id.max(progress.cursor_id);
-                failure_progress.last_scanned = partial.scanned;
-                failure_progress.last_updated = partial.updated;
-            }
+            let failure_progress = startup_backfill_progress_after_partial_failure(&progress, &err);
             // A bounded backfill may have committed earlier micro-batches before a later
             // source/read failure. Preserve that committed delta in the child workload sample
             // before persisting the failed scheduler state.

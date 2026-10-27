@@ -130,7 +130,7 @@ fn publish_prepared_archive_file(temporary_file_path: &Path, final_file_path: &P
             "archive_publish_file",
         ));
     };
-    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
+    let _archive_lock = super::super::retention::retention_archive_file_try_lock(final_file_path)?;
     match fs::hard_link(temporary_file_path, final_file_path) {
         Ok(()) => fs::remove_file(temporary_file_path).with_context(|| {
             format!(
@@ -266,13 +266,20 @@ fn archive_disk_attach_uri(path: &Path) -> Result<String> {
 }
 
 pub(crate) async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
-    let mut connection = open_archive_sqlite_connection(path).await?;
-    sqlx::query("PRAGMA optimize")
-        .execute(&mut connection)
-        .await
-        .with_context(|| format!("failed to finalize archive sqlite file {}", path.display()))?;
-    connection.close().await?;
-    Ok(())
+    let file_phase = super::super::acquire_file_phase_permit("archive_sqlite_finalize").await?;
+    let path = path.to_path_buf();
+    super::super::spawn_file_phase_task(file_phase, async move {
+        let mut connection = open_archive_sqlite_connection(&path).await?;
+        sqlx::query("PRAGMA optimize")
+            .execute(&mut connection)
+            .await
+            .with_context(|| {
+                format!("failed to finalize archive sqlite file {}", path.display())
+            })?;
+        connection.close().await?;
+        Ok(())
+    })
+    .await
 }
 
 pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
@@ -462,24 +469,23 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 return Err(error);
             }
 
-            let backfill_outcome = async {
-                let file_phase =
-                    super::super::acquire_file_phase_permit(
-                        "archive_public_id_file_phase_sqlite",
-                    )
-                    .await?;
-                let mut conn = open_archive_sqlite_connection(&work_path).await?;
+            let file_phase = super::super::acquire_file_phase_permit(
+                "archive_public_id_file_phase_sqlite",
+            )
+            .await?;
+            let worker_work_path = work_path.clone();
+            let backfill_outcome = super::super::spawn_file_phase_task(file_phase, async move {
+                let mut conn = open_archive_sqlite_connection(&worker_work_path).await?;
                 ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
                 let outcome = backfill_pool_upstream_request_attempt_public_ids_on_connection(
                     &mut conn, 0, None, None,
                 )
                 .await?;
                 conn.close().await?;
-                drop(file_phase);
                 Ok::<BackfillBatchOutcome<PoolAttemptPublicIdBackfillSummary>, anyhow::Error>(
                     outcome,
                 )
-            }
+            })
             .await;
 
             let outcome = match backfill_outcome {
@@ -1311,17 +1317,22 @@ async fn archive_rows_into_month_batch_with_snapshots(
 }
 
 async fn prepare_task_month_snapshot_index(work_path: &Path) -> Result<()> {
-    let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
-    let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await?;
-    let result = sqlx::query("CREATE INDEX IF NOT EXISTS idx_retention_snapshot_time_id ON codex_invocations(julianday(occurred_at), id)")
-        .execute(&archive_pool)
-        .await
-        .map(|_| ());
-    archive_pool.close().await;
-    result.map_err(Into::into)
+    let file_phase = super::super::acquire_file_phase_permit("archive_snapshot_index").await?;
+    let work_path = work_path.to_path_buf();
+    super::super::spawn_file_phase_task(file_phase, async move {
+        let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(&work_path))?;
+        let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        let result = sqlx::query("CREATE INDEX IF NOT EXISTS idx_retention_snapshot_time_id ON codex_invocations(julianday(occurred_at), id)")
+            .execute(&archive_pool)
+            .await
+            .map(|_| ());
+        archive_pool.close().await;
+        result.map_err(Into::into)
+    })
+    .await
 }
 
 async fn load_task_month_snapshot_pages(
@@ -2129,6 +2140,16 @@ mod tests {
         }
     }
 
+    async fn with_test_file_phase<F, T>(future: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let permit = crate::maintenance::acquire_file_phase_permit("archive_writer_test")
+            .await
+            .expect("acquire archive writer test file phase permit");
+        crate::maintenance::with_file_phase_permit(permit, future).await
+    }
+
     #[test]
     fn segment_part_key_is_stable_for_one_prepared_identity() {
         let forward = archive_segment_part_key_for_ids(&[7, 3, 5]).expect("part key");
@@ -2139,55 +2160,61 @@ mod tests {
         assert_ne!(forward, distinct);
     }
 
-    #[test]
-    fn prepared_archive_publish_rejects_conflicting_existing_identity() {
-        let root = std::env::temp_dir().join(format!(
-            "codex-vibe-monitor-archive-publish-{}",
-            retention_temp_suffix()
-        ));
-        fs::create_dir_all(&root).expect("create archive root");
-        let temporary = root.join("prepared.sqlite.gz");
-        let final_path = root.join("part.sqlite.gz");
-        fs::write(&temporary, b"prepared").expect("write prepared archive");
-        fs::write(&final_path, b"different").expect("write conflicting archive");
+    #[tokio::test]
+    async fn prepared_archive_publish_rejects_conflicting_existing_identity() {
+        with_test_file_phase(async {
+            let root = std::env::temp_dir().join(format!(
+                "codex-vibe-monitor-archive-publish-{}",
+                retention_temp_suffix()
+            ));
+            fs::create_dir_all(&root).expect("create archive root");
+            let temporary = root.join("prepared.sqlite.gz");
+            let final_path = root.join("part.sqlite.gz");
+            fs::write(&temporary, b"prepared").expect("write prepared archive");
+            fs::write(&final_path, b"different").expect("write conflicting archive");
 
-        let error = publish_prepared_archive_file(&temporary, &final_path)
-            .expect_err("conflicting archive identity must fail");
-        assert!(error.to_string().contains("identity collision"));
-        assert!(temporary.exists());
-        assert_eq!(
-            fs::read(&final_path).expect("read final archive"),
-            b"different"
-        );
+            let error = publish_prepared_archive_file(&temporary, &final_path)
+                .expect_err("conflicting archive identity must fail");
+            assert!(error.to_string().contains("identity collision"));
+            assert!(temporary.exists());
+            assert_eq!(
+                fs::read(&final_path).expect("read final archive"),
+                b"different"
+            );
 
-        let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir_all(root);
+        })
+        .await;
     }
 
-    #[test]
-    fn prepared_archive_publish_reuses_a_matching_identity() {
-        let root = std::env::temp_dir().join(format!(
-            "codex-vibe-monitor-archive-publish-{}",
-            retention_temp_suffix()
-        ));
-        fs::create_dir_all(&root).expect("create archive root");
-        let first_temporary = root.join("first.sqlite.gz");
-        let retry_temporary = root.join("retry.sqlite.gz");
-        let final_path = root.join("part.sqlite.gz");
-        fs::write(&first_temporary, b"prepared").expect("write prepared archive");
-        publish_prepared_archive_file(&first_temporary, &final_path)
-            .expect("publish first prepared archive");
-        fs::write(&retry_temporary, b"prepared").expect("write retry archive");
-        publish_prepared_archive_file(&retry_temporary, &final_path)
-            .expect("reuse matching prepared archive");
+    #[tokio::test]
+    async fn prepared_archive_publish_reuses_a_matching_identity() {
+        with_test_file_phase(async {
+            let root = std::env::temp_dir().join(format!(
+                "codex-vibe-monitor-archive-publish-{}",
+                retention_temp_suffix()
+            ));
+            fs::create_dir_all(&root).expect("create archive root");
+            let first_temporary = root.join("first.sqlite.gz");
+            let retry_temporary = root.join("retry.sqlite.gz");
+            let final_path = root.join("part.sqlite.gz");
+            fs::write(&first_temporary, b"prepared").expect("write prepared archive");
+            publish_prepared_archive_file(&first_temporary, &final_path)
+                .expect("publish first prepared archive");
+            fs::write(&retry_temporary, b"prepared").expect("write retry archive");
+            publish_prepared_archive_file(&retry_temporary, &final_path)
+                .expect("reuse matching prepared archive");
 
-        assert!(!first_temporary.exists());
-        assert!(!retry_temporary.exists());
-        assert_eq!(
-            fs::read(&final_path).expect("read final archive"),
-            b"prepared"
-        );
+            assert!(!first_temporary.exists());
+            assert!(!retry_temporary.exists());
+            assert_eq!(
+                fs::read(&final_path).expect("read final archive"),
+                b"prepared"
+            );
 
-        let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir_all(root);
+        })
+        .await;
     }
 
     #[tokio::test]
