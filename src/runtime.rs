@@ -12,6 +12,14 @@ const MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250)
 const MANAGED_TASK_MAX_ACTIVE_WORKERS: usize = 4;
 const MANAGED_TASK_MAX_ACTIVE_FINALIZERS: usize = 2;
 const MANAGED_TASK_MAX_PENDING_FINISHES: usize = 16;
+const MANAGED_TASK_DISPATCH_ENQUEUE_RETRY_DELAYS: [Duration; 6] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
 const STARTUP_RECOVERY_BATCH_ROWS: usize = 64;
 pub(crate) const STARTUP_RECOVERY_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
 pub(crate) const STARTUP_RECOVERY_ADMISSION_BUDGET: Duration = Duration::from_millis(250);
@@ -1979,11 +1987,19 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     if !has_dispatch_work {
                         continue;
                     }
-                    if let Err(error) = store
-                        .enqueue_due_runs_excluding(&blocked_task_keys)
-                        .await
+                    match enqueue_managed_task_runs_with_retry(
+                        &store,
+                        &blocked_task_keys,
+                        &state.shutdown,
+                    )
+                    .await
                     {
-                        warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(error) => {
+                            warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
+                            continue;
+                        }
                     }
                     let claim = match store
                         .claim_requested_run_excluding(&blocked_task_keys)
@@ -2063,6 +2079,48 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             }
         }
     })
+}
+
+fn managed_task_dispatch_enqueue_is_retryable(error: &anyhow::Error) -> bool {
+    matches!(
+        crate::db_pressure::classify_db_pressure_error(error),
+        Some(crate::db_pressure::DbPressureErrorClass::SqliteBusy)
+            | Some(crate::db_pressure::DbPressureErrorClass::SqliteLocked)
+            | Some(crate::db_pressure::DbPressureErrorClass::PoolAcquireTimeout)
+    )
+}
+
+async fn enqueue_managed_task_runs_with_retry(
+    store: &crate::maintenance_store::MaintenanceStore,
+    blocked_task_keys: &[String],
+    shutdown: &CancellationToken,
+) -> Result<bool> {
+    for (attempt, delay) in MANAGED_TASK_DISPATCH_ENQUEUE_RETRY_DELAYS
+        .iter()
+        .enumerate()
+    {
+        match store.enqueue_due_runs_excluding(blocked_task_keys).await {
+            Ok(_) => return Ok(true),
+            Err(error)
+                if managed_task_dispatch_enqueue_is_retryable(&error)
+                    && attempt + 1 < MANAGED_TASK_DISPATCH_ENQUEUE_RETRY_DELAYS.len() =>
+            {
+                warn!(
+                    attempt = attempt + 1,
+                    retry_after_ms = delay.as_millis() as u64,
+                    error = %error,
+                    "managed task dispatcher enqueue hit transient database pressure; retrying"
+                );
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => return Ok(false),
+                    _ = tokio::time::sleep(*delay) => {}
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("managed task enqueue retry loop must return on every attempt")
 }
 
 fn is_retention_owner_v2_task(task_key: &str) -> bool {
@@ -4430,6 +4488,42 @@ mod managed_task_lease_conflict_tests {
         assert!(unknown["selected"].is_null());
         assert!(unknown["processedCount"].is_null());
         assert!(unknown["selectedScope"]["rawFilesRemoved"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod managed_task_dispatch_retry_tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_retry_only_covers_transient_database_pressure() {
+        assert!(managed_task_dispatch_enqueue_is_retryable(&anyhow!(
+            "database is busy"
+        )));
+        assert!(managed_task_dispatch_enqueue_is_retryable(&anyhow!(
+            "database is locked"
+        )));
+        assert!(managed_task_dispatch_enqueue_is_retryable(&anyhow!(
+            "pool timed out while waiting for an open connection"
+        )));
+        assert!(!managed_task_dispatch_enqueue_is_retryable(&anyhow!(
+            "invalid task configuration"
+        )));
+    }
+
+    #[test]
+    fn enqueue_retry_uses_a_bounded_backoff() {
+        assert_eq!(
+            MANAGED_TASK_DISPATCH_ENQUEUE_RETRY_DELAYS,
+            [
+                Duration::from_millis(50),
+                Duration::from_millis(100),
+                Duration::from_millis(250),
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+            ]
+        );
     }
 }
 
