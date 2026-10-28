@@ -224,7 +224,11 @@ fn classify_retention_owner_error(error: &anyhow::Error) -> (&'static str, Optio
         return ("deferred", Some("retention_work_budget".to_string()));
     }
     if is_retention_write_deferred(error) {
-        return ("deferred", Some("retention_write_admission".to_string()));
+        let reason = match retention_write_deferred_operation(error) {
+            Some("archive_replacement_recovery") => "archive_replacement_recovery",
+            _ => "retention_write_admission",
+        };
+        return ("deferred", Some(reason.to_string()));
     }
     if crate::is_sqlite_lock_error(error) {
         return (
@@ -656,6 +660,16 @@ async fn run_timestamped_archive_owner(
     } else {
         "forward_proxy_attempts"
     };
+    if !dry_run && let Err(error) = reconcile_staged_archive_replacements(pool, Some(config)).await
+    {
+        // A previous publication may have left a durable rollback pointer while its native file
+        // phase or SQLite cleanup was waiting. Resolve that recovery boundary before selecting a
+        // new source window; transient pressure must stay inside the owner retry loop instead of
+        // turning the selected tail into owner_failed.
+        summary.has_more = Some(true);
+        apply_retention_owner_error(&mut summary, &error);
+        return Ok(summary.finish(started_at));
+    }
     let archive = archive_timestamped_dataset(
         pool,
         config,
@@ -1109,6 +1123,7 @@ fn retention_owner_internal_retryable_reason(reason: Option<&str>) -> bool {
                 | "sqlite_pool_wait"
                 | "archive_directory_scan"
                 | "archive_directory_lock_busy"
+                | "archive_replacement_recovery"
                 | RETENTION_ARCHIVE_FILE_OPERATION_BUDGET_REASON
         )
     )
@@ -2658,6 +2673,28 @@ mod owner_fact_tests {
 
         assert_eq!(summary.completion, "partial");
         assert_eq!(summary.wait_reason.as_deref(), Some("sqlite_pressure"));
+        assert!(summary.fatal_error.is_none());
+    }
+
+    #[test]
+    fn pending_archive_replacement_is_an_owner_defer_with_retry_facts() {
+        let mut summary = RetentionOwnerRunSummary::new(
+            "pool_upstream_attempt_archive",
+            "pool_upstream_request_attempts:retention_policy",
+            "rows",
+        );
+        let error = retention_write_deferred("archive_replacement_recovery");
+
+        apply_retention_owner_error(&mut summary, &error);
+
+        assert_eq!(summary.completion, "deferred");
+        assert_eq!(
+            summary.wait_reason.as_deref(),
+            Some("archive_replacement_recovery")
+        );
+        assert!(retention_owner_internal_retryable_reason(Some(
+            "archive_replacement_recovery"
+        )));
         assert!(summary.fatal_error.is_none());
     }
 

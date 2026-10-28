@@ -280,7 +280,9 @@ async fn ensure_no_pending_replacement(
     .await?
     .flatten();
     if prepared.is_some() || manifest.is_some() {
-        anyhow::bail!("archive replacement recovery is still pending");
+        return Err(super::super::retention::retention_write_deferred(
+            "archive_replacement_recovery",
+        ));
     }
     Ok(())
 }
