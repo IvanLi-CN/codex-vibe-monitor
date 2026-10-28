@@ -77,7 +77,23 @@ impl StorageConfig {
         } else {
             host
         };
-        format!("postgres://{host}:{port}/{database}")
+        let mut identity_query = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in url.query_pairs() {
+            let normalized_key = key.to_ascii_lowercase();
+            if matches!(
+                normalized_key.as_str(),
+                "options" | "search_path" | "current_schema" | "currentschema"
+            ) {
+                identity_query.append_pair(&normalized_key, &value);
+            }
+        }
+        let query = identity_query.finish();
+        let query_suffix = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        format!("postgres://{host}:{port}/{database}{query_suffix}")
     }
 
     pub(crate) fn from_env() -> Result<Self> {

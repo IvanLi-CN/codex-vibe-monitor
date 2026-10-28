@@ -608,9 +608,8 @@ impl ModuleGenerationGate {
         match publication {
             AuthorityPublication::NotCommitted => {
                 self.0.recovery_required.store(false, Ordering::Release);
-                self.reopen_admission().await;
                 bail!(
-                    "module authority manifest was not committed; source authority remains active"
+                    "module authority manifest was not committed; source authority rollback is required before reopening admission"
                 );
             }
             AuthorityPublication::Committed => {
@@ -734,6 +733,22 @@ impl ModuleGenerationGate {
 
     pub(crate) fn requires_recovery(&self) -> bool {
         self.0.recovery_required.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn reopen_after_uncommitted_switch(&self) -> Result<()> {
+        let mut state = self.0.state.lock().await;
+        if self.0.recovery_required.load(Ordering::Acquire) {
+            bail!("module authority requires recovery before reopening admission");
+        }
+        if state.authority.backend != BackendKind::Sqlite {
+            bail!("only the old SQLite authority may reopen after an uncommitted switch");
+        }
+        if self.0.active.load(Ordering::Acquire) != 0 {
+            bail!("cannot reopen module authority while generation leases are active");
+        }
+        state.accepting = true;
+        self.0.changed.notify_waiters();
+        Ok(())
     }
 
     #[cfg(test)]

@@ -189,13 +189,32 @@ impl StorageRuntimeRouter {
                     .recover_postgres(manifest.authority.generation, manifest.source_watermark)
                     .await?;
             }
-            AuthorityRecoveryRecord::NeverMigrated { .. }
+            AuthorityRecoveryRecord::NeverMigrated {
+                migration_id,
+                installation_id,
+                module,
+                source_identity,
+                target_identity,
+                source_watermark,
+            } => {
+                let expected_target_identity =
+                    expected_postgres_target_identity(&self.worker.config);
+                if migration_id != MIGRATION_ID
+                    || installation_id != INSTALLATION_ID
+                    || module != StorageModule::TrafficArchive
+                    || source_identity != SOURCE_IDENTITY
+                    || target_identity != expected_target_identity
+                    || source_watermark < 0
+                {
+                    bail!(
+                        "durable traffic authority recovery marker identity does not match runtime state"
+                    );
+                }
                 if status.authority.backend
-                    == super::migration_status::StorageMigrationBackend::Postgres =>
-            {
-                bail!("PostgreSQL authority has no durable traffic manifest");
-            }
-            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                    == super::migration_status::StorageMigrationBackend::Postgres
+                {
+                    bail!("PostgreSQL authority has no durable traffic manifest");
+                }
                 let source_authority =
                     load_durable_source_write_authority(&self.worker.pool).await?;
                 let gate_authority = self.traffic_gate.current_authority().await;

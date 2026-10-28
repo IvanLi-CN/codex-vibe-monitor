@@ -15,6 +15,45 @@ use sqlx::{Pool, Sqlite, sqlite::SqlitePoolOptions};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn postgres_target_identity_includes_schema_options_without_credentials() {
+    let public_a = StorageConfig {
+        postgres_database_url: Some(
+            "postgresql://user:secret-a@127.0.0.1:5432/cvm?options=-csearch_path%3Dpublic"
+                .to_string(),
+        ),
+        ..StorageConfig::default()
+    };
+    let public_b = StorageConfig {
+        postgres_database_url: Some(
+            "postgresql://user:secret-b@127.0.0.1:5432/cvm?options=-csearch_path%3Dpublic"
+                .to_string(),
+        ),
+        ..StorageConfig::default()
+    };
+    let private = StorageConfig {
+        postgres_database_url: Some(
+            "postgresql://user:secret-a@127.0.0.1:5432/cvm?options=-csearch_path%3Dprivate"
+                .to_string(),
+        ),
+        ..StorageConfig::default()
+    };
+
+    assert_eq!(
+        public_a.postgres_target_identity(),
+        public_b.postgres_target_identity()
+    );
+    assert_ne!(
+        public_a.postgres_target_identity(),
+        private.postgres_target_identity()
+    );
+    assert!(
+        public_a
+            .postgres_target_identity()
+            .contains("options=-csearch_path%3Dpublic")
+    );
+}
+
 #[tokio::test]
 async fn configured_postgres_builds_authority_router_and_scoped_worker() {
     let pool = SqlitePoolOptions::new()
@@ -103,6 +142,59 @@ async fn restart_rejects_postgres_status_without_durable_authority_manifest() {
             .to_string()
             .contains("PostgreSQL authority has no durable traffic manifest")
     );
+}
+
+#[tokio::test]
+async fn restart_rejects_mismatched_never_migrated_recovery_marker() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite pool should open");
+    ensure_persistence_schema(&pool)
+        .await
+        .expect("migration status persistence should exist");
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+        ..StorageConfig::default()
+    };
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS storage_migration_authority (
+            module TEXT PRIMARY KEY,
+            recovery_json TEXT,
+            manifest_json TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("authority metadata should exist");
+    let stale_marker = AuthorityRecoveryContext {
+        migration_id: "storage-migration".to_string(),
+        installation_id: "local".to_string(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite:local".to_string(),
+        target_identity: "postgres://127.0.0.1:5432/other".to_string(),
+        source_watermark: 0,
+    };
+    sqlx::query(
+        "INSERT INTO storage_migration_authority (module, recovery_json, manifest_json)
+         VALUES ('traffic_archive', ?1, NULL)",
+    )
+    .bind(serde_json::to_string(&stale_marker).expect("recovery marker should encode"))
+    .execute(&pool)
+    .await
+    .expect("stale recovery marker should persist");
+
+    let migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration status should load"),
+    );
+    let error =
+        StorageRuntimeRouter::initialize(pool, &config, migration, CancellationToken::new())
+            .await
+            .expect_err("startup must reject a stale no-cutover recovery marker");
+    assert!(error.to_string().contains("recovery marker identity"));
 }
 
 #[tokio::test]

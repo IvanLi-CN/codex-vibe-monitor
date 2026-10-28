@@ -2436,7 +2436,7 @@ async fn indeterminate_authority_publication_stays_closed_until_recovery() {
 }
 
 #[tokio::test]
-async fn rejected_authority_publication_reopens_the_source_authority() {
+async fn rejected_authority_publication_stays_closed_until_source_rollback() {
     let store = Arc::new(TestAuthorityStore::default());
     *store.publication.lock().await = AuthorityPublication::NotCommitted;
     let gate = ModuleGenerationGate::new(
@@ -2457,6 +2457,10 @@ async fn rejected_authority_publication_reopens_the_source_authority() {
         .await
         .is_err()
     );
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    gate.reopen_after_uncommitted_switch()
+        .await
+        .expect("the caller must reopen only after rolling back the source fence");
     let current = gate.acquire(StorageModule::TrafficArchive).await.unwrap();
     assert_eq!(current.lease.authority.backend, BackendKind::Sqlite);
     assert_eq!(current.lease.authority.generation, 1);
