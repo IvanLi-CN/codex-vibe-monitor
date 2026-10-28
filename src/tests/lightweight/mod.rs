@@ -23,6 +23,7 @@ mod raw_payload_file_storage;
 mod response_payload_content_encodings;
 mod retention_archive_size;
 mod retention_batch_metrics;
+mod runtime;
 mod schema_migration_and_maintenance;
 mod storage_migration_status;
 mod storage_runtime;

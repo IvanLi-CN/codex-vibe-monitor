@@ -30,6 +30,19 @@ pub(crate) fn pool_attempt_recovery_gate() -> &'static tokio::sync::RwLock<()> {
     POOL_ATTEMPT_RECOVERY_GATE.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
+pub(crate) fn configure_primary_sqlite_pool_options(
+    options: SqlitePoolOptions,
+) -> SqlitePoolOptions {
+    options.after_connect(|connection, _metadata| {
+        Box::pin(async move {
+            sqlx::query("PRAGMA recursive_triggers = ON")
+                .execute(connection)
+                .await
+                .map(|_| ())
+        })
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StartupRecoveryFence {
     pub(crate) invocation_max_id: i64,
@@ -1069,7 +1082,7 @@ pub(crate) async fn run() -> Result<()> {
     )?;
     let connect_opts = runtime_lock.sqlite_connect_options(&config.database_path, connect_opts)?;
     let db_connect_started_at = Instant::now();
-    let pool = SqlitePoolOptions::new()
+    let pool = configure_primary_sqlite_pool_options(SqlitePoolOptions::new())
         .max_connections(5)
         .connect_with(connect_opts)
         .await
