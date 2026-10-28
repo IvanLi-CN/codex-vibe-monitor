@@ -197,6 +197,8 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) responses_stream_timeout_secs: Option<i64>,
     pub(crate) compact_stream_timeout_secs: Option<i64>,
     pub(crate) request_compression_algorithm: Option<String>,
+    #[sqlx(default)]
+    pub(crate) oauth_request_compression_algorithm: Option<String>,
     pub(crate) request_compression_level_preset: Option<String>,
     pub(crate) codex_imagegen_rewrite_mode: Option<String>,
     #[sqlx(default)]

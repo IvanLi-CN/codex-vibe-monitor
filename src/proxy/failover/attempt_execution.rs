@@ -1487,9 +1487,19 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                         "failed to prepare pool model mapping attempt metadata"
                     );
                 }
-                let forwarded_request_compression = (context.method != Method::GET)
-                    .then(|| forwarded_request_compression_observation(context.headers))
-                    .flatten();
+                let forwarded_request_compression = if context.method == Method::GET {
+                    None
+                } else if context.account.auth.is_oauth() {
+                    match context.account.oauth_request_compression_algorithm {
+                        RequestCompressionAlgorithm::Follow => {
+                            forwarded_request_compression_observation(context.headers)
+                        }
+                        RequestCompressionAlgorithm::Identity => Some(("identity", "identity")),
+                        algorithm => Some((algorithm.as_str(), "recompressed")),
+                    }
+                } else {
+                    forwarded_request_compression_observation(context.headers)
+                };
                 if let (Some(pending_attempt_record), Some((algorithm, mode))) = (
                     pending_attempt_record.as_mut(),
                     forwarded_request_compression,
@@ -1579,22 +1589,53 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             context.original_uri.path(),
                         )
                     });
-                    let oauth_response = oauth_bridge::send_counted_oauth_upstream_request(
-                        context.method.clone(),
-                        context.original_uri,
-                        context.headers,
-                        oauth_body,
-                        attempt_send_timeout,
-                        attempt_pre_first_byte_timeout,
-                        Some(context.account.account_id),
-                        access_token,
-                        chatgpt_account_id.as_deref(),
-                        Some(&context.state.oauth_installation_seed),
-                        context.state.upstream_accounts.crypto_key.as_ref(),
-                        selected_proxy.endpoint_url.as_ref(),
-                        live_reporter,
-                    )
-                    .await;
+                    let oauth_response =
+                        oauth_bridge::send_counted_oauth_upstream_request_with_compression(
+                            context.method.clone(),
+                            context.original_uri,
+                            context.headers,
+                            oauth_body,
+                            attempt_send_timeout,
+                            attempt_pre_first_byte_timeout,
+                            Some(context.account.account_id),
+                            access_token,
+                            chatgpt_account_id.as_deref(),
+                            Some(&context.state.oauth_installation_seed),
+                            context.state.upstream_accounts.crypto_key.as_ref(),
+                            context.account.oauth_request_compression_algorithm,
+                            context.request_compression_level_preset,
+                            selected_proxy.endpoint_url.as_ref(),
+                            live_reporter,
+                        )
+                        .await;
+                    if let Some(debug) = oauth_response.request_debug.as_ref() {
+                        let request_header_bytes_approx = pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.upstream_request_header_bytes_approx)
+                            .and_then(|value| usize::try_from(value).ok());
+                        let response_body_bytes = pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.upstream_response_body_bytes)
+                            .and_then(|value| usize::try_from(value).ok());
+                        let response_header_bytes_approx = pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.upstream_response_header_bytes_approx)
+                            .and_then(|value| usize::try_from(value).ok());
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                            update_pending_pool_upstream_request_attempt_http_bytes(
+                                pending_attempt_record,
+                                debug.request_body_logical_bytes,
+                                debug.request_body_transmitted_bytes,
+                                request_header_bytes_approx,
+                                response_body_bytes,
+                                response_header_bytes_approx,
+                            );
+                            enqueue_pool_upstream_request_attempt_snapshot(
+                                context.state.as_ref(),
+                                pending_attempt_record,
+                            );
+                        }
+                    }
                     (
                         ProxyUpstreamResponseBody::Axum(oauth_response.response),
                         oauth_response.request_debug,

@@ -1799,6 +1799,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
             request_compression_algorithm TEXT,
+            oauth_request_compression_algorithm TEXT,
             request_compression_level_preset TEXT,
             codex_imagegen_rewrite_mode TEXT,
             available_models_json TEXT NOT NULL DEFAULT '[]',
@@ -1877,6 +1878,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_routing_settings.request_compression_algorithm")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_routing_settings",
+        "oauth_request_compression_algorithm",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.oauth_request_compression_algorithm")?;
     ensure_nullable_text_column(
         pool,
         "pool_routing_settings",

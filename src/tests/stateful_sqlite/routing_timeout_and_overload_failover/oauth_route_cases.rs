@@ -307,6 +307,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,

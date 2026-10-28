@@ -313,6 +313,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         concurrency_limit,
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
@@ -333,6 +334,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
             image_tool_rewrite_mode: "root".to_string(),
             codex_imagegen_rewrite_mode: "root".to_string(),
             request_compression_algorithm: "root".to_string(),
+            oauth_request_compression_algorithm: "root".to_string(),
             concurrency_limit: "root".to_string(),
             upstream_429_retry: "root".to_string(),
             available_models: "root".to_string(),
@@ -3150,6 +3152,12 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+    let compression = resolve_pool_request_compression_settings_from_row(&row);
+    assert_eq!(compression.algorithm, RequestCompressionAlgorithm::Identity);
+    assert_eq!(
+        compression.oauth_algorithm,
+        RequestCompressionAlgorithm::Zstd
+    );
 }
 
 #[tokio::test]
@@ -3363,6 +3371,7 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
         "compact_first_byte_timeout_secs",
         "responses_stream_timeout_secs",
         "compact_stream_timeout_secs",
+        "oauth_request_compression_algorithm",
         "default_first_byte_timeout_secs",
         "upstream_handshake_timeout_secs",
         "request_read_timeout_secs",
@@ -3426,6 +3435,7 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     assert_eq!(row.default_first_byte_timeout_secs, None);
     assert_eq!(row.upstream_handshake_timeout_secs, None);
     assert_eq!(row.request_read_timeout_secs, None);
+    assert_eq!(row.oauth_request_compression_algorithm, None);
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
@@ -5101,6 +5111,7 @@ fn root_and_lower_model_policies_fail_closed_on_blank_entries() {
         None,
         None,
         false,
+        false,
         None,
         None,
         None,
@@ -6588,6 +6599,7 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
             crypto_key: None,
             api_key: None,
             request_compression_algorithm: Some(RequestCompressionAlgorithm::Gzip),
+            oauth_request_compression_algorithm: None,
             request_compression_level_preset: Some(RequestCompressionLevelPreset::Best),
             codex_imagegen_rewrite_mode: Some(CodexImagegenRewriteMode::ForceAdd),
             available_models: None,
@@ -6683,6 +6695,14 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
         "root"
     );
     assert_eq!(
+        root_only.oauth_request_compression_algorithm,
+        RequestCompressionAlgorithm::Zstd
+    );
+    assert_eq!(
+        root_only.field_sources.oauth_request_compression_algorithm,
+        "root"
+    );
+    assert_eq!(
         root_only.codex_imagegen_rewrite_mode,
         CodexImagegenRewriteMode::ForceAdd
     );
@@ -6696,6 +6716,10 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     assert_eq!(
         group_only.field_sources.request_compression_algorithm,
         "root"
+    );
+    assert_eq!(
+        group_only.oauth_request_compression_algorithm,
+        RequestCompressionAlgorithm::Zstd
     );
     assert_eq!(
         group_only.codex_imagegen_rewrite_mode,
@@ -6715,6 +6739,16 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
         "account"
     );
     assert_eq!(
+        account_override.oauth_request_compression_algorithm,
+        RequestCompressionAlgorithm::Zstd
+    );
+    assert_eq!(
+        account_override
+            .field_sources
+            .oauth_request_compression_algorithm,
+        "root"
+    );
+    assert_eq!(
         account_override.codex_imagegen_rewrite_mode,
         CodexImagegenRewriteMode::ForceRemove
     );
@@ -6731,6 +6765,14 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     assert_eq!(
         oauth_rule.field_sources.request_compression_algorithm,
         "root"
+    );
+    assert_eq!(
+        oauth_rule.oauth_request_compression_algorithm,
+        RequestCompressionAlgorithm::Identity
+    );
+    assert_eq!(
+        oauth_rule.field_sources.oauth_request_compression_algorithm,
+        "account"
     );
     assert_eq!(
         oauth_rule.codex_imagegen_rewrite_mode,

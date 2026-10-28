@@ -31,6 +31,7 @@ The editable inherited policy covers:
 - FAST mode rewrite mode
 - image tool rewrite mode
 - upstream request compression algorithm for API-key upstream HTTP requests
+- independent OAuth upstream request compression default
 - cut-out
 - cut-in
 - concurrency limit
@@ -79,6 +80,7 @@ Root defaults preserve existing behavior:
 - upstream 429 max retries: 0
 - image tool rewrite mode: keep original
 - upstream request compression algorithm: identity
+- OAuth upstream request compression algorithm: zstd
 - upstream request compression level preset: balanced
 - available models: unrestricted
 - available models mode: denylist
@@ -109,13 +111,27 @@ Each explicit lower-level model rule replaces both the inherited mode and list. 
 
 Clearing a lower-level model rule is atomic: a legacy client that sends only `availableModels: null` clears both the stored list and mode. Read-only legacy tag model constraints, when present, remain allowlists and never become an editable tag policy; they retain their constraint source while inheriting the four editable levels.
 
-Request compression has one scope restriction:
+Request compression has separate API-key and OAuth defaults:
 
-- root settings may define the default algorithm and the global compression level preset
+- root settings define `requestCompressionAlgorithm` for API-key upstreams and
+  `oauthRequestCompressionAlgorithm` for OAuth upstreams
+- missing or legacy OAuth root values resolve to `zstd`
 - group and account may override only the algorithm
-- the group/account algorithm override applies only when the final target upstream account kind is `api_key_codex`
-- OAuth upstreams ignore group/account request-compression overrides
+- the effective OAuth algorithm is resolved as OAuth root default -> group override -> account override
+- the effective API-key algorithm continues to use the existing API-key root default -> account override path
 - conversation overrides do not participate in request compression
+
+For every OAuth POST with a request body, the selected algorithm is applied after
+existing account and OAuth request rewrites. GET requests are never compressed.
+`follow` reuses the downstream encoding after decoding and rewriting when needed;
+`identity` sends the decoded final body without an encoding header. Unsupported
+encodings fail explicitly and an upstream rejection is not retried by silently
+resending with `identity`.
+
+The existing large-body boundary remains authoritative: bodies outside the
+Responses rewrite window are streamed and are not materialized solely to apply a
+rewrite, but they are decoded and re-encoded when the selected OAuth algorithm
+differs from the downstream encoding.
 
 Status-change reason toggles follow the same `group -> system -> account` resolution envelope with one restriction:
 
@@ -149,6 +165,9 @@ Request compression level is global-only:
 - group/account never store or override a level
 - level presets are `fast | balanced | best`
 - runtime maps the preset to encoder-specific quality levels for `gzip`, `deflate`, and `zstd`
+
+The runtime records the actual upstream algorithm, compression mode, and body byte
+observations on the existing upstream-attempt telemetry fields for both auth modes.
 
 `imageFirstByteTimeoutSecs` applies to `/v1/images/generations` and `/v1/images/edits`, defaults to `300`, and follows the same field-local root -> group -> account -> conversation inheritance contract. Direct-image first-byte timeout is terminal: the proxy must not retry the same account or switch accounts after the image operation may already have started upstream.
 
@@ -375,7 +394,8 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 - Splitting text reasoning and image generation across two upstreams in the same Responses request is not introduced.
 - OAuth/API key credential behavior is unchanged apart from rejecting manual `tagIds`.
 - Global reverse-proxy `/v1/*` settings are unchanged.
-- OAuth upstream requests and conversation-level request compression overrides are not introduced.
+- Conversation-level request compression overrides are not introduced; OAuth upstream
+  request compression is covered by the independent root/group/account policy above.
 
 ## Visual Evidence
 
@@ -410,6 +430,11 @@ Visual evidence is captured from stable Storybook scenarios for:
 - Group settings Routing tab rendering priority, FAST mode, image-tool rewrite, and request compression as inline radio groups on desktop, while retaining compact Select controls at widths of `768px` and below
 - Dashboard upstream-account quick policy chips showing explicit Fast rewrite labels for `force_add` and `keep_original`
 - system settings page showing the global request compression defaults and request-path timeouts with `zstd` + `best` persisted after save
+- system settings page showing the independent OAuth default compression selector,
+  the API-key selector, and inheritance copy in a desktop `1280x900` Storybook
+  viewport and a narrow `393x852` Storybook viewport. Both are mock-only,
+  element-level captures from the `Settings/Components/Pool Routing Settings Card`
+  canvas, with source-managed margin preflight passing.
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
 - effective routing rule card showing the resolved request compression row and account-owned source badge
 - upstream account detail Overview showing independent endpoint/image cards plus the Codex `image_gen` namespace capability, whose observed failure reason and operator override remain distinct from hosted image-tool support
@@ -424,6 +449,10 @@ Visual evidence is captured from stable Storybook scenarios for:
 ![Upstream account detail read-only system tags](./assets/upstream-account-detail-read-only-system-tags.png)
 
 ![Upstream account list system tag filter](./assets/upstream-account-list-system-tag-filter.png)
+
+![OAuth request compression desktop](./assets/oauth-request-compression-desktop.png)
+
+![OAuth request compression mobile](./assets/oauth-request-compression-mobile.png)
 
 ![Effective routing rule inline account overrides](./assets/effective-rule-inline-overrides-trimmed.png)
 

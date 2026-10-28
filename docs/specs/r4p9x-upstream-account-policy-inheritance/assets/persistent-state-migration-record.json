@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "implementation-in-progress-validation-pending",
+  "migration": {
+    "description": "Add an independent nullable OAuth request-compression algorithm to pool routing settings and resolve missing legacy values to zstd.",
+    "release_unit_description": "OAuth upstream request compression support in the r4p9x account-policy release unit.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "The pool_routing_settings OAuth request-compression default and the existing group/account nullable policy overrides.",
+    "storage_implementation": "SQLite pool_routing_settings.oauth_request_compression_algorithm plus existing nullable group/account policy columns.",
+    "source_compatibility_range": {
+      "from_program_versions": "Existing installations with the pre-OAuth-compression schema and supported same-Major pool settings states.",
+      "to_program_version": "Current candidate head; release version is not selected by this record.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-oauth-compression-column",
+        "description": "Idempotently add nullable pool_routing_settings.oauth_request_compression_algorithm; existing databases and fresh schemas use the same nullable shape.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-oauth-compression-resolution",
+        "description": "Do not rewrite existing rows. Resolve NULL or absent legacy values to zstd at runtime; write only explicit operator values or the existing default on new settings rows.",
+        "order": 2,
+        "depends_on": ["ddl-oauth-compression-column"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-none",
+        "description": "No historical row rewrite is required. Runtime defaulting is deterministic and preserves all existing API-key settings and group/account overrides.",
+        "order": 3,
+        "depends_on": ["ddl-oauth-compression-column"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-oauth-compression-column", "dml-oauth-compression-resolution", "backfill-none"],
+    "progress_signals": [
+      "Schema maintenance reports the existing column or successful idempotent creation.",
+      "Settings reads expose zstd for NULL/legacy rows and preserve explicit values.",
+      "OAuth attempt telemetry records the actual algorithm and compression mode."
+    ],
+    "pause_points": [
+      "After the idempotent column check before any settings write.",
+      "After runtime resolution and before enabling OAuth upstream dispatch."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Older binaries ignore the additive nullable column and continue to read/write existing API-key settings; they do not silently remove the OAuth value.",
+    "faulty_release_recovery": "Repair forward with a subsequent program version; do not down-migrate or rewrite the nullable column during application rollback.",
+    "backup_restore_role": "Restore a pre-change SQLite backup only as separate disaster recovery; rerun idempotent schema maintenance after restore."
+  },
+  "validation": {
+    "status": "pending-current-candidate-ci-and-review",
+    "required_test_evidence": [
+      "Legacy schema upgrade creates the nullable column and resolves NULL to zstd.",
+      "Repeated startup maintenance is idempotent and preserves explicit OAuth and API-key values.",
+      "Old clients omitting the OAuth field preserve the stored value.",
+      "Focused SQLite inheritance and settings API tests pass; current candidate CI and review remain pending."
+    ]
+  }
+}

@@ -161,7 +161,17 @@ API-key upstream request dispatch now applies compression after body rewrite.
 - file-backed or replay bodies use streaming/chunked encoders for `gzip`, `deflate`, and `zstd`
 - rewritten in-memory JSON bodies avoid generating an additional fully compressed buffer
 - `follow` re-encodes using supported downstream request encodings only; unsupported encodings return an explicit request error and do not auto-fallback
-- OAuth upstream dispatch keeps its current request-body behavior
+- OAuth upstream dispatch now resolves an independent OAuth default (`zstd`) through
+  root -> group -> account policy, decodes supported downstream request encodings,
+  applies existing Responses rewrites, and encodes every body-bearing POST with the
+  selected `follow | identity | gzip | deflate | zstd` algorithm. GET requests remain
+  uncompressed, large-body streaming boundaries remain unchanged, and an upstream
+  rejection is not retried with an identity downgrade.
+
+The OAuth root setting is nullable in SQLite for legacy databases. Startup schema
+maintenance adds the column idempotently; a missing or NULL value resolves to `zstd`.
+Older clients that omit the field preserve the stored value, while API-key defaults
+and overrides continue to use their existing independent field.
 
 Outbound observability now records both raw downstream and actual upstream request encodings.
 
@@ -200,10 +210,11 @@ Validation covers:
 - API-key create/update writes preserve a non-empty explicit proxy binding. The current UI defaults new transit accounts to direct, prevents removal of the final binding, and the server rejects an explicit empty binding.
 - API-key candidate snapshots expose the account's canonical proxy binding, while runtime selection honors a conversation override before that account scope and never falls back to legacy group policy.
 - backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
+- backend regressions covering OAuth request-compression schema migration, root/group/account inheritance, gzip-input rewrite followed by zstd output, passthrough content-length/header correctness, and no identity fallback on upstream rejection
 - backend regressions covering proactive fallback sticky comparison, higher-priority handoff without pre-success sticky mutation, same/lower-priority retention, and generation-guarded successful rebinding
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
-- frontend regressions and Storybook states proving root algorithm + level controls, group/account algorithm override rows, source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability
+- frontend regressions and Storybook states proving independent API-key/OAuth root algorithm controls, OAuth inheritance copy, group/account source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability
 - model-policy regressions proving exact and dated allowlist matches, denylist exclusion, empty-list semantics, legacy list-only compatibility, and immutable system-deny behavior
 - candidate settings coverage proving `gpt-5.4-mini` is discoverable without changing the default enabled preset set, while `gpt-image-2` is exposed as an independent image candidate
 - validation commands completed: `cargo fmt --check`, `cargo check`, targeted Rust model-policy tests, `cd web && bun run test`, `cd web && bun run build`, and `cd web && bun run build-storybook`

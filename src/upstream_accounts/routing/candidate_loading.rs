@@ -315,16 +315,11 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
             root_settings.available_models_mode.as_deref(),
         );
         let normalized_group_name = normalize_optional_text(account_row.group_name.clone());
-        let request_compression_override_enabled =
-            account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
         if account_row.kind.trim() != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
             && let Some(group_name) = normalized_group_name.as_ref()
             && let Some(group_policy) = group_policy_overrides.get(group_name)
         {
-            apply_group_routing_policy_override(&mut rule, group_policy);
-            if !request_compression_override_enabled {
-                apply_root_request_compression_defaults(&mut rule, &root_request_compression);
-            }
+            apply_group_routing_policy_override(&mut rule, group_policy, false, true);
         }
         if let Some(tags) = tags_by_account.get(&account_id)
             && !tags.is_empty()
@@ -333,10 +328,12 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
             apply_tag_layer_routing_policy(&mut rule, &tag_rule);
         }
         if let Some(account_policy) = account_policy_overrides.get(&account_id) {
-            apply_account_routing_policy_override(&mut rule, account_policy);
-            if !request_compression_override_enabled {
-                apply_root_request_compression_defaults(&mut rule, &root_request_compression);
-            }
+            apply_account_routing_policy_override(
+                &mut rule,
+                account_policy,
+                account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+                account_row.kind.trim() != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            );
         }
         rules.insert(account_id, rule);
     }
@@ -391,7 +388,7 @@ pub(crate) async fn load_effective_routing_rule_for_group(
     let mut group_policy_overrides =
         load_group_routing_policy_override_map(pool, std::slice::from_ref(&group_name)).await?;
     if let Some(group_policy) = group_policy_overrides.remove(&group_name) {
-        apply_group_routing_policy_override(&mut rule, &group_policy);
+        apply_group_routing_policy_override(&mut rule, &group_policy, true, true);
     }
     Ok(rule)
 }
@@ -525,6 +522,7 @@ pub(crate) async fn selectable_group_bound_proxy_keys(
     manager.selectable_bound_proxy_keys_in_order(bound_proxy_keys)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pool_resolved_account(
     row: &UpstreamAccountRow,
     effective_rule: &EffectiveRoutingRule,
@@ -533,6 +531,7 @@ pub(crate) fn build_pool_resolved_account(
     upstream_base_url: Url,
     forward_proxy_scope: ForwardProxyRouteScope,
     routing_source: PoolRoutingSelectionSource,
+    oauth_request_compression_algorithm: RequestCompressionAlgorithm,
 ) -> PoolResolvedAccount {
     PoolResolvedAccount {
         account_id: row.id,
@@ -553,6 +552,14 @@ pub(crate) fn build_pool_resolved_account(
         image_tool_rewrite_mode: effective_rule.image_tool_rewrite_mode,
         codex_imagegen_rewrite_mode: effective_rule.codex_imagegen_rewrite_mode,
         request_compression_algorithm: effective_rule.request_compression_algorithm,
+        oauth_request_compression_algorithm: if effective_rule
+            .oauth_request_compression_algorithm_source()
+            == "root"
+        {
+            oauth_request_compression_algorithm
+        } else {
+            effective_rule.oauth_request_compression_algorithm
+        },
         response_endpoint_capability: effective_capability_support(
             decode_capability_support(row.response_endpoint_capability.as_deref()),
             decode_capability_override(row.policy_response_endpoint_capability_override.as_deref()),
@@ -633,6 +640,9 @@ pub(crate) async fn prepare_pool_account_with_scopes(
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
+    let root_request_compression = load_pool_routing_runtime_cache(state)
+        .await?
+        .request_compression;
     match credentials {
         StoredCredentials::ApiKey(value) => Ok(Some(build_pool_resolved_account(
             row,
@@ -644,6 +654,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
             upstream_base_url,
             forward_proxy_scope,
             routing_source,
+            root_request_compression.oauth_algorithm,
         ))),
         StoredCredentials::Oauth(mut value) => {
             let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
@@ -881,6 +892,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                 upstream_base_url,
                 forward_proxy_scope,
                 routing_source,
+                root_request_compression.oauth_algorithm,
             )))
         }
     }
@@ -902,6 +914,9 @@ pub(crate) async fn prepare_pool_account_identity_only(
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
+    let root_request_compression = load_pool_routing_runtime_cache(state)
+        .await?
+        .request_compression;
     let auth = match credentials {
         StoredCredentials::ApiKey(value) => PoolResolvedAuth::ApiKey {
             authorization: format!("Bearer {}", value.api_key),
@@ -919,6 +934,7 @@ pub(crate) async fn prepare_pool_account_identity_only(
         upstream_base_url,
         ForwardProxyRouteScope::Automatic,
         routing_source,
+        root_request_compression.oauth_algorithm,
     )))
 }
 

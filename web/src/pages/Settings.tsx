@@ -55,6 +55,7 @@ type PricingDraft = {
 
 type RoutingDraft = {
   requestCompressionAlgorithm: RequestCompressionAlgorithm;
+  oauthRequestCompressionAlgorithm: RequestCompressionAlgorithm;
   requestCompressionLevelPreset: RequestCompressionLevelPreset;
   codexImagegenRewriteMode: import("../lib/api").CodexImagegenRewriteMode;
   availableModels: string[];
@@ -282,6 +283,7 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
   const timeouts = routing.timeouts ?? DEFAULT_ROUTING_TIMEOUTS;
   return {
     requestCompressionAlgorithm: routing.requestCompressionAlgorithm ?? "identity",
+    oauthRequestCompressionAlgorithm: routing.oauthRequestCompressionAlgorithm ?? "zstd",
     requestCompressionLevelPreset: routing.requestCompressionLevelPreset ?? "balanced",
     codexImagegenRewriteMode: routing.codexImagegenRewriteMode ?? "keep_original",
     availableModels: routing.availableModels ?? [],
@@ -818,6 +820,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
 
     const payload: UpdatePoolRoutingSettingsPayload = {
       requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
+      oauthRequestCompressionAlgorithm: routingDraft.oauthRequestCompressionAlgorithm,
       requestCompressionLevelPreset: routingDraft.requestCompressionLevelPreset,
       codexImagegenRewriteMode: routingDraft.codexImagegenRewriteMode,
       availableModels: routingDraft.availableModels,
@@ -2047,6 +2050,11 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 onAlgorithmChange={(value) =>
                   updateRoutingDraft({
                     requestCompressionAlgorithm: value,
+                  })
+                }
+                onOauthAlgorithmChange={(value) =>
+                  updateRoutingDraft({
+                    oauthRequestCompressionAlgorithm: value,
                   })
                 }
                 onLevelPresetChange={(value) =>

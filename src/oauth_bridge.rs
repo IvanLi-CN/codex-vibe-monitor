@@ -3,6 +3,13 @@
     reason = "OAuth transport errors intentionally retain structured response diagnostics."
 )]
 
+use crate::proxy::{
+    BoxedPoolRequestReader, PoolRequestBodyCompressionMode, RequestBodyContentEncoding,
+    decode_pool_request_reader, decode_request_payload_bytes, encode_pool_request_reader,
+    request_compression_algorithm_encoding, request_compression_preset_to_async_level,
+    resolve_request_body_content_encoding_from_prefix,
+};
+use crate::{RequestCompressionAlgorithm, RequestCompressionLevelPreset};
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,
@@ -12,6 +19,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::TryStreamExt;
+use futures_util::{StreamExt, stream};
 use hmac::{Hmac, Mac};
 use rand::{RngCore, rngs::OsRng};
 use reqwest::{Body as ReqwestBody, Client, Url};
@@ -20,8 +28,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, timeout};
+use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::{info, warn};
 
 #[cfg(test)]
@@ -34,9 +45,11 @@ pub(crate) const OAUTH_CODEX_MODELS_CLIENT_VERSION: &str = "0.111.0";
 const OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES: &[&str] = &[
     "content-type",
     "content-length",
+    "content-encoding",
     "openai-beta",
     "chatgpt-account-id",
 ];
+const OAUTH_BODY_REWRITTEN_HEADER_NAMES: &[&str] = &["content-length", "content-encoding"];
 const PROMPT_CACHE_HEADER_NAMES: &[&str] = &[
     "x-prompt-cache-key",
     "prompt-cache-key",
@@ -210,6 +223,8 @@ pub(crate) struct OauthRequestDebugInfo {
     pub(crate) request_body_prefix_fingerprint: Option<String>,
     pub(crate) request_body_prefix_bytes: Option<usize>,
     pub(crate) request_body_snapshot_kind: Option<&'static str>,
+    pub(crate) request_body_logical_bytes: Option<usize>,
+    pub(crate) request_body_transmitted_bytes: Option<usize>,
     pub(crate) responses_body_mode: Option<&'static str>,
     pub(crate) rewrite: OauthResponsesRewriteSummary,
 }
@@ -250,6 +265,153 @@ struct PreparedResponsesRequestBody {
     wants_stream: bool,
     body: Vec<u8>,
     rewrite: OauthResponsesRewriteSummary,
+}
+
+fn oauth_source_request_encoding(
+    body_prefix: Option<&[u8]>,
+    headers: &HeaderMap,
+) -> Result<RequestBodyContentEncoding, (StatusCode, String)> {
+    resolve_request_body_content_encoding_from_prefix(
+        body_prefix,
+        headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok()),
+    )
+    .map_err(|err| (err.status, err.message))
+}
+
+async fn encode_oauth_bytes(
+    bytes: Bytes,
+    target_encoding: RequestBodyContentEncoding,
+    level_preset: RequestCompressionLevelPreset,
+) -> Result<Bytes, (StatusCode, String)> {
+    if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+        return Ok(bytes);
+    }
+    let input = stream::once(async move { Ok::<Bytes, io::Error>(bytes) });
+    let reader: BoxedPoolRequestReader = Box::pin(StreamReader::new(input));
+    let mut encoded = encode_pool_request_reader(
+        reader,
+        target_encoding,
+        request_compression_preset_to_async_level(level_preset),
+    );
+    let mut output = Vec::new();
+    encoded.read_to_end(&mut output).await.map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to encode oauth request body: {err}"),
+        )
+    })?;
+    Ok(Bytes::from(output))
+}
+
+async fn prepare_oauth_bytes(
+    bytes: Bytes,
+    headers: &HeaderMap,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    request_compression_level_preset: RequestCompressionLevelPreset,
+    rewrite_responses: bool,
+    account_id: Option<i64>,
+    installation_seed: Option<&[u8; 32]>,
+) -> Result<
+    (
+        Bytes,
+        RequestBodyContentEncoding,
+        PoolRequestBodyCompressionMode,
+        OauthResponsesRewriteSummary,
+        Option<bool>,
+        usize,
+    ),
+    (StatusCode, String),
+> {
+    let source_encoding = oauth_source_request_encoding(Some(bytes.as_ref()), headers)?;
+    let decoded = decode_request_payload_bytes(&bytes, source_encoding)
+        .map_err(|err| (err.status, err.message))?;
+    let (decoded, rewrite, wants_stream) = if rewrite_responses {
+        let prepared = prepare_responses_request_body(&decoded, account_id, installation_seed)
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+        (
+            Bytes::from(prepared.body),
+            prepared.rewrite,
+            Some(prepared.wants_stream),
+        )
+    } else {
+        (decoded, OauthResponsesRewriteSummary::default(), None)
+    };
+    let target_encoding =
+        request_compression_algorithm_encoding(request_compression_algorithm, source_encoding);
+    let mode = if target_encoding == source_encoding && !rewrite.applied {
+        if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+            PoolRequestBodyCompressionMode::Identity
+        } else {
+            PoolRequestBodyCompressionMode::Passthrough
+        }
+    } else if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+        PoolRequestBodyCompressionMode::Identity
+    } else {
+        PoolRequestBodyCompressionMode::Recompressed
+    };
+    let logical_body_bytes = decoded.len();
+    let encoded =
+        encode_oauth_bytes(decoded, target_encoding, request_compression_level_preset).await?;
+    Ok((
+        encoded,
+        target_encoding,
+        mode,
+        rewrite,
+        wants_stream,
+        logical_body_bytes,
+    ))
+}
+
+async fn transcode_oauth_stream(
+    body: Body,
+    headers: &HeaderMap,
+    body_prefix: Option<&[u8]>,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    request_compression_level_preset: RequestCompressionLevelPreset,
+) -> Result<
+    (
+        Body,
+        RequestBodyContentEncoding,
+        PoolRequestBodyCompressionMode,
+    ),
+    (StatusCode, String),
+> {
+    let source_encoding = oauth_source_request_encoding(body_prefix, headers)?;
+    let target_encoding =
+        request_compression_algorithm_encoding(request_compression_algorithm, source_encoding);
+    if target_encoding == source_encoding {
+        let mode = if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+            PoolRequestBodyCompressionMode::Identity
+        } else {
+            PoolRequestBodyCompressionMode::Passthrough
+        };
+        return Ok((body, target_encoding, mode));
+    }
+    let input = body
+        .into_data_stream()
+        .map(|chunk| chunk.map_err(|err| io::Error::other(err.to_string())));
+    let reader: BoxedPoolRequestReader = Box::pin(StreamReader::new(input));
+    let decoded = if matches!(source_encoding, RequestBodyContentEncoding::Identity) {
+        reader
+    } else {
+        decode_pool_request_reader(reader, source_encoding)
+            .await
+            .map_err(|err| (err.status, err.message))?
+    };
+    let encoded = encode_pool_request_reader(
+        decoded,
+        target_encoding,
+        request_compression_preset_to_async_level(request_compression_level_preset),
+    );
+    let stream = ReaderStream::new(encoded).map(|chunk| chunk.map_err(axum::Error::new));
+    let mode = if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+        PoolRequestBodyCompressionMode::Identity
+    } else {
+        PoolRequestBodyCompressionMode::Recompressed
+    };
+    Ok((Body::from_stream(stream), target_encoding, mode))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -356,6 +518,43 @@ pub(crate) async fn send_counted_oauth_upstream_request(
     forward_proxy_url: Option<&Url>,
     reporter: Option<crate::proxy::UpstreamTrafficReporter>,
 ) -> OauthUpstreamResponse {
+    send_counted_oauth_upstream_request_with_compression(
+        method,
+        original_uri,
+        headers,
+        body,
+        handshake_timeout,
+        response_timeout,
+        account_id,
+        access_token,
+        chatgpt_account_id,
+        installation_seed,
+        crypto_key,
+        RequestCompressionAlgorithm::Identity,
+        RequestCompressionLevelPreset::Balanced,
+        forward_proxy_url,
+        reporter,
+    )
+    .await
+}
+
+pub(crate) async fn send_counted_oauth_upstream_request_with_compression(
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    body: CountedOauthUpstreamRequestBody,
+    handshake_timeout: Duration,
+    response_timeout: Duration,
+    account_id: Option<i64>,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    installation_seed: Option<&[u8; 32]>,
+    crypto_key: Option<&[u8; 32]>,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    request_compression_level_preset: RequestCompressionLevelPreset,
+    forward_proxy_url: Option<&Url>,
+    reporter: Option<crate::proxy::UpstreamTrafficReporter>,
+) -> OauthUpstreamResponse {
     match original_uri.path() {
         "/v1/models" => {
             counted_oauth_models(
@@ -379,6 +578,8 @@ pub(crate) async fn send_counted_oauth_upstream_request(
                 body,
                 installation_seed,
                 crypto_key,
+                request_compression_algorithm,
+                request_compression_level_preset,
                 forward_proxy_url,
                 reporter,
             )
@@ -395,6 +596,8 @@ pub(crate) async fn send_counted_oauth_upstream_request(
                 access_token,
                 chatgpt_account_id,
                 crypto_key,
+                request_compression_algorithm,
+                request_compression_level_preset,
                 forward_proxy_url,
                 reporter,
             )
@@ -524,6 +727,8 @@ async fn counted_oauth_responses(
     body: CountedOauthUpstreamRequestBody,
     installation_seed: Option<&[u8; 32]>,
     crypto_key: Option<&[u8; 32]>,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    request_compression_level_preset: RequestCompressionLevelPreset,
     forward_proxy_url: Option<&Url>,
     reporter: Option<crate::proxy::UpstreamTrafficReporter>,
 ) -> OauthUpstreamResponse {
@@ -542,65 +747,94 @@ async fn counted_oauth_responses(
     };
     let (mut outbound_headers, forwarded_headers) =
         collect_forwardable_headers(headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES, crypto_key);
-    let (request_body, request_debug, wants_stream) = match body {
+    let (
+        request_body,
+        request_content_length,
+        request_content_encoding,
+        request_compression_mode,
+        request_debug,
+        wants_stream,
+    ) = match body {
         CountedOauthUpstreamRequestBody::Empty => {
-            let prepared = match prepare_responses_request_body(&[], account_id, installation_seed)
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(
-                            StatusCode::BAD_REQUEST,
-                            &err.to_string(),
-                            "invalid_request_error",
-                        ),
-                        request_debug: None,
-                    };
-                }
-            };
-            let request_debug = build_oauth_request_debug(
-                "/v1/responses",
-                &forwarded_headers,
-                Some(prepared.body.as_slice()),
-                prepared.rewrite.clone(),
-                Some("empty"),
-                Some("small_body_rewrite"),
-                crypto_key,
-            );
-            (
-                Body::from(prepared.body),
-                request_debug,
-                prepared.wants_stream,
-            )
-        }
-        CountedOauthUpstreamRequestBody::Bytes(bytes) => {
-            let prepared =
-                match prepare_responses_request_body(&bytes, account_id, installation_seed) {
+            let (encoded, encoding, mode, rewrite, wants_stream, logical_body_bytes) =
+                match prepare_oauth_bytes(
+                    Bytes::new(),
+                    headers,
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    true,
+                    account_id,
+                    installation_seed,
+                )
+                .await
+                {
                     Ok(value) => value,
-                    Err(err) => {
+                    Err((status, message)) => {
                         return OauthUpstreamResponse {
-                            response: error_response(
-                                StatusCode::BAD_REQUEST,
-                                &err.to_string(),
-                                "invalid_request_error",
-                            ),
+                            response: error_response(status, &message, "invalid_request_error"),
                             request_debug: None,
                         };
                     }
                 };
-            let request_debug = build_oauth_request_debug(
+            let mut request_debug = build_oauth_request_debug(
                 "/v1/responses",
                 &forwarded_headers,
-                Some(prepared.body.as_slice()),
-                prepared.rewrite.clone(),
+                Some(encoded.as_ref()),
+                rewrite,
+                Some("empty"),
+                Some("small_body_rewrite"),
+                crypto_key,
+            );
+            request_debug.request_body_logical_bytes = Some(logical_body_bytes);
+            request_debug.request_body_transmitted_bytes = Some(encoded.len());
+            (
+                Body::from(encoded.clone()),
+                Some(encoded.len()),
+                encoding,
+                mode,
+                request_debug,
+                wants_stream.unwrap_or(false),
+            )
+        }
+        CountedOauthUpstreamRequestBody::Bytes(bytes) => {
+            let (encoded, encoding, mode, rewrite, wants_stream, logical_body_bytes) =
+                match prepare_oauth_bytes(
+                    bytes,
+                    headers,
+                    request_compression_algorithm,
+                    request_compression_level_preset,
+                    true,
+                    account_id,
+                    installation_seed,
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err((status, message)) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(status, &message, "invalid_request_error"),
+                            request_debug: None,
+                        };
+                    }
+                };
+            let mut request_debug = build_oauth_request_debug(
+                "/v1/responses",
+                &forwarded_headers,
+                Some(encoded.as_ref()),
+                rewrite,
                 Some("memory"),
                 Some("small_body_rewrite"),
                 crypto_key,
             );
+            request_debug.request_body_logical_bytes = Some(logical_body_bytes);
+            request_debug.request_body_transmitted_bytes = Some(encoded.len());
             (
-                Body::from(prepared.body),
+                Body::from(encoded.clone()),
+                Some(encoded.len()),
+                encoding,
+                mode,
                 request_debug,
-                prepared.wants_stream,
+                wants_stream.unwrap_or(false),
             )
         }
         CountedOauthUpstreamRequestBody::Stream {
@@ -609,6 +843,23 @@ async fn counted_oauth_responses(
             request_is_stream,
             snapshot_kind,
         } => {
+            let (body, encoding, mode) = match transcode_oauth_stream(
+                body,
+                headers,
+                debug_body_prefix.as_deref(),
+                request_compression_algorithm,
+                request_compression_level_preset,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err((status, message)) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(status, &message, "invalid_request_error"),
+                        request_debug: None,
+                    };
+                }
+            };
             let request_debug = build_oauth_request_debug_with_prefix(
                 "/v1/responses",
                 &forwarded_headers,
@@ -618,13 +869,31 @@ async fn counted_oauth_responses(
                 Some("large_body_passthrough"),
                 crypto_key,
             );
-            (body, request_debug, request_is_stream.unwrap_or(false))
+            (
+                body,
+                None,
+                encoding,
+                mode,
+                request_debug,
+                request_is_stream.unwrap_or(false),
+            )
         }
     };
     outbound_headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    if let Some(content_length) = request_content_length
+        && let Ok(value) = HeaderValue::from_str(&content_length.to_string())
+    {
+        outbound_headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if let Some(content_encoding) = request_content_encoding.header_value() {
+        outbound_headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from_static(content_encoding),
+        );
+    }
     insert_oauth_auth_headers(
         &mut outbound_headers,
         access_token,
@@ -640,6 +909,8 @@ async fn counted_oauth_responses(
         request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint,
         request_body_snapshot_kind = request_debug.request_body_snapshot_kind,
         responses_body_mode = request_debug.responses_body_mode,
+        request_compression_algorithm = request_content_encoding.as_str(),
+        request_compression_mode = request_compression_mode.as_str(),
         "forwarding counted oauth responses request"
     );
     let upstream = match send_counted_oauth_http_request(
@@ -755,10 +1026,12 @@ async fn counted_oauth_passthrough(
     headers: &HeaderMap,
     body: CountedOauthUpstreamRequestBody,
     handshake_timeout: Duration,
-    _account_id: Option<i64>,
+    account_id: Option<i64>,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     crypto_key: Option<&[u8; 32]>,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    request_compression_level_preset: RequestCompressionLevelPreset,
     forward_proxy_url: Option<&Url>,
     reporter: Option<crate::proxy::UpstreamTrafficReporter>,
 ) -> OauthUpstreamResponse {
@@ -780,21 +1053,80 @@ async fn counted_oauth_passthrough(
         }
     };
     let (mut outbound_headers, forwarded_headers) =
-        collect_forwardable_headers(headers, &[], crypto_key);
-    let (request_body, debug_body_prefix) = match body {
-        CountedOauthUpstreamRequestBody::Empty => (Body::empty(), Some(Bytes::new())),
+        collect_forwardable_headers(headers, OAUTH_BODY_REWRITTEN_HEADER_NAMES, crypto_key);
+    let (
+        request_body,
+        request_content_length,
+        request_content_encoding,
+        request_compression_mode,
+        debug_body_prefix,
+        request_logical_body_bytes,
+    ) = match body {
+        CountedOauthUpstreamRequestBody::Empty => (
+            Body::empty(),
+            Some(0),
+            RequestBodyContentEncoding::Identity,
+            PoolRequestBodyCompressionMode::Identity,
+            Some(Bytes::new()),
+            Some(0),
+        ),
         CountedOauthUpstreamRequestBody::Bytes(bytes) => {
             let debug_body_prefix =
                 oauth_request_body_prefix_bytes(Some(bytes.as_ref())).map(Bytes::from);
-            (Body::from(bytes), debug_body_prefix)
+            let (encoded, encoding, mode, _, _, logical_body_bytes) = match prepare_oauth_bytes(
+                bytes,
+                headers,
+                request_compression_algorithm,
+                request_compression_level_preset,
+                false,
+                account_id,
+                None,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err((status, message)) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(status, &message, "invalid_request_error"),
+                        request_debug: None,
+                    };
+                }
+            };
+            (
+                Body::from(encoded.clone()),
+                Some(encoded.len()),
+                encoding,
+                mode,
+                debug_body_prefix,
+                Some(logical_body_bytes),
+            )
         }
         CountedOauthUpstreamRequestBody::Stream {
             body,
             debug_body_prefix,
             ..
-        } => (body, debug_body_prefix),
+        } => {
+            let (body, encoding, mode) = match transcode_oauth_stream(
+                body,
+                headers,
+                debug_body_prefix.as_deref(),
+                request_compression_algorithm,
+                request_compression_level_preset,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err((status, message)) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(status, &message, "invalid_request_error"),
+                        request_debug: None,
+                    };
+                }
+            };
+            (body, None, encoding, mode, debug_body_prefix, None)
+        }
     };
-    let request_debug = build_oauth_request_debug(
+    let mut request_debug = build_oauth_request_debug(
         original_uri.path(),
         &forwarded_headers,
         debug_body_prefix.as_deref(),
@@ -803,11 +1135,30 @@ async fn counted_oauth_passthrough(
         None,
         crypto_key,
     );
+    request_debug.request_body_logical_bytes = request_logical_body_bytes;
+    request_debug.request_body_transmitted_bytes = request_content_length;
     insert_oauth_auth_headers(
         &mut outbound_headers,
         access_token,
         chatgpt_account_id,
         true,
+    );
+    if let Some(content_length) = request_content_length
+        && let Ok(value) = HeaderValue::from_str(&content_length.to_string())
+    {
+        outbound_headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if let Some(content_encoding) = request_content_encoding.header_value() {
+        outbound_headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from_static(content_encoding),
+        );
+    }
+    info!(
+        path = original_uri.path(),
+        request_compression_algorithm = request_content_encoding.as_str(),
+        request_compression_mode = request_compression_mode.as_str(),
+        "forwarding counted oauth passthrough request"
     );
     let upstream = match send_counted_oauth_http_request(
         method,
@@ -1692,6 +2043,8 @@ fn build_oauth_request_debug_with_prefix(
         request_body_prefix_fingerprint,
         request_body_prefix_bytes,
         request_body_snapshot_kind,
+        request_body_logical_bytes: None,
+        request_body_transmitted_bytes: None,
         responses_body_mode,
         rewrite,
     }

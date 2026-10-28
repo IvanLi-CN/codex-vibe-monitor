@@ -1132,6 +1132,7 @@ async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
             api_key: None,
             maintenance: None,
             request_compression_algorithm: None,
+            oauth_request_compression_algorithm: None,
             request_compression_level_preset: None,
             codex_imagegen_rewrite_mode: None,
             available_models: None,

@@ -3,6 +3,47 @@ use axum::{Json, Router, body::to_bytes, routing::post};
 use serde_json::json;
 use tokio::net::TcpListener;
 
+#[tokio::test]
+async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
+    let headers = HeaderMap::from_iter([
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        ),
+        (header::CONTENT_ENCODING, HeaderValue::from_static("gzip")),
+    ]);
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(
+        &mut gzip,
+        br#"{"model":"gpt-5.4","max_output_tokens":128,"input":"hello"}"#,
+    )
+    .expect("write gzip payload");
+    let compressed = Bytes::from(gzip.finish().expect("finish gzip payload"));
+
+    let (encoded, encoding, mode, rewrite, wants_stream, logical_body_bytes) = prepare_oauth_bytes(
+        compressed,
+        &headers,
+        RequestCompressionAlgorithm::Zstd,
+        RequestCompressionLevelPreset::Balanced,
+        true,
+        None,
+        None,
+    )
+    .await
+    .expect("prepare compressed oauth body");
+    assert_eq!(encoding, RequestBodyContentEncoding::Zstd);
+    assert_eq!(mode, PoolRequestBodyCompressionMode::Recompressed);
+    assert!(rewrite.applied);
+    assert_eq!(wants_stream, Some(false));
+    assert!(logical_body_bytes > 0);
+    let decoded = zstd::decode_all(encoded.as_ref()).expect("decode zstd payload");
+    let payload: Value = serde_json::from_slice(&decoded).expect("decode rewritten payload");
+    assert_eq!(payload["instructions"], "");
+    assert_eq!(payload["store"], false);
+    assert_eq!(payload["stream"], true);
+    assert!(payload.get("max_output_tokens").is_none());
+}
+
 #[test]
 fn transform_models_payload_maps_codex_catalog_to_openai_shape() {
     let payload = br#"{"models":[{"slug":"gpt-5.4"},{"slug":"gpt-5.3-codex"}]}"#;
@@ -160,6 +201,79 @@ async fn standalone_search_passthrough_supports_ordinary_and_counted_requests() 
         serde_json::from_slice(&counted_body).expect("decode counted search response");
     assert_eq!(counted_payload["path"], "/backend-api/codex/alpha/search");
     assert_eq!(counted_payload["query"], "cursor=next");
+
+    handle.abort();
+    reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn counted_oauth_passthrough_sets_zstd_encoding_and_content_length() {
+    async fn search_upstream(request: axum::extract::Request) -> Response {
+        assert_eq!(
+            request
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("zstd")
+        );
+        assert!(request.headers().contains_key(header::CONTENT_LENGTH));
+        let body = to_bytes(request.into_body(), usize::MAX)
+            .await
+            .expect("read compressed search request body");
+        let decoded = zstd::decode_all(body.as_ref()).expect("decode zstd search request body");
+        (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "body": String::from_utf8(decoded).expect("decoded search body is utf8"),
+            })),
+        )
+            .into_response()
+    }
+
+    let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+    let app = Router::new().route("/backend-api/codex/alpha/search", post(search_upstream));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind compressed oauth upstream");
+    let addr = listener
+        .local_addr()
+        .expect("compressed oauth upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("compressed oauth upstream should run");
+    });
+    set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("http://{addr}/backend-api/codex"))
+            .expect("valid compressed oauth base url"),
+    )
+    .await;
+
+    let headers = HeaderMap::from_iter([(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    )]);
+    let response = send_counted_oauth_upstream_request_with_compression(
+        Method::POST,
+        &"/v1/alpha/search".parse().expect("valid search uri"),
+        &headers,
+        CountedOauthUpstreamRequestBody::Bytes(Bytes::from_static(
+            br#"{"model":"gpt-5.4","query":"hello"}"#,
+        )),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        Some(7),
+        "oauth-search-compressed",
+        Some("org_search"),
+        None,
+        None,
+        RequestCompressionAlgorithm::Zstd,
+        RequestCompressionLevelPreset::Balanced,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.response.status(), StatusCode::ACCEPTED);
 
     handle.abort();
     reset_test_oauth_codex_upstream_base_url().await;

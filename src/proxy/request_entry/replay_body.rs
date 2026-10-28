@@ -564,9 +564,9 @@ pub(crate) fn counted_http_body_from_snapshot(
     }
 }
 
-type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
+pub(crate) type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
 
-fn request_compression_preset_to_async_level(
+pub(crate) fn request_compression_preset_to_async_level(
     preset: RequestCompressionLevelPreset,
 ) -> AsyncCompressionLevel {
     match preset {
@@ -576,7 +576,7 @@ fn request_compression_preset_to_async_level(
     }
 }
 
-fn resolve_request_body_content_encoding_from_prefix(
+pub(crate) fn resolve_request_body_content_encoding_from_prefix(
     prefix: Option<&[u8]>,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -603,7 +603,7 @@ fn resolve_request_body_content_encoding_from_prefix(
     }
 }
 
-async fn resolve_request_body_content_encoding(
+pub(crate) async fn resolve_request_body_content_encoding(
     snapshot: &PoolReplayBodySnapshot,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -685,7 +685,7 @@ async fn count_decoded_request_snapshot_bytes(
     }
 }
 
-fn decode_request_payload_bytes(
+pub(crate) fn decode_request_payload_bytes(
     bytes: &[u8],
     encoding: RequestBodyContentEncoding,
 ) -> Result<Bytes, PoolRequestBodyPreparationError> {
@@ -753,7 +753,7 @@ async fn open_pool_request_snapshot_reader(
     }
 }
 
-async fn decode_pool_request_reader(
+pub(crate) async fn decode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
 ) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
@@ -781,7 +781,7 @@ async fn decode_pool_request_reader(
     }
 }
 
-fn encode_pool_request_reader(
+pub(crate) fn encode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
     level: AsyncCompressionLevel,
@@ -806,6 +806,21 @@ fn encode_pool_request_reader(
         RequestBodyContentEncoding::Zstd => {
             Box::pin(AsyncZstdEncoder::with_quality(buffered, level))
         }
+    }
+}
+
+pub(crate) fn request_compression_algorithm_encoding(
+    algorithm: RequestCompressionAlgorithm,
+    downstream_encoding: RequestBodyContentEncoding,
+) -> RequestBodyContentEncoding {
+    match algorithm {
+        RequestCompressionAlgorithm::Follow => downstream_encoding,
+        RequestCompressionAlgorithm::Identity => RequestBodyContentEncoding::Identity,
+        RequestCompressionAlgorithm::Gzip => RequestBodyContentEncoding::Gzip,
+        RequestCompressionAlgorithm::Deflate => {
+            RequestBodyContentEncoding::Deflate { zlib_wrapper: true }
+        }
+        RequestCompressionAlgorithm::Zstd => RequestBodyContentEncoding::Zstd,
     }
 }
 
