@@ -39,6 +39,7 @@ from measure import (
     start_container,
     task_runs,
     validate_task_snapshot,
+    wait_for_task_evidence,
 )
 
 
@@ -209,6 +210,34 @@ class MeasurementBudgetTests(unittest.TestCase):
         rows[0]["progress"] = None
         with self.assertRaisesRegex(AcceptanceError, "schedule and catch-up"):
             validate_task_snapshot(rows, "baseline")
+
+    def test_baseline_evidence_uses_reference_readiness_without_summary_proof(self) -> None:
+        proof_status = {
+            "ready": False,
+            "reference_ready": True,
+            "datasets": {},
+        }
+        with patch("measure.task_runs", return_value=[]), patch(
+            "measure.validate_task_snapshot"
+        ), patch("measure.archive_proof_status", return_value=proof_status) as proof:
+            self.assertEqual(
+                wait_for_task_evidence(
+                    Path("main.sqlite"),
+                    Path("maintenance.sqlite"),
+                    "2026-10-23 00:00:00",
+                    {name: 1 for name in DATASETS},
+                    time.monotonic(),
+                    "baseline",
+                    timeout_seconds=1,
+                ),
+                [],
+            )
+        proof.assert_called_once_with(
+            Path("main.sqlite"),
+            "2026-10-23 00:00:00",
+            {name: 1 for name in DATASETS},
+            require_summary_proof=False,
+        )
 
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

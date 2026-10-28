@@ -1008,23 +1008,39 @@ def wait_for_owner_schedule_admission(maintenance_db: Path, started: float) -> N
     )
 
 
-def archive_proofs_ready(
+def archive_proof_status(
     database: Path,
     cutoff: str,
     added_counts: dict[str, int],
-    version: str,
-) -> bool:
+    require_summary_proof: bool,
+) -> dict[str, Any]:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
+        datasets: dict[str, dict[str, Any]] = {}
         for name, definition in DATASETS.items():
             dataset = definition["manifest_dataset"]
             table = definition["table"]
+            required_converted = math.ceil(10 * added_counts[name]) if require_summary_proof else 1
+            dataset_status: dict[str, Any] = {
+                "dataset": dataset,
+                "manifest_count": 0,
+                "converted_rows": None,
+                "required_converted_rows": required_converted,
+                "missing": [],
+                "reference_missing": [],
+                "summary_proof_missing": [],
+            }
+            source_kind_clause = " AND summary_source_kind='authoritative'" if name == "invocations" else ""
             manifests = connection.execute(
-                "SELECT id,file_path,sha256 FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL",
+                "SELECT id,file_path,sha256 FROM archive_batches "
+                "WHERE dataset=? AND status='completed' AND cleanup_state='active' "
+                f"AND superseded_by IS NULL{source_kind_clause}",
                 (dataset,),
             ).fetchall()
+            dataset_status["manifest_count"] = len(manifests)
             if not manifests:
-                return False
+                dataset_status["missing"].append("completed active archive manifest")
+                dataset_status["reference_missing"].append("completed active archive manifest")
             if name == "invocations":
                 targets = {"invocation_rollup_hourly", "upstream_account_stats_hourly", "upstream_account_usage_breakdown_hourly"}
                 for archive_id, file_path, manifest_sha in manifests:
@@ -1033,13 +1049,20 @@ def archive_proofs_ready(
                         (archive_id, manifest_sha),
                     ).fetchone()
                     if proof is None:
-                        return False
+                        missing_proof = f"summary proof:{archive_id}"
+                        dataset_status["summary_proof_missing"].append(missing_proof)
+                        if require_summary_proof:
+                            dataset_status["missing"].append(missing_proof)
+                        continue
                     pages = connection.execute(
                         "SELECT COUNT(*) FROM summary_archive_snapshot WHERE archive_batch_id=? AND manifest_sha256=? AND format_version=2",
                         (archive_id, manifest_sha),
                     ).fetchone()[0]
                     if pages != proof[0]:
-                        return False
+                        missing_pages = f"summary pages:{archive_id}:{pages}/{proof[0]}"
+                        dataset_status["summary_proof_missing"].append(missing_pages)
+                        if require_summary_proof:
+                            dataset_status["missing"].append(missing_pages)
                     replayed = {
                         row[0]
                         for row in connection.execute(
@@ -1047,17 +1070,31 @@ def archive_proofs_ready(
                             (dataset, file_path, manifest_sha),
                         )
                     }
-                    if not targets.issubset(replayed):
-                        return False
+                    missing_targets = sorted(targets - replayed)
+                    if missing_targets:
+                        missing_replay = f"replay:{archive_id}:{','.join(missing_targets)}"
+                        dataset_status["summary_proof_missing"].append(missing_replay)
+                        if require_summary_proof:
+                            dataset_status["missing"].append(missing_replay)
             identity_column = definition["identity_column"]
             converted = definition["seed_rows"] - connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE {identity_column} LIKE 'retention-seed-%' AND occurred_at < ?",
                 (cutoff,),
             ).fetchone()[0]
-            required = math.ceil(10 * added_counts[name]) if version == "candidate" else 1
-            if converted < required:
-                return False
-        return True
+            dataset_status["converted_rows"] = converted
+            if converted < required_converted:
+                missing_conversion = f"source conversion:{converted}/{required_converted}"
+                dataset_status["missing"].append(missing_conversion)
+                dataset_status["reference_missing"].append(missing_conversion)
+            dataset_status["summary_proof_complete"] = not dataset_status["summary_proof_missing"]
+            dataset_status["reference_ready"] = not dataset_status["reference_missing"]
+            dataset_status["ready"] = not dataset_status["missing"]
+            datasets[name] = dataset_status
+        return {
+            "ready": all(dataset["ready"] for dataset in datasets.values()),
+            "reference_ready": all(dataset["reference_ready"] for dataset in datasets.values()),
+            "datasets": datasets,
+        }
     finally:
         connection.close()
 
@@ -1082,14 +1119,30 @@ def wait_for_task_evidence(
             # The fixed seed snapshot intentionally contains 100,000 expired rows. The legacy
             # baseline may still be draining that backlog when its 10x cohort is already proved;
             # the candidate must still complete its schedule/catch-up chain before returning.
-            if archive_proofs_ready(main_db, cutoff, added_counts, version):
+            proof_status = archive_proof_status(
+                main_db,
+                cutoff,
+                added_counts,
+                require_summary_proof=version == "candidate",
+            )
+            proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
+            if proof_ready:
                 return latest
             last_error = AcceptanceError("archive proofs or 10x source conversion are still draining")
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
     if last_error is not None:
-        raise AcceptanceError(f"production task/evidence drain timed out: {last_error}") from last_error
+        proof_status = archive_proof_status(
+            main_db,
+            cutoff,
+            added_counts,
+            require_summary_proof=version == "candidate",
+        )
+        raise AcceptanceError(
+            "production task/evidence drain timed out: "
+            f"{last_error}; archive_proof_status={json.dumps(proof_status, sort_keys=True)}"
+        ) from last_error
     validate_task_snapshot(latest, version)
     raise AcceptanceError("production task/evidence drain timed out")
 
@@ -1176,6 +1229,7 @@ def run_trial(
     driver_cleanup: dict[str, Any] = {}
     foreground_evidence: dict[str, Any] = {}
     task_evidence: list[dict[str, Any]] = []
+    proof_status: dict[str, Any] | None = None
     write_scrapes: list[dict[str, Any]] = []
     write_buckets: dict[str, int] | None = None
     oracle: dict[str, Any] | None = None
@@ -1250,6 +1304,12 @@ def run_trial(
             phase_started,
             version,
         )
+        proof_status = archive_proof_status(
+            main_db,
+            cutoff,
+            {name: len(added[name]) for name in DATASETS},
+            require_summary_proof=version == "candidate",
+        )
         post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
         write_buckets = histogram_delta(pre_buckets, post_buckets)
@@ -1271,6 +1331,7 @@ def run_trial(
             template / "codex_vibe_monitor.db",
             cutoff,
             root / f"oracle-{version}-{index}",
+            require_summary_proof=version == "candidate",
             budget_check=lambda: remaining_budget(phase_started),
         )
     except BaseException as error:
@@ -1322,6 +1383,7 @@ def run_trial(
             "latency_samples_ms": input_samples,
             "foreground_workload": foreground_evidence,
             "task_runs": task_evidence,
+            "archive_proof_status": proof_status,
             "write_hold_samples": write_scrapes,
             "write_hold_buckets": write_buckets,
         }
@@ -1383,6 +1445,7 @@ def run_trial(
         "latency_samples_ms": input_samples,
         "foreground_workload": foreground_evidence,
         "task_runs": task_evidence,
+        "archive_proof_status": proof_status,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
         "oracle": oracle,

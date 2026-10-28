@@ -589,6 +589,18 @@ class SummaryProofTests(unittest.TestCase):
             result = verify_dataset(*arguments, **keywords)
             self.assertEqual(result["converted_rows"], 3)
             target = sqlite3.connect(database)
+            target.execute("DELETE FROM summary_archive_snapshot_v2_proof")
+            target.commit()
+            target.close()
+            baseline_result = verify_dataset(
+                *arguments,
+                **keywords,
+                require_summary_proof=False,
+            )
+            self.assertFalse(baseline_result["summary_proof_verified"])
+            with self.assertRaisesRegex(AcceptanceError, "missing its final Summary Snapshot V2 proof"):
+                verify_dataset(*arguments, **keywords)
+            target = sqlite3.connect(database)
             target.execute("UPDATE summary_archive_snapshot SET payload=? WHERE page_index=0", (b"summary-page",))
             target.commit()
             target.close()
