@@ -142,7 +142,18 @@ def _verified_archive_snapshot(
                 _assert_archive_unchanged(path, source, initial_signature, expected_sha, dataset, budget_check)
 
 
-def _archive_path(database: Path, archive_root: Path, stored_path: str, dataset: str, month_key: str) -> Path:
+def _archive_path(
+    database: Path,
+    archive_root: Path,
+    stored_path: str,
+    dataset: str,
+    month_key: str,
+    *,
+    day_key: str | None = None,
+    part_key: str | None = None,
+    layout: str | None = None,
+    codec: str | None = None,
+) -> Path:
     path = Path(stored_path)
     resolved_root = archive_root.resolve(strict=True)
     if path.is_absolute():
@@ -173,9 +184,38 @@ def _archive_path(database: Path, archive_root: Path, stored_path: str, dataset:
         relative = resolved.relative_to(resolved_root)
     except ValueError as error:
         raise AcceptanceError("archive manifest escaped the configured archive root") from error
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_key):
+        raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
+    if codec is not None and codec != "gzip":
+        raise AcceptanceError("archive manifest uses an unsupported archive codec")
+
     parts = relative.parts
-    expected = (dataset, month_key[:4], f"{dataset}-{month_key}.sqlite.gz")
-    if parts != expected or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_key):
+    expected_month_path = (dataset, month_key[:4], f"{dataset}-{month_key}.sqlite.gz")
+    if parts == expected_month_path:
+        if layout is not None and layout != "legacy_month":
+            raise AcceptanceError("legacy archive path has a non-legacy manifest layout")
+        if day_key is not None or part_key is not None:
+            raise AcceptanceError("legacy archive path has segment manifest identity")
+    elif len(parts) == 5 and parts[0] == dataset:
+        _, year, month, day, filename = parts
+        actual_day_key = f"{year}-{month}-{day}"
+        if (
+            not re.fullmatch(r"\d{4}", year)
+            or not re.fullmatch(r"(?:0[1-9]|1[0-2])", month)
+            or not re.fullmatch(r"(?:0[1-9]|[12]\d|3[01])", day)
+            or f"{year}-{month}" != month_key
+            or not filename.startswith("part-")
+            or not filename.endswith(".sqlite.gz")
+        ):
+            raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
+        if layout is not None and layout != "segment_v1":
+            raise AcceptanceError("segment archive path has a non-segment manifest layout")
+        if day_key is not None and day_key != actual_day_key:
+            raise AcceptanceError("segment archive day identity disagrees with its manifest path")
+        actual_part_key = filename.removesuffix(".sqlite.gz")
+        if part_key is not None and part_key != actual_part_key:
+            raise AcceptanceError("segment archive part identity disagrees with its manifest path")
+    else:
         raise AcceptanceError("archive manifest did not resolve to the canonical dataset/year/month path")
     if resolved.suffixes[-2:] != [".sqlite", ".gz"]:
         raise AcceptanceError("archive artifact is not a gzip SQLite file")
@@ -465,8 +505,23 @@ def verify_dataset(
         required = {"id", "dataset", "month_key", "file_path", "sha256", "row_count", "status", "cleanup_state", "superseded_by"}
         if not required.issubset(manifest_columns):
             raise AcceptanceError(f"production archive manifest schema is incomplete for {dataset}")
+        manifest_select = [
+            "id",
+            "dataset",
+            "month_key",
+            "file_path",
+            "sha256",
+            "row_count",
+            "status",
+            "cleanup_state",
+            "superseded_by",
+            "summary_source_kind",
+        ]
+        for optional_column in ("day_key", "part_key", "layout", "codec"):
+            if optional_column in manifest_columns:
+                manifest_select.append(optional_column)
         manifests = connection.execute(
-            "SELECT id,dataset,month_key,file_path,sha256,row_count,status,cleanup_state,superseded_by,summary_source_kind FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL ORDER BY month_key,file_path,id",
+            f"SELECT {','.join(manifest_select)} FROM archive_batches WHERE dataset=? AND status='completed' AND cleanup_state='active' AND superseded_by IS NULL ORDER BY month_key,file_path,id",
             (dataset,),
         ).fetchall()
         if not manifests:
@@ -477,7 +532,18 @@ def verify_dataset(
             if dataset == "codex_invocations":
                 if manifest["summary_source_kind"] != "authoritative":
                     raise AcceptanceError("invocation archive manifest is not authoritative")
-            path = _archive_path(database, archive_root, manifest["file_path"], dataset, manifest["month_key"])
+            manifest_keys = manifest.keys()
+            path = _archive_path(
+                database,
+                archive_root,
+                manifest["file_path"],
+                dataset,
+                manifest["month_key"],
+                day_key=manifest["day_key"] if "day_key" in manifest_keys else None,
+                part_key=manifest["part_key"] if "part_key" in manifest_keys else None,
+                layout=manifest["layout"] if "layout" in manifest_keys else None,
+                codec=manifest["codec"] if "codec" in manifest_keys else None,
+            )
             decompressed = scratch / f"{dataset}-{manifest['id']}.sqlite"
             with _verified_archive_snapshot(path, manifest["sha256"], scratch, dataset, budget_check) as snapshot:
                 with gzip.GzipFile(fileobj=snapshot, mode="rb") as source, decompressed.open("wb") as target:
@@ -521,6 +587,9 @@ def verify_dataset(
                         raise AcceptanceError(f"{dataset} archive contains a malformed source row")
                     if occurred_at[:7] != manifest["month_key"]:
                         raise AcceptanceError(f"{dataset} archive contains a row outside its manifest month")
+                    manifest_day = manifest["day_key"] if "day_key" in manifest_keys else None
+                    if manifest_day is not None and occurred_at[:10] != manifest_day:
+                        raise AcceptanceError(f"{dataset} archive contains a row outside its manifest day")
                     if identity not in expected_ids:
                         raise AcceptanceError(f"{dataset} archive contains rows outside the seeded and measured input")
                     if identity not in seed_ids:
