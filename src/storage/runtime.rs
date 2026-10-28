@@ -438,19 +438,7 @@ impl StorageMigrationWorker {
     async fn run_migration(&self, status: StorageMigrationResponse) -> Result<()> {
         let authority = self.traffic_gate.current_authority().await;
         if authority.backend == BackendKind::Postgres {
-            let manifest = match self
-                .metadata
-                .load_authority_manifest(StorageModule::TrafficArchive)
-                .await?
-            {
-                AuthorityRecoveryRecord::Manifest(manifest) => manifest,
-                AuthorityRecoveryRecord::NeverMigrated { .. } => {
-                    bail!("PostgreSQL authority has no durable traffic manifest")
-                }
-                AuthorityRecoveryRecord::Indeterminate => {
-                    bail!("traffic authority recovery is indeterminate")
-                }
-            };
+            let manifest = self.load_traffic_authority_manifest().await?;
             if manifest.authority != authority {
                 bail!(
                     "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
@@ -619,19 +607,7 @@ impl StorageMigrationWorker {
                 self.config.migration_switch_budget,
             )
             .await?;
-        let manifest = match self
-            .metadata
-            .load_authority_manifest(StorageModule::TrafficArchive)
-            .await?
-        {
-            AuthorityRecoveryRecord::Manifest(manifest) => manifest,
-            AuthorityRecoveryRecord::NeverMigrated { .. } => {
-                bail!("PostgreSQL authority has no durable traffic manifest")
-            }
-            AuthorityRecoveryRecord::Indeterminate => {
-                bail!("traffic authority recovery is indeterminate")
-            }
-        };
+        let manifest = self.load_traffic_authority_manifest().await?;
         let authority = self.traffic_gate.current_authority().await;
         if manifest.authority != authority {
             bail!(
@@ -643,6 +619,22 @@ impl StorageMigrationWorker {
             .publish_postgres_authority(authority.generation, manifest.source_watermark)
             .await?;
         Ok(())
+    }
+
+    async fn load_traffic_authority_manifest(&self) -> Result<ModuleAuthorityManifest> {
+        match self
+            .metadata
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?
+        {
+            AuthorityRecoveryRecord::Manifest(manifest) => Ok(manifest),
+            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                bail!("PostgreSQL authority has no durable traffic manifest")
+            }
+            AuthorityRecoveryRecord::Indeterminate => {
+                bail!("traffic authority recovery is indeterminate")
+            }
+        }
     }
 }
 
