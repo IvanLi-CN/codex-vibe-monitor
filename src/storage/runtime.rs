@@ -88,13 +88,7 @@ impl StorageRuntimeRouter {
             },
         );
         let source_fence = SourceWriteFence::new(1);
-        let metadata = Arc::new(SqliteMigrationMetadataStore::new(
-            pool.clone(),
-            config
-                .postgres_database_url
-                .as_deref()
-                .is_some_and(|url| !url.trim().is_empty()),
-        ));
+        let metadata = Arc::new(SqliteMigrationMetadataStore::new(pool.clone(), config));
         metadata.ensure_schema().await?;
 
         let traffic_authority = Arc::new(TrafficFactStore::with_authority_and_fence(
@@ -138,11 +132,9 @@ impl StorageRuntimeRouter {
             .await?;
         match record {
             AuthorityRecoveryRecord::Manifest(manifest) => {
-                validate_manifest_identity(
-                    &manifest,
-                    &status,
-                    expected_postgres_target_identity(&self.worker.config),
-                )?;
+                let expected_target_identity =
+                    expected_postgres_target_identity(&self.worker.config);
+                validate_manifest_identity(&manifest, &status, &expected_target_identity)?;
                 if manifest.authority.backend != BackendKind::Postgres {
                     bail!("durable traffic authority manifest is not PostgreSQL");
                 }
@@ -152,6 +144,11 @@ impl StorageRuntimeRouter {
                 if !matches!(
                     status.state,
                     StorageMigrationState::Postgres
+                        | StorageMigrationState::Preparing
+                        | StorageMigrationState::Copying
+                        | StorageMigrationState::CatchingUp
+                        | StorageMigrationState::Verifying
+                        | StorageMigrationState::Ready
                         | StorageMigrationState::Switching
                         | StorageMigrationState::Recovering
                 ) {
@@ -446,11 +443,8 @@ impl StorageMigrationWorker {
         let authority = self.traffic_gate.current_authority().await;
         if authority.backend == BackendKind::Postgres {
             let manifest = self.load_traffic_authority_manifest().await?;
-            validate_manifest_identity(
-                &manifest,
-                &status,
-                expected_postgres_target_identity(&self.config),
-            )?;
+            let expected_target_identity = expected_postgres_target_identity(&self.config);
+            validate_manifest_identity(&manifest, &status, &expected_target_identity)?;
             if manifest.authority != authority {
                 bail!(
                     "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
@@ -607,7 +601,7 @@ impl StorageMigrationWorker {
             source_watermark: watermark,
         };
         self.migration
-            .publish_progress(StorageMigrationProgress {
+            .publish_progress_durable(StorageMigrationProgress {
                 phase: StorageMigrationState::Switching,
                 captured_through: Some(watermark),
                 applied_through: Some(watermark),
@@ -632,11 +626,8 @@ impl StorageMigrationWorker {
         let manifest = self.load_traffic_authority_manifest().await?;
         let authority = self.traffic_gate.current_authority().await;
         let status = self.migration.snapshot().await;
-        validate_manifest_identity(
-            &manifest,
-            &status,
-            expected_postgres_target_identity(&self.config),
-        )?;
+        let expected_target_identity = expected_postgres_target_identity(&self.config);
+        validate_manifest_identity(&manifest, &status, &expected_target_identity)?;
         if manifest.authority != authority {
             bail!(
                 "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
@@ -691,14 +682,14 @@ fn migration_resume_work(state: StorageMigrationState) -> Result<MigrationResume
 #[derive(Debug, Clone)]
 pub(crate) struct SqliteMigrationMetadataStore {
     pool: Pool<Sqlite>,
-    target_configured: bool,
+    target_identity: String,
 }
 
 impl SqliteMigrationMetadataStore {
-    fn new(pool: Pool<Sqlite>, target_configured: bool) -> Self {
+    fn new(pool: Pool<Sqlite>, config: &StorageConfig) -> Self {
         Self {
             pool,
-            target_configured,
+            target_identity: config.postgres_target_identity(),
         }
     }
 
@@ -784,11 +775,7 @@ impl AuthorityManifestStore for SqliteMigrationMetadataStore {
                 installation_id: INSTALLATION_ID.to_string(),
                 module,
                 source_identity: SOURCE_IDENTITY.to_string(),
-                target_identity: if self.target_configured {
-                    "postgres:configured".to_string()
-                } else {
-                    "postgres:unconfigured".to_string()
-                },
+                target_identity: self.target_identity.clone(),
                 source_watermark: 0,
             });
         };
@@ -1024,16 +1011,8 @@ fn recovery_context_from_record(
     }
 }
 
-fn expected_postgres_target_identity(config: &StorageConfig) -> &'static str {
-    if config
-        .postgres_database_url
-        .as_deref()
-        .is_some_and(|url| !url.trim().is_empty())
-    {
-        "postgres:configured"
-    } else {
-        "postgres:unconfigured"
-    }
+fn expected_postgres_target_identity(config: &StorageConfig) -> String {
+    config.postgres_target_identity()
 }
 
 fn validate_manifest_identity(
@@ -1201,6 +1180,7 @@ mod tests {
             postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
             ..StorageConfig::default()
         };
+        let target_identity = config.postgres_target_identity();
         for phase in [
             StorageMigrationState::Switching,
             StorageMigrationState::Recovering,
@@ -1217,15 +1197,15 @@ mod tests {
                     generation: 2,
                 },
                 source_watermark: 7,
-                target_identity: "postgres:configured".to_string(),
+                target_identity: target_identity.clone(),
             };
 
-            validate_manifest_identity(&manifest, &status, "postgres:configured")
+            validate_manifest_identity(&manifest, &status, &target_identity)
                 .expect("a committed manifest may repair a stale transitional watermark");
 
             let ahead_migration = StorageMigrationRuntime::new(&config);
             let ahead = prepare_transitional_migration_status(&ahead_migration, phase, 8).await?;
-            let error = validate_manifest_identity(&manifest, &ahead, "postgres:configured")
+            let error = validate_manifest_identity(&manifest, &ahead, &target_identity)
                 .expect_err("transitional status must not be ahead of the manifest watermark");
             assert!(error.to_string().contains("watermark"));
         }
@@ -1242,6 +1222,7 @@ mod tests {
             postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
             ..StorageConfig::default()
         };
+        let target_identity = config.postgres_target_identity();
         let migration = Arc::new(StorageMigrationRuntime::new(&config));
         let status = prepare_transitional_migration_status(
             migration.as_ref(),
@@ -1249,14 +1230,14 @@ mod tests {
             7,
         )
         .await?;
-        let metadata = Arc::new(SqliteMigrationMetadataStore::new(pool.clone(), true));
+        let metadata = Arc::new(SqliteMigrationMetadataStore::new(pool.clone(), &config));
         metadata.ensure_schema().await?;
         let context = AuthorityRecoveryContext {
             migration_id: MIGRATION_ID.to_string(),
             installation_id: INSTALLATION_ID.to_string(),
             module: StorageModule::TrafficArchive,
             source_identity: SOURCE_IDENTITY.to_string(),
-            target_identity: "postgres:configured".to_string(),
+            target_identity: target_identity.clone(),
             source_watermark: 7,
         };
         metadata.set_recovery_context(&context).await?;

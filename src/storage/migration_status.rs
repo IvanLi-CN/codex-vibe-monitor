@@ -21,8 +21,6 @@ use tokio::{
 const MIGRATION_ID: &str = "storage-migration";
 const INSTALLATION_ID: &str = "local";
 const SOURCE_IDENTITY: &str = "sqlite:local";
-const TARGET_IDENTITY_CONFIGURED: &str = "postgres:configured";
-const TARGET_IDENTITY_UNCONFIGURED: &str = "postgres:unconfigured";
 const STORAGE_MIGRATION_RUNTIME_TABLE: &str = "storage_migration_runtime";
 const STORAGE_MIGRATION_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -355,6 +353,7 @@ pub(crate) struct StorageMigrationRuntime {
     events: watch::Sender<StorageMigrationEvent>,
     event_receiver: watch::Receiver<StorageMigrationEvent>,
     pool: Option<Pool<Sqlite>>,
+    target_identity: String,
     progress_flush: Arc<ProgressFlushCoordinator>,
     #[cfg(test)]
     progress_publish_count: Arc<AtomicUsize>,
@@ -492,11 +491,7 @@ impl StorageMigrationRuntime {
             .postgres_database_url
             .as_deref()
             .is_some_and(|url| !url.trim().is_empty());
-        let target_identity = if target_configured {
-            TARGET_IDENTITY_CONFIGURED
-        } else {
-            TARGET_IDENTITY_UNCONFIGURED
-        };
+        let target_identity = config.postgres_target_identity();
         let now = Utc::now();
         let status = MigrationStatus {
             migration_id: MIGRATION_ID.to_string(),
@@ -541,6 +536,7 @@ impl StorageMigrationRuntime {
             events,
             event_receiver,
             pool,
+            target_identity,
             progress_flush: Arc::new(ProgressFlushCoordinator {
                 notify: Arc::new(Notify::new()),
                 worker_started: AtomicBool::new(false),
@@ -671,16 +667,11 @@ impl StorageMigrationRuntime {
 
     pub(crate) async fn validate_runtime_identity(&self) -> Result<()> {
         let state = self.state.lock().await;
-        let expected_target_identity = if state.target_configured {
-            TARGET_IDENTITY_CONFIGURED
-        } else {
-            TARGET_IDENTITY_UNCONFIGURED
-        };
         if state.status.migration_id != MIGRATION_ID
             || state.status.installation_id != INSTALLATION_ID
             || state.status.module != StorageModule::TrafficArchive
             || state.status.source_identity != SOURCE_IDENTITY
-            || state.status.target_identity != expected_target_identity
+            || state.status.target_identity != self.target_identity
         {
             bail!("persisted storage migration status belongs to another runtime identity");
         }

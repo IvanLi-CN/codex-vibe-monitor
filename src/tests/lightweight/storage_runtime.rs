@@ -106,7 +106,7 @@ async fn restart_rejects_postgres_status_without_durable_authority_manifest() {
 }
 
 #[tokio::test]
-async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
+async fn restart_repairs_stale_pre_switch_progress_from_committed_manifest() {
     let database_path = std::env::temp_dir().join(format!(
         "codex-vibe-monitor-storage-runtime-recovery-{}.sqlite",
         std::process::id()
@@ -144,7 +144,7 @@ async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
         installation_id: "local".to_string(),
         module: StorageModule::TrafficArchive,
         source_identity: "sqlite:local".to_string(),
-        target_identity: "postgres:configured".to_string(),
+        target_identity: config.postgres_target_identity(),
         source_watermark: 7,
     };
     router
@@ -153,28 +153,6 @@ async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
         .set_recovery_context(&context)
         .await
         .expect("authority recovery context should persist");
-    let manifest = ModuleAuthorityManifest {
-        migration_id: context.migration_id.clone(),
-        installation_id: context.installation_id.clone(),
-        source_identity: context.source_identity.clone(),
-        module: context.module,
-        authority: ModuleAuthority {
-            backend: BackendKind::Postgres,
-            generation: 2,
-        },
-        source_watermark: context.source_watermark,
-        target_identity: context.target_identity.clone(),
-    };
-    assert_eq!(
-        router
-            .worker()
-            .metadata
-            .publish_authority_manifest(&manifest, &context)
-            .await
-            .expect("authority manifest should publish"),
-        AuthorityPublication::Committed
-    );
-
     migration
         .apply_control(StorageMigrationControlRequest { paused: false })
         .await
@@ -193,17 +171,16 @@ async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
             .await
             .expect("migration phase should persist");
     }
-    // Model a crash or transient SQLite failure after manifest publication but before the
-    // final Switching watermark is durable: status is still the pre-fence value 6.
+    // Model an older release whose pre-switch boundary was still durable as Ready.
     migration
         .publish_progress_durable(StorageMigrationProgress {
-            phase: StorageMigrationState::Switching,
+            phase: StorageMigrationState::Ready,
             captured_through: Some(6),
             applied_through: Some(6),
             ..StorageMigrationProgress::default()
         })
         .await
-        .expect("stale Switching checkpoint should persist");
+        .expect("pre-switch checkpoint should persist");
 
     sqlx::query(
         "CREATE TABLE migration_change_log_state (
@@ -225,6 +202,28 @@ async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
     .execute(&pool)
     .await
     .expect("source authority fence should persist");
+
+    let manifest = ModuleAuthorityManifest {
+        migration_id: context.migration_id.clone(),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        module: context.module,
+        authority: ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        },
+        source_watermark: context.source_watermark,
+        target_identity: context.target_identity.clone(),
+    };
+    assert_eq!(
+        router
+            .worker()
+            .metadata
+            .publish_authority_manifest(&manifest, &context)
+            .await
+            .expect("authority manifest should publish"),
+        AuthorityPublication::Committed
+    );
 
     pool.close().await;
     let error = migration
@@ -252,7 +251,7 @@ async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
     let restarted_migration = Arc::new(
         StorageMigrationRuntime::load(&config, restarted_pool.clone())
             .await
-            .expect("stale Switching status should reload"),
+            .expect("stale pre-switch status should reload"),
     );
     let recovered = StorageRuntimeRouter::initialize(
         restarted_pool,
@@ -261,7 +260,7 @@ async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
         CancellationToken::new(),
     )
     .await
-    .expect("committed manifest should repair stale Switching status");
+    .expect("committed manifest should repair stale pre-switch status");
 
     assert_eq!(
         recovered
@@ -361,7 +360,7 @@ async fn restart_recovers_durable_postgres_authority_without_capture_scan() {
         installation_id: "local".to_string(),
         module: StorageModule::TrafficArchive,
         source_identity: "sqlite:local".to_string(),
-        target_identity: "postgres:configured".to_string(),
+        target_identity: config.postgres_target_identity(),
         source_watermark: 7,
     };
     router
@@ -539,7 +538,9 @@ async fn restart_rejects_every_durable_postgres_manifest_identity_mismatch() {
             "installation_id" => manifest.installation_id = "other-installation".to_string(),
             "module" => manifest.module = StorageModule::Analytics,
             "source_identity" => manifest.source_identity = "sqlite:other".to_string(),
-            "target_identity" => manifest.target_identity = "postgres:other".to_string(),
+            "target_identity" => {
+                manifest.target_identity = "postgres://127.0.0.1:5432/other".to_string()
+            }
             "source_watermark" => manifest.source_watermark = 6,
             _ => unreachable!("test field is listed above"),
         }
@@ -591,7 +592,7 @@ async fn seed_postgres_authority_fixture(
         installation_id: "local".to_string(),
         module: StorageModule::TrafficArchive,
         source_identity: "sqlite:local".to_string(),
-        target_identity: "postgres:configured".to_string(),
+        target_identity: config.postgres_target_identity(),
         source_watermark: 7,
     };
     router

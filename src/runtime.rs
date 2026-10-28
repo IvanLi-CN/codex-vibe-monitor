@@ -56,6 +56,42 @@ impl StartupRecoveryFence {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StartupRecoveryCompletion {
+    completed: Arc<AtomicBool>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl StartupRecoveryCompletion {
+    fn new() -> Self {
+        Self {
+            completed: Arc::new(AtomicBool::new(false)),
+            changed: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn complete(&self) {
+        self.completed.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait(&self, shutdown: &CancellationToken) -> bool {
+        loop {
+            if self.completed.load(Ordering::Acquire) {
+                return true;
+            }
+            let notified = self.changed.notified();
+            if self.completed.load(Ordering::Acquire) {
+                return true;
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => return false,
+                _ = notified => {}
+            }
+        }
+    }
+}
+
 async fn capture_startup_recovery_fence(
     options: &SqliteConnectOptions,
 ) -> Result<StartupRecoveryFence> {
@@ -764,6 +800,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -772,15 +809,18 @@ fn publish_http_readiness_and_spawn_recovery(
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
     recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
-) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+) -> (JoinHandle<()>, StartupRecoveryCompletion) {
+    let completion = StartupRecoveryCompletion::new();
+    let handle = publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
         recovery_connect_options,
-    )
+        Some(completion.clone()),
+    );
+    (handle, completion)
 }
 
 #[cfg(test)]
@@ -793,6 +833,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         state,
         startup_started_at,
         summary_deadline,
+        None,
         None,
         None,
         None,
@@ -817,15 +858,18 @@ pub(crate) fn publish_http_readiness_and_spawn_recovery_for_test(
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
     recovery_connect_options: SqliteConnectOptions,
-) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+) -> (JoinHandle<()>, StartupRecoveryCompletion) {
+    let completion = StartupRecoveryCompletion::new();
+    let handle = publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
         Some(Arc::new(recovery_connect_options)),
-    )
+        Some(completion.clone()),
+    );
+    (handle, completion)
 }
 
 #[cfg(test)]
@@ -841,6 +885,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         Some(summary_start_delay),
         None,
         None,
+        None,
     )
 }
 
@@ -851,6 +896,7 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     summary_start_delay: Option<Duration>,
     startup_recovery_fence: Option<StartupRecoveryFence>,
     startup_recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
+    startup_recovery_completion: Option<StartupRecoveryCompletion>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
     let readiness_at = Instant::now();
@@ -860,19 +906,33 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     );
 
     crate::observability::contention::spawn_performance(state.observability.clone(), async move {
-        let recovery_handle = startup_recovery_fence
-            .zip(startup_recovery_connect_options)
-            .map(|(fence, recovery_connect_options)| {
-                crate::observability::contention::spawn_performance(
+        let recovery_handle = match startup_recovery_fence.zip(startup_recovery_connect_options) {
+            Some((fence, recovery_connect_options)) => {
+                let completion = startup_recovery_completion.clone();
+                let recovery_state = state.clone();
+                Some(crate::observability::contention::spawn_performance(
                     state.observability.clone(),
-                    run_startup_recovery(
-                        state.clone(),
-                        fence,
-                        readiness_at,
-                        recovery_connect_options,
-                    ),
-                )
-            });
+                    async move {
+                        run_startup_recovery(
+                            recovery_state,
+                            fence,
+                            readiness_at,
+                            recovery_connect_options,
+                        )
+                        .await;
+                        if let Some(completion) = completion {
+                            completion.complete();
+                        }
+                    },
+                ))
+            }
+            None => {
+                if let Some(completion) = startup_recovery_completion {
+                    completion.complete();
+                }
+                None
+            }
+        };
         let post_readiness_warmups_handle = crate::observability::contention::spawn_performance(
             state.observability.clone(),
             run_post_readiness_runtime_warmups(state.clone()),
@@ -1822,12 +1882,29 @@ where
         .await;
     }
 
-    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_recovery(
-        state.clone(),
-        startup_started_at,
-        startup_recovery_fence,
-        startup_recovery_connect_options,
-    ));
+    let (startup_recovery_handle, startup_recovery_completion) =
+        publish_http_readiness_and_spawn_recovery(
+            state.clone(),
+            startup_started_at,
+            startup_recovery_fence,
+            startup_recovery_connect_options,
+        );
+    startup_hot_read_hydration_handle = Some(startup_recovery_handle);
+    if !startup_recovery_completion.wait(&cancel).await {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            pool_orphan_recovery_handle,
+            retention_handle,
+            startup_backfill_handle,
+            startup_hot_read_hydration_handle,
+        )
+        .await;
+    }
     if let Some(storage_runtime) = state.storage_runtime.as_ref() {
         storage_runtime.start().await;
     }

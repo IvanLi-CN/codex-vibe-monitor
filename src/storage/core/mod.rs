@@ -854,23 +854,33 @@ impl MigrationState {
             ),
             Self::Preparing => matches!(
                 next,
-                Self::Copying | Self::Paused | Self::Blocked | Self::Failed
+                Self::Copying | Self::Postgres | Self::Paused | Self::Blocked | Self::Failed
             ),
             Self::Copying => matches!(
                 next,
-                Self::CatchingUp | Self::Paused | Self::Blocked | Self::Failed
+                Self::CatchingUp | Self::Postgres | Self::Paused | Self::Blocked | Self::Failed
             ),
             Self::CatchingUp => matches!(
                 next,
-                Self::Copying | Self::Verifying | Self::Paused | Self::Blocked | Self::Failed
+                Self::Copying
+                    | Self::Verifying
+                    | Self::Postgres
+                    | Self::Paused
+                    | Self::Blocked
+                    | Self::Failed
             ),
             Self::Verifying => matches!(
                 next,
-                Self::Ready | Self::CatchingUp | Self::Paused | Self::Blocked | Self::Failed
+                Self::Ready
+                    | Self::CatchingUp
+                    | Self::Postgres
+                    | Self::Paused
+                    | Self::Blocked
+                    | Self::Failed
             ),
             Self::Ready => matches!(
                 next,
-                Self::Switching | Self::Paused | Self::Blocked | Self::Failed
+                Self::Switching | Self::Postgres | Self::Paused | Self::Blocked | Self::Failed
             ),
             Self::Switching => matches!(
                 next,

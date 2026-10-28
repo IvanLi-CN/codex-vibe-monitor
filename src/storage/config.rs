@@ -51,6 +51,35 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
+    pub(crate) fn postgres_target_identity(&self) -> String {
+        let Some(database_url) = self.postgres_database_url.as_deref() else {
+            return "postgres:unconfigured".to_string();
+        };
+        let Ok(url) = url::Url::parse(database_url) else {
+            return "postgres:invalid".to_string();
+        };
+        if !matches!(url.scheme(), "postgres" | "postgresql") {
+            return "postgres:invalid".to_string();
+        }
+        let Some(host) = url.host_str() else {
+            return "postgres:invalid".to_string();
+        };
+        let Some(port) = url.port_or_known_default() else {
+            return "postgres:invalid".to_string();
+        };
+        let database = url.path().trim_start_matches('/');
+        if database.is_empty() {
+            return "postgres:invalid".to_string();
+        }
+        let host = host.to_ascii_lowercase();
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host
+        };
+        format!("postgres://{host}:{port}/{database}")
+    }
+
     pub(crate) fn from_env() -> Result<Self> {
         let postgres_database_url = match env::var(ENV_POSTGRES_DATABASE_URL) {
             Ok(value) if !value.trim().is_empty() => Some(value),
