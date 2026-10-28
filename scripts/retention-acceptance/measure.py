@@ -1518,6 +1518,26 @@ def run_trial(
             {name: len(added[name]) for name in DATASETS},
             require_summary_proof=version == "candidate",
         )
+        if version == "candidate" and not proof_status["ready"]:
+            # A catch-up owner can publish the next manifest immediately after the
+            # first ready poll. Re-sample the strict candidate proof before the
+            # oracle so that a publication-edge snapshot cannot become a false
+            # trial failure.
+            task_evidence = wait_for_task_evidence(
+                main_db,
+                maintenance_db,
+                cutoff,
+                {name: len(added[name]) for name in DATASETS},
+                phase_started,
+                version,
+                competitor_raw_dir=raw_dir,
+            )
+            proof_status = archive_proof_status(
+                main_db,
+                cutoff,
+                {name: len(added[name]) for name in DATASETS},
+                require_summary_proof=True,
+            )
         competitor_oracle = competitor_file_oracle(raw_dir)
         post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
