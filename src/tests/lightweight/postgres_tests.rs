@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use axum::extract::{Path, Query, State};
 use serde::Deserialize;
-use sqlx::{SqlitePool, postgres::PgPoolOptions};
+use sqlx::{Connection, SqlitePool, postgres::PgPoolOptions, sqlite::SqliteConnectOptions};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId, RecoveryObligation};
@@ -31,7 +31,8 @@ use crate::storage::migration_sqlx::{
 use crate::storage::native::{NativeRow, NativeValue, PostgresNativeSchemaAdapter};
 use crate::storage::traffic::TrafficFactStore;
 use crate::{
-    ListQuery, LocateInvocationQuery, fetch_invocation_attempt_response_body,
+    ListQuery, LocateInvocationQuery, configure_offline_maintenance_business_pool_options,
+    connect_primary_sqlite_connection, fetch_invocation_attempt_response_body,
     fetch_invocation_history_overview_with_runtime_overlay, fetch_invocation_new_records_count,
     fetch_invocation_pool_attempts, fetch_invocation_record_detail, fetch_invocation_request_body,
     fetch_invocation_response_body, fetch_invocation_suggestions, fetch_invocation_summary,
@@ -565,11 +566,15 @@ async fn sqlite_catalog_excludes_migration_capture_metadata_from_native_tables()
 
 #[tokio::test]
 async fn native_sqlite_capture_triggers_capture_and_fence_legacy_writes() {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
+    let pool = configure_offline_maintenance_business_pool_options()
         .connect("sqlite::memory:")
         .await
         .unwrap();
+    let recursive_triggers: i64 = sqlx::query_scalar("PRAGMA recursive_triggers")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(recursive_triggers, 1);
     sqlx::query(
         "CREATE TABLE codex_invocations (
             id INTEGER PRIMARY KEY,
@@ -649,6 +654,79 @@ async fn native_sqlite_capture_triggers_capture_and_fence_legacy_writes() {
     assert_eq!(changes.len(), 3);
     assert_eq!(source.source_write_authority().await.unwrap().generation, 2);
     assert!(source.source_write_authority().await.unwrap().fenced);
+}
+
+#[tokio::test]
+async fn startup_recovery_connection_cannot_bypass_native_sqlite_capture() {
+    let database_url = format!(
+        "sqlite:file:startup-recovery-native-capture-{}?mode=memory&cache=shared",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos()
+    );
+    let pool = crate::configure_primary_sqlite_pool_options(
+        sqlx::sqlite::SqlitePoolOptions::new().max_connections(1),
+    )
+    .connect(&database_url)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE codex_invocations (
+            id INTEGER PRIMARY KEY,
+            payload TEXT,
+            raw_payload BLOB
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let source = SqliteMigrationSource::from_native_catalog(
+        pool.clone(),
+        "startup-recovery-native-capture",
+        "sqlite:test",
+        "migration_change_log",
+        &native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap();
+    source.ensure_capture_schema().await.unwrap();
+    source.ensure_native_capture_triggers().await.unwrap();
+
+    let options = database_url
+        .parse::<SqliteConnectOptions>()
+        .expect("startup recovery SQLite options should parse");
+    let mut connection = connect_primary_sqlite_connection(&options)
+        .await
+        .expect("startup recovery SQLite connection should open");
+    let recursive_triggers: i64 = sqlx::query_scalar("PRAGMA recursive_triggers")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(recursive_triggers, 1);
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (id, payload, raw_payload)
+         VALUES (1, 'startup-recovery', X'00FF')",
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+
+    let changes = source
+        .changes_after(0, ChangeBatchLimits::default())
+        .await
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].kind, ChangeKind::Insert);
+
+    connection.close().await.unwrap();
+    pool.close().await;
 }
 
 #[tokio::test]

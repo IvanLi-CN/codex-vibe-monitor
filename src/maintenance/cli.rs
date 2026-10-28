@@ -129,6 +129,11 @@ pub(crate) fn selected_owned_maintenance(cli: &CliArgs) -> Result<Option<(&'stat
     })
 }
 
+pub(crate) fn configure_offline_maintenance_business_pool_options() -> SqlitePoolOptions {
+    crate::runtime::configure_primary_sqlite_pool_options(SqlitePoolOptions::new())
+        .max_connections(3)
+}
+
 pub(crate) async fn run_owned_maintenance_cli(
     config: &AppConfig,
     task_key: &str,
@@ -181,8 +186,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                     Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
                 )?,
             )?;
-            let pool = SqlitePoolOptions::new()
-                .max_connections(3)
+            let pool = configure_offline_maintenance_business_pool_options()
                 .connect_with(options)
                 .await?;
             let mut maintenance_pool = None;
