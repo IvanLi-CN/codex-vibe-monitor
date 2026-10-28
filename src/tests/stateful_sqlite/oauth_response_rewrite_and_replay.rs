@@ -416,7 +416,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         payload["path"].as_str(),
         Some("/backend-api/codex/responses")
     );
-    assert_eq!(payload["contentEncodingHeader"].as_str(), Some("gzip"));
+    assert_eq!(payload["contentEncodingHeader"].as_str(), Some("zstd"));
     assert_eq!(payload["received"]["stream"].as_bool(), Some(false));
     assert_eq!(payload["received"]["max_output_tokens"].as_u64(), Some(64));
     assert_eq!(

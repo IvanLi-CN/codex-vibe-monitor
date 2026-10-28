@@ -1450,6 +1450,11 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex capture request body");
+    let body_for_display = if content_encoding.as_deref() == Some("zstd") {
+        zstd::decode_all(body.as_ref()).unwrap_or_else(|_| body.to_vec())
+    } else {
+        body.to_vec()
+    };
     (
         StatusCode::OK,
         Json(json!({
@@ -1470,7 +1475,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
             "forwardedHeaderNames": forwarded_header_names,
             "contentEncoding": content_encoding,
             "bodyLength": body.len(),
-            "body": String::from_utf8_lossy(&body),
+            "body": String::from_utf8_lossy(&body_for_display),
         })),
     )
         .into_response()
@@ -1561,8 +1566,16 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex responses capture request body");
-    let (decoded_body, decode_error) =
-        decode_response_payload(&body, content_encoding.as_deref(), false);
+    let (decoded_body, decode_error) = if content_encoding.as_deref() == Some("zstd") {
+        match zstd::decode_all(body.as_ref()) {
+            Ok(decoded) => (Bytes::from(decoded), None),
+            Err(err) => (body.clone(), Some(format!("zstd_decode_error:{err}"))),
+        }
+    } else {
+        let (decoded, decode_error) =
+            decode_response_payload(&body, content_encoding.as_deref(), false);
+        (Bytes::copy_from_slice(decoded.as_ref()), decode_error)
+    };
     assert!(
         decode_error.is_none(),
         "decode oauth capture body: {decode_error:?}"
