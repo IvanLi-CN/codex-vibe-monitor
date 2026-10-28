@@ -1144,6 +1144,31 @@ async fn flush_sqlite_owned_p2_side_effects(
     Ok(())
 }
 
+async fn configure_sqlite_capture_transaction(
+    transaction: &mut crate::storage::traffic::TrafficFactTransaction,
+    recovery_replay: bool,
+) -> Result<()> {
+    // SQLite's native capture triggers need recursive trigger execution to observe the implicit
+    // DELETE emitted by INSERT OR REPLACE. Configure it on every writer transaction so capture
+    // remains in the same transaction and generation as the business fact.
+    sqlx::query("PRAGMA recursive_triggers = ON")
+        .execute(transaction.sqlite_connection()?)
+        .await
+        .context("enable recursive SQLite capture triggers")
+        .map(|_| ())?;
+    if recovery_replay {
+        sqlx::query(&format!(
+            "PRAGMA busy_timeout = {}",
+            crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
+        ))
+        .execute(transaction.sqlite_connection()?)
+        .await
+        .context("configure startup recovery SQLite busy timeout")
+        .map(|_| ())?;
+    }
+    Ok(())
+}
+
 /// Persist account-selection observations before the PostgreSQL fact transaction commits.
 ///
 /// SQLite and PostgreSQL cannot share a transaction here. The outbox is therefore committed
@@ -1309,17 +1334,10 @@ async fn flush_pending_batch_inner_with_authority(
             );
         }
         execute_started = Instant::now();
-        let recovery_setup_result: Result<()> = if recovery_replay
-            && terminal_backend == crate::storage::core::BackendKind::Sqlite
+        let recovery_setup_result: Result<()> = if terminal_backend
+            == crate::storage::core::BackendKind::Sqlite
         {
-            sqlx::query(&format!(
-                "PRAGMA busy_timeout = {}",
-                crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
-            ))
-            .execute(terminal_tx.sqlite_connection()?)
-            .await
-            .context("configure startup recovery SQLite busy timeout")
-            .map(|_| ())
+            configure_sqlite_capture_transaction(&mut terminal_tx, recovery_replay).await
         } else {
             Ok(())
         };
@@ -1756,17 +1774,10 @@ async fn flush_pending_batch_inner_with_authority(
     let execute_started = Instant::now();
     let mut terminal_overlay_keys = Vec::new();
     let execute_result: Result<()> = async {
-    let recovery_setup_result: Result<()> = if recovery_replay
-        && traffic_backend == crate::storage::core::BackendKind::Sqlite
+    let recovery_setup_result: Result<()> = if traffic_backend
+        == crate::storage::core::BackendKind::Sqlite
     {
-        sqlx::query(&format!(
-            "PRAGMA busy_timeout = {}",
-            crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
-        ))
-        .execute(traffic_tx.sqlite_connection()?)
-        .await
-        .context("configure startup recovery SQLite busy timeout")
-        .map(|_| ())
+        configure_sqlite_capture_transaction(&mut traffic_tx, recovery_replay).await
     } else {
         Ok(())
     };
