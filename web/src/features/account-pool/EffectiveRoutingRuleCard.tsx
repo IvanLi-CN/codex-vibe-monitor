@@ -75,6 +75,7 @@ type EditablePolicyField =
   | "imageToolRewriteMode"
   | "codexImagegenRewriteMode"
   | "requestCompressionAlgorithm"
+  | "oauthRequestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
   | "availableModels"
@@ -95,6 +96,7 @@ export type EffectiveRoutingRuleCardRowKey =
   | "imageToolRewriteMode"
   | "codexImagegenRewriteMode"
   | "requestCompressionAlgorithm"
+  | "oauthRequestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
   | "availableModels"
@@ -113,6 +115,7 @@ const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]
   ["imageToolRewriteMode", "imageToolRewriteMode"],
   ["codexImagegenRewriteMode", "codexImagegenRewriteMode"],
   ["requestCompressionAlgorithm", "requestCompressionAlgorithm"],
+  ["oauthRequestCompressionAlgorithm", "oauthRequestCompressionAlgorithm"],
   ["concurrencyLimit", "concurrencyLimit"],
   ["upstream429Retry", "upstream429Retry"],
   ["availableModels", "availableModels"],
@@ -241,6 +244,7 @@ interface EffectiveRoutingRuleCardProps {
     fieldCodexImagegenRewriteMode?: string;
     codexImagegenRewriteHint?: string;
     fieldRequestCompression?: string;
+    fieldOauthRequestCompression?: string;
     fieldConcurrency?: string;
     fieldUpstream429?: string;
     fieldAvailableModels?: string;
@@ -307,6 +311,7 @@ const defaultFieldSources: FieldSourceMap = {
   imageToolRewriteMode: "root",
   codexImagegenRewriteMode: "root",
   requestCompressionAlgorithm: "root",
+  oauthRequestCompressionAlgorithm: "root",
   concurrencyLimit: "root",
   upstream429Retry: "root",
   availableModels: "root",
@@ -492,6 +497,11 @@ function valueVariant(
     return "secondary";
   }
   if (field === "requestCompressionAlgorithm") {
+    if (value === labels.requestCompressionIdentity) return "success";
+    if (value === labels.requestCompressionFollow) return "info";
+    return "primary";
+  }
+  if (field === "oauthRequestCompressionAlgorithm") {
     if (value === labels.requestCompressionIdentity) return "success";
     if (value === labels.requestCompressionFollow) return "info";
     return "primary";
@@ -801,6 +811,7 @@ export function EffectiveRoutingRuleCard({
           "imageToolRewriteMode",
           "codexImagegenRewriteMode",
           "requestCompressionAlgorithm",
+          "oauthRequestCompressionAlgorithm",
           "concurrencyLimit",
           "upstream429Retry",
           "availableModels",
@@ -1156,6 +1167,36 @@ export function EffectiveRoutingRuleCard({
           onChange={(value) =>
             changeField("requestCompressionAlgorithm", {
               requestCompressionAlgorithm: value,
+            })
+          }
+        />
+      ),
+    },
+    {
+      key: "oauthRequestCompressionAlgorithm" as const,
+      field: "oauthRequestCompressionAlgorithm" as const,
+      label: labels.fieldOauthRequestCompression ?? "OAuth request compression",
+      value: requestCompressionAlgorithmLabel(
+        resolvedRule.oauthRequestCompressionAlgorithm ?? "identity",
+        labels,
+      ),
+      source: fieldSources.oauthRequestCompressionAlgorithm ?? "root",
+      clearPayload: { oauthRequestCompressionAlgorithm: null },
+      editor: (
+        <PolicyInlineOptionGroup<RequestCompressionAlgorithm>
+          ariaLabel={labels.fieldOauthRequestCompression ?? "OAuth request compression"}
+          value={resolvedRule.oauthRequestCompressionAlgorithm ?? "identity"}
+          disabled={isBusy("oauthRequestCompressionAlgorithm")}
+          options={[
+            { value: "follow", label: labels.requestCompressionFollow },
+            { value: "identity", label: labels.requestCompressionIdentity },
+            { value: "gzip", label: labels.requestCompressionGzip },
+            { value: "deflate", label: labels.requestCompressionDeflate },
+            { value: "zstd", label: labels.requestCompressionZstd },
+          ]}
+          onChange={(value) =>
+            changeField("oauthRequestCompressionAlgorithm", {
+              oauthRequestCompressionAlgorithm: value,
             })
           }
         />
@@ -1936,6 +1977,8 @@ function fieldToSource(
       return sources.codexImagegenRewriteMode ?? "root";
     case "requestCompressionAlgorithm":
       return sources.requestCompressionAlgorithm ?? "root";
+    case "oauthRequestCompressionAlgorithm":
+      return sources.oauthRequestCompressionAlgorithm ?? "root";
     case "concurrencyLimit":
       return sources.concurrencyLimit;
     case "upstream429Retry":

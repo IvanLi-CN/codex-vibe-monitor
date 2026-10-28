@@ -447,7 +447,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.requestCompressionSectionTitle":
       "Upstream request compression",
     "accountPool.upstreamAccounts.routing.requestCompressionSectionDescription":
-      "Set the default request-body compression used for API key upstream HTTP requests. Group and account overrides can change the algorithm, but the level preset stays global.",
+      "Set independent API key and OAuth defaults for upstream request bodies. Group and account overrides can change the algorithm, but the level preset stays global.",
     "accountPool.upstreamAccounts.routing.requestCompressionAlgorithmLabel":
       "Default compression algorithm",
     "accountPool.upstreamAccounts.routing.requestCompressionLevelPresetLabel":
@@ -798,9 +798,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm":
       "Request compression",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionHint":
-      "Override the algorithm only for API key upstream accounts in this group. Clear it to inherit the root default.",
+      "Override the algorithm for upstream accounts in this group. Clear it to inherit the matching API key or OAuth root default.",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionMixedGroupHint":
-      "Mixed groups only apply this override when the final target account is an API key upstream.",
+      "Mixed groups apply this override using the final account's auth mode; OAuth accounts inherit the OAuth root default when unset.",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle":
       "Status change trigger reasons",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
@@ -1002,6 +1002,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "System denied models",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "Account proxy",
     "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression": "Request compression",
+    "accountPool.upstreamAccounts.effectiveRule.fieldOauthRequestCompression":
+      "OAuth request compression",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "Inherited / unrestricted",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "No models allowed",
@@ -2202,7 +2204,7 @@ const baseTranslations = {
     "settings.revertSave": "Revert to saved",
     "settings.routing.title": "Upstream request defaults",
     "settings.routing.description":
-      "Configure the global request-body compression and request path timeouts for API key upstream HTTP requests. Group and account rules can override only the algorithm.",
+      "Configure independent global request-body compression defaults for API key and OAuth upstream HTTP requests, plus request path timeouts. Group and account rules can override only the matching algorithm.",
     "settings.routing.readOnly": "Read-only",
     "settings.routing.saved": "Saved",
     "settings.routing.unsaved": "Unsaved changes",
@@ -2211,11 +2213,14 @@ const baseTranslations = {
       "Routing defaults are unavailable right now. Refresh the page and try again.",
     "settings.routing.requestCompressionSectionTitle": "Upstream request compression",
     "settings.routing.requestCompressionSectionDescription":
-      "Choose the default request-body compression algorithm and the global level preset used for API key upstream HTTP requests.",
+      "Choose independent API key and OAuth request-body compression defaults, plus the global level preset shared by both upstream modes.",
     "settings.routing.requestCompressionAlgorithmLabel": "Default compression algorithm",
+    "settings.routing.oauthRequestCompressionAlgorithmLabel": "OAuth default compression algorithm",
     "settings.routing.requestCompressionLevelPresetLabel": "Compression level preset",
     "settings.routing.requestCompressionHint":
       "Follow reuses the downstream request encoding. Unsupported downstream encodings fail explicitly instead of falling back automatically.",
+    "settings.routing.oauthRequestCompressionHint":
+      "OAuth uses this independent default, then applies group and account overrides; API key defaults remain separate.",
     "settings.routing.codexImagegen.title": "Codex image generation",
     "settings.routing.codexImagegen.description":
       "Configure the Codex-only imagegen tool contract separately from the hosted Responses image tool.",
@@ -4129,7 +4134,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.timeout.compactStream": "压缩请求流结束超时",
     "accountPool.upstreamAccounts.routing.requestCompressionSectionTitle": "上游请求压缩",
     "accountPool.upstreamAccounts.routing.requestCompressionSectionDescription":
-      "为 API Key 上游 HTTP 请求设置默认请求体压缩。分组和账号只允许覆盖算法，压缩等级预设始终沿用全局设置。",
+      "分别设置 API Key 与 OAuth 上游请求体的默认压缩。分组和账号只覆盖算法，压缩等级预设始终沿用全局设置。",
     "accountPool.upstreamAccounts.routing.requestCompressionAlgorithmLabel": "默认压缩算法",
     "accountPool.upstreamAccounts.routing.requestCompressionLevelPresetLabel": "压缩等级预设",
     "accountPool.upstreamAccounts.routing.requestCompressionHint":
@@ -4482,9 +4487,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove": "强制去掉",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm": "请求压缩",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionHint":
-      "仅覆盖这个分组内 API Key 上游账号的压缩算法。清空后会重新继承根设置。",
+      "覆盖这个分组内上游账号的压缩算法。清空后会按账号认证方式继承对应的 API Key 或 OAuth 根设置。",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionMixedGroupHint":
-      "混合分组只会在最终命中的账号是 API Key 上游时应用这个覆盖。",
+      "混合分组按最终账号的认证方式应用覆盖；OAuth 账号未设置覆盖时继承 OAuth 根默认值。",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle": "状态变化触发原因",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
       "关闭后，这类原因仍会保留调用证据和一条中性账号事件，但不再把账号推向重新登录、上游拒绝、冷却或降级状态。",
@@ -4672,6 +4677,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "系统拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "账号代理",
     "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression": "请求压缩",
+    "accountPool.upstreamAccounts.effectiveRule.fieldOauthRequestCompression": "OAuth 请求压缩",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited": "继承 / 不限",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "无可用模型",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowed": "允许模型",
@@ -5794,7 +5800,7 @@ const baseTranslations = {
     "settings.revertSave": "还原到已保存值",
     "settings.routing.title": "上游请求默认值",
     "settings.routing.description":
-      "为 API Key 上游 HTTP 请求配置全局默认的请求体压缩和请求链路超时。分组和账号规则只允许覆盖算法。",
+      "分别为 API Key 与 OAuth 上游 HTTP 请求配置全局默认压缩和请求链路超时。分组和账号规则只覆盖对应认证方式的算法。",
     "settings.routing.readOnly": "只读",
     "settings.routing.saved": "已保存",
     "settings.routing.unsaved": "有未保存修改",
@@ -5802,11 +5808,14 @@ const baseTranslations = {
     "settings.routing.unavailable": "暂时无法加载路由默认值，请刷新页面后重试。",
     "settings.routing.requestCompressionSectionTitle": "上游请求压缩",
     "settings.routing.requestCompressionSectionDescription":
-      "选择 API Key 上游 HTTP 请求默认使用的请求体压缩算法，以及全局压缩等级预设。",
+      "分别选择 API Key 与 OAuth 上游请求体的默认压缩算法，并设置两种认证方式共用的全局压缩等级预设。",
     "settings.routing.requestCompressionAlgorithmLabel": "默认压缩算法",
+    "settings.routing.oauthRequestCompressionAlgorithmLabel": "OAuth 默认压缩算法",
     "settings.routing.requestCompressionLevelPresetLabel": "压缩等级预设",
     "settings.routing.requestCompressionHint":
       "“跟随”会复用下游请求体编码；遇到不支持的下游编码时会显式失败，不会自动降级。",
+    "settings.routing.oauthRequestCompressionHint":
+      "OAuth 使用独立默认值，再应用分组和账号覆盖；API Key 默认值保持独立。",
     "settings.routing.codexImagegen.title": "Codex 图片生成",
     "settings.routing.codexImagegen.description":
       "Codex 专用 imagegen 工具契约与 hosted Responses 图片工具分别配置。",

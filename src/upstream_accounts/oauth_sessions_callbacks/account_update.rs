@@ -90,6 +90,18 @@ pub(crate) async fn update_upstream_account_inner(
                 .map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
+    let policy_oauth_request_compression_algorithm = payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| match &rule.oauth_request_compression_algorithm {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        })
+        .map(|value| {
+            normalize_request_compression_algorithm(Some(value))
+                .map(|mode| mode.as_str().to_string())
+        })
+        .transpose()?;
     // Empty tagIds remains a compatibility no-op. Manual tag mutation is removed,
     // so account edits must not clear preserved system tags.
     if let Some(values) = payload.tag_ids.as_ref() {
@@ -783,6 +795,21 @@ pub(crate) async fn update_upstream_account_inner(
     .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple)?;
+    if let Some(rule) = payload.routing_rule.as_ref()
+        && !matches!(
+            rule.oauth_request_compression_algorithm,
+            OptionalField::Missing
+        )
+    {
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_oauth_request_compression_algorithm = ?2 WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(policy_oauth_request_compression_algorithm)
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+    }
     if invalidate_runtime_outcomes {
         sqlx::query("UPDATE pool_upstream_accounts SET runtime_routing_generation=runtime_routing_generation+1 WHERE id=?1")
             .bind(id).execute(tx.as_mut()).await.map_err(internal_error_tuple)?;

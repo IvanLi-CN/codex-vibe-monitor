@@ -163,6 +163,7 @@ export interface GroupAccountRoutingRule extends TagRoutingRule {
   imageToolRewriteMode?: ImageToolRewriteMode;
   codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
+  oauthRequestCompressionAlgorithm?: RequestCompressionAlgorithm;
   statusChangeReasons?: StatusChangeReasons;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
@@ -175,6 +176,7 @@ export interface EffectiveRoutingRuleFieldSources {
   imageToolRewriteMode?: EffectiveRoutingRuleSource;
   codexImagegenRewriteMode?: EffectiveRoutingRuleSource;
   requestCompressionAlgorithm?: EffectiveRoutingRuleSource;
+  oauthRequestCompressionAlgorithm?: EffectiveRoutingRuleSource;
   concurrencyLimit: EffectiveRoutingRuleSource;
   upstream429Retry: EffectiveRoutingRuleSource;
   availableModels?: EffectiveRoutingRuleSource;
@@ -489,6 +491,7 @@ export interface UpdatePoolRoutingSettingsPayload {
   apiKey?: string;
   maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
+  oauthRequestCompressionAlgorithm?: RequestCompressionAlgorithm;
   requestCompressionLevelPreset?: RequestCompressionLevelPreset;
   codexImagegenRewriteMode?: CodexImagegenRewriteMode;
   availableModels?: string[];
@@ -504,6 +507,7 @@ export interface PoolRoutingSettings {
   maskedApiKey?: string | null;
   maintenance?: PoolRoutingMaintenanceSettings;
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
+  oauthRequestCompressionAlgorithm?: RequestCompressionAlgorithm;
   requestCompressionLevelPreset?: RequestCompressionLevelPreset;
   codexImagegenRewriteMode?: CodexImagegenRewriteMode;
   availableModels?: string[];
@@ -1016,6 +1020,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   imageToolRewriteMode?: NullableRoutingRuleValue<ImageToolRewriteMode>;
   codexImagegenRewriteMode?: NullableRoutingRuleValue<CodexImagegenRewriteMode>;
   requestCompressionAlgorithm?: NullableRoutingRuleValue<RequestCompressionAlgorithm>;
+  oauthRequestCompressionAlgorithm?: NullableRoutingRuleValue<RequestCompressionAlgorithm>;
   concurrencyLimit?: NullableRoutingRuleValue<number>;
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;
@@ -1285,6 +1290,9 @@ function normalizeGroupAccountRoutingRule(raw: unknown): GroupAccountRoutingRule
     requestCompressionAlgorithm: normalizeOptionalRequestCompressionAlgorithm(
       rawPayload.requestCompressionAlgorithm,
     ),
+    oauthRequestCompressionAlgorithm: normalizeOptionalRequestCompressionAlgorithm(
+      rawPayload.oauthRequestCompressionAlgorithm,
+    ),
     statusChangeReasons: normalizeStatusChangeReasons(rawPayload.statusChangeReasons),
     timeouts: normalizeOptionalPoolRoutingTimeoutSettings(rawPayload.timeouts),
   };
@@ -1334,6 +1342,9 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       imageToolRewriteMode: normalizeSource(rawSources.imageToolRewriteMode),
       codexImagegenRewriteMode: normalizeSource(rawSources.codexImagegenRewriteMode),
       requestCompressionAlgorithm: normalizeSource(rawSources.requestCompressionAlgorithm),
+      oauthRequestCompressionAlgorithm: normalizeSource(
+        rawSources.oauthRequestCompressionAlgorithm,
+      ),
       concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),
       availableModels: normalizeSource(rawSources.availableModels),

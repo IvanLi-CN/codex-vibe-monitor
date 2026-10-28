@@ -125,6 +125,7 @@ const labels = {
   requestCompressionGzip: "Gzip",
   requestCompressionDeflate: "Deflate",
   requestCompressionZstd: "Zstd",
+  fieldOauthRequestCompression: "OAuth request compression",
   upstream429RetryCountValue: (count: number) => String(count),
   currentValue: "Current value",
   availableModelsAddCustom: "Add model",
@@ -141,6 +142,7 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
     fastModeRewriteMode: "keep_original",
     imageToolRewriteMode: "keep_original",
     requestCompressionAlgorithm: "identity",
+    oauthRequestCompressionAlgorithm: "zstd",
     concurrencyLimit: 0,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
@@ -157,6 +159,7 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
       fastModeRewriteMode: "root",
       imageToolRewriteMode: "root",
       requestCompressionAlgorithm: "root",
+      oauthRequestCompressionAlgorithm: "root",
       concurrencyLimit: "root",
       upstream429Retry: "root",
       availableModels: "root",
@@ -251,6 +254,8 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).toContain("Inherited / unrestricted");
     expect(document.body.textContent).toContain("Image tools");
     expect(document.body.textContent).toContain("Request compression");
+    expect(document.body.textContent).toContain("OAuth request compression");
+    expect(document.body.textContent).toContain("Zstd");
     expect(document.body.textContent).toContain("Identity");
     expect(document.body.textContent).not.toContain("No models allowed");
   });

@@ -421,6 +421,7 @@ describe("Settings forward proxy table", () => {
       availableModels: [],
       availableModelsMode: "denylist",
       requestCompressionAlgorithm: "identity",
+      oauthRequestCompressionAlgorithm: "zstd",
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",
       priorityHandoffAdmissionEnabled: false,

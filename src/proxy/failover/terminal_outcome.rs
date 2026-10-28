@@ -188,19 +188,19 @@ fn pool_terminal_request_compression_algorithm(
     }
 
     let account = error.account.as_ref()?;
-    resolved_pool_request_compression_algorithm(
-        headers,
-        account.auth.is_oauth(),
-        account.request_compression_algorithm,
-    )
+    let configured_algorithm = if account.auth.is_oauth() {
+        account.oauth_request_compression_algorithm
+    } else {
+        account.request_compression_algorithm
+    };
+    resolved_pool_request_compression_algorithm(headers, configured_algorithm)
 }
 
 pub(crate) fn resolved_pool_request_compression_algorithm(
     headers: &HeaderMap,
-    is_oauth: bool,
     configured_algorithm: RequestCompressionAlgorithm,
 ) -> Option<&'static str> {
-    if is_oauth || configured_algorithm == RequestCompressionAlgorithm::Follow {
+    if configured_algorithm == RequestCompressionAlgorithm::Follow {
         forwarded_request_compression_observation(headers).map(|(algorithm, _)| algorithm)
     } else {
         Some(configured_algorithm.as_str())

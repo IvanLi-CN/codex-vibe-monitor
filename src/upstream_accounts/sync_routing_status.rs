@@ -35,6 +35,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
     let image_tool_rewrite_mode = ImageToolRewriteMode::KeepOriginal;
     let codex_imagegen_rewrite_mode = CodexImagegenRewriteMode::KeepOriginal;
     let request_compression_algorithm = RequestCompressionAlgorithm::Identity;
+    let oauth_request_compression_algorithm = RequestCompressionAlgorithm::Zstd;
     let mut concurrency_limit = 0;
     let mut upstream_429_retry_enabled = false;
     let mut upstream_429_max_retries = 0_u8;
@@ -108,6 +109,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
         image_tool_rewrite_mode,
         codex_imagegen_rewrite_mode,
         request_compression_algorithm,
+        oauth_request_compression_algorithm,
         concurrency_limit,
         upstream_429_retry_enabled,
         upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
@@ -131,6 +133,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
             image_tool_rewrite_mode: "root".to_string(),
             codex_imagegen_rewrite_mode: "root".to_string(),
             request_compression_algorithm: "root".to_string(),
+            oauth_request_compression_algorithm: "root".to_string(),
             concurrency_limit: field_source.clone(),
             upstream_429_retry: field_source.clone(),
             available_models: available_models_source,
@@ -162,6 +165,7 @@ pub(crate) struct RoutingPolicyOverrideRow {
     policy_image_tool_rewrite_mode: Option<String>,
     policy_codex_imagegen_rewrite_mode: Option<String>,
     policy_request_compression_algorithm: Option<String>,
+    policy_oauth_request_compression_algorithm: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -199,6 +203,7 @@ pub(crate) struct GroupRoutingPolicyOverrideRow {
     policy_image_tool_rewrite_mode: Option<String>,
     policy_codex_imagegen_rewrite_mode: Option<String>,
     policy_request_compression_algorithm: Option<String>,
+    policy_oauth_request_compression_algorithm: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -304,6 +309,8 @@ pub(crate) fn apply_root_request_compression_defaults(
 ) {
     rule.request_compression_algorithm = root.algorithm;
     rule.field_sources.request_compression_algorithm = "root".to_string();
+    rule.oauth_request_compression_algorithm = root.oauth_algorithm;
+    rule.field_sources.oauth_request_compression_algorithm = "root".to_string();
 }
 
 pub(crate) fn apply_root_codex_imagegen_rewrite_mode(
@@ -350,7 +357,9 @@ pub(crate) fn apply_routing_policy_override(
     image_tool_rewrite_mode: Option<&str>,
     codex_imagegen_rewrite_mode: Option<&str>,
     request_compression_algorithm: Option<&str>,
-    allow_request_compression_override: bool,
+    oauth_request_compression_algorithm: Option<&str>,
+    allow_api_key_request_compression_override: bool,
+    allow_oauth_request_compression_override: bool,
     concurrency_limit: Option<i64>,
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
@@ -392,13 +401,21 @@ pub(crate) fn apply_routing_policy_override(
         rule.field_sources.codex_imagegen_rewrite_mode = source.to_string();
         rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
     }
-    if allow_request_compression_override
+    if allow_api_key_request_compression_override
         && request_compression_algorithm.is_some()
         && let Ok(request_compression_algorithm) =
             normalize_request_compression_algorithm(request_compression_algorithm)
     {
         rule.field_sources.request_compression_algorithm = source.to_string();
         rule.request_compression_algorithm = request_compression_algorithm;
+    }
+    if allow_oauth_request_compression_override
+        && oauth_request_compression_algorithm.is_some()
+        && let Ok(request_compression_algorithm) =
+            normalize_request_compression_algorithm(oauth_request_compression_algorithm)
+    {
+        rule.field_sources.oauth_request_compression_algorithm = source.to_string();
+        rule.oauth_request_compression_algorithm = request_compression_algorithm;
     }
     if let Some(concurrency_limit) = concurrency_limit
         && let Ok(concurrency_limit) =
@@ -463,6 +480,7 @@ pub(crate) async fn load_group_routing_policy_override_map(
             policy_image_tool_rewrite_mode,
             policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
+            policy_oauth_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -523,6 +541,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_image_tool_rewrite_mode,
             policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
+            policy_oauth_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -565,6 +584,8 @@ pub(crate) async fn load_account_routing_policy_override_map(
 pub(crate) fn apply_group_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     row: &GroupRoutingPolicyOverrideRow,
+    allow_api_key_request_compression_override: bool,
+    allow_oauth_request_compression_override: bool,
 ) {
     apply_routing_policy_override(
         rule,
@@ -576,7 +597,9 @@ pub(crate) fn apply_group_routing_policy_override(
         row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
-        true,
+        row.policy_oauth_request_compression_algorithm.as_deref(),
+        allow_api_key_request_compression_override,
+        allow_oauth_request_compression_override,
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
@@ -690,6 +713,11 @@ pub(crate) fn apply_tag_layer_routing_policy(
     let inherited_request_compression_algorithm = rule.request_compression_algorithm;
     let inherited_request_compression_algorithm_source =
         rule.field_sources.request_compression_algorithm.clone();
+    let inherited_oauth_request_compression_algorithm = rule.oauth_request_compression_algorithm;
+    let inherited_oauth_request_compression_algorithm_source = rule
+        .field_sources
+        .oauth_request_compression_algorithm
+        .clone();
     let inherited_available_models = rule.available_models.clone();
     let inherited_available_models_mode = rule.available_models_mode;
     let inherited_available_models_defined = rule.available_models_defined;
@@ -756,6 +784,9 @@ pub(crate) fn apply_tag_layer_routing_policy(
     rule.request_compression_algorithm = inherited_request_compression_algorithm;
     rule.field_sources.request_compression_algorithm =
         inherited_request_compression_algorithm_source;
+    rule.oauth_request_compression_algorithm = inherited_oauth_request_compression_algorithm;
+    rule.field_sources.oauth_request_compression_algorithm =
+        inherited_oauth_request_compression_algorithm_source;
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
         rule.available_models_mode = inherited_available_models_mode;
@@ -814,6 +845,8 @@ pub(crate) fn apply_tag_layer_routing_policy(
 pub(crate) fn apply_account_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     row: &RoutingPolicyOverrideRow,
+    allow_api_key_request_compression_override: bool,
+    allow_oauth_request_compression_override: bool,
 ) {
     apply_routing_policy_override(
         rule,
@@ -825,7 +858,9 @@ pub(crate) fn apply_account_routing_policy_override(
         row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
-        true,
+        row.policy_oauth_request_compression_algorithm.as_deref(),
+        allow_api_key_request_compression_override,
+        allow_oauth_request_compression_override,
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,

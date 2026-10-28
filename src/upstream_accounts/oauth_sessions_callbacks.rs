@@ -98,6 +98,11 @@ pub(crate) async fn update_pool_routing_settings(
         .as_deref()
         .map(|value| normalize_request_compression_algorithm(Some(value)))
         .transpose()?;
+    let oauth_request_compression_algorithm = payload
+        .oauth_request_compression_algorithm
+        .as_deref()
+        .map(|value| normalize_request_compression_algorithm(Some(value)))
+        .transpose()?;
     let request_compression_level_preset = payload
         .request_compression_level_preset
         .as_deref()
@@ -135,6 +140,7 @@ pub(crate) async fn update_pool_routing_settings(
     if api_key.is_some()
         || timeout_updates.is_some()
         || request_compression_algorithm.is_some()
+        || oauth_request_compression_algorithm.is_some()
         || request_compression_level_preset.is_some()
         || codex_imagegen_rewrite_mode.is_some()
         || available_models.is_some()
@@ -150,6 +156,7 @@ pub(crate) async fn update_pool_routing_settings(
                 crypto_key,
                 api_key: api_key.as_deref(),
                 request_compression_algorithm,
+                oauth_request_compression_algorithm,
                 request_compression_level_preset,
                 codex_imagegen_rewrite_mode,
                 available_models: available_models.as_deref(),

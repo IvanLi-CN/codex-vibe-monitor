@@ -155,6 +155,12 @@ pub(crate) async fn update_upstream_account_group(
                 normalize_request_compression_algorithm(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
+        let policy_oauth_request_compression_algorithm = routing_rule
+            .oauth_request_compression_algorithm_value()
+            .map(|value| {
+                normalize_request_compression_algorithm(Some(value)).map(|mode| mode.as_str())
+            })
+            .transpose()?;
         let mut available_models_json = match &routing_rule.available_models {
             OptionalField::Missing | OptionalField::Null => None,
             OptionalField::Value(value) => Some(
@@ -341,6 +347,19 @@ pub(crate) async fn update_upstream_account_group(
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
+        if !matches!(
+            routing_rule.oauth_request_compression_algorithm,
+            OptionalField::Missing
+        ) {
+            sqlx::query(
+                "UPDATE pool_upstream_account_group_notes SET policy_oauth_request_compression_algorithm = ?2 WHERE group_name = ?1",
+            )
+            .bind(&group_name)
+            .bind(policy_oauth_request_compression_algorithm)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        }
         if !matches!(routing_rule.available_models_mode, OptionalField::Missing)
             || matches!(
                 routing_rule.available_models,
