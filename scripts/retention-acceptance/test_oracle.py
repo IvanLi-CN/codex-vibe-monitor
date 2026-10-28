@@ -644,6 +644,29 @@ class SummaryProofTests(unittest.TestCase):
             result = verify_dataset(*arguments, **keywords)
             self.assertEqual(result["converted_rows"], 3)
             target = sqlite3.connect(database)
+            original_payload = target.execute(
+                "SELECT payload FROM summary_archive_snapshot WHERE page_index=0"
+            ).fetchone()[0]
+            target.execute(
+                "UPDATE summary_archive_snapshot SET payload=? WHERE page_index=0",
+                (b"legacy-summary-page",),
+            )
+            target.commit()
+            target.close()
+            baseline_with_legacy_proof = verify_dataset(
+                *arguments,
+                **keywords,
+                require_summary_proof=False,
+            )
+            self.assertFalse(baseline_with_legacy_proof["summary_proof_verified"])
+            target = sqlite3.connect(database)
+            target.execute(
+                "UPDATE summary_archive_snapshot SET payload=? WHERE page_index=0",
+                (original_payload,),
+            )
+            target.commit()
+            target.close()
+            target = sqlite3.connect(database)
             target.execute("DELETE FROM summary_archive_snapshot_v2_proof")
             target.commit()
             target.close()

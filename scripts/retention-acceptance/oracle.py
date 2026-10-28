@@ -560,11 +560,7 @@ def verify_dataset(
                         f"{dataset} archive is missing complete source row columns: {sorted(missing_columns)}"
                     )
                 if dataset == "codex_invocations":
-                    proof_exists = connection.execute(
-                        "SELECT 1 FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
-                        (manifest["id"], manifest["sha256"]),
-                    ).fetchone() is not None
-                    if proof_exists or require_summary_proof:
+                    if require_summary_proof:
                         _verify_summary_proof(
                             connection,
                             manifest["id"],
@@ -575,6 +571,9 @@ def verify_dataset(
                             budget_check=budget_check,
                         )
                     else:
+                        # The immutable baseline is a performance reference, not a candidate
+                        # proof source. It may contain legacy V2 pages that predate the current
+                        # semantic contract; candidate runs must still verify every page.
                         summary_proof_verified = False
                 archived_identity_index = archived_columns.index(identity_column)
                 occurred_at_index = archived_columns.index("occurred_at")
