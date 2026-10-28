@@ -2775,7 +2775,7 @@ async fn retention_task_local_archive_artifact_matches_each_source_microbatch() 
         .expect("published artifact row count"),
         1_000
     );
-    assert_eq!(
+    assert!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COALESCE(MAX(row_count), 0) FROM archive_batches
              WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
@@ -2783,8 +2783,7 @@ async fn retention_task_local_archive_artifact_matches_each_source_microbatch() 
         .fetch_one(&pool)
         .await
         .expect("largest published artifact row count")
-            <= 64,
-        true
+            <= 64
     );
     let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
