@@ -375,6 +375,7 @@ export function useUpstreamAccountGroupSettingsDialog(
       requestCompressionAlgorithm: t(
         "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm",
       ),
+      oauthRequestCompressionAlgorithm: t("settings.routing.oauthRequestCompressionAlgorithmLabel"),
       requestCompressionFollow: t("accountPool.requestCompression.follow"),
       requestCompressionIdentity: t("accountPool.requestCompression.identity"),
       requestCompressionGzip: t("accountPool.requestCompression.gzip"),

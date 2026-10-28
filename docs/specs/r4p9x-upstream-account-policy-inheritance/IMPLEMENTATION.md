@@ -112,7 +112,8 @@ Request compression extends the same inheritance contract with one root-only fie
 - `pool_routing_settings` stores the global `request_compression_algorithm` and `request_compression_level_preset`
 - `pool_upstream_account_group_notes` stores nullable `policy_request_compression_algorithm`
 - `pool_upstream_accounts` stores nullable `policy_request_compression_algorithm`
-- effective routing exports `requestCompressionAlgorithm` plus `fieldSources.requestCompressionAlgorithm`
+- effective routing exports independent API Key and OAuth compression algorithms plus matching
+  `fieldSources` entries; mixed-auth groups resolve each algorithm only for its own dispatch path
 - group/account `null` clears the stored algorithm override; the root level preset never has lower-layer overrides
 - mixed-group request-compression overrides are runtime-gated so only `api_key_codex` targets observe them
 - root defaults preserve existing traffic behavior by starting from `identity`

@@ -685,6 +685,23 @@ async fn count_decoded_request_snapshot_bytes(
     }
 }
 
+pub(crate) async fn validate_pool_request_snapshot_transcode(
+    snapshot: &PoolReplayBodySnapshot,
+    downstream_content_encoding: Option<&str>,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+) -> Result<(), PoolRequestBodyPreparationError> {
+    let downstream_encoding =
+        resolve_request_body_content_encoding(snapshot, downstream_content_encoding).await?;
+    let target_encoding =
+        request_compression_algorithm_encoding(request_compression_algorithm, downstream_encoding);
+    if !matches!(downstream_encoding, RequestBodyContentEncoding::Identity)
+        && target_encoding != downstream_encoding
+    {
+        count_decoded_request_snapshot_bytes(snapshot, downstream_encoding).await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_request_payload_bytes(
     bytes: &[u8],
     encoding: RequestBodyContentEncoding,

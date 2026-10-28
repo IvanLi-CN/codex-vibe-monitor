@@ -390,6 +390,7 @@ type InlinePolicyField =
   | "fastModeRewriteMode"
   | "imageToolRewriteMode"
   | "requestCompressionAlgorithm"
+  | "oauthRequestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
   | "availableModels"
@@ -4044,6 +4045,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       fieldFastMode: t("accountPool.upstreamAccounts.effectiveRule.fieldFastMode"),
                       fieldRequestCompression: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression",
+                      ),
+                      fieldOauthRequestCompression: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldOauthRequestCompression",
                       ),
                       fieldConcurrency: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency",

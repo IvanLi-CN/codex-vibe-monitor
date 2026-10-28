@@ -5,9 +5,8 @@
 
 use crate::proxy::{
     BoxedPoolRequestReader, PoolRequestBodyCompressionMode, RequestBodyContentEncoding,
-    decode_pool_request_reader, decode_request_payload_bytes, encode_pool_request_reader,
-    request_compression_algorithm_encoding, request_compression_preset_to_async_level,
-    resolve_request_body_content_encoding_from_prefix,
+    decode_pool_request_reader, encode_pool_request_reader, request_compression_algorithm_encoding,
+    request_compression_preset_to_async_level, resolve_request_body_content_encoding_from_prefix,
 };
 use crate::{RequestCompressionAlgorithm, RequestCompressionLevelPreset};
 use anyhow::{Context, Result, bail};
@@ -305,6 +304,42 @@ async fn encode_oauth_bytes(
     Ok(Bytes::from(output))
 }
 
+async fn decode_oauth_bytes(
+    bytes: Bytes,
+    source_encoding: RequestBodyContentEncoding,
+) -> Result<Bytes, (StatusCode, String)> {
+    if matches!(source_encoding, RequestBodyContentEncoding::Identity) {
+        return Ok(bytes);
+    }
+    let input = stream::once(async move { Ok::<Bytes, io::Error>(bytes) });
+    let reader: BoxedPoolRequestReader = Box::pin(StreamReader::new(input));
+    let decoded = decode_pool_request_reader(reader, source_encoding)
+        .await
+        .map_err(|err| (err.status, err.message))?;
+    let mut output = Vec::new();
+    let max_decoded_bytes = crate::proxy::OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES;
+    decoded
+        .take((max_decoded_bytes.saturating_add(1)) as u64)
+        .read_to_end(&mut output)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("failed to decode oauth request body: {err}"),
+            )
+        })?;
+    if output.len() > max_decoded_bytes {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "decoded oauth request body exceeds {} bytes",
+                max_decoded_bytes
+            ),
+        ));
+    }
+    Ok(Bytes::from(output))
+}
+
 async fn prepare_oauth_bytes(
     bytes: Bytes,
     headers: &HeaderMap,
@@ -325,8 +360,7 @@ async fn prepare_oauth_bytes(
     (StatusCode, String),
 > {
     let source_encoding = oauth_source_request_encoding(Some(bytes.as_ref()), headers)?;
-    let decoded = decode_request_payload_bytes(&bytes, source_encoding)
-        .map_err(|err| (err.status, err.message))?;
+    let decoded = decode_oauth_bytes(bytes, source_encoding).await?;
     let (decoded, rewrite, wants_stream) = if rewrite_responses {
         let prepared = prepare_responses_request_body(&decoded, account_id, installation_seed)
             .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;

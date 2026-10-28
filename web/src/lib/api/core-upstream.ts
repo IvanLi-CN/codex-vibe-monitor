@@ -1020,6 +1020,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   imageToolRewriteMode?: NullableRoutingRuleValue<ImageToolRewriteMode>;
   codexImagegenRewriteMode?: NullableRoutingRuleValue<CodexImagegenRewriteMode>;
   requestCompressionAlgorithm?: NullableRoutingRuleValue<RequestCompressionAlgorithm>;
+  oauthRequestCompressionAlgorithm?: NullableRoutingRuleValue<RequestCompressionAlgorithm>;
   concurrencyLimit?: NullableRoutingRuleValue<number>;
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;

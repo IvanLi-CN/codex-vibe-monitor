@@ -1001,6 +1001,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "System denied models",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "Account proxy",
     "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression": "Request compression",
+    "accountPool.upstreamAccounts.effectiveRule.fieldOauthRequestCompression":
+      "OAuth request compression",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "Inherited / unrestricted",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "No models allowed",
@@ -4598,6 +4600,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "系统拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "账号代理",
     "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression": "请求压缩",
+    "accountPool.upstreamAccounts.effectiveRule.fieldOauthRequestCompression": "OAuth 请求压缩",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited": "继承 / 不限",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "无可用模型",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowed": "允许模型",

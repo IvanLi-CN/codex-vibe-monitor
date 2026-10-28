@@ -1224,6 +1224,49 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                     selected_proxy.key.as_str(),
                 )
                 .await;
+                if !matches!(
+                    &prepared_request_body.snapshot,
+                    PoolReplayBodySnapshot::Empty
+                ) {
+                    validate_pool_request_snapshot_transcode(
+                        &prepared_request_body.snapshot,
+                        context
+                            .headers
+                            .get(header::CONTENT_ENCODING)
+                            .and_then(|value| value.to_str().ok()),
+                        context.account.oauth_request_compression_algorithm,
+                    )
+                    .await
+                    .map_err(|err| {
+                        release_pool_routing_reservation(
+                            context.state.as_ref(),
+                            &context.reservation_key,
+                        );
+                        PoolUpstreamError {
+                            codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                            account: Some(context.account.clone()),
+                            status: err.status,
+                            message: err.message,
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                            oauth_responses_debug: None,
+                            attempt_summary: pool_attempt_summary(
+                                *context.attempt_count,
+                                distinct_account_count,
+                                Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                            ),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        }
+                    })?;
+                }
                 let oauth_body = match &prepared_request_body.snapshot {
                     snapshot @ (PoolReplayBodySnapshot::Empty
                     | PoolReplayBodySnapshot::Memory(_))

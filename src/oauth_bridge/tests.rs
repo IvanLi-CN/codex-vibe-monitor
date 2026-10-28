@@ -44,6 +44,32 @@ async fn oauth_request_compression_decodes_input_rewrites_then_encodes_zstd() {
     assert!(payload.get("max_output_tokens").is_none());
 }
 
+#[tokio::test]
+async fn oauth_request_compression_rejects_oversized_decoded_buffered_body() {
+    let headers =
+        HeaderMap::from_iter([(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"))]);
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(
+        &mut gzip,
+        &vec![b'x'; crate::proxy::OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1],
+    )
+    .expect("write oversized gzip payload");
+    let compressed = Bytes::from(gzip.finish().expect("finish oversized gzip payload"));
+
+    let error = prepare_oauth_bytes(
+        compressed,
+        &headers,
+        RequestCompressionAlgorithm::Zstd,
+        RequestCompressionLevelPreset::Balanced,
+        false,
+        None,
+        None,
+    )
+    .await
+    .expect_err("oversized decoded body should be rejected");
+    assert_eq!(error.0, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[test]
 fn transform_models_payload_maps_codex_catalog_to_openai_shape() {
     let payload = br#"{"models":[{"slug":"gpt-5.4"},{"slug":"gpt-5.3-codex"}]}"#;

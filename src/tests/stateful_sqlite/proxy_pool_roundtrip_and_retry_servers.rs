@@ -1442,6 +1442,11 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .get("x-forwarded-for")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let content_encoding = request
+        .headers()
+        .get(http_header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex capture request body");
@@ -1463,6 +1468,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
             "originatorHeader": originator,
             "forwardedFor": forwarded_for,
             "forwardedHeaderNames": forwarded_header_names,
+            "contentEncoding": content_encoding,
             "bodyLength": body.len(),
             "body": String::from_utf8_lossy(&body),
         })),
