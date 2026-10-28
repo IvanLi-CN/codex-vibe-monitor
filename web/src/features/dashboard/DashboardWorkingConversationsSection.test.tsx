@@ -3634,6 +3634,20 @@ describe("DashboardWorkingConversationsSection", () => {
       icon: "weather-night",
     },
     {
+      label: "GPT-6.1 Terra",
+      model: "gpt-6.1-terra",
+      reasoningEffort: "xhigh",
+      generation: "6.1",
+      icon: "earth",
+    },
+    {
+      label: "future multi-part generation",
+      model: "gpt-7.2.1-sol",
+      reasoningEffort: "high",
+      generation: "7.2.1",
+      icon: "white-balance-sunny",
+    },
+    {
       label: "GPT-5.6 without reasoning",
       model: "gpt-5.6-sol",
       reasoningEffort: null,

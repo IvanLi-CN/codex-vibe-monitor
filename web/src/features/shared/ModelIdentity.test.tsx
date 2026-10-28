@@ -9,6 +9,24 @@ import {
 
 describe("resolveModelIdentityIcon", () => {
   it.each([
+    "5.6",
+    "6",
+    "6.1",
+    "7.2.1",
+  ])("maps every known family independently of generation %s", (generation) => {
+    for (const [family, icon] of [
+      ["astra", "creation"],
+      ["sol", "white-balance-sunny"],
+      ["terra", "earth"],
+      ["luna", "weather-night"],
+    ] as const) {
+      const model = `gpt-${generation}-${family}`;
+      expect(resolveModelIdentityIcon(model)).toBe(icon);
+      expect(resolveModelIdentityGenerationLabel(model)).toBe(generation);
+    }
+  });
+
+  it.each([
     ["gpt-5.6-sol", "white-balance-sunny"],
     ["gpt-5.6", "white-balance-sunny"],
     ["gpt-5.6-terra", "earth"],
@@ -27,25 +45,28 @@ describe("resolveModelIdentityIcon", () => {
     ["gpt-6.1-astra", "creation"],
     ["gpt-6.1-sol", "white-balance-sunny"],
     ["gpt-6.1-luna", "weather-night"],
+    ["gpt-6.1-terra", "earth"],
+    ["gpt-7.2.1-sol", "white-balance-sunny"],
     ["gpt-6-astra-2024-02-29", "creation"],
     ["GPT-6.1-SOL-2026-09-25", "white-balance-sunny"],
     ["  GPT-6.1-LUNA  ", "weather-night"],
   ])("maps %s to the family icon %s", (model, iconName) => {
     expect(resolveModelIdentityIcon(model)).toBe(iconName);
-    expect(resolveModelIdentityGeneration(model)).toBe(6);
+    expect(resolveModelIdentityGeneration(model)).toBe(model.trim().match(/^gpt-(\d+)/i)?.[1]);
   });
 
   it.each([
-    ["gpt-5.6", 5],
-    ["gpt-5.6-sol", 5],
-    ["gpt-5.6-terra", 5],
-    ["gpt-5.6-luna", 5],
-    ["gpt-6-astra", 6],
-    ["gpt-6-sol", 6],
-    ["gpt-6-luna", 6],
-    ["gpt-6.1-astra", 6],
-    ["gpt-6.1-sol", 6],
-    ["gpt-6.1-luna", 6],
+    ["gpt-5.6", "5"],
+    ["gpt-5.6-sol", "5"],
+    ["gpt-5.6-terra", "5"],
+    ["gpt-5.6-luna", "5"],
+    ["gpt-6-astra", "6"],
+    ["gpt-6-sol", "6"],
+    ["gpt-6-luna", "6"],
+    ["gpt-6.1-astra", "6"],
+    ["gpt-6.1-sol", "6"],
+    ["gpt-6.1-luna", "6"],
+    ["gpt-12345678901234567890.2-terra", "12345678901234567890"],
   ] as const)("resolves the major generation for %s", (model, generation) => {
     expect(resolveModelIdentityGeneration(model)).toBe(generation);
   });
@@ -56,6 +77,8 @@ describe("resolveModelIdentityIcon", () => {
     ["GPT-6-SOL-2024-02-29", "6"],
     ["gpt-6.1-astra-2026-01-01", "6.1"],
     [" gpt-6.1-luna ", "6.1"],
+    ["gpt-6.1-terra", "6.1"],
+    ["gpt-7.2.1-sol", "7.2.1"],
   ] as const)("resolves full generation label for %s", (model, generation) => {
     expect(resolveModelIdentityGenerationLabel(model)).toBe(generation);
   });
@@ -67,8 +90,9 @@ describe("resolveModelIdentityIcon", () => {
     "gpt-5.6-sol-2026-02-30",
     "gpt-6",
     "gpt-6.1",
-    "gpt-6-terra",
-    "gpt-6.1-terra",
+    "gpt-7-unknown",
+    "gpt-7o-terra",
+    "gpt-7.2.1-sol-preview",
     "gpt-6-astra-preview",
     "gpt-6-astra-2025-02-29",
     "gpt-6-sol-2026-02-30",
@@ -82,7 +106,7 @@ describe("resolveModelIdentityIcon", () => {
 
   it.each([
     "gpt-6",
-    "gpt-6-terra",
+    "gpt-7-unknown",
     "gpt-6-astra-preview",
     "gpt-6-astra-2025-02-29",
   ])("does not resolve an unsupported GPT-6 id %s", (model) => {
@@ -99,6 +123,8 @@ describe("ModelIdentity", () => {
     ["gpt-6-luna", "weather-night", "text-info"],
     ["gpt-6.1-sol", "white-balance-sunny", "text-warning"],
     ["gpt-6.1-luna", "weather-night", "text-info"],
+    ["gpt-6.1-terra", "earth", "text-success"],
+    ["gpt-7.2.1-sol", "white-balance-sunny", "text-warning"],
   ])("renders %s with its fixed identity color", (model, iconName, colorClassName) => {
     const markup = renderToStaticMarkup(<ModelIdentity model={model} />);
 

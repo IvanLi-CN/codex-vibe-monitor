@@ -7,8 +7,8 @@ This spec owns invocation observability and the read-only model identity present
 ## Requirements
 
 - REQ-GPT6-PERFORMANCE-IDENTITY: GPT-6 Astra/Sol/Luna identities in model-performance rows must reuse the shared accessible model identity as bare glyphs, integrate into the badge's single existing outer border, and preserve single-line rows and badge height.
-- REQ-MODEL-GENERATION-IDENTITY: 共享只读身份必须按下方识别表区分完整模型代次 `5.6`、`6`、`6.1`，不能把 `5.6` 压成 `5` 或把 `6.1` 压成 `6`。合法日期别名沿用基础模型代次；非法日期、preview、未知家族及未列出的代次必须保留原模型文本，不推断身份。完整模型 ID 必须继续保留在 title 与可访问名称中。
-- REQ-MODEL-FAMILY-ICON: 所有共享只读身份必须按家族复用图标的形状与颜色：Sol 使用 `white-balance-sunny` 及 warning 色，Luna 使用 `weather-night` 及 info 色，Astra 使用 `creation` 及既有紫色，GPT-5.6 Terra 保留 `earth` 及既有 success 色。同一家族的图标颜色不得随代次变化。图标必须始终以裸 glyph 呈现；图标本体及其对齐容器不得有背景、边框/轮廓、圆角、阴影或代次专属底板。外层业务组件可保留既有边界。图标不得被称为官方 OpenAI 图标。
+- REQ-MODEL-GENERATION-IDENTITY: 共享只读身份必须识别一个或多个以点分隔的数字组成的完整模型代次，不能把 `5.6` 压成 `5` 或把 `6.1` 压成 `6`。合法日期别名沿用基础模型代次；非法日期、preview、未知家族及不符合格式的模型必须保留原模型文本，不推断身份。完整模型 ID 必须继续保留在 title 与可访问名称中。
+- REQ-MODEL-FAMILY-ICON: 所有共享只读身份必须按家族复用图标的形状与颜色：Sol 使用 `white-balance-sunny` 及 warning 色，Luna 使用 `weather-night` 及 info 色，Astra 使用 `creation` 及既有紫色，Terra 使用 `earth` 及既有 success 色。同一家族的图标颜色不得随代次变化。图标必须始终以裸 glyph 呈现；图标本体及其对齐容器不得有背景、边框/轮廓、圆角、阴影或代次专属底板。外层业务组件可保留既有边界。图标不得被称为官方 OpenAI 图标。
 - REQ-DASHBOARD-MODEL-CONTEXT-FORMAT: Dashboard 全局和账号级模型性能、用量明细在详细模式命中身份时，必须在同一单行胶囊内按 `<代次> <家族图标> <推理强度>` 排列；Dashboard working conversation 当前/历史 invocation slot 与 upstream-account recent invocation row 的紧凑上下文必须复用同一顺序，并在其后保留既有 FAST 语义。可见代次只显示版本段，不含 `GPT-` 前缀或日期。代次使用中性色紧凑等宽文本，并在与固定尺寸模型段相同的固定高度盒内通过 1px 视觉基线校正保持可读对齐；紧凑胶囊保留对称的 4px 左右内间距，FAST 紧凑槽位与图标保持固定紧凑尺寸，裁剪 glyph 的内置透明留白但不得改变 glyph 比例，使闪电实际可见左缘与推理强度文字右缘保持约 3px 间距、实际可见右缘与胶囊右侧保持约 5px 内缩；图标保留固定尺寸模型段，紧凑上下文的推理强度只保留既有 tone 与文本，不渲染前置圆点 marker；详细胶囊同样不在强度前显示圆点或其它 marker。不得重复展示完整模型 ID，不得给图标段添加背景、边框/轮廓、圆角或阴影，外层边界与高度保持稳定。请求与响应模型规范化后确实不同时，紧凑上下文按 `request → response` 显示两段独立身份；每段分别使用可识别的代次/裸 glyph 或文本回退。桌面、窄屏与浅/深色状态复用同一身份顺序，且不得产生横向滚动。
 - REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK: Dashboard 性能/用量详细模式中的缺失、空白或格式化为破折号的推理强度必须显示 `—`；两类紧凑 invocation 上下文则省略缺失、空白或 `—` 的推理强度段，不得推断模型默认值。显式 `none` 在详细与紧凑模式均必须仍显示 `none`。未知推理强度必须按既有格式化规则保留其文本并使用 unknown 色调。单模型值继续按 `responseModel` → legacy `model` → `requestModel` 回退；只有请求与响应均存在且规范化后确实不同才显示 mismatch，缺失模型显示 `—`，未知/非法模型保留完整文本，不猜测代次或家族。完整模型 ID 继续通过 title/aria 作为辅助身份信息保留。
 - REQ-MODEL-IDENTITY-SCOPE: 简单模式必须继续显示完整模型名且不显示推理强度，也不使用详细模式的代次胶囊。代次顺序适用于 Dashboard 性能/用量详细身份和上述两类 Dashboard 紧凑 invocation 上下文；Records/Invocation 表格、调用详情 request/response 字段、长期统计、编辑器、筛选器、选择器及原始 payload 共享识别规则但保留自身布局、FAST、请求/响应模型和改路由信号。身份展示不得改变模型目录、价格、API/SSE、数据库、历史记录、筛选值、聚合键或排序规则。
@@ -21,19 +21,9 @@ This spec owns invocation observability and the read-only model identity present
 
 模型代次表示模型 ID 中的完整版本段，家族图标表示 Astra、Sol、Luna 或 Terra，推理强度表示调用记录已有的 `reasoningEffort`；界面中所称的“思考等级”使用同一字段，不是模型等级或推理 Token 数量。
 
-| 基础模型 ID              | 可见代次 | 家族图标                   |
-| ------------------------ | -------- | -------------------------- |
-| `gpt-5.6`、`gpt-5.6-sol` | `5.6`    | Sol：`white-balance-sunny` |
-| `gpt-5.6-luna`           | `5.6`    | Luna：`weather-night`      |
-| `gpt-5.6-terra`          | `5.6`    | Terra：`earth`             |
-| `gpt-6-sol`              | `6`      | Sol：`white-balance-sunny` |
-| `gpt-6-luna`             | `6`      | Luna：`weather-night`      |
-| `gpt-6-astra`            | `6`      | Astra：`creation`          |
-| `gpt-6.1-sol`            | `6.1`    | Sol：`white-balance-sunny` |
-| `gpt-6.1-luna`           | `6.1`    | Luna：`weather-night`      |
-| `gpt-6.1-astra`          | `6.1`    | Astra：`creation`          |
+任意 `gpt-<数字版本>-<家族>` 组合均可识别，其中数字版本由一个或多个以点分隔的数字段组成，家族为 Astra、Sol、Luna 或 Terra。例如 `gpt-6.1-terra` 显示 `6.1` 和 Terra 图标，`gpt-7.2.1-sol` 显示 `7.2.1` 和 Sol 图标。
 
-输入首尾空白忽略，模型身份匹配不区分大小写。带家族名的基础模型允许追加一个日历有效的 `-YYYY-MM-DD` 后缀；日期不展示在代次段中，但完整原模型 ID 仍可通过 hover 和可访问名称获知。裸别名 `gpt-5.6` 继续代表 Sol，不扩展其日期形式；裸 `gpt-6`、裸 `gpt-6.1`、`gpt-6-terra`、`gpt-6.1-terra`、preview 后缀、其它未知代次及非法日期继续按原文回退。
+输入首尾空白忽略，模型身份匹配不区分大小写。带家族名的基础模型允许追加一个日历有效的 `-YYYY-MM-DD` 后缀；日期不展示在代次段中，但完整原模型 ID 仍可通过 hover 和可访问名称获知。裸别名 `gpt-5.6` 继续代表 Sol，不扩展其日期形式；其它裸版本、未知家族、非数字版本、preview 或其它后缀及非法日期继续按原文回退。
 
 ### Detailed and simple modes
 
@@ -48,7 +38,8 @@ This spec owns invocation observability and the read-only model identity present
 - Given 详细模式同时存在 `gpt-5.6-sol`、`gpt-6-sol` 和 `gpt-6.1-sol` 且推理强度均为 `high`，When 查看任一模型性能或用量明细，Then 依次可见相应 `5.6`、`6`、`6.1` 代次，Sol 图标形状与颜色相同，胶囊内顺序为代次、图标、推理强度。
 - Given `gpt-6.1-luna` 或 `gpt-6.1-astra`，When 共享身份渲染，Then 分别使用 `weather-night` 或 `creation`，且 title/可访问名称保留完整模型 ID。
 - Given 首尾有空白的 `GPT-6.1-SOL-2026-09-25` 或 `gpt-6-astra-2024-02-29`，When 解析身份，Then 忽略首尾空白和匹配大小写、验证合法日期，并分别显示代次 `6.1` 或 `6`；不会把日期或家族名混入代次文本。
-- Given `gpt-5.6-sol-2026-02-30`、`gpt-6.1-sol-2025-02-29`、`gpt-6.1-sol-preview`、`gpt-6.1-terra`、`gpt-6.1` 或其它未识别 ID，When 详细明细渲染，Then 保留模型文本与推理强度，不展示推断的代次或家族图标。
+- Given `gpt-5.6-sol-2026-02-30`、`gpt-6.1-sol-2025-02-29`、`gpt-6.1-sol-preview`、`gpt-7-unknown`、`gpt-6.1` 或其它未识别 ID，When 详细明细渲染，Then 保留模型文本与推理强度，不展示推断的代次或家族图标。
+- Given `gpt-6.1-terra` 或 `gpt-7.2.1-sol`，When 共享身份渲染，Then 显示完整代次及相应家族图标。
 - Given `gpt-5.6` 或 `gpt-5.6-terra`，When 详细明细渲染，Then 分别显示 `5.6 [Sol 图标]` 或 `5.6 [Terra 图标]`，保持已有别名和 Terra 身份。
 - Given 推理强度为缺失、空白、`—`、显式 `none` 或自定义值，When 详细明细渲染，Then 前三者显示 `—`，`none` 保持明确文本，自定义值沿用既有格式化文本与 unknown 色调；不会生成模型默认推理强度。
 - Given Dashboard working conversation 当前/历史 invocation slot 或 upstream-account recent invocation row 命中 `gpt-5.6-sol`、`gpt-6-luna`、`gpt-6.1-luna`，When 紧凑上下文渲染，Then 可见顺序分别为 `5.6`、`6`、`6.1` 代次、裸家族 glyph、已有推理强度与 FAST，且两个消费者使用同一渲染边界。
@@ -408,6 +399,36 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Components/ModelIdentity/PresentationModes
+  state: shared identities on desktop
+  requested_viewport: none
+  viewport_strategy: natural
+  margin_policy: require_margin
+  evidence_surface: component
+  evidence_note: verifies GPT-6.1 Terra and GPT-7.2.1 Sol show their generation and family glyph in detailed badges.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only
+  submission_gate: approved
+  image:
+  ![Universal model identity desktop](./assets/model-identity-universal-desktop.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Components/ModelIdentity/PresentationModesMobile393
+  state: shared identities on a narrow viewport
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  evidence_note: verifies the same identities remain readable at the narrow viewport without horizontal overflow.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only
+  submission_gate: approved
+  image:
+  ![Universal model identity mobile](./assets/model-identity-universal-mobile.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Monitoring/InvocationTable/Default
@@ -1058,7 +1079,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 ## Verification
 
 - VER-GPT6-PERFORMANCE-IDENTITY: covers: REQ-GPT6-PERFORMANCE-IDENTITY; ModelPerformanceModelIdentity and Dashboard performance tests verify badge composition, accessible model labels, and row layout.
-- VER-MODEL-GENERATION-IDENTITY: covers: REQ-MODEL-GENERATION-IDENTITY, REQ-MODEL-FAMILY-ICON; shared identity tests verify every listed generation/family, the legacy Sol alias, case/whitespace handling, valid dates including leap years, invalid dates for all supported generations, unsupported-ID text fallback, consistent family glyph and color mapping, no icon background/border/outline/rounded frame/shadow, and complete tooltip/accessible IDs.
+- VER-MODEL-GENERATION-IDENTITY: covers: REQ-MODEL-GENERATION-IDENTITY, REQ-MODEL-FAMILY-ICON; shared identity tests verify numeric generations and every known family across generations, the legacy Sol alias, case/whitespace handling, valid dates including leap years, invalid dates for all supported generations, unsupported-ID text fallback, consistent family glyph and color mapping, no icon background/border/outline/rounded frame/shadow, and complete tooltip/accessible IDs.
 - VER-DASHBOARD-MODEL-CONTEXT: covers: REQ-DASHBOARD-MODEL-CONTEXT-FORMAT, REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK; ModelPerformanceModelIdentity tests preserve detailed/simple behavior, while InvocationModelContextCluster and Dashboard working/upstream tests verify `5.6`/`6`/`6.1` order, generation-before-glyph, FAST placement, missing-versus-explicit-none effort, request-to-response mismatch, full title/aria values, and safe unknown/missing fallback. Deterministic mock Storybook evidence verifies both compact consumers in light/dark desktop and source-managed 393x852 narrow layouts with stable height and no horizontal overflow.
 - VER-MODEL-IDENTITY-SCOPE: covers: REQ-MODEL-IDENTITY-SCOPE; consumer regression coverage verifies simple-mode full names and grouping, complete title/accessible values, unchanged routing/FAST metadata and missing-effort behavior outside detailed Dashboard breakdowns, textual editors/filters/selectors/raw payloads, and unchanged data keys and backend contracts.
 - VER-DASHBOARD-MODEL-BREAKDOWN: covers: REQ-DASHBOARD-MODEL-BREAKDOWN; backend model-performance duration tests, API normalization, ModelPerformanceDetails and UsageBreakdownTooltip tests verify exact model grouping and synchronized frontend mode state.
