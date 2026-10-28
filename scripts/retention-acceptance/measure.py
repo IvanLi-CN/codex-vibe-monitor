@@ -1729,7 +1729,7 @@ def main() -> int:
                 cutoff,
                 phase_started,
                 owned,
-                reuse_from=templates.get("baseline", (None,))[0] if version == "candidate" else None,
+                reuse_from=templates.get("baseline") if version == "candidate" else None,
                 reuse_fingerprint=fingerprints.get("baseline") if version == "candidate" else None,
             )
         if fingerprints["baseline"] != fingerprints["candidate"]:
