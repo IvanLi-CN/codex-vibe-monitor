@@ -30,17 +30,29 @@ pub(crate) fn pool_attempt_recovery_gate() -> &'static tokio::sync::RwLock<()> {
     POOL_ATTEMPT_RECOVERY_GATE.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
+pub(crate) async fn configure_primary_sqlite_connection(
+    connection: &mut SqliteConnection,
+) -> sqlx::Result<()> {
+    sqlx::query("PRAGMA recursive_triggers = ON")
+        .execute(connection)
+        .await
+        .map(|_| ())
+}
+
 pub(crate) fn configure_primary_sqlite_pool_options(
     options: SqlitePoolOptions,
 ) -> SqlitePoolOptions {
     options.after_connect(|connection, _metadata| {
-        Box::pin(async move {
-            sqlx::query("PRAGMA recursive_triggers = ON")
-                .execute(connection)
-                .await
-                .map(|_| ())
-        })
+        Box::pin(configure_primary_sqlite_connection(connection))
     })
+}
+
+pub(crate) async fn connect_primary_sqlite_connection(
+    options: &SqliteConnectOptions,
+) -> sqlx::Result<SqliteConnection> {
+    let mut connection = SqliteConnection::connect_with(options).await?;
+    configure_primary_sqlite_connection(&mut connection).await?;
+    Ok(connection)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,7 +107,7 @@ impl StartupRecoveryCompletion {
 async fn capture_startup_recovery_fence(
     options: &SqliteConnectOptions,
 ) -> Result<StartupRecoveryFence> {
-    let mut connection = SqliteConnection::connect_with(options).await?;
+    let mut connection = connect_primary_sqlite_connection(options).await?;
     let mut transaction = connection.begin().await?;
     let invocation_max_id =
         sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
@@ -528,7 +540,7 @@ async fn run_startup_recovery(
             continue;
         }
         if connection.is_none() {
-            match SqliteConnection::connect_with(recovery_connect_options.as_ref()).await {
+            match connect_primary_sqlite_connection(recovery_connect_options.as_ref()).await {
                 Ok(new_connection) => connection = Some(new_connection),
                 Err(error) => {
                     observe_startup_recovery_retry(&state, "connection", "connect_failed");
