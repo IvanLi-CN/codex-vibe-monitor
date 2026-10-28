@@ -1057,16 +1057,30 @@ fn validate_manifest_identity(
         bail!("durable traffic authority manifest identity does not match runtime state");
     }
 
-    if matches!(
-        status.state,
-        StorageMigrationState::Postgres
-            | StorageMigrationState::Switching
-            | StorageMigrationState::Recovering
-    ) {
+    if status.state == StorageMigrationState::Postgres {
         if status.progress.captured_through != Some(manifest.source_watermark)
             || status.progress.applied_through != Some(manifest.source_watermark)
         {
             bail!("durable traffic authority manifest watermark does not match migration status");
+        }
+    } else if matches!(
+        status.state,
+        StorageMigrationState::Switching | StorageMigrationState::Recovering
+    ) {
+        // The manifest is committed by the authority switch before the final Switching
+        // progress write. A crash or transient SQLite failure in that interval can leave the
+        // durable status behind the committed cutover watermark. Recovery must repair that
+        // intermediate state forward instead of rejecting an already committed authority.
+        let status_watermarks = [
+            status.progress.captured_through,
+            status.progress.applied_through,
+        ];
+        if status_watermarks
+            .into_iter()
+            .flatten()
+            .any(|watermark| watermark > manifest.source_watermark)
+        {
+            bail!("durable traffic authority manifest watermark regresses migration progress");
         }
     } else {
         let status_watermarks = [
@@ -1181,8 +1195,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manifest_identity_requires_exact_watermark_during_transitional_recovery() -> Result<()>
-    {
+    async fn manifest_identity_allows_stale_transitional_watermark_but_rejects_ahead_status()
+    -> Result<()> {
         let config = StorageConfig {
             postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
             ..StorageConfig::default()
@@ -1206,8 +1220,13 @@ mod tests {
                 target_identity: "postgres:configured".to_string(),
             };
 
-            let error = validate_manifest_identity(&manifest, &status, "postgres:configured")
-                .expect_err("transitional status must match the manifest watermark exactly");
+            validate_manifest_identity(&manifest, &status, "postgres:configured")
+                .expect("a committed manifest may repair a stale transitional watermark");
+
+            let ahead_migration = StorageMigrationRuntime::new(&config);
+            let ahead = prepare_transitional_migration_status(&ahead_migration, phase, 8).await?;
+            let error = validate_manifest_identity(&manifest, &ahead, "postgres:configured")
+                .expect_err("transitional status must not be ahead of the manifest watermark");
             assert!(error.to_string().contains("watermark"));
         }
         Ok(())

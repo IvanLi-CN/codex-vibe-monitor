@@ -106,6 +106,182 @@ async fn restart_rejects_postgres_status_without_durable_authority_manifest() {
 }
 
 #[tokio::test]
+async fn restart_repairs_stale_switching_progress_from_committed_manifest() {
+    let database_path = std::env::temp_dir().join(format!(
+        "codex-vibe-monitor-storage-runtime-recovery-{}.sqlite",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&database_path);
+    let database_url = format!("sqlite://{}?mode=rwc", database_path.to_string_lossy());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("SQLite pool should open");
+    ensure_persistence_schema(&pool)
+        .await
+        .expect("migration status persistence should exist");
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+        ..StorageConfig::default()
+    };
+    let migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration status should load"),
+    );
+    let router = StorageRuntimeRouter::initialize(
+        pool.clone(),
+        &config,
+        migration.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("initial SQLite authority should initialize");
+
+    let context = AuthorityRecoveryContext {
+        migration_id: "storage-migration".to_string(),
+        installation_id: "local".to_string(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite:local".to_string(),
+        target_identity: "postgres:configured".to_string(),
+        source_watermark: 7,
+    };
+    router
+        .worker()
+        .metadata
+        .set_recovery_context(&context)
+        .await
+        .expect("authority recovery context should persist");
+    let manifest = ModuleAuthorityManifest {
+        migration_id: context.migration_id.clone(),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        module: context.module,
+        authority: ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        },
+        source_watermark: context.source_watermark,
+        target_identity: context.target_identity.clone(),
+    };
+    assert_eq!(
+        router
+            .worker()
+            .metadata
+            .publish_authority_manifest(&manifest, &context)
+            .await
+            .expect("authority manifest should publish"),
+        AuthorityPublication::Committed
+    );
+
+    migration
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("migration should start");
+    for phase in [
+        StorageMigrationState::Copying,
+        StorageMigrationState::CatchingUp,
+        StorageMigrationState::Verifying,
+        StorageMigrationState::Ready,
+    ] {
+        migration
+            .publish_progress(StorageMigrationProgress {
+                phase,
+                ..StorageMigrationProgress::default()
+            })
+            .await
+            .expect("migration phase should persist");
+    }
+    // Model a crash or transient SQLite failure after manifest publication but before the
+    // final Switching watermark is durable: status is still the pre-fence value 6.
+    migration
+        .publish_progress_durable(StorageMigrationProgress {
+            phase: StorageMigrationState::Switching,
+            captured_through: Some(6),
+            applied_through: Some(6),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("stale Switching checkpoint should persist");
+
+    sqlx::query(
+        "CREATE TABLE migration_change_log_state (
+            migration_id TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            authority_generation INTEGER NOT NULL,
+            source_writes_fenced INTEGER NOT NULL,
+            PRIMARY KEY (migration_id, source_identity)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("source authority state should exist");
+    sqlx::query(
+        "INSERT INTO migration_change_log_state
+            (migration_id, source_identity, authority_generation, source_writes_fenced)
+         VALUES ('storage-migration', 'sqlite:local', 2, 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("source authority fence should persist");
+
+    pool.close().await;
+    let error = migration
+        .publish_progress_durable(StorageMigrationProgress {
+            phase: StorageMigrationState::Switching,
+            captured_through: Some(7),
+            applied_through: Some(7),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect_err("final Switching progress should fail after persistence is closed");
+    assert!(
+        error
+            .to_string()
+            .contains("persist storage migration status")
+    );
+    drop(router);
+    drop(migration);
+
+    let restarted_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("SQLite persistence should reopen after the simulated crash");
+    let restarted_migration = Arc::new(
+        StorageMigrationRuntime::load(&config, restarted_pool.clone())
+            .await
+            .expect("stale Switching status should reload"),
+    );
+    let recovered = StorageRuntimeRouter::initialize(
+        restarted_pool,
+        &config,
+        restarted_migration.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("committed manifest should repair stale Switching status");
+
+    assert_eq!(
+        recovered
+            .current_authority(StorageModule::TrafficArchive)
+            .await,
+        ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        }
+    );
+    let status = restarted_migration.snapshot().await;
+    assert_eq!(status.state, StorageMigrationState::Postgres);
+    assert_eq!(status.progress.captured_through, Some(7));
+    assert_eq!(status.progress.applied_through, Some(7));
+    recovered.stop().await;
+    drop(recovered);
+    let _ = std::fs::remove_file(database_path);
+}
+
+#[tokio::test]
 async fn restart_rejects_sqlite_authority_generation_drift() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
