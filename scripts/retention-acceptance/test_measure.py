@@ -38,6 +38,8 @@ from measure import (
     remaining_budget,
     run_command,
     run_foreground,
+    reuse_fixture_data,
+    sqlite_schema_fingerprint,
     start_container,
     task_runs,
     competitor_file_oracle,
@@ -56,6 +58,81 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_reuse_fixture_data_copies_only_controlled_fixture_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.sqlite"
+            target = root / "target.sqlite"
+            maintenance = root / "maintenance.sqlite"
+            for database in (source, target):
+                connection = sqlite3.connect(database)
+                connection.executescript(
+                    """
+                    CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, value TEXT);
+                    CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, value TEXT);
+                    CREATE TABLE parallel_work_hourly_coverage (id INTEGER PRIMARY KEY, value TEXT);
+                    CREATE TABLE target_only (id INTEGER PRIMARY KEY, value TEXT);
+                    """
+                )
+                connection.commit()
+                connection.close()
+
+            connection = sqlite3.connect(source)
+            connection.executescript(
+                """
+                INSERT INTO codex_invocations VALUES (1, 'source');
+                INSERT INTO pool_upstream_request_attempts VALUES (1, 'source');
+                INSERT INTO parallel_work_hourly_coverage VALUES (1, 'source');
+                INSERT INTO target_only VALUES (1, 'source');
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            connection = sqlite3.connect(target)
+            connection.executescript(
+                """
+                INSERT INTO codex_invocations VALUES (1, 'target');
+                INSERT INTO target_only VALUES (1, 'target');
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            reuse_fixture_data(source, target, maintenance, time.monotonic())
+
+            connection = sqlite3.connect(target)
+            self.assertEqual(connection.execute("SELECT value FROM codex_invocations").fetchone()[0], "source")
+            self.assertEqual(
+                connection.execute("SELECT value FROM pool_upstream_request_attempts").fetchone()[0],
+                "source",
+            )
+            self.assertEqual(
+                connection.execute("SELECT value FROM parallel_work_hourly_coverage").fetchone()[0],
+                "source",
+            )
+            self.assertEqual(connection.execute("SELECT value FROM target_only").fetchone()[0], "target")
+            connection.close()
+
+    def test_sqlite_schema_fingerprint_changes_when_schema_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "first.sqlite"
+            second = Path(temporary) / "second.sqlite"
+            for database in (first, second):
+                connection = sqlite3.connect(database)
+                connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+                connection.commit()
+                connection.close()
+
+            self.assertEqual(sqlite_schema_fingerprint(first), sqlite_schema_fingerprint(second))
+
+            connection = sqlite3.connect(second)
+            connection.execute("ALTER TABLE records ADD COLUMN note TEXT")
+            connection.commit()
+            connection.close()
+
+            self.assertNotEqual(sqlite_schema_fingerprint(first), sqlite_schema_fingerprint(second))
+
     def test_competitor_chunks_and_file_phase_defers_are_counted_separately(self) -> None:
         rows = []
         for index, task_key in enumerate(("retention_archive", "pool_upstream_attempt_archive")):

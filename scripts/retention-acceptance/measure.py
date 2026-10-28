@@ -665,6 +665,51 @@ def checkpoint_and_reset_history(main_db: Path, maintenance_db: Path, phase_star
         maintenance.close()
 
 
+def sqlite_schema_fingerprint(database: Path) -> str:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        schema = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('index', 'table', 'trigger', 'view') "
+            "ORDER BY type, name"
+        ).fetchall()
+        pragmas = {
+            "application_id": connection.execute("PRAGMA application_id").fetchone()[0],
+            "encoding": connection.execute("PRAGMA encoding").fetchone()[0],
+            "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
+        }
+    finally:
+        connection.close()
+    return sha256_bytes(json.dumps({"pragmas": pragmas, "schema": schema}, sort_keys=True).encode())
+
+
+def reuse_fixture_data(
+    source_database: Path,
+    target_database: Path,
+    maintenance_database: Path,
+    started: float,
+) -> None:
+    fixture_tables = (
+        "codex_invocations",
+        "pool_upstream_request_attempts",
+        "parallel_work_hourly_coverage",
+    )
+    connection = sqlite3.connect(target_database, timeout=min(30, remaining_budget(started)))
+    try:
+        connection.execute(f"ATTACH DATABASE ? AS source_fixture", (str(source_database),))
+        connection.execute("BEGIN IMMEDIATE")
+        for table in fixture_tables:
+            connection.execute(f"DELETE FROM main.{table}")
+            connection.execute(f"INSERT INTO main.{table} SELECT * FROM source_fixture.{table}")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    checkpoint_and_reset_history(target_database, maintenance_database, started)
+
+
 def prepare_template(
     tag: str,
     version: str,
@@ -672,6 +717,8 @@ def prepare_template(
     cutoff: str,
     started: float,
     owned: OwnedContainerLedger | None = None,
+    reuse_from: Path | None = None,
+    reuse_fingerprint: str | None = None,
 ) -> tuple[Path, str]:
     owned = owned or OwnedContainerLedger()
     directory = root / f"template-{version}"
@@ -701,6 +748,16 @@ def prepare_template(
     maintenance_db = directory / "codex_vibe_monitor.maintenance.sqlite"
     if not main_db.is_file() or not maintenance_db.is_file():
         raise AcceptanceError(f"{version} production startup did not create both SQLite databases")
+    if reuse_from is not None:
+        source_main_db = reuse_from / "codex_vibe_monitor.db"
+        if (
+            source_main_db.is_file()
+            and sqlite_schema_fingerprint(source_main_db) == sqlite_schema_fingerprint(main_db)
+        ):
+            if reuse_fingerprint is None:
+                raise AcceptanceError("reused fixture is missing its deterministic input fingerprint")
+            reuse_fixture_data(source_main_db, main_db, maintenance_db, started)
+            return directory, reuse_fingerprint
     fingerprint = populate_template(main_db, cutoff, budget_check=lambda: remaining_budget(started))
     checkpoint_and_reset_history(main_db, maintenance_db, started)
     return directory, fingerprint
@@ -1666,7 +1723,14 @@ def main() -> int:
         for version in ("baseline", "candidate"):
             remaining_budget(phase_started)
             templates[version], fingerprints[version] = prepare_template(
-                tags[version], version, root, cutoff, phase_started, owned
+                tags[version],
+                version,
+                root,
+                cutoff,
+                phase_started,
+                owned,
+                reuse_from=templates.get("baseline", (None,))[0] if version == "candidate" else None,
+                reuse_fingerprint=fingerprints.get("baseline") if version == "candidate" else None,
             )
         if fingerprints["baseline"] != fingerprints["candidate"]:
             raise AcceptanceError("baseline and candidate fixture fingerprints differ")
