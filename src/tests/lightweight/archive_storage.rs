@@ -358,6 +358,11 @@ fn raw_conversion_preserves_legacy_aliases_without_filesystem_access() {
             .aliases
             .contains(&"2026/10/request.bin".to_owned())
     );
+    assert!(
+        conversion
+            .aliases
+            .contains(&"/var/lib/codex/raw/2026/10/request.bin".to_owned())
+    );
 
     assert!(
         RawReferenceConversion::from_legacy_path(
@@ -366,6 +371,26 @@ fn raw_conversion_preserves_legacy_aliases_without_filesystem_access() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn bounded_path_aliases_cover_root_prefixed_and_absolute_spellings() {
+    let archive_aliases = archive_path_aliases(
+        "/var/lib/codex/archive/2026/10/part-0.sqlite.gz",
+        Path::new("/var/lib/codex/archive"),
+    )
+    .unwrap();
+    assert!(archive_aliases.contains(&"2026/10/part-0.sqlite.gz".to_owned()));
+    assert!(archive_aliases.contains(&"archive/2026/10/part-0.sqlite.gz".to_owned()));
+    assert!(
+        archive_aliases.contains(&"/var/lib/codex/archive/2026/10/part-0.sqlite.gz".to_owned())
+    );
+
+    let raw_aliases =
+        raw_path_aliases("raw/2026/10/request.bin", Path::new("/var/lib/codex/raw")).unwrap();
+    assert!(raw_aliases.contains(&"2026/10/request.bin".to_owned()));
+    assert!(raw_aliases.contains(&"raw/2026/10/request.bin".to_owned()));
+    assert!(raw_aliases.contains(&"/var/lib/codex/raw/2026/10/request.bin".to_owned()));
 }
 
 #[test]

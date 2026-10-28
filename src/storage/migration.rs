@@ -5,6 +5,7 @@
 //! are deterministic reference implementations for the protocol tests.
 
 use std::{
+    any::Any,
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     future::Future,
@@ -965,6 +966,9 @@ pub(crate) struct MigrationProgress {
 pub(crate) trait MigrationSource: Send + Sync {
     async fn capture_watermark(&self) -> Result<i64>;
     async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint>;
+    async fn source_write_authority(&self) -> Result<Option<SourceWriteAuthority>> {
+        Ok(None)
+    }
     async fn mark_baseline_complete(&self, capture_generation: u64, through: i64) -> Result<()>;
     async fn fence_source_writes(
         &self,
@@ -1712,6 +1716,12 @@ impl MigrationSource for InMemoryMigrationSource {
         InMemoryMigrationSource::capture_checkpoint(self).await
     }
 
+    async fn source_write_authority(&self) -> Result<Option<SourceWriteAuthority>> {
+        Ok(Some(
+            InMemoryMigrationSource::source_write_authority(self).await?,
+        ))
+    }
+
     async fn mark_baseline_complete(&self, capture_generation: u64, through: i64) -> Result<()> {
         InMemoryMigrationSource::mark_baseline_complete(self, capture_generation, through).await
     }
@@ -2413,10 +2423,30 @@ struct StoredMigrationState {
     manifest: Option<StoredManifest>,
     #[serde(default)]
     recovery_context: Option<StoredRecoveryContext>,
+    #[serde(default)]
+    authority_identity: Option<StoredAuthorityIdentity>,
+    #[serde(default)]
+    capture_binding: Option<StoredCaptureBinding>,
     statuses: Vec<StoredStatus>,
     checkpoints: Vec<StoredCheckpoint>,
     outbox: Vec<StoredOutboxItem>,
     reservations: Vec<StoredReservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredAuthorityIdentity {
+    migration_id: String,
+    installation_id: String,
+    source_identity: String,
+    module: String,
+    target_identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredCaptureBinding {
+    identity: StoredAuthorityIdentity,
+    capture_generation: u64,
+    source_watermark: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2483,7 +2513,7 @@ struct StoredOutboxItem {
     payload_digest: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredReservation {
     reservation_id: String,
     migration_id: String,
@@ -2524,6 +2554,44 @@ impl FileMigrationStore {
         <Self as AuthorityManifestStore>::publish_authority_manifest(self, manifest, expected).await
     }
 
+    pub(crate) async fn bind_capture_generation(
+        &self,
+        context: &AuthorityRecoveryContext,
+        checkpoint: &CaptureCheckpoint,
+    ) -> Result<()> {
+        if checkpoint.capture_generation == 0
+            || checkpoint.next_version < 0
+            || checkpoint.migration_id != context.migration_id
+            || checkpoint.source_identity != context.source_identity
+        {
+            bail!("migration capture generation identity is invalid");
+        }
+        let _guard = self.lock.lock().await;
+        let mut state = self.read_state().await?;
+        ensure_state_identity(&mut state, context)?;
+        let binding = StoredCaptureBinding {
+            identity: stored_authority_identity_from_context(context),
+            capture_generation: checkpoint.capture_generation,
+            source_watermark: checkpoint.next_version,
+        };
+        if let Some(existing) = state.capture_binding.as_ref() {
+            if existing.identity != binding.identity {
+                bail!("migration capture generation belongs to another authority identity");
+            }
+            if existing.capture_generation != binding.capture_generation {
+                bail!(
+                    "migration capture generation changed; durable plans and checkpoints require a fresh migration"
+                );
+            }
+            if binding.source_watermark < existing.source_watermark {
+                bail!("migration capture watermark regressed within a capture generation");
+            }
+            return Ok(());
+        }
+        state.capture_binding = Some(binding);
+        self.write_state(&state).await
+    }
+
     async fn read_state(&self) -> Result<StoredMigrationState> {
         match fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -2548,6 +2616,7 @@ impl FileMigrationStore {
         }
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        ensure_state_identity(&mut state, context)?;
         let stored_context = value_to_stored_recovery_context(context);
         if let Some(existing) = state.recovery_context.as_ref()
             && existing != &stored_context
@@ -2607,17 +2676,42 @@ impl AuthorityManifestStore for FileMigrationStore {
     ) -> Result<AuthorityRecoveryRecord> {
         let _guard = self.lock.lock().await;
         let state = self.read_state().await?;
-        let Some(stored) = state.manifest else {
-            let context = if let Some(stored) = state.recovery_context {
-                let context = stored_recovery_context_to_value(stored)?;
-                if context.module != module {
-                    return Ok(AuthorityRecoveryRecord::Indeterminate);
-                }
-                context
-            } else {
-                self.context.lock().await.clone()
-            };
-            if context.module != module {
+        let constructor_context = self.context.lock().await.clone();
+        let durable_identity = match durable_state_identity(&state, None) {
+            Ok(identity) => identity,
+            Err(_) => return Ok(AuthorityRecoveryRecord::Indeterminate),
+        };
+        if state_has_durable_records(&state) && durable_identity.is_none() {
+            return Ok(AuthorityRecoveryRecord::Indeterminate);
+        }
+        if durable_identity.is_some_and(|identity| {
+            identity != stored_authority_identity_from_context(&constructor_context)
+        }) {
+            return Ok(AuthorityRecoveryRecord::Indeterminate);
+        }
+        if validate_durable_records(&state, &constructor_context).is_err() {
+            return Ok(AuthorityRecoveryRecord::Indeterminate);
+        }
+        if let Some(stored) = state.manifest.clone() {
+            let manifest = stored_manifest_to_value(stored)?;
+            if manifest.module != module
+                || manifest.migration_id != constructor_context.migration_id
+                || manifest.installation_id != constructor_context.installation_id
+                || manifest.source_identity != constructor_context.source_identity
+                || manifest.target_identity != constructor_context.target_identity
+            {
+                return Ok(AuthorityRecoveryRecord::Indeterminate);
+            }
+            return Ok(AuthorityRecoveryRecord::Manifest(manifest));
+        }
+        if let Some(stored) = state.recovery_context.clone() {
+            let context = stored_recovery_context_to_value(stored)?;
+            if context.module != module
+                || context.migration_id != constructor_context.migration_id
+                || context.installation_id != constructor_context.installation_id
+                || context.source_identity != constructor_context.source_identity
+                || context.target_identity != constructor_context.target_identity
+            {
                 return Ok(AuthorityRecoveryRecord::Indeterminate);
             }
             return Ok(AuthorityRecoveryRecord::NeverMigrated {
@@ -2628,12 +2722,34 @@ impl AuthorityManifestStore for FileMigrationStore {
                 target_identity: context.target_identity,
                 source_watermark: context.source_watermark,
             });
-        };
-        let manifest = stored_manifest_to_value(stored)?;
-        if manifest.module != module {
+        }
+        if let Some(binding) = state.capture_binding {
+            if binding.identity.module != module_name(module) {
+                return Ok(AuthorityRecoveryRecord::Indeterminate);
+            }
+            return Ok(AuthorityRecoveryRecord::NeverMigrated {
+                migration_id: binding.identity.migration_id,
+                installation_id: binding.identity.installation_id,
+                module,
+                source_identity: binding.identity.source_identity,
+                target_identity: binding.identity.target_identity,
+                source_watermark: binding.source_watermark,
+            });
+        }
+        if state_has_durable_records(&state) {
             return Ok(AuthorityRecoveryRecord::Indeterminate);
         }
-        Ok(AuthorityRecoveryRecord::Manifest(manifest))
+        if constructor_context.module != module {
+            return Ok(AuthorityRecoveryRecord::Indeterminate);
+        }
+        Ok(AuthorityRecoveryRecord::NeverMigrated {
+            migration_id: constructor_context.migration_id,
+            installation_id: constructor_context.installation_id,
+            module,
+            source_identity: constructor_context.source_identity,
+            target_identity: constructor_context.target_identity,
+            source_watermark: constructor_context.source_watermark,
+        })
     }
 
     async fn publish_authority_manifest(
@@ -2656,10 +2772,21 @@ impl AuthorityManifestStore for FileMigrationStore {
         }
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        if validate_state_identity(&state, expected).is_err() {
+            return Ok(AuthorityPublication::Indeterminate);
+        }
         if let Some(existing) = state.manifest.as_ref() {
             let existing = stored_manifest_to_value(existing.clone())?;
             if existing == *manifest {
-                if state.recovery_context.take().is_some() {
+                let mut changed = state.recovery_context.take().is_some();
+                if state.authority_identity.as_ref()
+                    != Some(&stored_authority_identity_from_context(expected))
+                {
+                    state.authority_identity =
+                        Some(stored_authority_identity_from_context(expected));
+                    changed = true;
+                }
+                if changed {
                     self.write_state(&state).await?;
                 }
                 return Ok(AuthorityPublication::Committed);
@@ -2674,6 +2801,7 @@ impl AuthorityManifestStore for FileMigrationStore {
             return Ok(AuthorityPublication::Conflict);
         }
         state.manifest = Some(value_to_stored_manifest(manifest));
+        state.authority_identity = Some(stored_authority_identity_from_context(expected));
         state.recovery_context = None;
         self.write_state(&state).await?;
         Ok(AuthorityPublication::Committed)
@@ -2689,6 +2817,8 @@ impl MigrationMetadataStore for FileMigrationStore {
     async fn load_status(&self, module: StorageModule) -> Result<Option<MigrationStatus>> {
         let _guard = self.lock.lock().await;
         let state = self.read_state().await?;
+        let context = self.context.lock().await.clone();
+        validate_state_identity(&state, &context)?;
         state
             .statuses
             .into_iter()
@@ -2701,6 +2831,16 @@ impl MigrationMetadataStore for FileMigrationStore {
         status.validate()?;
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        let context = self.context.lock().await.clone();
+        ensure_state_identity(&mut state, &context)?;
+        if status.migration_id != context.migration_id
+            || status.installation_id != context.installation_id
+            || status.module != context.module
+            || status.source_identity != context.source_identity
+            || status.target_identity != context.target_identity
+        {
+            bail!("migration status belongs to another authority identity");
+        }
         let module = module_name(status.module).to_owned();
         state
             .statuses
@@ -2716,11 +2856,8 @@ impl MigrationMetadataStore for FileMigrationStore {
     ) -> Result<Option<MigrationCheckpoint>> {
         let _guard = self.lock.lock().await;
         let state = self.read_state().await?;
-        let identity_context = if let Some(stored) = state.recovery_context.clone() {
-            stored_recovery_context_to_value(stored)?
-        } else {
-            self.context.lock().await.clone()
-        };
+        let identity_context = self.context.lock().await.clone();
+        validate_state_identity(&state, &identity_context)?;
         state
             .checkpoints
             .into_iter()
@@ -2739,11 +2876,8 @@ impl MigrationMetadataStore for FileMigrationStore {
         checkpoint.validate()?;
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
-        let identity_context = if let Some(stored) = state.recovery_context.clone() {
-            stored_recovery_context_to_value(stored)?
-        } else {
-            self.context.lock().await.clone()
-        };
+        let identity_context = self.context.lock().await.clone();
+        ensure_state_identity(&mut state, &identity_context)?;
         validate_checkpoint_identity_against_context(checkpoint, &identity_context)?;
         state.checkpoints.retain(|stored| {
             stored.migration_id != checkpoint.migration_id
@@ -2759,13 +2893,23 @@ impl MigrationMetadataStore for FileMigrationStore {
         item.validate()?;
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        let context = self.context.lock().await.clone();
+        ensure_state_identity(&mut state, &context)?;
+        validate_stored_outbox_identity(&value_to_stored_outbox(item), &context)?;
         let incoming = value_to_stored_outbox(item);
         if let Some(existing) = state
             .outbox
             .iter()
             .find(|stored| stored.outbox_id == item.outbox_id)
         {
-            if existing == &incoming {
+            if existing.outbox_id == incoming.outbox_id
+                && existing.migration_id == incoming.migration_id
+                && existing.source_identity == incoming.source_identity
+                && existing.source_version == incoming.source_version
+                && existing.module == incoming.module
+                && existing.authority_generation == incoming.authority_generation
+                && existing.payload_digest == incoming.payload_digest
+            {
                 return Ok(false);
             }
             bail!("migration outbox id conflicts with an existing payload or identity");
@@ -2781,9 +2925,12 @@ impl MigrationMetadataStore for FileMigrationStore {
         }
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        let context = self.context.lock().await.clone();
+        validate_state_identity(&state, &context)?;
         let Some(item) = state.outbox.iter().find(|item| item.outbox_id == outbox_id) else {
             bail!("migration outbox item is missing");
         };
+        validate_stored_outbox_identity(item, &context)?;
         if applied_through < item.source_version {
             bail!("migration outbox acknowledgement regresses its source version");
         }
@@ -2795,16 +2942,26 @@ impl MigrationMetadataStore for FileMigrationStore {
         reservation.validate()?;
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        let context = self.context.lock().await.clone();
+        ensure_state_identity(&mut state, &context)?;
+        let incoming = value_to_stored_reservation(reservation);
+        validate_stored_reservation_identity(&incoming, &context)?;
         if state
             .reservations
             .iter()
             .any(|stored| stored.reservation_id == reservation.reservation_id)
         {
+            if let Some(existing) = state
+                .reservations
+                .iter()
+                .find(|stored| stored.reservation_id == reservation.reservation_id)
+                && existing != &incoming
+            {
+                bail!("migration reservation id conflicts with an existing identity");
+            }
             return Ok(false);
         }
-        state
-            .reservations
-            .push(value_to_stored_reservation(reservation));
+        state.reservations.push(incoming);
         self.write_state(&state).await?;
         Ok(true)
     }
@@ -2812,6 +2969,11 @@ impl MigrationMetadataStore for FileMigrationStore {
     async fn release_capacity(&self, reservation_id: &str) -> Result<()> {
         let _guard = self.lock.lock().await;
         let mut state = self.read_state().await?;
+        let context = self.context.lock().await.clone();
+        validate_state_identity(&state, &context)?;
+        for reservation in &state.reservations {
+            validate_stored_reservation_identity(reservation, &context)?;
+        }
         state
             .reservations
             .retain(|reservation| reservation.reservation_id != reservation_id);
@@ -2888,6 +3050,216 @@ fn parse_state(value: &str) -> Result<MigrationState> {
         "failed" => Ok(MigrationState::Failed),
         _ => bail!("unknown migration state: {value}"),
     }
+}
+
+fn stored_authority_identity_from_context(
+    context: &AuthorityRecoveryContext,
+) -> StoredAuthorityIdentity {
+    StoredAuthorityIdentity {
+        migration_id: context.migration_id.clone(),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        module: module_name(context.module).to_owned(),
+        target_identity: context.target_identity.clone(),
+    }
+}
+
+fn stored_authority_identity_from_manifest(manifest: &StoredManifest) -> StoredAuthorityIdentity {
+    StoredAuthorityIdentity {
+        migration_id: manifest.migration_id.clone(),
+        installation_id: manifest.installation_id.clone(),
+        source_identity: manifest.source_identity.clone(),
+        module: manifest.module.clone(),
+        target_identity: manifest.target_identity.clone(),
+    }
+}
+
+fn stored_authority_identity_from_recovery(
+    context: &StoredRecoveryContext,
+) -> StoredAuthorityIdentity {
+    StoredAuthorityIdentity {
+        migration_id: context.migration_id.clone(),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        module: context.module.clone(),
+        target_identity: context.target_identity.clone(),
+    }
+}
+
+fn merge_stored_authority_identity(
+    current: &mut Option<StoredAuthorityIdentity>,
+    candidate: StoredAuthorityIdentity,
+) -> Result<()> {
+    if let Some(existing) = current.as_ref()
+        && existing != &candidate
+    {
+        bail!("durable migration state contains conflicting authority identities");
+    }
+    *current = Some(candidate);
+    Ok(())
+}
+
+fn durable_state_identity(
+    state: &StoredMigrationState,
+    checkpoint_module: Option<StorageModule>,
+) -> Result<Option<StoredAuthorityIdentity>> {
+    let mut identity = None;
+    if let Some(stored) = state.authority_identity.clone() {
+        merge_stored_authority_identity(&mut identity, stored)?;
+    }
+    if let Some(stored) = state.manifest.as_ref() {
+        merge_stored_authority_identity(
+            &mut identity,
+            stored_authority_identity_from_manifest(stored),
+        )?;
+    }
+    if let Some(stored) = state.recovery_context.as_ref() {
+        merge_stored_authority_identity(
+            &mut identity,
+            stored_authority_identity_from_recovery(stored),
+        )?;
+    }
+    if let Some(binding) = state.capture_binding.as_ref() {
+        merge_stored_authority_identity(&mut identity, binding.identity.clone())?;
+    }
+    for status in &state.statuses {
+        merge_stored_authority_identity(
+            &mut identity,
+            StoredAuthorityIdentity {
+                migration_id: status.migration_id.clone(),
+                installation_id: status.installation_id.clone(),
+                source_identity: status.source_identity.clone(),
+                module: status.module.clone(),
+                target_identity: status.target_identity.clone(),
+            },
+        )?;
+    }
+    if let Some(module) = checkpoint_module {
+        for checkpoint in &state.checkpoints {
+            merge_stored_authority_identity(
+                &mut identity,
+                StoredAuthorityIdentity {
+                    migration_id: checkpoint.migration_id.clone(),
+                    installation_id: checkpoint.installation_id.clone(),
+                    source_identity: checkpoint.source_identity.clone(),
+                    module: module_name(module).to_owned(),
+                    target_identity: checkpoint.target_identity.clone(),
+                },
+            )?;
+        }
+    }
+    Ok(identity)
+}
+
+fn state_has_durable_records(state: &StoredMigrationState) -> bool {
+    state.manifest.is_some()
+        || state.recovery_context.is_some()
+        || state.authority_identity.is_some()
+        || state.capture_binding.is_some()
+        || !state.statuses.is_empty()
+        || !state.checkpoints.is_empty()
+        || !state.outbox.is_empty()
+        || !state.reservations.is_empty()
+}
+
+fn ensure_state_identity(
+    state: &mut StoredMigrationState,
+    context: &AuthorityRecoveryContext,
+) -> Result<()> {
+    let expected = stored_authority_identity_from_context(context);
+    let durable = durable_state_identity(state, Some(context.module))?;
+    if let Some(durable) = durable.as_ref()
+        && durable != &expected
+    {
+        bail!("durable migration state belongs to another authority identity");
+    }
+    if state_has_durable_records(state) && durable.is_none() {
+        bail!("durable migration state has no recoverable authority identity");
+    }
+    state.authority_identity = Some(expected);
+    Ok(())
+}
+
+fn validate_state_identity(
+    state: &StoredMigrationState,
+    context: &AuthorityRecoveryContext,
+) -> Result<()> {
+    let expected = stored_authority_identity_from_context(context);
+    let durable = durable_state_identity(state, None)?;
+    if state_has_durable_records(state) && durable.is_none() {
+        bail!("durable migration state has no recoverable authority identity");
+    }
+    if durable.is_some_and(|identity| identity != expected) {
+        bail!("durable migration state belongs to another authority identity");
+    }
+    validate_durable_records(state, context)?;
+    Ok(())
+}
+
+fn validate_durable_records(
+    state: &StoredMigrationState,
+    context: &AuthorityRecoveryContext,
+) -> Result<()> {
+    let module = module_name(context.module);
+    if let Some(binding) = state.capture_binding.as_ref()
+        && (binding.identity != stored_authority_identity_from_context(context)
+            || binding.capture_generation == 0
+            || binding.source_watermark < 0)
+    {
+        bail!("durable capture binding belongs to another authority identity");
+    }
+    for status in &state.statuses {
+        if status.migration_id != context.migration_id
+            || status.installation_id != context.installation_id
+            || status.module != module
+            || status.source_identity != context.source_identity
+            || status.target_identity != context.target_identity
+        {
+            bail!("durable migration status belongs to another authority identity");
+        }
+    }
+    for checkpoint in &state.checkpoints {
+        if checkpoint.migration_id != context.migration_id
+            || checkpoint.installation_id != context.installation_id
+            || checkpoint.source_identity != context.source_identity
+            || checkpoint.target_identity != context.target_identity
+        {
+            bail!("durable migration checkpoint belongs to another authority identity");
+        }
+    }
+    for item in &state.outbox {
+        validate_stored_outbox_identity(item, context)?;
+    }
+    for reservation in &state.reservations {
+        validate_stored_reservation_identity(reservation, context)?;
+    }
+    Ok(())
+}
+
+fn validate_stored_outbox_identity(
+    item: &StoredOutboxItem,
+    context: &AuthorityRecoveryContext,
+) -> Result<()> {
+    if item.migration_id != context.migration_id
+        || item.source_identity != context.source_identity
+        || item.module != module_name(context.module)
+    {
+        bail!("migration outbox item belongs to another authority identity");
+    }
+    Ok(())
+}
+
+fn validate_stored_reservation_identity(
+    reservation: &StoredReservation,
+    context: &AuthorityRecoveryContext,
+) -> Result<()> {
+    if reservation.migration_id != context.migration_id
+        || reservation.source_identity != context.source_identity
+        || reservation.module != module_name(context.module)
+    {
+        bail!("migration reservation belongs to another authority identity");
+    }
+    Ok(())
 }
 
 fn value_to_stored_manifest(manifest: &ModuleAuthorityManifest) -> StoredManifest {
@@ -3066,6 +3438,7 @@ pub(crate) struct MigrationEngine<S, T, M> {
     installation_id: String,
     target_identity: String,
     authority_generation: u64,
+    capture_generation: Arc<Mutex<Option<u64>>>,
     limits: MigrationLimits,
     fence: SourceWriteFence,
     switching: Arc<Mutex<()>>,
@@ -3083,6 +3456,7 @@ impl<S, T, M> Clone for MigrationEngine<S, T, M> {
             installation_id: self.installation_id.clone(),
             target_identity: self.target_identity.clone(),
             authority_generation: self.authority_generation,
+            capture_generation: Arc::clone(&self.capture_generation),
             limits: self.limits,
             fence: self.fence.clone(),
             switching: Arc::clone(&self.switching),
@@ -3129,6 +3503,7 @@ where
             installation_id,
             target_identity,
             authority_generation,
+            capture_generation: Arc::new(Mutex::new(None)),
             limits,
             fence,
             switching: Arc::new(Mutex::new(())),
@@ -3159,8 +3534,41 @@ where
         }
     }
 
+    async fn bind_capture_generation(&self, checkpoint: &CaptureCheckpoint) -> Result<()> {
+        if checkpoint.capture_generation == 0
+            || checkpoint.migration_id != self.source.migration_id()
+            || checkpoint.source_identity != self.source.source_identity()
+        {
+            bail!("migration capture checkpoint does not match the engine identity");
+        }
+        let bound_generation = *self.capture_generation.lock().await;
+        if bound_generation.is_some_and(|generation| generation != checkpoint.capture_generation) {
+            bail!(
+                "migration capture generation changed; durable plans and checkpoints require a fresh migration"
+            );
+        }
+        let context = AuthorityRecoveryContext {
+            migration_id: self.source.migration_id().to_owned(),
+            installation_id: self.installation_id.clone(),
+            module: self.module,
+            source_identity: self.source.source_identity().to_owned(),
+            target_identity: self.target_identity.clone(),
+            source_watermark: checkpoint.next_version,
+        };
+        if let Some(store) = (&*self.store as &dyn Any).downcast_ref::<FileMigrationStore>() {
+            store.bind_capture_generation(&context, checkpoint).await?;
+        }
+        let mut bound = self.capture_generation.lock().await;
+        if bound.is_some_and(|generation| generation != checkpoint.capture_generation) {
+            bail!("migration capture generation changed while binding durable progress");
+        }
+        *bound = Some(checkpoint.capture_generation);
+        Ok(())
+    }
+
     async fn ensure_capture_ready(&self) -> Result<CaptureCheckpoint> {
         let checkpoint = self.source.capture_checkpoint().await?;
+        self.bind_capture_generation(&checkpoint).await?;
         if checkpoint.continuity_lost || checkpoint.baseline_required {
             bail!(
                 "migration capture is not baseline-complete; complete a fresh source baseline before continuing"
@@ -3172,6 +3580,7 @@ where
     pub(crate) async fn mark_baseline_complete(&self, through: i64) -> Result<()> {
         self.ensure_running().await?;
         let checkpoint = self.source.capture_checkpoint().await?;
+        self.bind_capture_generation(&checkpoint).await?;
         if checkpoint.continuity_lost {
             bail!("migration capture continuity has been lost; start a new capture generation");
         }
@@ -3858,6 +4267,53 @@ where
         Ok(())
     }
 
+    async fn fence_source_writes_for_switch(&self) -> Result<u64> {
+        let mut expected_generation = self.authority_generation;
+        if let Some(authority) = self.source.source_write_authority().await? {
+            authority.validate()?;
+            if authority.fenced {
+                bail!("source write fence is already active and requires recovery");
+            }
+            expected_generation = authority.generation;
+        }
+        let mut attempts = 0_usize;
+        loop {
+            let next_generation = expected_generation
+                .max(self.authority_generation)
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("migration authority generation exhausted"))?;
+            match self
+                .source
+                .fence_source_writes(expected_generation, next_generation)
+                .await
+            {
+                Ok(()) => return Ok(next_generation),
+                Err(error)
+                    if is_stale_source_generation_error(&error)
+                        && attempts < self.limits.max_queued_operations.max(1) =>
+                {
+                    attempts = attempts
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("source fence retry count overflowed"))?;
+                    if let Some(authority) = self.source.source_write_authority().await? {
+                        authority.validate()?;
+                        if authority.fenced {
+                            bail!(
+                                "source fence state became indeterminate after a stale generation error: {error}"
+                            );
+                        }
+                        expected_generation = authority.generation;
+                    } else {
+                        expected_generation = expected_generation
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow!("migration authority generation exhausted"))?;
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(crate) async fn switch_authority(
         &self,
         gate: &ModuleGenerationGate,
@@ -3933,19 +4389,15 @@ where
         }
 
         self.fence.close_and_drain(switch_budget).await?;
-        let next_authority_generation = self
-            .authority_generation
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("migration authority generation exhausted"))?;
         let mut source_fenced = false;
+        let mut fenced_generation = None;
         let result = async {
             // The in-memory fence is shared with routed production writers. Persist the same
             // generation-bound fence before reading the post-fence watermark so direct SQLite
             // writers are rejected by the trigger before the final capture boundary is chosen.
-            self.source
-                .fence_source_writes(self.authority_generation, next_authority_generation)
-                .await?;
+            let next_authority_generation = self.fence_source_writes_for_switch().await?;
             source_fenced = true;
+            fenced_generation = Some(next_authority_generation);
             let watermark = self.source.capture_watermark().await?;
             if watermark < pre_fence_watermark {
                 bail!("source capture watermark regressed during the switch fence");
@@ -3997,7 +4449,10 @@ where
             {
                 if source_fenced {
                     self.source
-                        .reopen_source_writes(next_authority_generation)
+                        .reopen_source_writes(
+                            fenced_generation
+                                .expect("a fenced source must have a recorded generation"),
+                        )
                         .await?;
                 }
                 self.fence.reopen().await;
@@ -4037,6 +4492,12 @@ where
             complete: checkpoint.complete,
         })
     }
+}
+
+fn is_stale_source_generation_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("stale") && message.contains("generation")
+        || message.contains("generation mismatch")
 }
 
 fn rows_digest(rows: &[VersionedRow]) -> String {
