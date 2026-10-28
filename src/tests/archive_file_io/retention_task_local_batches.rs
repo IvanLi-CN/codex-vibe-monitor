@@ -2008,7 +2008,10 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     .await
     .expect("staged archive manifest");
     assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
-    assert_eq!(staged.1, 401);
+    assert_eq!(
+        staged.1, 64,
+        "the staged monthly artifact is bound to the first write microbatch"
+    );
     assert_eq!(staged.2, 1);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
@@ -2020,7 +2023,7 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
         .fetch_one(&pool)
         .await
         .expect("first durable Summary Snapshot page"),
-        400
+        64
     );
     let page_prefix_reused = Arc::new(tokio::sync::Notify::new());
     let mut resumed_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED.scope(
@@ -2052,7 +2055,10 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     .expect("completed archive manifest");
     assert_eq!(settled.0, ARCHIVE_STATUS_COMPLETED);
     assert_eq!(settled.1, 401);
-    assert_eq!(settled.2, 2);
+    assert_eq!(
+        settled.2, 8,
+        "one durable Summary Snapshot page is retained for each source microbatch"
+    );
     assert_eq!(settled.3, 1);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
@@ -2402,6 +2408,9 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
     config.proxy_raw_compression = RawCompressionCodec::None;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month)
+        .expect("canonical archive target");
     let first_page_committed = Arc::new(tokio::sync::Notify::new());
     let mut first_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE.scope(
         Duration::from_secs(60),
@@ -2439,7 +2448,11 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
     let mut records =
         crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(&payload)
             .expect("decode committed Summary page payload");
-    assert_eq!(records.len(), 400);
+    assert_eq!(
+        records.len(),
+        64,
+        "the first Summary page is scoped to the first write microbatch"
+    );
     records.remove(0);
     let normalized = serde_json::to_vec(&records).expect("encode non-prefix Summary page payload");
     let corrupted_payload = zstd::stream::encode_all(normalized.as_slice(), 1)
@@ -2462,17 +2475,30 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
         .await
         .expect("resume rebuilds the non-prefix Summary page");
     assert_eq!(resumed.0, 401);
-    let settled = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*), COALESCE(SUM(row_count), 0)
-         FROM summary_archive_snapshot
-         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+    let settled = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        "SELECT
+             (SELECT COUNT(*) FROM archive_batches
+              WHERE dataset='codex_invocations' AND file_path=?1 AND status='completed'),
+             (SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+              WHERE dataset='codex_invocations' AND file_path=?1 AND status='completed'),
+             (SELECT COUNT(*) FROM summary_archive_snapshot AS snapshot
+              JOIN archive_batches AS batch ON batch.id=snapshot.archive_batch_id
+              WHERE batch.dataset='codex_invocations' AND batch.file_path=?1
+                AND snapshot.manifest_sha256=batch.sha256),
+             (SELECT COALESCE(SUM(snapshot.row_count), 0) FROM summary_archive_snapshot AS snapshot
+              JOIN archive_batches AS batch ON batch.id=snapshot.archive_batch_id
+              WHERE batch.dataset='codex_invocations' AND batch.file_path=?1
+                AND snapshot.manifest_sha256=batch.sha256)",
     )
-    .bind(batch_id)
-    .bind(&manifest_sha256)
+    .bind(target.to_string_lossy().to_string())
     .fetch_one(&pool)
     .await
     .expect("load rebuilt Summary pages");
-    assert_eq!(settled, (2, 401));
+    assert_eq!(
+        settled,
+        (1, 401, 2, 401),
+        "rebuild retains one completed archive and the complete current Summary page set"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
