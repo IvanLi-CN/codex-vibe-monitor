@@ -197,6 +197,11 @@ pub(crate) fn resolve_pool_request_compression_settings_from_row(
             .as_deref()
             .map(RequestCompressionAlgorithm::from_str)
             .unwrap_or_default(),
+        oauth_algorithm: row
+            .oauth_request_compression_algorithm
+            .as_deref()
+            .map(RequestCompressionAlgorithm::from_str)
+            .unwrap_or(RequestCompressionAlgorithm::Zstd),
         level_preset: decode_request_compression_level_preset(
             row.request_compression_level_preset.as_deref(),
         ),
@@ -672,6 +677,7 @@ pub(crate) async fn load_pool_routing_settings(
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
             request_compression_algorithm,
+            oauth_request_compression_algorithm,
             request_compression_level_preset,
             codex_imagegen_rewrite_mode,
             available_models_json,
@@ -741,6 +747,7 @@ pub(crate) fn build_pool_routing_settings_response(
         masked_api_key: row.masked_api_key.clone(),
         maintenance: resolve_pool_routing_maintenance_settings(row, &state.config).into_response(),
         request_compression_algorithm: request_compression.algorithm,
+        oauth_request_compression_algorithm: request_compression.oauth_algorithm,
         request_compression_level_preset: request_compression.level_preset,
         codex_imagegen_rewrite_mode: row
             .codex_imagegen_rewrite_mode
@@ -1035,6 +1042,7 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) crypto_key: Option<&'a [u8; 32]>,
     pub(crate) api_key: Option<&'a str>,
     pub(crate) request_compression_algorithm: Option<RequestCompressionAlgorithm>,
+    pub(crate) oauth_request_compression_algorithm: Option<RequestCompressionAlgorithm>,
     pub(crate) request_compression_level_preset: Option<RequestCompressionLevelPreset>,
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     pub(crate) available_models: Option<&'a [String]>,
@@ -1121,6 +1129,9 @@ pub(crate) async fn save_pool_routing_settings(
         .request_compression_algorithm
         .map(|value| value.as_str().to_string())
         .or(current.request_compression_algorithm.clone());
+    let oauth_request_compression_algorithm_update = update
+        .oauth_request_compression_algorithm
+        .map(|value| value.as_str().to_string());
     let request_compression_level_preset = update
         .request_compression_level_preset
         .map(|value| value.as_str().to_string())
@@ -1172,16 +1183,17 @@ pub(crate) async fn save_pool_routing_settings(
             responses_stream_timeout_secs = ?10,
             compact_stream_timeout_secs = ?11,
             request_compression_algorithm = ?12,
-            request_compression_level_preset = ?13,
-            codex_imagegen_rewrite_mode = ?14,
+            oauth_request_compression_algorithm = CASE WHEN ?13 IS NULL THEN oauth_request_compression_algorithm ELSE ?13 END,
+            request_compression_level_preset = ?14,
+            codex_imagegen_rewrite_mode = ?15,
             -- Model policy columns are updated below with field-local writes.
-            available_models_json = CASE WHEN ?15 IS NULL THEN available_models_json ELSE available_models_json END,
-            available_models_mode = CASE WHEN ?16 IS NULL THEN available_models_mode ELSE available_models_mode END,
-            default_first_byte_timeout_secs = ?17,
-            upstream_handshake_timeout_secs = ?18,
-            request_read_timeout_secs = ?19,
-            priority_handoff_admission_enabled = ?20,
-            updated_at = ?21
+            available_models_json = CASE WHEN ?16 IS NULL THEN available_models_json ELSE available_models_json END,
+            available_models_mode = CASE WHEN ?17 IS NULL THEN available_models_mode ELSE available_models_mode END,
+            default_first_byte_timeout_secs = ?18,
+            upstream_handshake_timeout_secs = ?19,
+            request_read_timeout_secs = ?20,
+            priority_handoff_admission_enabled = ?21,
+            updated_at = ?22
         WHERE id = ?1
         "#,
     )
@@ -1197,6 +1209,7 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(responses_stream_timeout_secs)
     .bind(compact_stream_timeout_secs)
     .bind(request_compression_algorithm)
+    .bind(oauth_request_compression_algorithm_update)
     .bind(request_compression_level_preset)
     .bind(codex_imagegen_rewrite_mode)
     .bind(available_models_json)
@@ -1370,6 +1383,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
     pub(crate) codex_imagegen_rewrite_mode: CodexImagegenRewriteMode,
     pub(crate) request_compression_algorithm: RequestCompressionAlgorithm,
+    pub(crate) oauth_request_compression_algorithm: RequestCompressionAlgorithm,
     pub(crate) response_endpoint_capability: CapabilitySupport,
     pub(crate) chat_completions_capability: CapabilitySupport,
     pub(crate) image_endpoint_capability: CapabilitySupport,

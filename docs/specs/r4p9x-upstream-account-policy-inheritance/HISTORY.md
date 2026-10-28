@@ -4,6 +4,8 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-10-28: Added an independent OAuth upstream request-compression default and nullable legacy-compatible storage. OAuth policy now resolves root `zstd` -> group -> account, applies compression after existing request rewrites for body-bearing POSTs, preserves the large-body streaming boundary, and never retries an upstream rejection by silently downgrading to identity. API-key compression defaults remain independent.
+
 2026-10-22: Changed the account-pool root route to default to the API-key transit surface while preserving explicit and legacy OAuth/Session account-pool links.
 
 2026-10-22: Corrected account-roster policy chip translations and separated neutral account metadata from semantic status tones across desktop and mobile pool views.

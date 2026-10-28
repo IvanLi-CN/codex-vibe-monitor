@@ -3,6 +3,18 @@ import { describe, expect, it } from "vitest";
 import { ModelPerformanceModelIdentity } from "./ModelPerformanceModelIdentity";
 
 describe("ModelPerformanceModelIdentity", () => {
+  it.each([
+    ["gpt-6.1-terra", "6.1", "earth"],
+    ["gpt-7.2.1-sol", "7.2.1", "white-balance-sunny"],
+  ])("renders the complete generation and family for %s", (model, generation, icon) => {
+    const markup = renderToStaticMarkup(
+      <ModelPerformanceModelIdentity model={model} effortValue="xhigh" showGeneration />,
+    );
+    expect(markup).toContain(`data-model-generation-segment="${generation}"`);
+    expect(markup).toContain(`data-model-icon="${icon}"`);
+    expect(markup).toContain(`title="${model} · xhigh"`);
+  });
+
   it("uses the icon instead of a duplicate model name while preserving the hover label", () => {
     const markup = renderToStaticMarkup(
       <ModelPerformanceModelIdentity model="gpt-5.6" effortValue=" MAX " testId="model-context" />,

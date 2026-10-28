@@ -35,6 +35,8 @@ async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() 
         request_body_prefix_fingerprint: None,
         request_body_prefix_bytes: None,
         request_body_snapshot_kind: None,
+        request_body_logical_bytes: None,
+        request_body_transmitted_bytes: None,
         responses_body_mode: None,
         rewrite: oauth_bridge::OauthResponsesRewriteSummary::default(),
     });
@@ -693,6 +695,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,

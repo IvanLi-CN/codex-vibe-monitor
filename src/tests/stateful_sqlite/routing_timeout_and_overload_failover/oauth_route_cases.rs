@@ -307,6 +307,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
@@ -359,7 +360,12 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         Some("Bearer oauth-large")
     );
     assert_eq!(payload["chatgptAccountId"].as_str(), Some("org_test"));
-    assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+    assert_eq!(payload["contentEncoding"].as_str(), Some("zstd"));
+    assert!(
+        payload["bodyLength"]
+            .as_u64()
+            .is_some_and(|length| length > 0)
+    );
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;

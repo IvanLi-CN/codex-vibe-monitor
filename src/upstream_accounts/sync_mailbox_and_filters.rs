@@ -1458,6 +1458,7 @@ pub(crate) fn normalize_group_account_routing_rule(
         image_tool_rewrite_mode,
         codex_imagegen_rewrite_mode: None,
         request_compression_algorithm: None,
+        oauth_request_compression_algorithm: None,
         concurrency_limit,
         upstream_429_retry_enabled,
         upstream_429_max_retries,
@@ -1849,6 +1850,7 @@ pub(crate) fn group_routing_rule_from_columns(
     policy_image_tool_rewrite_mode: Option<&str>,
     policy_codex_imagegen_rewrite_mode: Option<&str>,
     policy_request_compression_algorithm: Option<&str>,
+    policy_oauth_request_compression_algorithm: Option<&str>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -1887,6 +1889,8 @@ pub(crate) fn group_routing_rule_from_columns(
         codex_imagegen_rewrite_mode: policy_codex_imagegen_rewrite_mode
             .map(decode_codex_imagegen_rewrite_mode),
         request_compression_algorithm: policy_request_compression_algorithm
+            .map(decode_request_compression_algorithm),
+        oauth_request_compression_algorithm: policy_oauth_request_compression_algorithm
             .map(decode_request_compression_algorithm),
         concurrency_limit: policy_concurrency_limit.unwrap_or(legacy_concurrency_limit),
         upstream_429_retry_enabled,
@@ -1953,6 +1957,7 @@ pub(crate) async fn load_group_routing_rule(
         policy_image_tool_rewrite_mode: Option<String>,
         policy_codex_imagegen_rewrite_mode: Option<String>,
         policy_request_compression_algorithm: Option<String>,
+        policy_oauth_request_compression_algorithm: Option<String>,
         policy_concurrency_limit: Option<i64>,
         policy_upstream_429_retry_enabled: Option<i64>,
         policy_upstream_429_max_retries: Option<i64>,
@@ -1989,6 +1994,7 @@ pub(crate) async fn load_group_routing_rule(
             policy_image_tool_rewrite_mode,
             policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
+            policy_oauth_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -2022,7 +2028,7 @@ pub(crate) async fn load_group_routing_rule(
         return Ok(group_routing_rule_from_columns(
             0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None,
+            None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -2042,6 +2048,7 @@ pub(crate) async fn load_group_routing_rule(
         row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
+        row.policy_oauth_request_compression_algorithm.as_deref(),
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,

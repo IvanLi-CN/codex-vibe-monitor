@@ -336,6 +336,13 @@ impl PoolRequestBodyPreparationError {
         }
     }
 
+    fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+        }
+    }
+
     fn bad_gateway(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
@@ -566,9 +573,9 @@ pub(crate) fn counted_http_body_from_snapshot(
     }
 }
 
-type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
+pub(crate) type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
 
-fn request_compression_preset_to_async_level(
+pub(crate) fn request_compression_preset_to_async_level(
     preset: RequestCompressionLevelPreset,
 ) -> AsyncCompressionLevel {
     match preset {
@@ -578,7 +585,7 @@ fn request_compression_preset_to_async_level(
     }
 }
 
-fn resolve_request_body_content_encoding_from_prefix(
+pub(crate) fn resolve_request_body_content_encoding_from_prefix(
     prefix: Option<&[u8]>,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -605,7 +612,7 @@ fn resolve_request_body_content_encoding_from_prefix(
     }
 }
 
-async fn resolve_request_body_content_encoding(
+pub(crate) async fn resolve_request_body_content_encoding(
     snapshot: &PoolReplayBodySnapshot,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -657,23 +664,21 @@ pub(crate) fn observe_request_compression_from_bytes(
 async fn count_decoded_request_snapshot_bytes(
     snapshot: &PoolReplayBodySnapshot,
     encoding: RequestBodyContentEncoding,
+    max_decoded_bytes: usize,
 ) -> Result<usize, PoolRequestBodyPreparationError> {
     if matches!(encoding, RequestBodyContentEncoding::Identity) {
         return Ok(pool_request_snapshot_body_bytes(snapshot));
     }
     match snapshot {
         PoolReplayBodySnapshot::Empty => Ok(0),
-        PoolReplayBodySnapshot::Memory(bytes) => {
-            Ok(decode_request_payload_bytes(bytes, encoding)?.len())
-        }
-        PoolReplayBodySnapshot::File { .. } => {
+        PoolReplayBodySnapshot::Memory(_) | PoolReplayBodySnapshot::File { .. } => {
             let raw_reader = open_pool_request_snapshot_reader(snapshot).await?;
             let mut decoded_reader = decode_pool_request_reader(raw_reader, encoding).await?;
             let mut total = 0usize;
             let mut buf = [0_u8; 64 * 1024];
             loop {
                 let read_len = decoded_reader.read(&mut buf).await.map_err(|err| {
-                    PoolRequestBodyPreparationError::bad_gateway(format!(
+                    PoolRequestBodyPreparationError::bad_request(format!(
                         "failed to count decoded request body bytes: {err}"
                     ))
                 })?;
@@ -681,13 +686,37 @@ async fn count_decoded_request_snapshot_bytes(
                     break;
                 }
                 total = total.saturating_add(read_len);
+                if total > max_decoded_bytes {
+                    return Err(PoolRequestBodyPreparationError::payload_too_large(format!(
+                        "decoded request body exceeds {max_decoded_bytes} bytes"
+                    )));
+                }
             }
             Ok(total)
         }
     }
 }
 
-fn decode_request_payload_bytes(
+pub(crate) async fn validate_pool_request_snapshot_transcode(
+    snapshot: &PoolReplayBodySnapshot,
+    downstream_content_encoding: Option<&str>,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    max_decoded_bytes: usize,
+) -> Result<(), PoolRequestBodyPreparationError> {
+    let downstream_encoding =
+        resolve_request_body_content_encoding(snapshot, downstream_content_encoding).await?;
+    let target_encoding =
+        request_compression_algorithm_encoding(request_compression_algorithm, downstream_encoding);
+    if !matches!(downstream_encoding, RequestBodyContentEncoding::Identity)
+        && target_encoding != downstream_encoding
+    {
+        count_decoded_request_snapshot_bytes(snapshot, downstream_encoding, max_decoded_bytes)
+            .await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn decode_request_payload_bytes(
     bytes: &[u8],
     encoding: RequestBodyContentEncoding,
 ) -> Result<Bytes, PoolRequestBodyPreparationError> {
@@ -755,7 +784,7 @@ async fn open_pool_request_snapshot_reader(
     }
 }
 
-async fn decode_pool_request_reader(
+pub(crate) async fn decode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
 ) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
@@ -783,7 +812,7 @@ async fn decode_pool_request_reader(
     }
 }
 
-fn encode_pool_request_reader(
+pub(crate) fn encode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
     level: AsyncCompressionLevel,
@@ -808,6 +837,21 @@ fn encode_pool_request_reader(
         RequestBodyContentEncoding::Zstd => {
             Box::pin(AsyncZstdEncoder::with_quality(buffered, level))
         }
+    }
+}
+
+pub(crate) fn request_compression_algorithm_encoding(
+    algorithm: RequestCompressionAlgorithm,
+    downstream_encoding: RequestBodyContentEncoding,
+) -> RequestBodyContentEncoding {
+    match algorithm {
+        RequestCompressionAlgorithm::Follow => downstream_encoding,
+        RequestCompressionAlgorithm::Identity => RequestBodyContentEncoding::Identity,
+        RequestCompressionAlgorithm::Gzip => RequestBodyContentEncoding::Gzip,
+        RequestCompressionAlgorithm::Deflate => {
+            RequestBodyContentEncoding::Deflate { zlib_wrapper: true }
+        }
+        RequestCompressionAlgorithm::Zstd => RequestBodyContentEncoding::Zstd,
     }
 }
 
@@ -877,7 +921,12 @@ pub(crate) async fn build_pool_upstream_request_body(
             ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
         } else {
             ObservedBodyBytes::Fixed(
-                count_decoded_request_snapshot_bytes(&prepared.snapshot, target_encoding).await?,
+                count_decoded_request_snapshot_bytes(
+                    &prepared.snapshot,
+                    target_encoding,
+                    usize::MAX,
+                )
+                .await?,
             )
         };
         return Ok(PreparedPoolUpstreamRequestBody {
@@ -1280,6 +1329,7 @@ pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::sync::Arc;
     use tokio::sync::Notify;
 
@@ -1326,5 +1376,28 @@ mod tests {
             .expect("stream flag extraction should finish after permit release"),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn oauth_transcode_validation_rejects_oversized_decoded_file_snapshot() {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder
+            .write_all(&vec![b'x'; 4096])
+            .expect("write gzip payload");
+        let compressed = Bytes::from(encoder.finish().expect("finish gzip payload"));
+        let snapshot = pool_replay_snapshot_from_bytes_with_memory_threshold(901, compressed, 1)
+            .await
+            .expect("persist file snapshot");
+        assert!(matches!(snapshot, PoolReplayBodySnapshot::File { .. }));
+
+        let error = validate_pool_request_snapshot_transcode(
+            &snapshot,
+            Some("gzip"),
+            RequestCompressionAlgorithm::Zstd,
+            1024,
+        )
+        .await
+        .expect_err("oversized decoded body should be rejected before streaming");
+        assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 }

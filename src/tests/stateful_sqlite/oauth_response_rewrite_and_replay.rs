@@ -64,6 +64,7 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
@@ -215,6 +216,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
@@ -359,6 +361,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+        oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
@@ -413,7 +416,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         payload["path"].as_str(),
         Some("/backend-api/codex/responses")
     );
-    assert_eq!(payload["contentEncodingHeader"].as_str(), Some("gzip"));
+    assert_eq!(payload["contentEncodingHeader"].as_str(), Some("zstd"));
     assert_eq!(payload["received"]["stream"].as_bool(), Some(false));
     assert_eq!(payload["received"]["max_output_tokens"].as_u64(), Some(64));
     assert_eq!(
