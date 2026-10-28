@@ -181,6 +181,19 @@ class MeasurementBudgetTests(unittest.TestCase):
         self.assertEqual(oracle["remaining_bytes"], COMPETITOR_FILE_BYTES)
         self.assertFalse(oracle["verified_empty"])
 
+    def test_competitor_file_oracle_tolerates_a_concurrent_unlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_dir = Path(temporary)
+            orphan = raw_dir / "retention-orphan-0000.bin"
+            orphan.write_bytes(b"x" * COMPETITOR_FILE_BYTES)
+            orphan.unlink()
+
+            oracle = competitor_file_oracle(raw_dir)
+
+        self.assertEqual(oracle["remaining_count"], 0)
+        self.assertEqual(oracle["remaining_bytes"], 0)
+        self.assertTrue(oracle["verified_empty"])
+
     def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "coverage.sqlite"

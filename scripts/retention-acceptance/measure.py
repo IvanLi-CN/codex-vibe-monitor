@@ -1072,13 +1072,21 @@ def task_state_snapshot(maintenance_db: Path) -> dict[str, Any]:
 
 def competitor_file_oracle(raw_dir: Path) -> dict[str, Any]:
     """Verify that only the fixed fixture cohort was released."""
-    remaining = [
-        path
-        for path in sorted(raw_dir.glob("retention-orphan-*.bin"))
-        if path.exists() or path.is_symlink()
-    ]
-    remaining_files = [path for path in remaining if path.is_file()]
-    remaining_bytes = sum(path.stat().st_size for path in remaining_files)
+    # The production sweep may unlink a fixture between directory enumeration and
+    # the size read. Treat that path as gone and let the next poll establish the
+    # empty-cohort proof; never turn a valid concurrent cleanup into a harness
+    # exception.
+    remaining: list[Path] = []
+    remaining_bytes = 0
+    for path in sorted(raw_dir.glob("retention-orphan-*.bin")):
+        try:
+            if not path.exists() and not path.is_symlink():
+                continue
+            if path.is_file():
+                remaining_bytes += path.stat().st_size
+            remaining.append(path)
+        except FileNotFoundError:
+            continue
     return {
         "expected_count": COMPETITOR_FILE_COUNT,
         "expected_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
