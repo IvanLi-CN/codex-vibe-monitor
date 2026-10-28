@@ -660,16 +660,6 @@ async fn run_timestamped_archive_owner(
     } else {
         "forward_proxy_attempts"
     };
-    if !dry_run && let Err(error) = reconcile_staged_archive_replacements(pool, Some(config)).await
-    {
-        // A previous publication may have left a durable rollback pointer while its native file
-        // phase or SQLite cleanup was waiting. Resolve that recovery boundary before selecting a
-        // new source window; transient pressure must stay inside the owner retry loop instead of
-        // turning the selected tail into owner_failed.
-        summary.has_more = Some(true);
-        apply_retention_owner_error(&mut summary, &error);
-        return Ok(summary.finish(started_at));
-    }
     let archive = archive_timestamped_dataset(
         pool,
         config,
