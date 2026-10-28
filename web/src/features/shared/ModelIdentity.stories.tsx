@@ -13,6 +13,8 @@ const modelSamples = [
   ["GPT-6.1 Astra", "gpt-6.1-astra"],
   ["GPT-6.1 Sol", "gpt-6.1-sol"],
   ["GPT-6.1 Luna", "gpt-6.1-luna"],
+  ["GPT-6.1 Terra", "gpt-6.1-terra"],
+  ["GPT-7.2.1 Sol", "gpt-7.2.1-sol"],
 ] as const;
 
 function IdentityGallery() {
@@ -95,6 +97,18 @@ async function comparisonPlay({ canvasElement }: { canvasElement: HTMLElement })
       model.startsWith("gpt-6.1") ? "6.1" : "6",
     );
   }
+  await expect(canvas.getByTestId("model-gpt-6.1-terra")).toHaveAttribute(
+    "data-model-icon",
+    "earth",
+  );
+  await expect(canvas.getByTestId("model-gpt-6.1-terra")).toHaveAttribute(
+    "data-model-generation-label",
+    "6.1",
+  );
+  await expect(canvas.getByTestId("model-gpt-7.2.1-sol")).toHaveAttribute(
+    "data-model-generation-label",
+    "7.2.1",
+  );
 }
 
 export const GenerationComparisonLight: Story = {
@@ -140,6 +154,15 @@ export const GenerationComparisonTablet: Story = {
 function PresentationModesGallery() {
   return (
     <div className="grid max-w-2xl gap-5 text-sm sm:grid-cols-3">
+      {["gpt-6.1-terra", "gpt-7.2.1-sol"].map((model) => (
+        <ModelPerformanceModelIdentity
+          key={model}
+          model={model}
+          effortValue="xhigh"
+          showGeneration
+          testId={`new-${model}`}
+        />
+      ))}
       <div className="flex items-center gap-3">
         <ModelIdentity model="gpt-6-astra" testId="gpt6-standalone" />
         <span>Standalone glyph</span>
@@ -172,6 +195,16 @@ function PresentationModesGallery() {
 
 async function presentationModesPlay({ canvasElement }: { canvasElement: HTMLElement }) {
   const canvas = within(canvasElement);
+  for (const [model, generation, icon] of [
+    ["gpt-6.1-terra", "6.1", "earth"],
+    ["gpt-7.2.1-sol", "7.2.1", "white-balance-sunny"],
+  ] as const) {
+    const badge = canvas.getByTestId(`new-${model}`);
+    await expect(canvas.getByTestId(`new-${model}-generation`)).toHaveTextContent(generation);
+    await expect(badge.querySelector(`[data-model-icon="${icon}"]`)).not.toBeNull();
+    const rect = badge.getBoundingClientRect();
+    expect(rect.right).toBeLessThanOrEqual(canvasElement.ownerDocument.documentElement.clientWidth);
+  }
   const standalone = canvas.getByTestId("gpt6-standalone");
   const embeddedIdentity = canvas
     .getByTestId("gpt6-model-badge")
