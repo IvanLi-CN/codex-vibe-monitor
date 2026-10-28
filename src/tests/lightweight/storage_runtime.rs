@@ -259,10 +259,15 @@ async fn restart_recovers_durable_postgres_authority_without_capture_scan() {
     .await
     .expect("source authority fence should persist");
 
+    let restarted_migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("durable migration status should reload"),
+    );
     let recovered = StorageRuntimeRouter::initialize(
-        pool,
+        pool.clone(),
         &config,
-        migration.clone(),
+        restarted_migration.clone(),
         CancellationToken::new(),
     )
     .await
@@ -277,8 +282,20 @@ async fn restart_recovers_durable_postgres_authority_without_capture_scan() {
         }
     );
     assert_eq!(
-        migration.snapshot().await.state,
+        restarted_migration.snapshot().await.state,
         StorageMigrationState::Postgres
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'migration_change_log'
+            )",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("capture table existence should be queryable"),
+        0
     );
 }
 
