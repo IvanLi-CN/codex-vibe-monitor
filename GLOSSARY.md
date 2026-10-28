@@ -12,6 +12,10 @@ _Avoid_: dashboard snapshot, which can also mean a closed historical response.
 The complete version segment shown in a model identity, such as `5.6`, `6`, or `6.1`, used to distinguish model generations independently from the family glyph and reasoning effort.
 _Avoid_: model level, reasoning effort, generation icon.
 
+**Model Family**:
+A named model lineage, such as Astra, Sol, Luna, or Terra, whose visual identity is shared across model generations.
+_Avoid_: model generation, reasoning effort.
+
 **Compact Model Context**:
 The owner-facing model identity grouping used in a compact working-conversation or invocation surface, combining the visible model generation, family glyph, and available reasoning effort while retaining the full model ID as secondary identity information.
 _Avoid_: simplified display, model label, model level.
