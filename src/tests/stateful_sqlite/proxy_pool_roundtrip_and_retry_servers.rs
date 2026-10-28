@@ -1451,7 +1451,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .await
         .expect("read oauth codex capture request body");
     let body_for_display = if content_encoding.as_deref() == Some("zstd") {
-        zstd::decode_all(body.as_ref()).unwrap_or_else(|_| body.to_vec())
+        zstd::decode_all(body.as_ref()).expect("decode zstd oauth capture body")
     } else {
         body.to_vec()
     };
