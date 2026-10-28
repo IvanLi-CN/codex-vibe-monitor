@@ -125,7 +125,11 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         sqlx::query(
             "UPDATE archive_batches
              SET cleanup_state = ?1, cleanup_source_safe_start_date = NULL,
-                 sha256 = ?2, row_count = COALESCE(?3, row_count)
+                 sha256 = ?2, row_count = COALESCE(?3, row_count),
+                 status = CASE
+                     WHEN status = ?9 THEN ?10
+                     ELSE status
+                 END
              WHERE dataset = ?4 AND month_key = ?5 AND file_path = ?6
                AND cleanup_state IN (?7, ?8)",
         )
@@ -137,6 +141,11 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
         .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+        // A replacement is not a completed source conversion until the caller's source-table
+        // transaction commits. Keeping an existing completed manifest materializing prevents a
+        // pressure-deferred delete from exposing the same rows as both live and archived.
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(ARCHIVE_STATUS_MATERIALIZING)
         .execute(resources.connection_mut())
         .await?;
         fs::rename(temporary_file_path, final_file_path).context("publish prepared archive")?;
