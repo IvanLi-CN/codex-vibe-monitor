@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgConnection, PgPool, Row};
 
 const SHA256_HEX_LENGTH: usize = 64;
 const DEFAULT_LEGACY_TABLE: &str = "codex_invocations";
@@ -747,19 +747,11 @@ impl RawReferenceConversion {
     /// old spelling for readers during a gradual conversion and are deterministic for retries.
     pub(crate) fn from_legacy_path(legacy_path: &str, raw_root: &Path) -> Result<Self> {
         let canonical_path = normalize_raw_path(legacy_path, raw_root)?;
-        let mut aliases = BTreeSet::new();
-        aliases.insert(legacy_path.trim().to_owned());
-        aliases.insert(canonical_path.clone());
-        if let Some(root_name) = raw_root.file_name().and_then(|name| name.to_str()) {
-            let root_prefixed = Path::new(root_name).join(&canonical_path);
-            if let Some(value) = root_prefixed.to_str() {
-                aliases.insert(value.to_owned());
-            }
-        }
+        let aliases = bounded_path_aliases(legacy_path, raw_root, "Raw")?;
         Ok(Self {
             legacy_path: legacy_path.trim().to_owned(),
             canonical_path,
-            aliases: aliases.into_iter().collect(),
+            aliases,
         })
     }
 }
@@ -1291,6 +1283,7 @@ impl ArchiveStorageAdapter {
         &self,
         prepared_key: &str,
     ) -> Result<Option<RetentionPreparedArchive>> {
+        let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
             "SELECT prepared_key, dataset, month_key, day_key, part_key, file_path,
                     source_ids_json, source_identity_sha256, publication_kind, state,
@@ -1301,7 +1294,7 @@ impl ArchiveStorageAdapter {
               WHERE prepared_key = $1",
         )
         .bind(prepared_key)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .context("read retention prepared archive")?;
         let Some(row) = row else {
@@ -1329,7 +1322,32 @@ impl ArchiveStorageAdapter {
             updated_at_epoch_ms: row.try_get("updated_at_epoch_ms")?,
             quarantined_at: row.try_get("quarantined_at")?,
         };
-        Ok(Some(value.canonicalized(&self.archive_root)?))
+        let canonical = value.canonicalized(&self.archive_root)?;
+        if canonical.file_path != value.file_path
+            || canonical.staged_file_path != value.staged_file_path
+        {
+            let updated = sqlx::query(
+                "UPDATE retention_prepared_archives
+                    SET file_path = $2, staged_file_path = $3
+                  WHERE prepared_key = $1
+                    AND source_identity_sha256 = $4",
+            )
+            .bind(&canonical.prepared_key)
+            .bind(&canonical.file_path)
+            .bind(&canonical.staged_file_path)
+            .bind(&canonical.source_identity_sha256)
+            .execute(&mut *transaction)
+            .await
+            .context("persist canonical retention prepared archive paths")?;
+            if updated.rows_affected() != 1 {
+                bail!("retention prepared archive path identity changed during read");
+            }
+        }
+        transaction
+            .commit()
+            .await
+            .context("commit canonical retention prepared archive paths")?;
+        Ok(Some(canonical))
     }
 
     pub(crate) async fn read_retention_recovery_cursor(
@@ -1387,6 +1405,11 @@ impl ArchiveStorageAdapter {
         &self,
         raw_path: &str,
     ) -> Result<Option<RetentionRawReconciliation>> {
+        let canonical_path = normalize_raw_path(raw_path, &self.raw_root)?;
+        let aliases = raw_path_aliases(raw_path, &self.raw_root)?;
+        let mut transaction = self.pool.begin().await?;
+        normalize_retention_raw_reconciliation_rows(&mut transaction, &aliases, &canonical_path)
+            .await?;
         let row = sqlx::query(
             "SELECT raw_path, file_identity_sha256, byte_size, quarantined_at,
                     release_pending, release_pending_at, removal_evidence_persisted,
@@ -1394,11 +1417,15 @@ impl ArchiveStorageAdapter {
                FROM retention_raw_reconciliation
               WHERE raw_path = $1",
         )
-        .bind(raw_path)
-        .fetch_optional(&self.pool)
+        .bind(&canonical_path)
+        .fetch_optional(&mut *transaction)
         .await
         .context("read retention Raw reconciliation")?;
         let Some(row) = row else {
+            transaction
+                .commit()
+                .await
+                .context("commit retention Raw reconciliation normalization")?;
             return Ok(None);
         };
         let value = RetentionRawReconciliation {
@@ -1412,6 +1439,10 @@ impl ArchiveStorageAdapter {
             updated_at_epoch_ms: row.try_get("updated_at_epoch_ms")?,
         };
         value.validate(&self.raw_root)?;
+        transaction
+            .commit()
+            .await
+            .context("commit retention Raw reconciliation normalization")?;
         Ok(Some(value))
     }
 
@@ -1431,6 +1462,13 @@ impl ArchiveStorageAdapter {
         .execute(&mut *transaction)
         .await
         .context("lock archive storage schema during publication")?;
+        normalize_archive_metadata_paths(
+            &mut transaction,
+            &operation,
+            &self.archive_root,
+            &self.raw_root,
+        )
+        .await?;
 
         sqlx::query(
             "INSERT INTO archive_batches
@@ -1928,19 +1966,28 @@ impl ArchiveStorageAdapter {
             }
         }
 
-        let raw_paths = raw_paths_in_lock_order(
+        let raw_paths = raw_aliases_in_lock_order(
             operation
                 .raw_reference_changes
                 .iter()
                 .map(|change| change.raw_path.as_str()),
-        );
-        for raw_path in raw_paths {
+            &self.raw_root,
+        )?;
+        for raw_path in &raw_paths {
             // Serialize link/release decisions even when the canonical blob row does not exist.
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
                 .bind(raw_path)
                 .execute(&mut *transaction)
                 .await
                 .context("lock canonical Raw ownership path")?;
+        }
+        for raw_path in canonical_raw_paths(
+            operation
+                .raw_reference_changes
+                .iter()
+                .map(|change| change.raw_path.as_str()),
+        ) {
+            normalize_raw_reference_paths(&mut transaction, &raw_path, &self.raw_root).await?;
         }
         for change in &operation.raw_reference_changes {
             let state = match change.action {
@@ -2484,6 +2531,8 @@ impl ArchiveStorageAdapter {
         .execute(&mut *transaction)
         .await
         .context("lock archive storage schema during pruning")?;
+        normalize_archive_prune_paths(&mut transaction, &plan, &self.archive_root, &self.raw_root)
+            .await?;
 
         let manifest_row = sqlx::query(
             "SELECT dataset, month_key, day_key, part, file_path, sha256,
@@ -2566,11 +2615,12 @@ impl ArchiveStorageAdapter {
             }
         }
 
-        let raw_paths = raw_paths_in_lock_order(
+        let raw_paths = raw_aliases_in_lock_order(
             plan.raw_reference_checks
                 .iter()
                 .map(|check| check.raw_path.as_str()),
-        );
+            &self.raw_root,
+        )?;
         for raw_path in &raw_paths {
             // Match publish's lock order so prune cannot race a new Raw ownership link.
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -2579,7 +2629,18 @@ impl ArchiveStorageAdapter {
                 .await
                 .context("lock Raw ownership path before pruning")?;
         }
-        for raw_path in &raw_paths {
+        for raw_path in canonical_raw_paths(
+            plan.raw_reference_checks
+                .iter()
+                .map(|check| check.raw_path.as_str()),
+        ) {
+            normalize_raw_reference_paths(&mut transaction, &raw_path, &self.raw_root).await?;
+        }
+        for raw_path in canonical_raw_paths(
+            plan.raw_reference_checks
+                .iter()
+                .map(|check| check.raw_path.as_str()),
+        ) {
             let parent = sqlx::query_scalar::<_, String>(
                 "SELECT raw_path
                    FROM proxy_raw_payload_blobs
@@ -2969,6 +3030,469 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub(crate) fn bounded_path_aliases(path: &str, root: &Path, label: &str) -> Result<Vec<String>> {
+    let canonical = normalize_bounded_path(path, root, label)?;
+    let root = lexical_root(root, label)?;
+    let mut aliases = BTreeSet::new();
+    aliases.insert(path.trim().to_owned());
+    aliases.insert(canonical.clone());
+    if let Some(root_name) = root.file_name().and_then(|name| name.to_str()) {
+        let root_prefixed = Path::new(root_name).join(&canonical);
+        if let Some(value) = root_prefixed.to_str() {
+            aliases.insert(value.to_owned());
+        }
+    }
+    let rooted = root.join(&canonical);
+    if let Some(value) = rooted.to_str() {
+        aliases.insert(value.to_owned());
+    }
+    Ok(aliases.into_iter().collect())
+}
+
+pub(crate) fn archive_path_aliases(path: &str, archive_root: &Path) -> Result<Vec<String>> {
+    bounded_path_aliases(path, archive_root, "archive")
+}
+
+pub(crate) fn raw_path_aliases(path: &str, raw_root: &Path) -> Result<Vec<String>> {
+    bounded_path_aliases(path, raw_root, "Raw")
+}
+
+async fn normalize_archive_metadata_paths(
+    transaction: &mut PgConnection,
+    operation: &ArchivePublishOperation,
+    archive_root: &Path,
+    raw_root: &Path,
+) -> Result<()> {
+    normalize_archive_manifest_path_rows(transaction, &operation.manifest, archive_root).await?;
+    for marker in &operation.replay_markers {
+        let archive_aliases = archive_path_aliases(&marker.file_path, archive_root)?;
+        sqlx::query(
+            "UPDATE hourly_rollup_archive_replay
+                SET file_path = $3
+              WHERE target = $1 AND dataset = $2
+                AND file_path = ANY($4) AND file_path <> $3",
+        )
+        .bind(&marker.target)
+        .bind(&marker.dataset)
+        .bind(&marker.file_path)
+        .bind(archive_aliases)
+        .execute(&mut *transaction)
+        .await
+        .context("normalize archive replay marker paths")?;
+    }
+    let archive_aliases = archive_path_aliases(&operation.manifest.file_path, archive_root)?;
+    sqlx::query(
+        "UPDATE pool_upstream_node_health_archive
+            SET archive_file_path = $1
+          WHERE archive_file_path = ANY($2) AND archive_file_path <> $1",
+    )
+    .bind(&operation.manifest.file_path)
+    .bind(archive_aliases.clone())
+    .execute(&mut *transaction)
+    .await
+    .context("normalize node-health archive paths")?;
+    sqlx::query(
+        "UPDATE pool_upstream_node_health_hourly_archive
+            SET archive_file_path = $1
+          WHERE (archive_batch_id = $2
+                 OR (archive_batch_id IS NULL AND archive_file_path = ANY($3)))
+            AND archive_file_path <> $1",
+    )
+    .bind(&operation.manifest.file_path)
+    .bind(operation.manifest.archive_batch_id)
+    .bind(archive_aliases)
+    .execute(&mut *transaction)
+    .await
+    .context("normalize node-health hourly archive paths")?;
+
+    if let Some(prepared_archive) = &operation.retention_prepared_archive {
+        let aliases = archive_path_aliases(&prepared_archive.file_path, archive_root)?;
+        sqlx::query(
+            "UPDATE retention_prepared_archives
+                SET file_path = $2
+              WHERE prepared_key = $1 AND file_path = ANY($3) AND file_path <> $2",
+        )
+        .bind(&prepared_archive.prepared_key)
+        .bind(&prepared_archive.file_path)
+        .bind(aliases)
+        .execute(&mut *transaction)
+        .await
+        .context("normalize prepared archive path")?;
+        if let Some(staged_file_path) = prepared_archive.staged_file_path.as_deref() {
+            let aliases = archive_path_aliases(staged_file_path, archive_root)?;
+            sqlx::query(
+                "UPDATE retention_prepared_archives
+                    SET staged_file_path = $2
+                  WHERE prepared_key = $1
+                    AND staged_file_path = ANY($3) AND staged_file_path <> $2",
+            )
+            .bind(&prepared_archive.prepared_key)
+            .bind(staged_file_path)
+            .bind(aliases)
+            .execute(&mut *transaction)
+            .await
+            .context("normalize staged prepared archive path")?;
+        }
+    }
+    for reconciliation in &operation.retention_raw_reconciliation {
+        let aliases = raw_path_aliases(&reconciliation.raw_path, raw_root)?;
+        normalize_retention_raw_reconciliation_rows(
+            transaction,
+            &aliases,
+            &reconciliation.raw_path,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn normalize_archive_manifest_path_rows(
+    transaction: &mut PgConnection,
+    manifest: &ArchiveManifest,
+    archive_root: &Path,
+) -> Result<()> {
+    let aliases = archive_path_aliases(&manifest.file_path, archive_root)?;
+    sqlx::query(
+        "UPDATE archive_batches
+            SET file_path = $2
+          WHERE archive_batch_id = $1 AND file_path = ANY($3) AND file_path <> $2",
+    )
+    .bind(manifest.archive_batch_id)
+    .bind(&manifest.file_path)
+    .bind(aliases)
+    .execute(&mut *transaction)
+    .await
+    .context("normalize archive manifest path")?;
+    let aliases = archive_path_aliases(&manifest.file_path, archive_root)?;
+    sqlx::query(
+        "UPDATE hourly_rollup_archive_replay
+            SET file_path = $2
+          WHERE dataset = $1 AND file_path = ANY($3) AND file_path <> $2",
+    )
+    .bind(&manifest.dataset)
+    .bind(&manifest.file_path)
+    .bind(aliases.clone())
+    .execute(&mut *transaction)
+    .await
+    .context("normalize archive replay paths")?;
+    sqlx::query(
+        "UPDATE pool_upstream_node_health_archive
+            SET archive_file_path = $1
+          WHERE archive_file_path = ANY($2) AND archive_file_path <> $1",
+    )
+    .bind(&manifest.file_path)
+    .bind(aliases.clone())
+    .execute(&mut *transaction)
+    .await
+    .context("normalize node-health archive paths")?;
+    sqlx::query(
+        "UPDATE pool_upstream_node_health_hourly_archive
+            SET archive_file_path = $1
+          WHERE (archive_batch_id = $2
+                 OR (archive_batch_id IS NULL AND archive_file_path = ANY($3)))
+            AND archive_file_path <> $1",
+    )
+    .bind(&manifest.file_path)
+    .bind(manifest.archive_batch_id)
+    .bind(aliases)
+    .execute(&mut *transaction)
+    .await
+    .context("normalize node-health hourly paths")?;
+    Ok(())
+}
+
+async fn normalize_archive_prune_paths(
+    transaction: &mut PgConnection,
+    plan: &ArchivePrunePlan,
+    archive_root: &Path,
+    _raw_root: &Path,
+) -> Result<()> {
+    normalize_archive_manifest_path_rows(transaction, &plan.manifest, archive_root).await?;
+    let aliases = archive_path_aliases(&plan.manifest.file_path, archive_root)?;
+    sqlx::query(
+        "UPDATE archive_prune_ledger
+            SET file_path = $2
+          WHERE archive_batch_id = $1 AND file_path = ANY($3)
+            AND metadata_pruned_at_epoch_ms IS NULL AND file_path <> $2",
+    )
+    .bind(plan.manifest.archive_batch_id)
+    .bind(&plan.manifest.file_path)
+    .bind(aliases)
+    .execute(&mut *transaction)
+    .await
+    .context("normalize recoverable archive prune ledger path")?;
+    Ok(())
+}
+
+fn canonical_raw_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+    paths.into_iter().map(str::to_owned).collect()
+}
+
+fn raw_aliases_in_lock_order<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    raw_root: &Path,
+) -> Result<BTreeSet<String>> {
+    let mut aliases = BTreeSet::new();
+    for path in paths {
+        aliases.extend(raw_path_aliases(path, raw_root)?);
+    }
+    Ok(aliases)
+}
+
+async fn normalize_raw_reference_paths(
+    transaction: &mut PgConnection,
+    canonical_path: &str,
+    raw_root: &Path,
+) -> Result<()> {
+    let aliases = raw_path_aliases(canonical_path, raw_root)?;
+    if aliases.len() <= 1 {
+        return Ok(());
+    }
+    let blob_rows = sqlx::query(
+        "SELECT raw_path, storage_codec, logical_size_bytes, file_identity_sha256
+           FROM proxy_raw_payload_blobs
+          WHERE raw_path = ANY($1)
+          FOR UPDATE",
+    )
+    .bind(aliases.clone())
+    .fetch_all(&mut *transaction)
+    .await
+    .context("lock Raw path aliases")?;
+    let mut canonical_identity = None;
+    let mut canonical_descriptor = None;
+    let mut source_row = None;
+    for row in &blob_rows {
+        let path: String = row.try_get("raw_path")?;
+        let storage_codec: String = row.try_get("storage_codec")?;
+        let logical_size_bytes: i64 = row.try_get("logical_size_bytes")?;
+        let identity: Option<String> = row.try_get("file_identity_sha256")?;
+        if let Some(existing) = canonical_identity.as_deref()
+            && identity.as_deref().is_some_and(|value| value != existing)
+        {
+            bail!("Raw path aliases have conflicting file identities");
+        }
+        if let Some((existing_codec, existing_size)) = canonical_descriptor.as_ref()
+            && (existing_codec != &storage_codec || *existing_size != logical_size_bytes)
+        {
+            bail!("Raw path aliases have conflicting blob descriptors");
+        }
+        if identity.is_some() {
+            canonical_identity = identity.clone();
+        }
+        if canonical_descriptor.is_none() {
+            canonical_descriptor = Some((storage_codec.clone(), logical_size_bytes));
+        }
+        if path != canonical_path && source_row.is_none() {
+            source_row = Some((path, storage_codec, logical_size_bytes, identity));
+        }
+    }
+    if let Some(source) = source_row.as_ref() {
+        let canonical_exists = blob_rows.iter().any(|row| {
+            row.try_get::<String, _>("raw_path")
+                .is_ok_and(|path| path == canonical_path)
+        });
+        if !canonical_exists {
+            sqlx::query(
+                "INSERT INTO proxy_raw_payload_blobs
+                    (raw_path, storage_codec, logical_size_bytes, file_identity_sha256)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (raw_path) DO NOTHING",
+            )
+            .bind(canonical_path)
+            .bind(&source.1)
+            .bind(source.2)
+            .bind(&source.3)
+            .execute(&mut *transaction)
+            .await
+            .context("create canonical Raw blob parent")?;
+        }
+        if canonical_identity.is_some() {
+            sqlx::query(
+                "UPDATE proxy_raw_payload_blobs
+                    SET file_identity_sha256 = COALESCE(file_identity_sha256, $2)
+                  WHERE raw_path = $1",
+            )
+            .bind(canonical_path)
+            .bind(canonical_identity.as_deref())
+            .execute(&mut *transaction)
+            .await
+            .context("preserve canonical Raw blob identity")?;
+        }
+    }
+    for alias in aliases
+        .iter()
+        .filter(|alias| alias.as_str() != canonical_path)
+    {
+        sqlx::query(
+            "DELETE FROM proxy_raw_payload_blob_links AS duplicate
+              WHERE duplicate.raw_path = $1
+                AND EXISTS (
+                    SELECT 1 FROM proxy_raw_payload_blob_links AS canonical
+                     WHERE canonical.raw_path = $2
+                       AND canonical.owner_kind = duplicate.owner_kind
+                       AND canonical.owner_id = duplicate.owner_id
+                       AND canonical.raw_role = duplicate.raw_role
+                )",
+        )
+        .bind(alias)
+        .bind(canonical_path)
+        .execute(&mut *transaction)
+        .await
+        .context("deduplicate aliased live Raw links")?;
+        sqlx::query(
+            "UPDATE proxy_raw_payload_blob_links
+                SET raw_path = $2
+              WHERE raw_path = $1",
+        )
+        .bind(alias)
+        .bind(canonical_path)
+        .execute(&mut *transaction)
+        .await
+        .context("normalize live Raw link path")?;
+        normalize_archive_raw_reference_rows(transaction, alias, canonical_path).await?;
+        sqlx::query("DELETE FROM proxy_raw_payload_blobs WHERE raw_path = $1")
+            .bind(alias)
+            .execute(&mut *transaction)
+            .await
+            .context("remove normalized Raw blob alias")?;
+    }
+    normalize_retention_raw_reconciliation_rows(transaction, &aliases, canonical_path).await?;
+    Ok(())
+}
+
+async fn normalize_archive_raw_reference_rows(
+    transaction: &mut PgConnection,
+    alias: &str,
+    canonical_path: &str,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT archive_batch_id, owner_kind, owner_id, raw_role, action,
+                raw_identity_sha256, state
+           FROM archive_raw_reference_changes
+          WHERE raw_path = $1
+          ORDER BY archive_batch_id, owner_kind, owner_id, raw_role",
+    )
+    .bind(alias)
+    .fetch_all(&mut *transaction)
+    .await
+    .context("read aliased archive Raw references")?;
+    for row in rows {
+        let archive_batch_id: i64 = row.try_get("archive_batch_id")?;
+        let owner_kind: String = row.try_get("owner_kind")?;
+        let owner_id: i64 = row.try_get("owner_id")?;
+        let raw_role: String = row.try_get("raw_role")?;
+        let action: String = row.try_get("action")?;
+        let identity: Option<String> = row.try_get("raw_identity_sha256")?;
+        let state: String = row.try_get("state")?;
+        let canonical = sqlx::query(
+            "SELECT action, raw_identity_sha256, state
+               FROM archive_raw_reference_changes
+              WHERE archive_batch_id = $1 AND raw_path = $2
+                AND owner_kind = $3 AND owner_id = $4 AND raw_role = $5",
+        )
+        .bind(archive_batch_id)
+        .bind(canonical_path)
+        .bind(&owner_kind)
+        .bind(owner_id)
+        .bind(&raw_role)
+        .fetch_optional(&mut *transaction)
+        .await
+        .context("check canonical archive Raw reference")?;
+        if let Some(canonical) = canonical {
+            if canonical.try_get::<String, _>("action")? != action
+                || canonical.try_get::<Option<String>, _>("raw_identity_sha256")? != identity
+                || canonical.try_get::<String, _>("state")? != state
+            {
+                bail!("Raw path aliases have conflicting archive reference metadata");
+            }
+            sqlx::query(
+                "DELETE FROM archive_raw_reference_changes
+                  WHERE archive_batch_id = $1 AND raw_path = $2
+                    AND owner_kind = $3 AND owner_id = $4 AND raw_role = $5",
+            )
+            .bind(archive_batch_id)
+            .bind(alias)
+            .bind(&owner_kind)
+            .bind(owner_id)
+            .bind(&raw_role)
+            .execute(&mut *transaction)
+            .await
+            .context("remove duplicate aliased archive Raw reference")?;
+        } else {
+            sqlx::query(
+                "UPDATE archive_raw_reference_changes
+                    SET raw_path = $2
+                  WHERE archive_batch_id = $1 AND raw_path = $3
+                    AND owner_kind = $4 AND owner_id = $5 AND raw_role = $6",
+            )
+            .bind(archive_batch_id)
+            .bind(canonical_path)
+            .bind(alias)
+            .bind(&owner_kind)
+            .bind(owner_id)
+            .bind(&raw_role)
+            .execute(&mut *transaction)
+            .await
+            .context("normalize archive Raw reference path")?;
+        }
+    }
+    Ok(())
+}
+
+async fn normalize_retention_raw_reconciliation_rows(
+    transaction: &mut PgConnection,
+    aliases: &[String],
+    canonical_path: &str,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT raw_path, file_identity_sha256
+           FROM retention_raw_reconciliation
+          WHERE raw_path = ANY($1)
+          FOR UPDATE",
+    )
+    .bind(aliases.to_vec())
+    .fetch_all(&mut *transaction)
+    .await
+    .context("read aliased retention Raw reconciliation")?;
+    let mut canonical_identity = None;
+    for row in &rows {
+        let identity: String = row.try_get("file_identity_sha256")?;
+        if let Some(existing) = canonical_identity.as_deref()
+            && existing != identity
+        {
+            bail!("Raw path aliases have conflicting retention identities");
+        }
+        canonical_identity = Some(identity);
+    }
+    if rows.iter().any(|row| {
+        row.try_get::<String, _>("raw_path")
+            .is_ok_and(|path| path == canonical_path)
+    }) {
+        for row in rows {
+            let path: String = row.try_get("raw_path")?;
+            if path != canonical_path {
+                sqlx::query("DELETE FROM retention_raw_reconciliation WHERE raw_path = $1")
+                    .bind(path)
+                    .execute(&mut *transaction)
+                    .await
+                    .context("remove duplicate retention Raw alias")?;
+            }
+        }
+    } else if !rows.is_empty() {
+        sqlx::query(
+            "UPDATE retention_raw_reconciliation
+                SET raw_path = $2
+              WHERE raw_path = ANY($1)",
+        )
+        .bind(aliases.to_vec())
+        .bind(canonical_path)
+        .execute(&mut *transaction)
+        .await
+        .context("normalize retention Raw reconciliation")?;
+    }
+    Ok(())
 }
 
 fn normalize_archive_path(path: &str, archive_root: &Path) -> Result<String> {

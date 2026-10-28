@@ -166,6 +166,58 @@ async fn file_migration_store_reopens_after_parent_synced_replace() -> Result<()
 }
 
 #[tokio::test]
+async fn file_migration_store_fails_closed_for_a_different_identity_without_manifest() -> Result<()>
+{
+    let (directory, path) = state_path("identity-without-marker");
+    let context = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-a".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-a".into(),
+        target_identity: "postgres-a".into(),
+        source_watermark: 0,
+    };
+    let store = FileMigrationStore::new(&path, context.clone());
+    store
+        .save_checkpoint(&MigrationCheckpoint {
+            migration_id: context.migration_id.clone(),
+            table_name: "events".into(),
+            stable_key: "checkpoint".into(),
+            cursor: None,
+            captured_through: Some(0),
+            applied_through: Some(0),
+            installation_id: context.installation_id.clone(),
+            source_identity: context.source_identity.clone(),
+            target_identity: context.target_identity.clone(),
+            authority_generation: 1,
+        })
+        .await?;
+    drop(store);
+
+    let different = AuthorityRecoveryContext {
+        source_identity: "sqlite-b".into(),
+        target_identity: "postgres-b".into(),
+        ..context
+    };
+    let reopened = FileMigrationStore::new(&path, different);
+    assert!(matches!(
+        reopened
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::Indeterminate
+    ));
+    assert!(
+        reopened
+            .load_checkpoint("migration-engine-test", "events")
+            .await
+            .is_err()
+    );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn file_migration_store_rejects_stale_recovery_marker_and_consumes_valid_marker() -> Result<()>
 {
     let (directory, path) = state_path("recovery-marker");
@@ -238,7 +290,7 @@ async fn file_migration_store_rejects_stale_recovery_marker_and_consumes_valid_m
 }
 
 #[tokio::test]
-async fn migration_engine_requires_explicit_baseline_completion_at_every_stage() -> Result<()> {
+async fn migration_engine_rejects_reuse_after_capture_generation_loss() -> Result<()> {
     let (directory, path) = state_path("baseline-guard");
     let source = Arc::new(InMemoryMigrationSource::new(
         "migration-engine-test",
@@ -298,9 +350,8 @@ async fn migration_engine_requires_explicit_baseline_completion_at_every_stage()
             .await
             .is_err()
     );
-    migration.mark_baseline_complete(1).await?;
-    assert!(!source.capture_checkpoint().await?.baseline_required);
-    assert!(migration.copy_next("events").await?.complete);
+    assert!(migration.mark_baseline_complete(1).await.is_err());
+    assert!(migration.copy_next("events").await.is_err());
     fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -443,6 +494,33 @@ async fn file_migration_store_rejects_checkpoint_identity_reuse_and_outbox_paylo
     };
     assert!(store.enqueue_outbox(&item).await?);
     assert!(!store.enqueue_outbox(&item).await?);
+    assert!(
+        store
+            .enqueue_outbox(&MigrationOutboxItem {
+                authority_generation: 2,
+                ..item.clone()
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .enqueue_outbox(&MigrationOutboxItem {
+                source_identity: "sqlite-b".into(),
+                ..item.clone()
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .enqueue_outbox(&MigrationOutboxItem {
+                module: StorageModule::Analytics,
+                ..item.clone()
+            })
+            .await
+            .is_err()
+    );
     assert!(
         store
             .enqueue_outbox(&MigrationOutboxItem {
@@ -628,6 +706,90 @@ async fn migration_switch_keeps_source_fenced_after_indeterminate_publication() 
             .await
             .is_err()
     );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_switch_retries_after_recovery_with_next_authority_generation() -> Result<()> {
+    let (directory, path) = state_path("authority-retry-generation");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let expected = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let store = Arc::new(FileMigrationStore::new(&path, expected.clone()));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence,
+    );
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    store.fail_next_authority_publication();
+    assert!(
+        migration
+            .switch_authority(&gate, expected.clone(), Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    assert!(gate.requires_recovery());
+    assert_eq!(source.source_write_authority().await?.generation, 2);
+    assert!(source.source_write_authority().await?.fenced);
+
+    // A confirmed no-cutover recovery resolves the durable source fence before retrying.
+    source.reopen_source_writes(2).await?;
+    gate.recover_authority(store.as_ref(), &expected).await?;
+    migration
+        .switch_authority(&gate, expected, Duration::from_secs(1))
+        .await?;
+
+    assert_eq!(
+        source.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 3,
+            fenced: true,
+        }
+    );
+    assert_eq!(
+        gate.current_authority().await,
+        ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 3,
+        }
+    );
+    assert!(matches!(
+        store
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::Manifest(manifest)
+            if manifest.authority.generation == 3
+    ));
 
     fs::remove_dir_all(directory)?;
     Ok(())
