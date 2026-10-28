@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 import shutil
@@ -26,7 +26,7 @@ from contract import (
     DATASETS,
     TRIAL_EXECUTION_ORDER,
 )
-from fixture import CONTROLLED_TASK_KEYS, prepare_competitor
+from fixture import CONTROLLED_TASK_KEYS, prepare_competitor, seed_parallel_work_coverage
 from measure import (
     OwnedContainerLedger,
     cleanup_budget,
@@ -53,6 +53,39 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "coverage.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE parallel_work_hourly_coverage (
+                        hour_start_epoch INTEGER NOT NULL,
+                        source_scope TEXT NOT NULL,
+                        minute_keys_complete INTEGER NOT NULL,
+                        hourly_scalar_complete INTEGER NOT NULL,
+                        PRIMARY KEY (hour_start_epoch, source_scope)
+                    )
+                    """
+                )
+                seed_parallel_work_coverage(connection, "2026-10-24 00:00:00")
+                rows = connection.execute(
+                    """
+                    SELECT hour_start_epoch, source_scope, minute_keys_complete
+                    FROM parallel_work_hourly_coverage
+                    ORDER BY hour_start_epoch, source_scope
+                    """
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(rows), 29 * 24 * 2)
+        self.assertEqual({row[1] for row in rows}, {"all", "proxy_only"})
+        self.assertEqual({row[2] for row in rows}, {1})
+        self.assertEqual(rows[0][0], int(datetime(2026, 9, 24, 16, tzinfo=timezone.utc).timestamp()))
+        self.assertEqual(rows[-1][0], int(datetime(2026, 10, 23, 15, tzinfo=timezone.utc).timestamp()))
+
     def test_task_runs_keeps_running_owner_without_persisted_actual_start(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "maintenance.sqlite"
@@ -284,6 +317,23 @@ class MeasurementBudgetTests(unittest.TestCase):
                     )
                     """
                 )
+                maintenance.execute(
+                    """
+                    CREATE TABLE startup_backfill_progress (
+                        task_name TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL,
+                        next_run_after TEXT,
+                        next_probe_at TEXT
+                    )
+                    """
+                )
+                maintenance.executemany(
+                    "INSERT INTO startup_backfill_progress VALUES (?,?,?,?)",
+                    [
+                        ("historical_rollups", 1, "old-run", "old-probe"),
+                        ("prompt_cache_key", 1, "old-run", "old-probe"),
+                    ],
+                )
                 task_rows = [
                     (key, 1, "old-trigger", "old-catchup", "old-reason", "old-updated")
                     for key in (
@@ -367,6 +417,15 @@ class MeasurementBudgetTests(unittest.TestCase):
                 retry_rows["summary_snapshot"],
                 (2, "2099-01-01T00:00:00.000Z", "retry_backoff"),
             )
+            progress_connection = sqlite3.connect(maintenance_database)
+            try:
+                progress_rows = progress_connection.execute(
+                    "SELECT enabled,next_run_after,next_probe_at "
+                    "FROM startup_backfill_progress ORDER BY task_name"
+                ).fetchall()
+            finally:
+                progress_connection.close()
+            self.assertEqual(progress_rows, [(0, None, None), (0, None, None)])
 
     def test_observed_attempt_states_counts_rows_from_five_column_query(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
