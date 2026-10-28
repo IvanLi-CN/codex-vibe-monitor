@@ -83,6 +83,25 @@ pub(crate) fn candidate_window_has_more(dataset: &str) -> Option<bool> {
         .flatten()
 }
 
+/// Remove the uncommitted tail of a batch before retrying it in the same owner
+/// execution. The next selection will discover that tail again, so retaining
+/// the failed attempt would double-count the logical selected scope in the
+/// persisted execution evidence.
+pub(super) fn retain_committed_batch_prefixes_for_retry() {
+    let _ = TASK_BATCH_METRICS.try_with(|metrics| {
+        metrics.borrow_mut().retain_mut(|batch| {
+            if batch.committed_rows == 0 {
+                return false;
+            }
+            if batch.committed_rows < batch.batch_rows {
+                batch.batch_rows = batch.committed_rows;
+                batch.small_batch_reason = Some("internal_pressure_retry".to_string());
+            }
+            true
+        });
+    });
+}
+
 pub(crate) struct BatchObservation {
     metrics: RetentionBatchMetrics,
     started: Instant,

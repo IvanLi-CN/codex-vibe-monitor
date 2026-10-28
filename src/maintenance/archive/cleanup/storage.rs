@@ -29,7 +29,16 @@ pub(crate) fn cleanup_stale_archive_temp_files(
 ) -> Result<ArchiveTempCleanupSummary> {
     let archive_root = resolved_archive_dir(config);
     let mut files = Vec::new();
-    collect_archive_file_paths(&archive_root, &mut files)?;
+    if let Err(error) = collect_archive_file_paths(&archive_root, &mut files) {
+        if is_retention_write_deferred(&error) {
+            // The janitor is auxiliary work. A busy file phase must not turn the
+            // owner task into a deferred run; the next janitor pass can rescan
+            // the same root after the owner releases its file-stage permit.
+            tracing::debug!(error = %error, "archive temp janitor deferred its directory scan");
+            return Ok(ArchiveTempCleanupSummary::default());
+        }
+        return Err(error);
+    }
     let mut summary = ArchiveTempCleanupSummary::default();
     for file_path in files {
         if !archive_file_is_stale_temp(&file_path) || !archive_temp_file_is_old_enough(&file_path) {
