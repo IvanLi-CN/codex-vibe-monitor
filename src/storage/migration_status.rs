@@ -21,8 +21,6 @@ use tokio::{
 const MIGRATION_ID: &str = "storage-migration";
 const INSTALLATION_ID: &str = "local";
 const SOURCE_IDENTITY: &str = "sqlite:local";
-const TARGET_IDENTITY_CONFIGURED: &str = "postgres:configured";
-const TARGET_IDENTITY_UNCONFIGURED: &str = "postgres:unconfigured";
 const STORAGE_MIGRATION_RUNTIME_TABLE: &str = "storage_migration_runtime";
 const STORAGE_MIGRATION_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -355,6 +353,7 @@ pub(crate) struct StorageMigrationRuntime {
     events: watch::Sender<StorageMigrationEvent>,
     event_receiver: watch::Receiver<StorageMigrationEvent>,
     pool: Option<Pool<Sqlite>>,
+    target_identity: String,
     progress_flush: Arc<ProgressFlushCoordinator>,
     #[cfg(test)]
     progress_publish_count: Arc<AtomicUsize>,
@@ -492,11 +491,7 @@ impl StorageMigrationRuntime {
             .postgres_database_url
             .as_deref()
             .is_some_and(|url| !url.trim().is_empty());
-        let target_identity = if target_configured {
-            TARGET_IDENTITY_CONFIGURED
-        } else {
-            TARGET_IDENTITY_UNCONFIGURED
-        };
+        let target_identity = config.postgres_target_identity();
         let now = Utc::now();
         let status = MigrationStatus {
             migration_id: MIGRATION_ID.to_string(),
@@ -541,6 +536,7 @@ impl StorageMigrationRuntime {
             events,
             event_receiver,
             pool,
+            target_identity,
             progress_flush: Arc::new(ProgressFlushCoordinator {
                 notify: Arc::new(Notify::new()),
                 worker_started: AtomicBool::new(false),
@@ -667,6 +663,19 @@ impl StorageMigrationRuntime {
 
     pub(crate) async fn snapshot(&self) -> StorageMigrationResponse {
         self.state.lock().await.response.clone()
+    }
+
+    pub(crate) async fn validate_runtime_identity(&self) -> Result<()> {
+        let state = self.state.lock().await;
+        if state.status.migration_id != MIGRATION_ID
+            || state.status.installation_id != INSTALLATION_ID
+            || state.status.module != StorageModule::TrafficArchive
+            || state.status.source_identity != SOURCE_IDENTITY
+            || state.status.target_identity != self.target_identity
+        {
+            bail!("persisted storage migration status belongs to another runtime identity");
+        }
+        Ok(())
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<StorageMigrationEvent> {
@@ -796,8 +805,29 @@ impl StorageMigrationRuntime {
     /// Publish worker-observed progress without deriving an ETA from a non-converging backlog.
     pub(crate) async fn publish_progress(
         &self,
-        mut progress: StorageMigrationProgress,
+        progress: StorageMigrationProgress,
     ) -> Result<StorageMigrationResponse> {
+        self.publish_progress_inner(progress, false).await
+    }
+
+    /// Publish a progress boundary immediately, bypassing the normal coalescing window.
+    pub(crate) async fn publish_progress_durable(
+        &self,
+        progress: StorageMigrationProgress,
+    ) -> Result<StorageMigrationResponse> {
+        self.publish_progress_inner(progress, true).await
+    }
+
+    async fn publish_progress_inner(
+        &self,
+        mut progress: StorageMigrationProgress,
+        persist_immediately: bool,
+    ) -> Result<StorageMigrationResponse> {
+        if progress.phase == StorageMigrationState::Postgres {
+            bail!(
+                "PostgreSQL authority status must be published after the durable authority manifest"
+            );
+        }
         let (previous, snapshot, monotonic_now) = {
             let mut state = self.state.lock().await;
             let previous = state.clone();
@@ -844,9 +874,10 @@ impl StorageMigrationRuntime {
             }
 
             let monotonic_now = Instant::now();
-            let publish_now = state.last_progress_published_at.is_none_or(|last| {
-                monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
-            });
+            let publish_now = persist_immediately
+                || state.last_progress_published_at.is_none_or(|last| {
+                    monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
+                });
             if !publish_now {
                 state.progress_dirty = true;
                 state.progress_flush_deadline = state
@@ -962,12 +993,49 @@ impl StorageMigrationRuntime {
         authority_generation: u64,
         source_watermark: i64,
     ) -> Result<StorageMigrationResponse> {
+        self.publish_postgres_state(
+            authority_generation,
+            source_watermark,
+            "recovered",
+            "recovered",
+        )
+        .await
+    }
+
+    pub(crate) async fn publish_postgres_authority(
+        &self,
+        authority_generation: u64,
+        source_watermark: i64,
+    ) -> Result<StorageMigrationResponse> {
+        self.publish_postgres_state(
+            authority_generation,
+            source_watermark,
+            "published",
+            "status",
+        )
+        .await
+    }
+
+    async fn publish_postgres_state(
+        &self,
+        authority_generation: u64,
+        source_watermark: i64,
+        switch_result: &'static str,
+        event_kind: &'static str,
+    ) -> Result<StorageMigrationResponse> {
         if authority_generation == 0 || source_watermark < 0 {
-            bail!("recovered PostgreSQL authority has invalid generation or watermark");
+            bail!("PostgreSQL authority has invalid generation or watermark");
         }
         let (previous, snapshot) = {
             let mut state = self.state.lock().await;
             let previous = state.clone();
+            if authority_generation < state.status.authority_generation {
+                bail!(
+                    "PostgreSQL authority generation regresses durable migration status from {} to {}",
+                    state.status.authority_generation,
+                    authority_generation
+                );
+            }
             let now = Utc::now();
             if state.status.state != MigrationState::Postgres {
                 state
@@ -979,7 +1047,7 @@ impl StorageMigrationRuntime {
             state.response.progress.applied_through = Some(source_watermark);
             state.response.progress.converged = Some(true);
             state.response.progress.phase = StorageMigrationState::Postgres;
-            state.response.switch.result = Some("recovered".to_string());
+            state.response.switch.result = Some(switch_result.to_string());
             state.response.switch.failure_reason = None;
             state.response.verification.last_error = None;
             state.response.heartbeat = StorageMigrationHeartbeat {
@@ -1008,7 +1076,7 @@ impl StorageMigrationRuntime {
                 }
                 let response = state.response.clone();
                 self.events.send_replace(StorageMigrationEvent {
-                    kind: "recovered",
+                    kind: event_kind,
                     revision: response.revision,
                     status: response.clone(),
                 });

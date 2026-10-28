@@ -30,6 +30,19 @@ pub(crate) fn pool_attempt_recovery_gate() -> &'static tokio::sync::RwLock<()> {
     POOL_ATTEMPT_RECOVERY_GATE.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
+pub(crate) fn configure_primary_sqlite_pool_options(
+    options: SqlitePoolOptions,
+) -> SqlitePoolOptions {
+    options.after_connect(|connection, _metadata| {
+        Box::pin(async move {
+            sqlx::query("PRAGMA recursive_triggers = ON")
+                .execute(connection)
+                .await
+                .map(|_| ())
+        })
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StartupRecoveryFence {
     pub(crate) invocation_max_id: i64,
@@ -40,6 +53,42 @@ pub(crate) struct StartupRecoveryFence {
 impl StartupRecoveryFence {
     fn empty() -> Self {
         Self::default()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StartupRecoveryCompletion {
+    completed: Arc<AtomicBool>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl StartupRecoveryCompletion {
+    fn new() -> Self {
+        Self {
+            completed: Arc::new(AtomicBool::new(false)),
+            changed: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn complete(&self) {
+        self.completed.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait(&self, shutdown: &CancellationToken) -> bool {
+        loop {
+            if self.completed.load(Ordering::Acquire) {
+                return true;
+            }
+            let notified = self.changed.notified();
+            if self.completed.load(Ordering::Acquire) {
+                return true;
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => return false,
+                _ = notified => {}
+            }
+        }
     }
 }
 
@@ -751,6 +800,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -759,15 +809,18 @@ fn publish_http_readiness_and_spawn_recovery(
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
     recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
-) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+) -> (JoinHandle<()>, StartupRecoveryCompletion) {
+    let completion = StartupRecoveryCompletion::new();
+    let handle = publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
         recovery_connect_options,
-    )
+        Some(completion.clone()),
+    );
+    (handle, completion)
 }
 
 #[cfg(test)]
@@ -780,6 +833,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         state,
         startup_started_at,
         summary_deadline,
+        None,
         None,
         None,
         None,
@@ -804,15 +858,18 @@ pub(crate) fn publish_http_readiness_and_spawn_recovery_for_test(
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
     recovery_connect_options: SqliteConnectOptions,
-) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+) -> (JoinHandle<()>, StartupRecoveryCompletion) {
+    let completion = StartupRecoveryCompletion::new();
+    let handle = publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
         Some(Arc::new(recovery_connect_options)),
-    )
+        Some(completion.clone()),
+    );
+    (handle, completion)
 }
 
 #[cfg(test)]
@@ -828,6 +885,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         Some(summary_start_delay),
         None,
         None,
+        None,
     )
 }
 
@@ -838,6 +896,7 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     summary_start_delay: Option<Duration>,
     startup_recovery_fence: Option<StartupRecoveryFence>,
     startup_recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
+    startup_recovery_completion: Option<StartupRecoveryCompletion>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
     let readiness_at = Instant::now();
@@ -847,19 +906,33 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     );
 
     crate::observability::contention::spawn_performance(state.observability.clone(), async move {
-        let recovery_handle = startup_recovery_fence
-            .zip(startup_recovery_connect_options)
-            .map(|(fence, recovery_connect_options)| {
-                crate::observability::contention::spawn_performance(
+        let recovery_handle = match startup_recovery_fence.zip(startup_recovery_connect_options) {
+            Some((fence, recovery_connect_options)) => {
+                let completion = startup_recovery_completion.clone();
+                let recovery_state = state.clone();
+                Some(crate::observability::contention::spawn_performance(
                     state.observability.clone(),
-                    run_startup_recovery(
-                        state.clone(),
-                        fence,
-                        readiness_at,
-                        recovery_connect_options,
-                    ),
-                )
-            });
+                    async move {
+                        run_startup_recovery(
+                            recovery_state,
+                            fence,
+                            readiness_at,
+                            recovery_connect_options,
+                        )
+                        .await;
+                        if let Some(completion) = completion {
+                            completion.complete();
+                        }
+                    },
+                ))
+            }
+            None => {
+                if let Some(completion) = startup_recovery_completion {
+                    completion.complete();
+                }
+                None
+            }
+        };
         let post_readiness_warmups_handle = crate::observability::contention::spawn_performance(
             state.observability.clone(),
             run_post_readiness_runtime_warmups(state.clone()),
@@ -1069,7 +1142,7 @@ pub(crate) async fn run() -> Result<()> {
     )?;
     let connect_opts = runtime_lock.sqlite_connect_options(&config.database_path, connect_opts)?;
     let db_connect_started_at = Instant::now();
-    let pool = SqlitePoolOptions::new()
+    let pool = configure_primary_sqlite_pool_options(SqlitePoolOptions::new())
         .max_connections(5)
         .connect_with(connect_opts)
         .await
@@ -1081,7 +1154,28 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
-        match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(&pool).await {
+        let storage_migration = Arc::new(
+            StorageMigrationRuntime::load(&config.storage, pool.clone())
+                .await
+                .context("failed to recover durable storage migration state")?,
+        );
+        let shutdown = CancellationToken::new();
+        let storage_runtime =
+            crate::storage::runtime::StorageRuntimeRouter::initialize(
+                pool.clone(),
+                &config.storage,
+                storage_migration.clone(),
+                shutdown.child_token(),
+            )
+            .await
+            .context("failed to initialize storage runtime router")?;
+        let traffic_authority = storage_runtime.traffic_authority();
+        match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(
+            &pool,
+            traffic_authority.as_ref(),
+        )
+        .await
+        {
             Ok(replayed) if replayed > 0 => {
                 info!(replayed, "replayed account-selection observations at startup");
             }
@@ -1090,11 +1184,6 @@ pub(crate) async fn run() -> Result<()> {
                 warn!(error = %error, "account-selection observation outbox replay deferred");
             }
         }
-        let storage_migration = Arc::new(
-            StorageMigrationRuntime::load(&config.storage, pool.clone())
-                .await
-                .context("failed to recover durable storage migration state")?,
-        );
         initialize_invocation_identity_cleanup_state(&pool, false).await?;
         let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
@@ -1215,16 +1304,6 @@ pub(crate) async fn run() -> Result<()> {
         let (tx, _rx) = broadcast::channel(128);
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
-        let shutdown = CancellationToken::new();
-        let storage_runtime =
-            crate::storage::runtime::StorageRuntimeRouter::initialize(
-                pool.clone(),
-                &config.storage,
-                storage_migration.clone(),
-                shutdown.clone(),
-            )
-            .await
-            .context("failed to initialize storage runtime router")?;
         let process_started_at_utc = Utc::now();
         observability
             .initialize_traces(config.observability.traces.clone())
@@ -1344,7 +1423,6 @@ pub(crate) async fn run() -> Result<()> {
             pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             upstream_accounts,
         });
-        storage_runtime.start().await;
         if let Some(store) = crate::maintenance_store::global().cloned() {
             crate::task_timeline::start_recorder(store).await;
         }
@@ -1804,12 +1882,32 @@ where
         .await;
     }
 
-    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_recovery(
-        state.clone(),
-        startup_started_at,
-        startup_recovery_fence,
-        startup_recovery_connect_options,
-    ));
+    let (startup_recovery_handle, startup_recovery_completion) =
+        publish_http_readiness_and_spawn_recovery(
+            state.clone(),
+            startup_started_at,
+            startup_recovery_fence,
+            startup_recovery_connect_options,
+        );
+    startup_hot_read_hydration_handle = Some(startup_recovery_handle);
+    if !startup_recovery_completion.wait(&cancel).await {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            pool_orphan_recovery_handle,
+            retention_handle,
+            startup_backfill_handle,
+            startup_hot_read_hydration_handle,
+        )
+        .await;
+    }
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.start().await;
+    }
     // The periodic sweep is a runtime recovery path, not part of the fenced startup batch. It
     // remains available after a fence capture failure, while the shared owner gate prevents it
     // from overlapping the startup coordinator when that coordinator is still active.

@@ -53,7 +53,7 @@ async fn health_is_ready_while_locked_recovery_resumes_after_release() {
 
     state.startup_ready.store(false, Ordering::Release);
     let app = build_app_router(state.clone());
-    let recovery_handle = publish_http_readiness_and_spawn_recovery_for_test(
+    let (recovery_handle, recovery_completion) = publish_http_readiness_and_spawn_recovery_for_test(
         state.clone(),
         Instant::now(),
         startup_recovery_fence_for_test(invocation_id, 0),
@@ -89,6 +89,15 @@ async fn health_is_ready_while_locked_recovery_resumes_after_release() {
         !recovery_handle.is_finished(),
         "recovery coordinator must remain pending behind the SQLite lock"
     );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            recovery_completion.wait(&state.shutdown),
+        )
+        .await
+        .is_err(),
+        "the storage-start barrier must remain closed while raw SQLite recovery is blocked"
+    );
 
     sqlx::query("COMMIT")
         .execute(&mut lock_connection)
@@ -110,6 +119,12 @@ async fn health_is_ready_while_locked_recovery_resumes_after_release() {
     })
     .await
     .expect("recovery coordinator should resume after SQLite lock release");
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        recovery_completion.wait(&state.shutdown),
+    )
+    .await
+    .expect("the storage-start barrier should open after raw SQLite recovery completes");
 
     state.shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(2), recovery_handle)

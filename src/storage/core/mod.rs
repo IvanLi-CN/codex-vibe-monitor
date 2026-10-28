@@ -176,14 +176,17 @@ impl StoragePools {
         self.postgres.clone()
     }
 
+    pub(crate) fn require_postgres_pool(&self) -> Result<PgPool> {
+        self.postgres.clone().ok_or_else(|| {
+            anyhow::anyhow!("PostgreSQL authority selected without a PostgreSQL pool")
+        })
+    }
+
     pub(crate) async fn begin(&self, lease: ModuleGenerationLease) -> Result<StorageTransaction> {
         let backend = match lease.lease.authority.backend {
             BackendKind::Sqlite => StorageTransactionBackend::Sqlite(self.sqlite.begin().await?),
             BackendKind::Postgres => {
-                let pool = self.postgres.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("PostgreSQL authority selected without a PostgreSQL pool")
-                })?;
-                StorageTransactionBackend::Postgres(pool.begin().await?)
+                StorageTransactionBackend::Postgres(self.require_postgres_pool()?.begin().await?)
             }
         };
         Ok(StorageTransaction {
@@ -605,9 +608,8 @@ impl ModuleGenerationGate {
         match publication {
             AuthorityPublication::NotCommitted => {
                 self.0.recovery_required.store(false, Ordering::Release);
-                self.reopen_admission().await;
                 bail!(
-                    "module authority manifest was not committed; source authority remains active"
+                    "module authority manifest was not committed; source authority rollback is required before reopening admission"
                 );
             }
             AuthorityPublication::Committed => {
@@ -733,9 +735,30 @@ impl ModuleGenerationGate {
         self.0.recovery_required.load(Ordering::Acquire)
     }
 
+    pub(crate) async fn reopen_after_uncommitted_switch(&self) -> Result<()> {
+        let mut state = self.0.state.lock().await;
+        if self.0.recovery_required.load(Ordering::Acquire) {
+            bail!("module authority requires recovery before reopening admission");
+        }
+        if state.authority.backend != BackendKind::Sqlite {
+            bail!("only the old SQLite authority may reopen after an uncommitted switch");
+        }
+        if self.0.active.load(Ordering::Acquire) != 0 {
+            bail!("cannot reopen module authority while generation leases are active");
+        }
+        state.accepting = true;
+        self.0.changed.notify_waiters();
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn require_recovery_for_test(&self) {
+        self.require_recovery();
+    }
+
+    pub(crate) fn require_recovery(&self) {
         self.0.recovery_required.store(true, Ordering::Release);
+        self.0.changed.notify_waiters();
     }
 
     #[cfg(test)]
@@ -846,23 +869,33 @@ impl MigrationState {
             ),
             Self::Preparing => matches!(
                 next,
-                Self::Copying | Self::Paused | Self::Blocked | Self::Failed
+                Self::Copying | Self::Postgres | Self::Paused | Self::Blocked | Self::Failed
             ),
             Self::Copying => matches!(
                 next,
-                Self::CatchingUp | Self::Paused | Self::Blocked | Self::Failed
+                Self::CatchingUp | Self::Postgres | Self::Paused | Self::Blocked | Self::Failed
             ),
             Self::CatchingUp => matches!(
                 next,
-                Self::Copying | Self::Verifying | Self::Paused | Self::Blocked | Self::Failed
+                Self::Copying
+                    | Self::Verifying
+                    | Self::Postgres
+                    | Self::Paused
+                    | Self::Blocked
+                    | Self::Failed
             ),
             Self::Verifying => matches!(
                 next,
-                Self::Ready | Self::CatchingUp | Self::Paused | Self::Blocked | Self::Failed
+                Self::Ready
+                    | Self::CatchingUp
+                    | Self::Postgres
+                    | Self::Paused
+                    | Self::Blocked
+                    | Self::Failed
             ),
             Self::Ready => matches!(
                 next,
-                Self::Switching | Self::Paused | Self::Blocked | Self::Failed
+                Self::Switching | Self::Postgres | Self::Paused | Self::Blocked | Self::Failed
             ),
             Self::Switching => matches!(
                 next,

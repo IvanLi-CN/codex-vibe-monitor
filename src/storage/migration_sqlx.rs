@@ -1290,6 +1290,49 @@ impl SqliteMigrationSource {
         Ok(())
     }
 
+    pub(crate) async fn rollback_source_write_fence(
+        &self,
+        fenced_generation: u64,
+        restored_generation: u64,
+    ) -> Result<()> {
+        if restored_generation == 0 || fenced_generation <= restored_generation {
+            bail!("source authority generations must roll back to a prior non-zero generation");
+        }
+        let mut transaction = self.pool.begin().await?;
+        let state = self.load_capture_state_tx(&mut transaction).await?;
+        if state.authority_generation != fenced_generation || !state.source_writes_fenced {
+            bail!("SQLite source write fence changed before rollback");
+        }
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let query = format!(
+            "UPDATE {state_table}
+                SET authority_generation = ?, source_writes_fenced = 0
+              WHERE migration_id = ?
+                AND source_identity = ?
+                AND authority_generation = ?
+                AND source_writes_fenced = 1"
+        );
+        let result = sqlx::query(&query)
+            .bind(i64::try_from(restored_generation).context("authority generation overflow")?)
+            .bind(&self.migration_id)
+            .bind(&self.source_identity)
+            .bind(i64::try_from(fenced_generation).context("authority generation overflow")?)
+            .execute(&mut *transaction)
+            .await
+            .context("rollback SQLite source write fence")?;
+        if result.rows_affected() != 1 {
+            bail!("SQLite source write authority changed during rollback");
+        }
+        transaction
+            .commit()
+            .await
+            .context("commit SQLite source write fence rollback")?;
+        Ok(())
+    }
+
     fn spec(&self, table_name: &str) -> Result<&MigrationTableSpec> {
         self.specs
             .get(table_name)
@@ -2131,6 +2174,19 @@ impl MigrationSource for SqliteMigrationSource {
 
     async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()> {
         SqliteMigrationSource::reopen_source_writes(self, expected_generation).await
+    }
+
+    async fn rollback_source_write_fence(
+        &self,
+        fenced_generation: u64,
+        restored_generation: u64,
+    ) -> Result<()> {
+        SqliteMigrationSource::rollback_source_write_fence(
+            self,
+            fenced_generation,
+            restored_generation,
+        )
+        .await
     }
 
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>> {

@@ -976,6 +976,11 @@ pub(crate) trait MigrationSource: Send + Sync {
         next_generation: u64,
     ) -> Result<()>;
     async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()>;
+    async fn rollback_source_write_fence(
+        &self,
+        fenced_generation: u64,
+        restored_generation: u64,
+    ) -> Result<()>;
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>>;
     async fn table_bounds(&self, table_name: &str) -> Result<(Option<String>, Option<String>)>;
     async fn scan_page(
@@ -1288,6 +1293,11 @@ struct InMemorySourceState {
     baseline_required: bool,
     authority_generation: u64,
     source_writes_fenced: bool,
+    write_delay: Duration,
+    write_started: Arc<Notify>,
+    verification_delay_after_fence: Duration,
+    fail_after_fence: bool,
+    fail_next_rollback: bool,
 }
 
 impl Default for InMemorySourceState {
@@ -1303,6 +1313,11 @@ impl Default for InMemorySourceState {
             baseline_required: false,
             authority_generation: INITIAL_AUTHORITY_GENERATION,
             source_writes_fenced: false,
+            write_delay: Duration::ZERO,
+            write_started: Arc::new(Notify::new()),
+            verification_delay_after_fence: Duration::ZERO,
+            fail_after_fence: false,
+            fail_next_rollback: false,
         }
     }
 }
@@ -1320,6 +1335,27 @@ impl InMemoryMigrationSource {
 
     pub(crate) async fn set_verification_delay_for_test(&self, delay: Duration) {
         *self.verification_delay.lock().await = delay;
+    }
+
+    pub(crate) async fn set_verification_delay_after_fence_for_test(&self, delay: Duration) {
+        self.state.lock().await.verification_delay_after_fence = delay;
+    }
+
+    pub(crate) async fn fail_after_fence_for_test(&self) {
+        self.state.lock().await.fail_after_fence = true;
+    }
+
+    pub(crate) async fn fail_next_rollback_for_test(&self) {
+        self.state.lock().await.fail_next_rollback = true;
+    }
+
+    pub(crate) async fn set_write_delay_for_test(&self, delay: Duration) {
+        self.state.lock().await.write_delay = delay;
+    }
+
+    pub(crate) async fn wait_for_write_for_test(&self) {
+        let write_started = self.state.lock().await.write_started.clone();
+        write_started.notified().await;
     }
 
     pub(crate) async fn wait_for_verification_for_test(&self) {
@@ -1397,6 +1433,14 @@ impl InMemoryMigrationSource {
         changes: Vec<ChangeInput>,
     ) -> Result<i64> {
         let lease = fence.begin_write().await?;
+        let (write_delay, write_started) = {
+            let state = self.state.lock().await;
+            (state.write_delay, state.write_started.clone())
+        };
+        write_started.notify_one();
+        if !write_delay.is_zero() {
+            tokio::time::sleep(write_delay).await;
+        }
         if changes.is_empty() {
             bail!("a source transaction must capture at least one change");
         }
@@ -1536,6 +1580,16 @@ impl InMemoryMigrationSource {
         }
         state.authority_generation = next_generation;
         state.source_writes_fenced = true;
+        let verification_delay = state.verification_delay_after_fence;
+        let fail_after_fence = state.fail_after_fence;
+        state.fail_after_fence = false;
+        drop(state);
+        if !verification_delay.is_zero() {
+            *self.verification_delay.lock().await = verification_delay;
+        }
+        if fail_after_fence {
+            bail!("in-memory source fence failed after durable commit for retry test");
+        }
         Ok(())
     }
 
@@ -1544,6 +1598,27 @@ impl InMemoryMigrationSource {
         if state.authority_generation != expected_generation {
             bail!("source writer generation is stale");
         }
+        state.source_writes_fenced = false;
+        Ok(())
+    }
+
+    pub(crate) async fn rollback_source_write_fence(
+        &self,
+        fenced_generation: u64,
+        restored_generation: u64,
+    ) -> Result<()> {
+        if restored_generation == 0 || fenced_generation <= restored_generation {
+            bail!("source authority generations must roll back to a prior non-zero generation");
+        }
+        let mut state = self.state.lock().await;
+        if state.authority_generation != fenced_generation || !state.source_writes_fenced {
+            bail!("source write fence changed before rollback");
+        }
+        if state.fail_next_rollback {
+            state.fail_next_rollback = false;
+            bail!("in-memory source fence rollback failed for recovery test");
+        }
+        state.authority_generation = restored_generation;
         state.source_writes_fenced = false;
         Ok(())
     }
@@ -1737,6 +1812,19 @@ impl MigrationSource for InMemoryMigrationSource {
 
     async fn reopen_source_writes(&self, expected_generation: u64) -> Result<()> {
         InMemoryMigrationSource::reopen_source_writes(self, expected_generation).await
+    }
+
+    async fn rollback_source_write_fence(
+        &self,
+        fenced_generation: u64,
+        restored_generation: u64,
+    ) -> Result<()> {
+        InMemoryMigrationSource::rollback_source_write_fence(
+            self,
+            fenced_generation,
+            restored_generation,
+        )
+        .await
     }
 
     async fn module_tables(&self, module: StorageModule) -> Result<Vec<String>> {
@@ -4319,7 +4407,7 @@ where
         gate: &ModuleGenerationGate,
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let migration = (*self).clone();
         let gate = gate.clone();
         tokio::spawn(async move {
@@ -4336,7 +4424,7 @@ where
         gate: &ModuleGenerationGate,
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let _switch = self.switching.lock().await;
         self.ensure_running().await?;
         self.ensure_capture_ready().await?;
@@ -4391,11 +4479,52 @@ where
         self.fence.close_and_drain(switch_budget).await?;
         let mut source_fenced = false;
         let mut fenced_generation = None;
+        let mut fence_restore_generation = self.authority_generation;
         let result = async {
             // The in-memory fence is shared with routed production writers. Persist the same
             // generation-bound fence before reading the post-fence watermark so direct SQLite
             // writers are rejected by the trigger before the final capture boundary is chosen.
-            let next_authority_generation = self.fence_source_writes_for_switch().await?;
+            let source_authority_before_fence = match self.source.source_write_authority().await {
+                Ok(authority) => authority,
+                Err(error) => {
+                    gate.require_recovery();
+                    return Err(error.context("inspect source write authority before fencing"));
+                }
+            };
+            if source_authority_before_fence.is_some_and(|authority| authority.fenced) {
+                gate.require_recovery();
+                bail!("source write fence is already active and requires recovery");
+            }
+            fence_restore_generation = source_authority_before_fence
+                .map_or(self.authority_generation, |authority| authority.generation);
+            let next_authority_generation = match self.fence_source_writes_for_switch().await {
+                Ok(generation) => generation,
+                Err(error) => match self.source.source_write_authority().await {
+                    Ok(Some(authority)) if authority.fenced => {
+                        source_fenced = true;
+                        fenced_generation = Some(authority.generation);
+                        return Err(error);
+                    }
+                    Ok(Some(authority)) if authority.generation != self.authority_generation => {
+                        gate.require_recovery();
+                        return Err(
+                            error.context("source authority generation changed while fencing")
+                        );
+                    }
+                    Ok(Some(_)) => return Err(error),
+                    Ok(None) => {
+                        gate.require_recovery();
+                        return Err(error
+                            .context("source fence outcome is unavailable after fencing error"));
+                    }
+                    Err(inspect_error) => {
+                        gate.require_recovery();
+                        return Err(error.context(format!(
+                            "source fence outcome is indeterminate: {inspect_error}"
+                        )));
+                    }
+                },
+            };
             source_fenced = true;
             fenced_generation = Some(next_authority_generation);
             let watermark = self.source.capture_watermark().await?;
@@ -4439,23 +4568,43 @@ where
                 switch_budget,
                 metadata,
             )
-            .await
+            .await?;
+            Ok(final_watermark)
         }
         .await;
-        if result.is_err() && !gate.requires_recovery() {
+        if result.is_err() {
+            if gate.requires_recovery() {
+                return result;
+            }
             let authority = gate.current_authority().await;
             if authority.backend == BackendKind::Sqlite
                 && authority.generation == self.authority_generation
             {
                 if source_fenced {
+                    // No authority manifest was committed and the gate is still on the old
+                    // SQLite generation, so undo the uncommitted source fence as one durable
+                    // transaction. Committed authority generations remain forward-only.
                     self.source
-                        .reopen_source_writes(
+                        .rollback_source_write_fence(
                             fenced_generation
                                 .expect("a fenced source must have a recorded generation"),
+                            fence_restore_generation,
                         )
-                        .await?;
+                        .await
+                        .map_err(|error| {
+                            gate.require_recovery();
+                            error.context("rollback source write fence after failed switch")
+                        })?;
                 }
                 self.fence.reopen().await;
+                gate.reopen_after_uncommitted_switch()
+                    .await
+                    .map_err(|error| {
+                        gate.require_recovery();
+                        error.context("reopen module admission after failed switch")
+                    })?;
+            } else {
+                gate.require_recovery();
             }
         }
         result

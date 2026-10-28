@@ -316,6 +316,77 @@ async fn progress_persistence_and_events_are_coalesced_to_one_hz() {
 }
 
 #[tokio::test]
+async fn durable_progress_bypasses_the_coalescing_window() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = StorageMigrationRuntime::load(&config, pool.clone())
+        .await
+        .expect("migration runtime should load");
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+    runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Copying,
+            pending_keys: Some(1),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("initial progress is accepted");
+    for phase in [
+        StorageMigrationState::CatchingUp,
+        StorageMigrationState::Verifying,
+        StorageMigrationState::Ready,
+    ] {
+        runtime
+            .publish_progress(StorageMigrationProgress {
+                phase,
+                ..StorageMigrationProgress::default()
+            })
+            .await
+            .expect("migration phase is accepted");
+    }
+
+    let switching = runtime
+        .publish_progress_durable(StorageMigrationProgress {
+            phase: StorageMigrationState::Switching,
+            captured_through: Some(2),
+            applied_through: Some(2),
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect("cutover progress should persist immediately");
+    assert_eq!(runtime.progress_publish_count_for_test(), 2);
+
+    let persisted: StorageMigrationResponse = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>(
+            "SELECT response_json FROM storage_migration_runtime WHERE migration_id = ?1",
+        )
+        .bind("storage-migration")
+        .fetch_one(&pool)
+        .await
+        .expect("durable cutover progress should be persisted"),
+    )
+    .expect("persisted response should decode");
+    assert_eq!(persisted.state, StorageMigrationState::Switching);
+    assert_eq!(persisted.progress.captured_through, Some(2));
+    assert_eq!(persisted.progress.applied_through, Some(2));
+    assert_eq!(persisted.revision, switching.revision);
+}
+
+#[tokio::test]
 async fn progress_flush_releases_runtime_lock_during_persistence() {
     let config = StorageConfig {
         postgres_database_url: Some("postgresql://private.example/db".to_string()),
@@ -697,7 +768,6 @@ async fn postgres_cutover_publishes_postgres_authority_and_completed_module() {
         StorageMigrationState::Verifying,
         StorageMigrationState::Ready,
         StorageMigrationState::Switching,
-        StorageMigrationState::Postgres,
     ] {
         runtime
             .publish_progress(StorageMigrationProgress {
@@ -708,8 +778,31 @@ async fn postgres_cutover_publishes_postgres_authority_and_completed_module() {
             .expect("migration phase is accepted");
     }
 
+    let switching = runtime.snapshot().await;
+    assert_eq!(switching.authority.backend, StorageMigrationBackend::Sqlite);
+    assert_eq!(switching.authority.generation, 1);
+    let error = runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Postgres,
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect_err("status progress cannot publish PostgreSQL before authority commit");
+    assert!(error.to_string().contains("durable authority manifest"));
+    let mut events = runtime.subscribe();
+    runtime
+        .publish_postgres_authority(2, 0)
+        .await
+        .expect("durable authority publication is accepted");
+    events
+        .changed()
+        .await
+        .expect("published status event is retained");
+    assert_eq!(events.borrow_and_update().kind, "status");
+
     let status = runtime.snapshot().await;
     assert_eq!(status.authority.backend, StorageMigrationBackend::Postgres);
+    assert_eq!(status.authority.generation, 2);
     assert_eq!(
         status.recovery.authority_backend,
         Some(StorageMigrationBackend::Postgres)

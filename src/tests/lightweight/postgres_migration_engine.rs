@@ -990,6 +990,242 @@ async fn migration_switch_abort_does_not_leave_source_fenced() -> Result<()> {
 }
 
 #[tokio::test]
+async fn migration_switch_retries_after_tail_failure_without_generation_drift() -> Result<()> {
+    let (directory, path) = state_path("authority-tail-retry");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let expected = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let store = Arc::new(FileMigrationStore::new(&path, expected.clone()));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+
+    // Keep one source transaction active across the pre-fence watermark read so it becomes the
+    // bounded tail delta after the durable source fence is written.
+    source
+        .set_write_delay_for_test(Duration::from_millis(50))
+        .await;
+    let writer = tokio::spawn({
+        let source = Arc::clone(&source);
+        let fence = fence.clone();
+        async move {
+            source
+                .write(
+                    &fence,
+                    vec![change("events", "b", ChangeKind::Insert, b"two")],
+                )
+                .await
+        }
+    });
+    source.wait_for_write_for_test().await;
+    source
+        .set_verification_delay_after_fence_for_test(Duration::from_secs(5))
+        .await;
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let error = migration
+        .switch_authority(&gate, expected.clone(), Duration::from_secs(1))
+        .await
+        .expect_err("tail verification failure should abort before authority publication");
+    assert!(
+        error.to_string().contains("tail delta exceeded"),
+        "unexpected tail failure: {error:#}"
+    );
+    writer.await??;
+
+    assert_eq!(
+        source.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 1,
+            fenced: false,
+        }
+    );
+    assert_eq!(
+        gate.current_authority().await,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        }
+    );
+    assert!(!gate.requires_recovery());
+    assert!(!fence.is_fenced().await);
+
+    source.set_write_delay_for_test(Duration::ZERO).await;
+    source.set_verification_delay_for_test(Duration::ZERO).await;
+    migration
+        .switch_authority(&gate, expected, Duration::from_secs(1))
+        .await?;
+    assert_eq!(
+        source.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: true,
+        }
+    );
+    assert_eq!(
+        gate.current_authority().await,
+        ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        }
+    );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_switch_fails_closed_for_pre_fenced_source_authority() -> Result<()> {
+    let (directory, path) = state_path("authority-pre-fenced");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let expected = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let store = Arc::new(FileMigrationStore::new(&path, expected.clone()));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+    source.fence_source_writes(1, 2).await?;
+
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    assert!(
+        migration
+            .switch_authority(&gate, expected, Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    assert!(gate.requires_recovery());
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    assert!(fence.is_fenced().await);
+    assert_eq!(
+        source.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: true,
+        }
+    );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_switch_fails_closed_when_source_fence_rollback_fails() -> Result<()> {
+    let (directory, path) = state_path("authority-rollback-failure");
+    let source = Arc::new(InMemoryMigrationSource::new(
+        "migration-engine-test",
+        "sqlite-test",
+    ));
+    let fence = SourceWriteFence::new(1);
+    source
+        .write(
+            &fence,
+            vec![change("events", "a", ChangeKind::Insert, b"one")],
+        )
+        .await?;
+    let target = Arc::new(InMemoryMigrationTarget::default());
+    let expected = AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: "postgres-test".into(),
+        source_watermark: 1,
+    };
+    let store = Arc::new(FileMigrationStore::new(&path, expected.clone()));
+    let migration = engine(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        fence.clone(),
+    );
+    migration.prepare(&["events".into()]).await?;
+    assert!(migration.copy_next("events").await?.complete);
+    source.fail_after_fence_for_test().await;
+    source.fail_next_rollback_for_test().await;
+
+    let gate = ModuleGenerationGate::new(
+        StorageModule::TrafficArchive,
+        ModuleAuthority {
+            backend: BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    let error = migration
+        .switch_authority(&gate, expected, Duration::from_secs(1))
+        .await
+        .expect_err("post-commit fence error must not reopen either authority");
+    assert!(error.to_string().contains("rollback source write fence"));
+    assert!(gate.requires_recovery());
+    assert!(gate.acquire(StorageModule::TrafficArchive).await.is_err());
+    assert!(fence.is_fenced().await);
+    assert_eq!(
+        source.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 2,
+            fenced: true,
+        }
+    );
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn migration_rejects_incomplete_module_table_sets() -> Result<()> {
     let (directory, path) = state_path("table-set");
     let source = Arc::new(InMemoryMigrationSource::new(
@@ -1334,10 +1570,11 @@ async fn switch_catches_up_source_writes_during_large_pre_fence_verification() -
             .await
             .is_ok()
     );
-    switching
+    let final_watermark = switching
         .await
         .expect("authority switch task")
         .expect("authority switch should include the bounded tail delta");
+    assert_eq!(final_watermark, 2);
     assert!(fence.is_fenced().await);
     assert_eq!(
         gate.current_authority().await.backend,
@@ -1353,6 +1590,13 @@ async fn switch_catches_up_source_writes_during_large_pre_fence_verification() -
         .expect("coverage checkpoint");
     assert!(checkpoint.complete);
     assert_eq!(checkpoint.source_row_count, 8);
+    assert!(matches!(
+        store
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::Manifest(manifest)
+            if manifest.source_watermark == final_watermark
+    ));
 
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -2669,6 +2913,16 @@ async fn sqlite_capture_persists_source_fence_and_rejects_stale_generations() ->
             .await
             .is_err()
     );
+
+    restarted.rollback_source_write_fence(2, 1).await?;
+    assert_eq!(
+        restarted.source_write_authority().await?,
+        crate::storage::migration::SourceWriteAuthority {
+            generation: 1,
+            fenced: false,
+        }
+    );
+    restarted.fence_source_writes(1, 2).await?;
 
     let stale_reopen = restarted
         .reopen_source_writes(1)
