@@ -1101,7 +1101,8 @@ pub(crate) fn freeze_and_finalize_retention_owner_observation(
     execution_duration_ms
 }
 
-const RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS: [u64; 4] = [250, 1_000, 3_000, 7_500];
+const RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS: [u64; 6] =
+    [250, 1_000, 3_000, 7_500, 15_000, 30_000];
 
 fn retention_owner_internal_retryable_reason(reason: Option<&str>) -> bool {
     matches!(
