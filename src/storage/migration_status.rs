@@ -798,6 +798,11 @@ impl StorageMigrationRuntime {
         &self,
         mut progress: StorageMigrationProgress,
     ) -> Result<StorageMigrationResponse> {
+        if progress.phase == StorageMigrationState::Postgres {
+            bail!(
+                "PostgreSQL authority status must be published after the durable authority manifest"
+            );
+        }
         let (previous, snapshot, monotonic_now) = {
             let mut state = self.state.lock().await;
             let previous = state.clone();
@@ -962,12 +967,49 @@ impl StorageMigrationRuntime {
         authority_generation: u64,
         source_watermark: i64,
     ) -> Result<StorageMigrationResponse> {
+        self.publish_postgres_state(
+            authority_generation,
+            source_watermark,
+            "recovered",
+            "recovered",
+        )
+        .await
+    }
+
+    pub(crate) async fn publish_postgres_authority(
+        &self,
+        authority_generation: u64,
+        source_watermark: i64,
+    ) -> Result<StorageMigrationResponse> {
+        self.publish_postgres_state(
+            authority_generation,
+            source_watermark,
+            "published",
+            "status",
+        )
+        .await
+    }
+
+    async fn publish_postgres_state(
+        &self,
+        authority_generation: u64,
+        source_watermark: i64,
+        switch_result: &'static str,
+        event_kind: &'static str,
+    ) -> Result<StorageMigrationResponse> {
         if authority_generation == 0 || source_watermark < 0 {
-            bail!("recovered PostgreSQL authority has invalid generation or watermark");
+            bail!("PostgreSQL authority has invalid generation or watermark");
         }
         let (previous, snapshot) = {
             let mut state = self.state.lock().await;
             let previous = state.clone();
+            if authority_generation < state.status.authority_generation {
+                bail!(
+                    "PostgreSQL authority generation regresses durable migration status from {} to {}",
+                    state.status.authority_generation,
+                    authority_generation
+                );
+            }
             let now = Utc::now();
             if state.status.state != MigrationState::Postgres {
                 state
@@ -979,7 +1021,7 @@ impl StorageMigrationRuntime {
             state.response.progress.applied_through = Some(source_watermark);
             state.response.progress.converged = Some(true);
             state.response.progress.phase = StorageMigrationState::Postgres;
-            state.response.switch.result = Some("recovered".to_string());
+            state.response.switch.result = Some(switch_result.to_string());
             state.response.switch.failure_reason = None;
             state.response.verification.last_error = None;
             state.response.heartbeat = StorageMigrationHeartbeat {
@@ -1008,7 +1050,7 @@ impl StorageMigrationRuntime {
                 }
                 let response = state.response.clone();
                 self.events.send_replace(StorageMigrationEvent {
-                    kind: "recovered",
+                    kind: event_kind,
                     revision: response.revision,
                     status: response.clone(),
                 });

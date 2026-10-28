@@ -1095,6 +1095,16 @@ pub(crate) async fn run() -> Result<()> {
                 .await
                 .context("failed to recover durable storage migration state")?,
         );
+        let shutdown = CancellationToken::new();
+        let storage_runtime =
+            crate::storage::runtime::StorageRuntimeRouter::initialize(
+                pool.clone(),
+                &config.storage,
+                storage_migration.clone(),
+                shutdown.child_token(),
+            )
+            .await
+            .context("failed to initialize storage runtime router")?;
         initialize_invocation_identity_cleanup_state(&pool, false).await?;
         let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
@@ -1215,16 +1225,6 @@ pub(crate) async fn run() -> Result<()> {
         let (tx, _rx) = broadcast::channel(128);
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
-        let shutdown = CancellationToken::new();
-        let storage_runtime =
-            crate::storage::runtime::StorageRuntimeRouter::initialize(
-                pool.clone(),
-                &config.storage,
-                storage_migration.clone(),
-                shutdown.clone(),
-            )
-            .await
-            .context("failed to initialize storage runtime router")?;
         let process_started_at_utc = Utc::now();
         observability
             .initialize_traces(config.observability.traces.clone())

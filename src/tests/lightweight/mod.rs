@@ -25,6 +25,7 @@ mod retention_archive_size;
 mod retention_batch_metrics;
 mod schema_migration_and_maintenance;
 mod storage_migration_status;
+mod storage_runtime;
 mod time_ranges_and_proxy_display;
 
 pub(crate) use lightweight_test_support::*;

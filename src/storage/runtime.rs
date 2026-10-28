@@ -33,7 +33,7 @@ use super::{
     },
     migration::{
         ChangeBatchLimits, CopyLimits, MigrationEngine, MigrationLimits, MigrationSource,
-        SourceWriteFence,
+        SourceWriteAuthority, SourceWriteFence,
     },
     migration_sqlx::{PostgresMigrationTarget, SqliteMigrationSource},
     migration_status::{
@@ -51,6 +51,7 @@ const CHECKPOINT_TABLE: &str = "storage_migration_engine_checkpoints";
 const OUTBOX_TABLE: &str = "storage_migration_engine_outbox";
 const RESERVATION_TABLE: &str = "storage_migration_engine_reservations";
 const STATUS_TABLE: &str = "storage_migration_engine_status";
+const CAPTURE_STATE_TABLE: &str = "migration_change_log_state";
 const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const WORKER_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -139,6 +140,38 @@ impl StorageRuntimeRouter {
                 if manifest.authority.backend != BackendKind::Postgres {
                     bail!("durable traffic authority manifest is not PostgreSQL");
                 }
+                self.pools
+                    .require_postgres_pool()
+                    .context("recover durable PostgreSQL traffic authority")?;
+                if !matches!(
+                    status.state,
+                    StorageMigrationState::Postgres
+                        | StorageMigrationState::Switching
+                        | StorageMigrationState::Recovering
+                ) {
+                    bail!(
+                        "durable PostgreSQL authority manifest conflicts with migration state {:?}",
+                        status.state
+                    );
+                }
+                if status.authority.backend
+                    == super::migration_status::StorageMigrationBackend::Postgres
+                    && status.authority.generation > manifest.authority.generation
+                {
+                    bail!(
+                        "durable migration status generation {} is ahead of PostgreSQL authority manifest generation {}",
+                        status.authority.generation,
+                        manifest.authority.generation
+                    );
+                }
+                if status.state != StorageMigrationState::Postgres
+                    && manifest.authority.generation <= status.authority.generation
+                {
+                    bail!(
+                        "PostgreSQL authority manifest does not advance migration generation {}",
+                        status.authority.generation
+                    );
+                }
                 self.ensure_native_source_fenced(manifest.authority.generation)
                     .await?;
                 let expected = recovery_context_from_record(AuthorityRecoveryRecord::Manifest(
@@ -159,21 +192,33 @@ impl StorageRuntimeRouter {
             {
                 bail!("PostgreSQL authority has no durable traffic manifest");
             }
-            AuthorityRecoveryRecord::NeverMigrated { .. }
-                if matches!(
-                    status.state,
-                    StorageMigrationState::Switching | StorageMigrationState::Recovering
-                ) =>
-            {
-                let source = self.native_source_for_recovery().await?;
-                let authority = source.source_write_authority().await?;
-                if authority.fenced {
+            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                let source_authority =
+                    load_durable_source_write_authority(&self.worker.pool).await?;
+                let gate_authority = self.traffic_gate.current_authority().await;
+                if status.authority.backend
+                    == super::migration_status::StorageMigrationBackend::Sqlite
+                    && status.authority.generation != gate_authority.generation
+                {
+                    bail!(
+                        "durable migration status generation {} does not match the selected SQLite generation {}",
+                        status.authority.generation,
+                        gate_authority.generation
+                    );
+                }
+                if source_authority
+                    .is_some_and(|authority| authority.generation != gate_authority.generation)
+                {
+                    bail!(
+                        "SQLite source authority generation does not match the selected SQLite generation"
+                    );
+                }
+                if source_authority.is_some_and(|authority| authority.fenced) {
                     bail!(
                         "SQLite source writes are durably fenced without a PostgreSQL authority manifest"
                     );
                 }
             }
-            AuthorityRecoveryRecord::NeverMigrated { .. } => {}
             AuthorityRecoveryRecord::Indeterminate => {
                 bail!("traffic authority recovery is indeterminate");
             }
@@ -181,27 +226,10 @@ impl StorageRuntimeRouter {
         Ok(())
     }
 
-    async fn native_source_for_recovery(&self) -> Result<SqliteMigrationSource> {
-        let catalog = ModuleCatalog::inspect_sqlite(&self.worker.pool).await?;
-        let native_catalog = catalog
-            .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
-            .map_err(|error| anyhow!(error))?;
-        let source = SqliteMigrationSource::from_native_catalog(
-            self.worker.pool.clone(),
-            MIGRATION_ID,
-            SOURCE_IDENTITY,
-            "migration_change_log",
-            &native_catalog,
-            StorageModule::TrafficArchive,
-        )?;
-        source.ensure_capture_schema().await?;
-        source.ensure_native_capture_triggers().await?;
-        Ok(source)
-    }
-
     async fn ensure_native_source_fenced(&self, expected_generation: u64) -> Result<()> {
-        let source = self.native_source_for_recovery().await?;
-        let authority = source.source_write_authority().await?;
+        let authority = load_durable_source_write_authority(&self.worker.pool)
+            .await?
+            .ok_or_else(|| anyhow!("SQLite source authority state is missing"))?;
         if !authority.fenced || authority.generation != expected_generation {
             bail!(
                 "PostgreSQL authority manifest requires SQLite source fence generation {}, found generation {} fenced={}",
@@ -255,6 +283,36 @@ impl StorageRuntimeRouter {
             },
         }
     }
+}
+
+async fn load_durable_source_write_authority(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<SourceWriteAuthority>> {
+    let exists = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{CAPTURE_STATE_TABLE}')"
+    ))
+    .fetch_one(pool)
+    .await?;
+    if exists == 0 {
+        return Ok(None);
+    }
+    let row = sqlx::query(&format!(
+        "SELECT authority_generation, source_writes_fenced
+           FROM {CAPTURE_STATE_TABLE}
+          WHERE migration_id = ? AND source_identity = ?"
+    ))
+    .bind(MIGRATION_ID)
+    .bind(SOURCE_IDENTITY)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow!("SQLite source authority state row is missing"))?;
+    let authority = SourceWriteAuthority {
+        generation: u64::try_from(row.try_get::<i64, _>("authority_generation")?)
+            .context("SQLite source authority generation is invalid")?,
+        fenced: row.try_get::<i64, _>("source_writes_fenced")? != 0,
+    };
+    authority.validate()?;
+    Ok(Some(authority))
 }
 
 #[derive(Debug)]
@@ -346,6 +404,9 @@ impl StorageMigrationWorker {
             if self.shutdown.is_cancelled() {
                 return;
             }
+            if self.traffic_gate.requires_recovery() {
+                return;
+            }
             let status = self.migration.snapshot().await;
             let should_run = matches!(
                 status.state,
@@ -375,6 +436,42 @@ impl StorageMigrationWorker {
     }
 
     async fn run_migration(&self, status: StorageMigrationResponse) -> Result<()> {
+        let authority = self.traffic_gate.current_authority().await;
+        if authority.backend == BackendKind::Postgres {
+            let manifest = match self
+                .metadata
+                .load_authority_manifest(StorageModule::TrafficArchive)
+                .await?
+            {
+                AuthorityRecoveryRecord::Manifest(manifest) => manifest,
+                AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                    bail!("PostgreSQL authority has no durable traffic manifest")
+                }
+                AuthorityRecoveryRecord::Indeterminate => {
+                    bail!("traffic authority recovery is indeterminate")
+                }
+            };
+            if manifest.authority != authority {
+                bail!(
+                    "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
+                    manifest.authority
+                );
+            }
+            self.migration
+                .recover_postgres(authority.generation, manifest.source_watermark)
+                .await?;
+            return Ok(());
+        }
+        if let Some(source_authority) = load_durable_source_write_authority(&self.pool).await?
+            && source_authority.generation != authority.generation
+        {
+            self.traffic_gate.require_recovery();
+            bail!(
+                "SQLite source authority generation {} does not match the selected SQLite generation {}",
+                source_authority.generation,
+                authority.generation
+            );
+        }
         let Some(postgres) = self.config.connect_postgres_lazy()? else {
             bail!("PostgreSQL storage is not configured");
         };
@@ -522,14 +619,28 @@ impl StorageMigrationWorker {
                 self.config.migration_switch_budget,
             )
             .await?;
+        let manifest = match self
+            .metadata
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?
+        {
+            AuthorityRecoveryRecord::Manifest(manifest) => manifest,
+            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                bail!("PostgreSQL authority has no durable traffic manifest")
+            }
+            AuthorityRecoveryRecord::Indeterminate => {
+                bail!("traffic authority recovery is indeterminate")
+            }
+        };
+        let authority = self.traffic_gate.current_authority().await;
+        if manifest.authority != authority {
+            bail!(
+                "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
+                manifest.authority
+            );
+        }
         self.migration
-            .publish_progress(StorageMigrationProgress {
-                phase: StorageMigrationState::Postgres,
-                captured_through: Some(watermark),
-                applied_through: Some(watermark),
-                converged: Some(true),
-                ..StorageMigrationProgress::default()
-            })
+            .publish_postgres_authority(authority.generation, manifest.source_watermark)
             .await?;
         Ok(())
     }

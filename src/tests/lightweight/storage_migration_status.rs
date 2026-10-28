@@ -697,7 +697,6 @@ async fn postgres_cutover_publishes_postgres_authority_and_completed_module() {
         StorageMigrationState::Verifying,
         StorageMigrationState::Ready,
         StorageMigrationState::Switching,
-        StorageMigrationState::Postgres,
     ] {
         runtime
             .publish_progress(StorageMigrationProgress {
@@ -708,8 +707,31 @@ async fn postgres_cutover_publishes_postgres_authority_and_completed_module() {
             .expect("migration phase is accepted");
     }
 
+    let switching = runtime.snapshot().await;
+    assert_eq!(switching.authority.backend, StorageMigrationBackend::Sqlite);
+    assert_eq!(switching.authority.generation, 1);
+    let error = runtime
+        .publish_progress(StorageMigrationProgress {
+            phase: StorageMigrationState::Postgres,
+            ..StorageMigrationProgress::default()
+        })
+        .await
+        .expect_err("status progress cannot publish PostgreSQL before authority commit");
+    assert!(error.to_string().contains("durable authority manifest"));
+    let mut events = runtime.subscribe();
+    runtime
+        .publish_postgres_authority(2, 0)
+        .await
+        .expect("durable authority publication is accepted");
+    events
+        .changed()
+        .await
+        .expect("published status event is retained");
+    assert_eq!(events.borrow_and_update().kind, "status");
+
     let status = runtime.snapshot().await;
     assert_eq!(status.authority.backend, StorageMigrationBackend::Postgres);
+    assert_eq!(status.authority.generation, 2);
     assert_eq!(
         status.recovery.authority_backend,
         Some(StorageMigrationBackend::Postgres)

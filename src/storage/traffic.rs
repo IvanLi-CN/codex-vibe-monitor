@@ -115,12 +115,16 @@ impl TrafficFactStore {
         &self,
     ) -> Result<(TrafficFactTransaction, std::time::Duration)> {
         let lease = self.gate.acquire(StorageModule::TrafficArchive).await?;
-        let source_write_lease = if let Some(source_fence) = &self.source_fence {
-            Some(source_fence.begin_write().await?)
+        let backend = lease.lease.authority.backend;
+        let source_write_lease = if backend == BackendKind::Sqlite {
+            if let Some(source_fence) = &self.source_fence {
+                Some(source_fence.begin_write().await?)
+            } else {
+                None
+            }
         } else {
             None
         };
-        let backend = lease.lease.authority.backend;
         let pool_acquisition_started = Instant::now();
         let transaction = self
             .pools
