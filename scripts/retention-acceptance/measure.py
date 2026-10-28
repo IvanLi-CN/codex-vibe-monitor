@@ -990,6 +990,24 @@ def task_runs(maintenance_db: Path) -> list[dict[str, Any]]:
         connection.close()
 
 
+def wait_for_owner_schedule_admission(maintenance_db: Path, started: float) -> None:
+    required = {DATASETS[name]["task_key"] for name in DATASETS}
+    deadline = time.monotonic() + min(30.0, remaining_budget(started))
+    while time.monotonic() < deadline:
+        rows = task_runs(maintenance_db)
+        admitted = {
+            row["task_key"]
+            for row in rows
+            if row.get("trigger_kind") == "schedule" and row.get("actual_started_at") is not None
+        }
+        if required.issubset(admitted):
+            return
+        time.sleep(0.25)
+    raise AcceptanceError(
+        "production owner schedule admission did not complete before foreground load"
+    )
+
+
 def archive_proofs_ready(
     database: Path,
     cutoff: str,
@@ -1177,6 +1195,7 @@ def run_trial(
             trial_index=index,
         )
         wait_healthy(container, phase_started)
+        wait_for_owner_schedule_admission(maintenance_db, phase_started)
         pre_buckets, pre_text, pre_time = scrape_metrics(container, phase_started)
         write_scrapes.append({"observed_at": pre_time, "scope": "pre-input", "bucket_counts": pre_buckets})
         foreground = run_foreground(

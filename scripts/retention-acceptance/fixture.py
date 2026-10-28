@@ -9,7 +9,15 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Iterable
 
-from contract import COMPETITOR_FILE_COUNT, COMPETITOR_TASK, DATASETS, RETENTION_DAYS, SEED, canonical_json
+from contract import (
+    COMPETITOR_FILE_COUNT,
+    COMPETITOR_START_DELAY_SECONDS,
+    COMPETITOR_TASK,
+    DATASETS,
+    RETENTION_DAYS,
+    SEED,
+    canonical_json,
+)
 
 
 CONTROLLED_TASK_KEYS = tuple(
@@ -191,7 +199,11 @@ def prepare_competitor(
         for table in ("managed_task_work_runs", "managed_task_runs"):
             if table in table_names:
                 maintenance.execute(f"DELETE FROM {table}")
-        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        competitor_trigger = (now_dt + timedelta(seconds=COMPETITOR_START_DELAY_SECONDS)).isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
         placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
         if "maintenance_owner_retry_state" in table_names:
             maintenance.execute(
@@ -208,7 +220,7 @@ def prepare_competitor(
         for key in task_keys:
             cursor = maintenance.execute(
                 "UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,updated_at=? WHERE task_key=? AND enabled!=0",
-                (now, now, key),
+                (competitor_trigger if key == COMPETITOR_TASK else now, now, key),
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(f"production managed task {key} is missing or disabled")

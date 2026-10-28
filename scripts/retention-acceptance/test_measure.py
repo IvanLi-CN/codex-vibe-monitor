@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ from unittest.mock import patch
 from contract import (
     AcceptanceError,
     CLEANUP_RESERVE_SECONDS,
+    COMPETITOR_START_DELAY_SECONDS,
     COMPETITOR_TASK,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
@@ -311,6 +313,18 @@ class MeasurementBudgetTests(unittest.TestCase):
                 key for key, (enabled, next_trigger, next_catchup, _) in rows.items()
                 if enabled == 1 and next_trigger is not None and next_catchup is None
             })
+            target_triggers = [
+                rows[DATASETS[name]["task_key"]][1]
+                for name in DATASETS
+            ]
+            competitor_trigger = rows[COMPETITOR_TASK][1]
+            target_time = datetime.fromisoformat(target_triggers[0].replace("Z", "+00:00"))
+            competitor_time = datetime.fromisoformat(competitor_trigger.replace("Z", "+00:00"))
+            self.assertTrue(all(trigger < competitor_trigger for trigger in target_triggers))
+            self.assertGreaterEqual(
+                (competitor_time - target_time).total_seconds(),
+                COMPETITOR_START_DELAY_SECONDS - 1,
+            )
             self.assertEqual(
                 rows["summary_snapshot"],
                 (0, None, None, None),
