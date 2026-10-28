@@ -39,6 +39,7 @@ type RoutingTimeoutFieldKey =
 type PoolRoutingSettingsCardProps = {
   draft: {
     requestCompressionAlgorithm: RequestCompressionAlgorithm;
+    oauthRequestCompressionAlgorithm: RequestCompressionAlgorithm;
     requestCompressionLevelPreset: RequestCompressionLevelPreset;
     codexImagegenRewriteMode: CodexImagegenRewriteMode;
     availableModels: string[];
@@ -58,6 +59,7 @@ type PoolRoutingSettingsCardProps = {
   canSave: boolean;
   validationMessage?: string | null;
   onAlgorithmChange: (value: RequestCompressionAlgorithm) => void;
+  onOauthAlgorithmChange: (value: RequestCompressionAlgorithm) => void;
   onLevelPresetChange: (value: RequestCompressionLevelPreset) => void;
   onCodexImagegenRewriteModeChange: (value: CodexImagegenRewriteMode) => void;
   availableModelOptions: string[];
@@ -80,6 +82,7 @@ export function PoolRoutingSettingsCard({
   canSave,
   validationMessage,
   onAlgorithmChange,
+  onOauthAlgorithmChange,
   onLevelPresetChange,
   onCodexImagegenRewriteModeChange,
   availableModelOptions,
@@ -257,6 +260,39 @@ export function PoolRoutingSettingsCard({
           <div className="grid gap-3 xl:grid-cols-2">
             <SelectField
               className="field"
+              label={t("settings.routing.oauthRequestCompressionAlgorithmLabel")}
+              name="settingsRoutingOauthRequestCompressionAlgorithm"
+              value={draft.oauthRequestCompressionAlgorithm}
+              disabled={!writesEnabled || busy}
+              options={[
+                {
+                  value: "follow",
+                  label: requestCompressionAlgorithmLabel("follow", compressionLabelMap),
+                },
+                {
+                  value: "identity",
+                  label: requestCompressionAlgorithmLabel("identity", compressionLabelMap),
+                },
+                {
+                  value: "gzip",
+                  label: requestCompressionAlgorithmLabel("gzip", compressionLabelMap),
+                },
+                {
+                  value: "deflate",
+                  label: requestCompressionAlgorithmLabel("deflate", compressionLabelMap),
+                },
+                {
+                  value: "zstd",
+                  label: requestCompressionAlgorithmLabel("zstd", compressionLabelMap),
+                },
+              ]}
+              onValueChange={(value) =>
+                onOauthAlgorithmChange(value as RequestCompressionAlgorithm)
+              }
+            />
+
+            <SelectField
+              className="field"
               label={t("settings.routing.requestCompressionAlgorithmLabel")}
               name="settingsRoutingRequestCompressionAlgorithm"
               value={draft.requestCompressionAlgorithm}
@@ -312,6 +348,9 @@ export function PoolRoutingSettingsCard({
 
           <p className="text-xs leading-snug text-base-content/60">
             {t("settings.routing.requestCompressionHint")}
+          </p>
+          <p className="text-xs leading-snug text-base-content/60">
+            {t("settings.routing.oauthRequestCompressionHint")}
           </p>
         </div>
 

@@ -138,10 +138,9 @@ mod request_compression_tests {
         assert_eq!(
             resolved_pool_request_compression_algorithm(
                 &headers,
-                true,
                 RequestCompressionAlgorithm::Identity,
             ),
-            Some("gzip")
+            Some("identity")
         );
     }
 
@@ -153,7 +152,6 @@ mod request_compression_tests {
         assert_eq!(
             resolved_pool_request_compression_algorithm(
                 &headers,
-                false,
                 RequestCompressionAlgorithm::Follow,
             ),
             Some("gzip")
@@ -161,7 +159,6 @@ mod request_compression_tests {
         assert_eq!(
             resolved_pool_request_compression_algorithm(
                 &headers,
-                false,
                 RequestCompressionAlgorithm::Zstd,
             ),
             Some("zstd")

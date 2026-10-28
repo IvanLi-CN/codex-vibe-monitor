@@ -300,6 +300,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
                 image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
                 codex_imagegen_rewrite_mode: Default::default(),
                 request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+                oauth_request_compression_algorithm: RequestCompressionAlgorithm::Zstd,
                 response_endpoint_capability: CapabilitySupport::Unknown,
                 chat_completions_capability: CapabilitySupport::Unknown,
                 image_endpoint_capability: CapabilitySupport::Unknown,

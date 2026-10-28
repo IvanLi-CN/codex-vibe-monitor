@@ -258,6 +258,7 @@ function GroupSettingsStory({
     imageToolForceAdd: "Force add",
     imageToolForceRemove: "Force remove",
     requestCompressionAlgorithm: "Request compression",
+    oauthRequestCompressionAlgorithm: "OAuth request compression",
     requestCompressionFollow: "Follow",
     requestCompressionIdentity: "Identity",
     requestCompressionGzip: "Gzip",

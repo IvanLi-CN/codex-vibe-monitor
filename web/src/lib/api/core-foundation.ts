@@ -4433,6 +4433,14 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
       payload.requestCompressionAlgorithm === "zstd"
         ? (payload.requestCompressionAlgorithm as RequestCompressionAlgorithm)
         : "identity",
+    oauthRequestCompressionAlgorithm:
+      payload.oauthRequestCompressionAlgorithm === "follow" ||
+      payload.oauthRequestCompressionAlgorithm === "identity" ||
+      payload.oauthRequestCompressionAlgorithm === "gzip" ||
+      payload.oauthRequestCompressionAlgorithm === "deflate" ||
+      payload.oauthRequestCompressionAlgorithm === "zstd"
+        ? (payload.oauthRequestCompressionAlgorithm as RequestCompressionAlgorithm)
+        : "zstd",
     requestCompressionLevelPreset:
       payload.requestCompressionLevelPreset === "fast" ||
       payload.requestCompressionLevelPreset === "balanced" ||

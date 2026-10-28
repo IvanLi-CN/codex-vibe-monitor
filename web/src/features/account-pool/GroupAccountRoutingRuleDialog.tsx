@@ -74,6 +74,9 @@ type GroupAccountRoutingRuleDraft = {
   requestCompressionAlgorithm:
     | RequestCompressionAlgorithm
     | typeof REQUEST_COMPRESSION_INHERIT_VALUE;
+  oauthRequestCompressionAlgorithm:
+    | RequestCompressionAlgorithm
+    | typeof REQUEST_COMPRESSION_INHERIT_VALUE;
   concurrencyLimit: number;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
@@ -217,6 +220,9 @@ function buildDraft(
     requestCompressionAlgorithm: options?.changedFieldsOnly
       ? (rule?.requestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
       : (rule?.requestCompressionAlgorithm ?? "identity"),
+    oauthRequestCompressionAlgorithm: options?.changedFieldsOnly
+      ? (rule?.oauthRequestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
+      : (rule?.oauthRequestCompressionAlgorithm ?? "zstd"),
     concurrencyLimit: apiConcurrencyLimitToSliderValue(rule?.concurrencyLimit),
     upstream429RetryEnabled: rule?.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeRetryCount(rule?.upstream429MaxRetries),
@@ -261,6 +267,10 @@ function buildPayload(
     draft.requestCompressionAlgorithm === REQUEST_COMPRESSION_INHERIT_VALUE
       ? null
       : draft.requestCompressionAlgorithm;
+  const oauthRequestCompressionAlgorithm =
+    draft.oauthRequestCompressionAlgorithm === REQUEST_COMPRESSION_INHERIT_VALUE
+      ? null
+      : draft.oauthRequestCompressionAlgorithm;
   const codexImagegenRewriteMode =
     draft.codexImagegenRewriteMode === CODEX_IMAGEGEN_INHERIT_VALUE
       ? null
@@ -275,6 +285,7 @@ function buildPayload(
     imageToolRewriteMode: draft.imageToolRewriteMode,
     codexImagegenRewriteMode,
     ...(requestCompressionAlgorithm == null ? {} : { requestCompressionAlgorithm }),
+    ...(oauthRequestCompressionAlgorithm == null ? {} : { oauthRequestCompressionAlgorithm }),
     concurrencyLimit: sliderConcurrencyLimitToApiValue(draft.concurrencyLimit),
     upstream429RetryEnabled: draft.upstream429RetryEnabled,
     upstream429MaxRetries: draft.upstream429RetryEnabled
@@ -315,6 +326,12 @@ function buildPayload(
       (base.requestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
     ) {
       changedPayload.requestCompressionAlgorithm = requestCompressionAlgorithm;
+    }
+    if (
+      draft.oauthRequestCompressionAlgorithm !==
+      (base.oauthRequestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
+    ) {
+      changedPayload.oauthRequestCompressionAlgorithm = oauthRequestCompressionAlgorithm;
     }
     if (draft.concurrencyLimit !== apiConcurrencyLimitToSliderValue(base.concurrencyLimit ?? 0)) {
       changedPayload.concurrencyLimit = payload.concurrencyLimit;
@@ -400,6 +417,7 @@ export interface GroupAccountRoutingRuleLabels {
   codexImagegenRewriteMode?: string;
   codexImagegenRewriteHint?: string;
   requestCompressionAlgorithm: string;
+  oauthRequestCompressionAlgorithm: string;
   requestCompressionFollow: string;
   requestCompressionIdentity: string;
   requestCompressionGzip: string;
@@ -754,6 +772,52 @@ export function GroupAccountRoutingRuleEditor({
             }))
           }
         />
+        <div className="mt-4 border-t border-base-300/60 pt-4">
+          <ResponsivePolicySelect
+            compact={isCompactViewport}
+            label={labels.oauthRequestCompressionAlgorithm}
+            name="groupOauthRequestCompressionAlgorithm"
+            value={draft.oauthRequestCompressionAlgorithm}
+            disabled={busy}
+            options={[
+              ...(changedFieldsOnly
+                ? [
+                    {
+                      value: REQUEST_COMPRESSION_INHERIT_VALUE,
+                      label: labels.requestCompressionInherited,
+                    },
+                  ]
+                : []),
+              {
+                value: "follow",
+                label: requestCompressionAlgorithmLabel("follow", labels),
+              },
+              {
+                value: "identity",
+                label: requestCompressionAlgorithmLabel("identity", labels),
+              },
+              {
+                value: "gzip",
+                label: requestCompressionAlgorithmLabel("gzip", labels),
+              },
+              {
+                value: "deflate",
+                label: requestCompressionAlgorithmLabel("deflate", labels),
+              },
+              {
+                value: "zstd",
+                label: requestCompressionAlgorithmLabel("zstd", labels),
+              },
+            ]}
+            onValueChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                oauthRequestCompressionAlgorithm:
+                  value as GroupAccountRoutingRuleDraft["oauthRequestCompressionAlgorithm"],
+              }))
+            }
+          />
+        </div>
       </div>
 
       {effectiveTimeouts ? (

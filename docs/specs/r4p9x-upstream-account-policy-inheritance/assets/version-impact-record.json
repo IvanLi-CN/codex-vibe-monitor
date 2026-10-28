@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "implementation-in-progress-validation-pending",
+  "change": {
+    "description": "Expose an independent OAuth request-compression setting and apply root/group/account OAuth compression to body-bearing upstream POST requests.",
+    "release_unit_description": "OAuth upstream request compression support in the r4p9x account-policy release unit.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The API additions are backward-compatible, but the new OAuth default changes the default wire behavior for OAuth POST bodies and adds durable routing state; this is a compatible capability addition within the Major, not a patch-only behavior correction.",
+      "assessed_at": "2026-10-28T00:00:00+08:00",
+      "evidence": ["docs/specs/r4p9x-upstream-account-policy-inheritance/SPEC.md", "docs/specs/r4p9x-upstream-account-policy-inheritance/assets/persistent-state-migration-record.json"]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "Implementation remains limited to OAuth request compression, additive settings/storage fields, policy inheritance, telemetry, UI, and focused compatibility coverage."
+      },
+      "reasoning": "Existing API-key compression defaults and fields remain unchanged. Missing OAuth storage resolves to zstd, old clients may omit the additive field, and older binaries can continue reading the additive SQLite column. The OAuth wire default is intentionally changed by the approved plan.",
+      "reassessed_at": "2026-10-28T00:00:00+08:00",
+      "evidence": ["src/upstream_accounts/core_schema_maintenance.rs", "src/upstream_accounts/routing/settings_runtime.rs", "web/src/lib/api/core-upstream.ts", "src/oauth_bridge.rs"]
+    },
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible additive settings and effective-rule fields",
+      "supported_consumer_range": "Existing same-Major API clients that ignore unknown response fields and omit the OAuth field when not editing it.",
+      "evidence": ["UpdatePoolRoutingSettingsRequest preserves the stored OAuth value when the field is omitted.", "Frontend normalization defaults missing OAuth response fields to zstd.", "Focused settings and inheritance tests pass; final CI/review verification is pending."]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "SQLite pool routing settings plus nullable group/account OAuth compression overrides.",
+      "source_program_compatibility_range": "Pre-change schema and supported same-Major installations; direct major skips are not claimed.",
+      "evidence": ["Idempotent nullable-column migration with runtime zstd default.", "Legacy schema upgrade and repeated resolution tests.", "Older-client omission path preserves explicit stored OAuth values."]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["persistent-state-migration-record.json"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": ["Final impact remains pending current-head CI, Tier 3 review, and fast-flow release gating."]
+  }
+}

@@ -2340,6 +2340,7 @@ describe("account pool frontend API helpers", () => {
         compactStreamTimeoutSecs: 300,
       },
       requestCompressionAlgorithm: "identity",
+      oauthRequestCompressionAlgorithm: "zstd",
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",
       cacheHitProtection: {

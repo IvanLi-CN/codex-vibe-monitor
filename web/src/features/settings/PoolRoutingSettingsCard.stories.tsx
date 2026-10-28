@@ -20,6 +20,7 @@ const meta = {
   args: {
     draft: {
       requestCompressionAlgorithm: "zstd",
+      oauthRequestCompressionAlgorithm: "zstd",
       requestCompressionLevelPreset: "best",
       codexImagegenRewriteMode: "keep_original",
       availableModels: ["gpt-image-2", "gpt-5.4-mini"],
@@ -38,6 +39,7 @@ const meta = {
     writesEnabled: true,
     canSave: false,
     onAlgorithmChange: () => undefined,
+    onOauthAlgorithmChange: () => undefined,
     onLevelPresetChange: () => undefined,
     onCodexImagegenRewriteModeChange: () => undefined,
     availableModelOptions: ["gpt-5.6-sol", "gpt-5.4-mini", "gpt-image-2", "gpt-image-1"],
@@ -52,7 +54,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <div
-          className="min-h-screen bg-[#21383d] px-[30px] pb-[30px] pt-[30px] sm:px-10"
+          className="min-h-screen bg-[#21383d] px-[36px] pb-[36px] pt-[36px] sm:px-10"
           data-visual-evidence-surface
         >
           <div className="mx-auto max-w-4xl bg-base-200 p-2 text-base-content">
@@ -80,6 +82,7 @@ export const ModelPolicy: Story = {
       <PoolRoutingSettingsCard
         draft={{
           requestCompressionAlgorithm: "zstd",
+          oauthRequestCompressionAlgorithm: "zstd",
           requestCompressionLevelPreset: "best",
           codexImagegenRewriteMode: "keep_original",
           availableModels,
@@ -98,6 +101,7 @@ export const ModelPolicy: Story = {
         writesEnabled
         canSave={false}
         onAlgorithmChange={() => undefined}
+        onOauthAlgorithmChange={() => undefined}
         onLevelPresetChange={() => undefined}
         onCodexImagegenRewriteModeChange={() => undefined}
         availableModelOptions={["gpt-5.6-sol", "gpt-5.4-mini", "gpt-image-2", "gpt-image-1"]}
@@ -116,6 +120,7 @@ export const PriorityHandoffAdmissionDisabled: Story = {
   args: {
     draft: {
       requestCompressionAlgorithm: "zstd",
+      oauthRequestCompressionAlgorithm: "zstd",
       requestCompressionLevelPreset: "best",
       codexImagegenRewriteMode: "keep_original",
       availableModels: ["gpt-image-2", "gpt-5.4-mini"],
@@ -158,6 +163,7 @@ export const CacheHitProtection: Story = {
   args: {
     draft: {
       requestCompressionAlgorithm: "zstd",
+      oauthRequestCompressionAlgorithm: "zstd",
       requestCompressionLevelPreset: "best",
       codexImagegenRewriteMode: "keep_original",
       availableModels: ["gpt-image-2", "gpt-5.4-mini"],

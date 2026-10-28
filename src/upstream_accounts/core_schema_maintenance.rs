@@ -80,6 +80,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_image_tool_rewrite_mode TEXT,
             policy_codex_imagegen_rewrite_mode TEXT,
             policy_request_compression_algorithm TEXT,
+            policy_oauth_request_compression_algorithm TEXT,
             policy_concurrency_limit INTEGER,
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
@@ -424,6 +425,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.policy_request_compression_algorithm")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_oauth_request_compression_algorithm",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_accounts.policy_oauth_request_compression_algorithm",
+    )?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_concurrency_limit")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_concurrency_limit")?;
@@ -1404,6 +1414,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_image_tool_rewrite_mode TEXT,
             policy_codex_imagegen_rewrite_mode TEXT,
             policy_request_compression_algorithm TEXT,
+            policy_oauth_request_compression_algorithm TEXT,
             policy_concurrency_limit INTEGER,
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
@@ -1562,6 +1573,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context(
         "failed to ensure pool_upstream_account_group_notes.policy_request_compression_algorithm",
+    )?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_oauth_request_compression_algorithm",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_account_group_notes.policy_oauth_request_compression_algorithm",
     )?;
     ensure_nullable_text_column(
         pool,
@@ -1799,6 +1819,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
             request_compression_algorithm TEXT,
+            oauth_request_compression_algorithm TEXT,
             request_compression_level_preset TEXT,
             codex_imagegen_rewrite_mode TEXT,
             available_models_json TEXT NOT NULL DEFAULT '[]',
@@ -1877,6 +1898,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_routing_settings.request_compression_algorithm")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_routing_settings",
+        "oauth_request_compression_algorithm",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.oauth_request_compression_algorithm")?;
     ensure_nullable_text_column(
         pool,
         "pool_routing_settings",
