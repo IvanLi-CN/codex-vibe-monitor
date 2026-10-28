@@ -1323,3 +1323,32 @@ pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     ));
     path
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[tokio::test]
+    async fn oauth_transcode_validation_rejects_oversized_decoded_file_snapshot() {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder
+            .write_all(&vec![b'x'; 4096])
+            .expect("write gzip payload");
+        let compressed = Bytes::from(encoder.finish().expect("finish gzip payload"));
+        let snapshot = pool_replay_snapshot_from_bytes_with_memory_threshold(901, compressed, 1)
+            .await
+            .expect("persist file snapshot");
+        assert!(matches!(snapshot, PoolReplayBodySnapshot::File { .. }));
+
+        let error = validate_pool_request_snapshot_transcode(
+            &snapshot,
+            Some("gzip"),
+            RequestCompressionAlgorithm::Zstd,
+            1024,
+        )
+        .await
+        .expect_err("oversized decoded body should be rejected before streaming");
+        assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}
