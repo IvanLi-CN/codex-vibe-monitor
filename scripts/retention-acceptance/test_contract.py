@@ -23,6 +23,7 @@ from contract import (
     sha256_json,
     task_run_is_accepted_competitor_chunk,
     task_run_is_accepted_zero_contribution_competitor_defer,
+    task_run_is_bounded_baseline_observation,
     task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
@@ -404,6 +405,30 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(task_run_is_accepted_terminal(row))
         row["details"]["selectedScope"]["committed"] = 999
         self.assertFalse(task_run_is_accepted_terminal(row))
+
+    def test_bounded_baseline_observation_requires_progress_and_backlog(self) -> None:
+        row = {
+            "trigger_kind": "schedule",
+            "status": "skipped",
+            "completion": "partial",
+            "actual_finished_at": "2026-10-28T01:00:00Z",
+            "error_detail": None,
+            "details": {
+                "result": "partial",
+                "fatalError": None,
+                "errorChain": None,
+                "timeoutCount": 0,
+                "backlogRemaining": 99186,
+                "selectedScope": {"selected": 1000, "committed": 814, "hasMore": True},
+                "archiveBatches": [{"batchRows": 1000, "committedRows": 814, "timeoutCount": 0}],
+            },
+        }
+        self.assertTrue(task_run_is_bounded_baseline_observation(row))
+        row["details"]["selectedScope"]["committed"] = 999
+        row["details"]["archiveBatches"][0]["committedRows"] = 999
+        self.assertTrue(task_run_is_bounded_baseline_observation(row))
+        row["details"]["selectedScope"]["hasMore"] = False
+        self.assertFalse(task_run_is_bounded_baseline_observation(row))
 
     def test_evidence_validator_accepts_legacy_partial_status_for_full_batch(self) -> None:
         evidence = valid_evidence()

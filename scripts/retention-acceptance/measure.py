@@ -42,6 +42,7 @@ from contract import (
     parse_time,
     sha256_bytes,
     task_run_is_bounded_active,
+    task_run_is_bounded_baseline_observation,
     task_run_is_accepted_competitor_chunk,
     task_run_is_accepted_zero_contribution_competitor_defer,
     task_run_is_recoverable_competitor_chunk,
@@ -1272,7 +1273,9 @@ def validate_task_snapshot(
                     )
                 )
             else:
-                accepted = task_run_is_accepted_terminal(row)
+                accepted = task_run_is_accepted_terminal(row) or (
+                    version == "baseline" and task_run_is_bounded_baseline_observation(row)
+                )
         if accepted:
             by_key.setdefault(row["task_key"], []).append(row)
         elif row.get("actual_finished_at") is None and task_run_is_bounded_active(row):

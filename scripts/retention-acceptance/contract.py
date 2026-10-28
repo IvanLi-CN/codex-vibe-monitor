@@ -134,6 +134,71 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
     )
 
 
+def task_run_is_bounded_baseline_observation(row: dict[str, Any]) -> bool:
+    """Accept a productive, pressure-bounded legacy schedule observation.
+
+    The baseline is a reference measurement and may finish its first selected batch
+    with a recoverable partial commit before catch-up takes over. This exception is
+    intentionally narrower than a terminal run and is never used for the candidate.
+    """
+    if (
+        row.get("trigger_kind") != "schedule"
+        or row.get("status") != "skipped"
+        or row.get("completion") != "partial"
+    ):
+        return False
+    if row.get("actual_finished_at") is None or row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    if (
+        details.get("result") != "partial"
+        or details.get("fatalError") is not None
+        or details.get("errorChain") is not None
+        or details.get("timeoutCount", 0) != 0
+    ):
+        return False
+    scope = details.get("selectedScope")
+    batches = details.get("archiveBatches")
+    if not isinstance(scope, dict) or not isinstance(batches, list) or not batches:
+        return False
+    selected = scope.get("selected")
+    committed = scope.get("committed")
+    if (
+        not isinstance(selected, int)
+        or isinstance(selected, bool)
+        or selected <= 0
+        or not isinstance(committed, int)
+        or isinstance(committed, bool)
+        or not 0 < committed < selected
+        or scope.get("hasMore") is not True
+    ):
+        return False
+    backlog = details.get("backlogRemaining")
+    if not isinstance(backlog, int) or isinstance(backlog, bool) or backlog <= 0:
+        return False
+    total_rows = 0
+    committed_rows = 0
+    for batch in batches:
+        if not isinstance(batch, dict) or batch.get("timeoutCount", 0) != 0:
+            return False
+        batch_rows = batch.get("batchRows")
+        batch_committed = batch.get("committedRows")
+        if (
+            not isinstance(batch_rows, int)
+            or isinstance(batch_rows, bool)
+            or batch_rows <= 0
+            or not isinstance(batch_committed, int)
+            or isinstance(batch_committed, bool)
+            or not 0 < batch_committed <= batch_rows
+        ):
+            return False
+        total_rows += batch_rows
+        committed_rows += batch_committed
+    return total_rows == selected and committed_rows == committed
+
+
 def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
     """Accept productive raw-sweep chunks while retaining the file oracle."""
     if row.get("status") == "success":
@@ -442,6 +507,7 @@ def _validate_task_runs(
                 or task_run_is_accepted_competitor_chunk(row)
                 if key == COMPETITOR_TASK
                 else task_run_is_accepted_terminal(row)
+                or (version == "baseline" and task_run_is_bounded_baseline_observation(row))
             )
             if (
                 not accepted

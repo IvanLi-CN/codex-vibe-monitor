@@ -333,6 +333,79 @@ class MeasurementBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
             validate_task_snapshot(rows)
 
+    def test_baseline_accepts_pressure_bounded_schedule_before_catchup(self) -> None:
+        partial_details = {
+            "result": "partial",
+            "fatalError": None,
+            "errorChain": None,
+            "timeoutCount": 0,
+            "backlogRemaining": 99186,
+            "selectedScope": {"selected": 1000, "committed": 814, "hasMore": True},
+            "archiveBatches": [{"batchRows": 1000, "committedRows": 814, "timeoutCount": 0}],
+        }
+        rows = [
+            {
+                "task_key": "retention_archive",
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 814,
+                "details": partial_details,
+                "error_detail": None,
+            },
+            {
+                "task_key": "retention_archive",
+                "trigger_kind": "catchup",
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": "2026-10-25T00:00:02Z",
+                "actual_finished_at": "2026-10-25T00:00:03Z",
+                "committed_work": 1000,
+                "details": {},
+                "error_detail": None,
+            },
+            {
+                "task_key": "pool_upstream_attempt_archive",
+                "trigger_kind": "schedule",
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": "2026-10-25T00:00:00Z",
+                "actual_finished_at": "2026-10-25T00:00:01Z",
+                "committed_work": 1000,
+                "details": {},
+                "error_detail": None,
+            },
+            {
+                "task_key": "pool_upstream_attempt_archive",
+                "trigger_kind": "catchup",
+                "status": "success",
+                "completion": "complete",
+                "actual_started_at": "2026-10-25T00:00:02Z",
+                "actual_finished_at": "2026-10-25T00:00:03Z",
+                "committed_work": 1000,
+                "details": {},
+                "error_detail": None,
+            },
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "success",
+                "completion": "completed",
+                "actual_started_at": "2026-10-25T00:00:04Z",
+                "actual_finished_at": "2026-10-25T00:00:05Z",
+                "committed_work": COMPETITOR_FILE_COUNT,
+                "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+                "details": {"filesReleased": COMPETITOR_FILE_COUNT, "failures": 0},
+                "error_detail": None,
+            },
+        ]
+
+        validate_task_snapshot(rows, "baseline")
+        with self.assertRaisesRegex(AcceptanceError, "both schedule and catch-up"):
+            validate_task_snapshot(rows, "candidate")
+
     def test_baseline_bounded_active_owner_is_accepted_only_with_progress(self) -> None:
         progress = {
             "phase": "running",
