@@ -7,6 +7,7 @@ import unittest
 
 from contract import (
     BASELINE_SHA,
+    COMPETITOR_FILE_BYTES,
     COMPETITOR_FILE_COUNT,
     CONTAINER_KIND_LABEL,
     CONTAINER_OWNER_LABEL,
@@ -20,6 +21,9 @@ from contract import (
     TRIAL_EXECUTION_ORDER,
     AcceptanceError,
     sha256_json,
+    task_run_is_accepted_competitor_chunk,
+    task_run_is_accepted_zero_contribution_competitor_defer,
+    task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
     validate_evidence,
 )
@@ -94,6 +98,7 @@ def task_runs(start: datetime) -> list[dict]:
             "actual_finished_at": timestamp(first_end),
             "status": "success",
             "committed_work": COMPETITOR_FILE_COUNT if key == "raw_orphan_sweep" else 100,
+            "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES if key == "raw_orphan_sweep" else 0,
         })
         if key != "raw_orphan_sweep":
             rows.append({
@@ -236,6 +241,13 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
             },
         },
         "task_runs": task_runs(start),
+        "competitor_file_oracle": {
+            "expected_count": COMPETITOR_FILE_COUNT,
+            "expected_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+            "remaining_count": 0,
+            "remaining_bytes": 0,
+            "verified_empty": True,
+        },
         "archive_proof_status": archive_proof_status,
         "write_hold_samples": write_scrapes,
         "write_hold_buckets": write_buckets,
@@ -310,6 +322,71 @@ def valid_evidence() -> dict:
 
 
 class ContractTests(unittest.TestCase):
+    def test_competitor_chunk_contract_distinguishes_progress_and_retry(self) -> None:
+        partial = {
+            "status": "skipped",
+            "completion": "partial",
+            "error_detail": None,
+            "details": {
+                "filesReleased": 3,
+                "filesChecked": 4,
+                "failures": 0,
+            },
+            "committed_work": 3,
+            "committed_bytes": 3 * COMPETITOR_FILE_BYTES,
+        }
+        recoverable = {
+            **partial,
+            "details": {
+                "filesReleased": 3,
+                "filesChecked": 4,
+                "failures": 1,
+                "hasMore": True,
+            },
+        }
+        self.assertTrue(task_run_is_accepted_competitor_chunk(partial))
+        self.assertFalse(task_run_is_accepted_competitor_chunk(recoverable))
+        self.assertTrue(task_run_is_recoverable_competitor_chunk(recoverable))
+
+    def test_competitor_file_phase_defer_has_no_contribution(self) -> None:
+        row = {
+            "status": "skipped",
+            "completion": "deferred",
+            "error_detail": None,
+            "committed_work": None,
+            "committed_bytes": None,
+            "details": {
+                "admissionStage": "file_phase",
+                "waitReason": "file_phase_busy",
+                "filesChecked": None,
+                "directoryEntriesChecked": None,
+                "reconciliationRowsChecked": None,
+                "filesReleased": None,
+                "bytesReleased": None,
+                "referencedSkipped": None,
+                "quarantined": None,
+                "failures": None,
+            },
+        }
+        self.assertTrue(task_run_is_accepted_zero_contribution_competitor_defer(row))
+
+    def test_fixed_competitor_file_oracle_is_required(self) -> None:
+        evidence = valid_evidence()
+        del evidence["versions"]["candidate"]["trials"][0]["competitor_file_oracle"]
+        with self.assertRaisesRegex(AcceptanceError, "fixed competitor file oracle"):
+            validate_evidence(evidence)
+
+    def test_fixed_competitor_bytes_are_bound(self) -> None:
+        evidence = valid_evidence()
+        row = next(
+            row
+            for row in evidence["versions"]["candidate"]["trials"][0]["task_runs"]
+            if row["task_key"] == "raw_orphan_sweep"
+        )
+        row["committed_bytes"] -= 1
+        with self.assertRaisesRegex(AcceptanceError, "unexpected byte count"):
+            validate_evidence(evidence)
+
     def test_legacy_partial_task_run_requires_full_selected_batch(self) -> None:
         row = {
             "status": "skipped",

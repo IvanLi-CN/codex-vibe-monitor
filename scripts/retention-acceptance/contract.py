@@ -32,6 +32,7 @@ DATASETS = {
 }
 COMPETITOR_TASK = "raw_orphan_sweep"
 COMPETITOR_FILE_COUNT = 512
+COMPETITOR_FILE_BYTES = 256
 COMPETITOR_START_DELAY_SECONDS = 10
 RUN_SECONDS = 120
 TRIALS_PER_VERSION = 3
@@ -130,6 +131,99 @@ def task_run_is_accepted_terminal(row: dict[str, Any]) -> bool:
         and batch.get("batchRows") == batch.get("committedRows")
         and batch.get("timeoutCount", 0) == 0
         for batch in batches
+    )
+
+
+def task_run_is_accepted_competitor_chunk(row: dict[str, Any]) -> bool:
+    """Accept productive raw-sweep chunks while retaining the file oracle."""
+    if row.get("status") == "success":
+        details = row.get("details")
+        if details is None:
+            return True
+        if not isinstance(details, dict):
+            return False
+        failures = details.get("failures", 0)
+        return isinstance(failures, int) and not isinstance(failures, bool) and failures == 0
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    failures = details.get("failures", 0)
+    if not isinstance(failures, int) or isinstance(failures, bool) or failures != 0:
+        return False
+    released = details.get("filesReleased")
+    checked = details.get("filesChecked")
+    return (
+        isinstance(released, int)
+        and not isinstance(released, bool)
+        and released > 0
+        and isinstance(checked, int)
+        and not isinstance(checked, bool)
+        and checked >= released
+    )
+
+
+def task_run_is_accepted_zero_contribution_competitor_defer(row: dict[str, Any]) -> bool:
+    """Accept a file-phase defer without counting work that did not run."""
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    if (
+        "committed_work" not in row
+        or row["committed_work"] is not None
+        or "committed_bytes" not in row
+        or row["committed_bytes"] is not None
+    ):
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return False
+    if (details.get("admissionStage"), details.get("waitReason")) not in {
+        ("file_phase", "file_phase_busy"),
+        ("archive_file_phase", "archive_directory_lock_busy"),
+    }:
+        return False
+    return all(
+        field in details and details[field] is None
+        for field in (
+            "filesChecked",
+            "directoryEntriesChecked",
+            "reconciliationRowsChecked",
+            "filesReleased",
+            "bytesReleased",
+            "referencedSkipped",
+            "quarantined",
+            "failures",
+        )
+    )
+
+
+def task_run_is_recoverable_competitor_chunk(row: dict[str, Any]) -> bool:
+    """Recognize a progressed failed chunk that must be followed by a successful retry."""
+    if row.get("status") != "skipped" or row.get("completion") not in ("partial", "deferred"):
+        return False
+    if row.get("error_detail") is not None:
+        return False
+    details = row.get("details")
+    if not isinstance(details, dict) or details.get("hasMore") is not True:
+        return False
+    released = details.get("filesReleased")
+    checked = details.get("filesChecked")
+    failures = details.get("failures", 0)
+    return (
+        isinstance(released, int)
+        and not isinstance(released, bool)
+        and released > 0
+        and isinstance(checked, int)
+        and not isinstance(checked, bool)
+        and checked >= released
+        and isinstance(failures, int)
+        and not isinstance(failures, bool)
+        and failures > 0
     )
 
 
@@ -311,10 +405,12 @@ def _validate_task_runs(
     cleanup_end: datetime,
     require_competitor_overlap: bool,
     version: str,
+    competitor_oracle: dict[str, Any] | None = None,
 ) -> int:
     rows = trial.get("task_runs")
     _require(isinstance(rows, list) and rows, "production dispatcher task-run evidence is missing")
     by_key: dict[str, list[dict[str, Any]]] = {}
+    recoverable_competitor_rows: list[dict[str, Any]] = []
     for row in rows:
         _require(isinstance(row, dict), "malformed production task-run evidence")
         key = row.get("task_key")
@@ -337,13 +433,47 @@ def _validate_task_runs(
             finished = parse_time(row.get("actual_finished_at"))
             _require(finished >= started, "task run has an inverted execution interval")
             _require(setup_start <= started <= finished <= cleanup_end, "task execution fell outside the measured trial")
-            _require(
-                task_run_is_accepted_terminal(row),
-                f"background task {key} did not finish successfully or fully commit its selected batch",
+            zero_contribution_defer = (
+                key == COMPETITOR_TASK
+                and task_run_is_accepted_zero_contribution_competitor_defer(row)
             )
+            accepted = (
+                zero_contribution_defer
+                or task_run_is_accepted_competitor_chunk(row)
+                if key == COMPETITOR_TASK
+                else task_run_is_accepted_terminal(row)
+            )
+            if (
+                not accepted
+                and key == COMPETITOR_TASK
+                and isinstance(competitor_oracle, dict)
+                and competitor_oracle.get("verified_empty") is True
+                and competitor_oracle.get("remaining_count") == 0
+                and competitor_oracle.get("remaining_bytes") == 0
+                and task_run_is_recoverable_competitor_chunk(row)
+            ):
+                accepted = True
+                recoverable_competitor_rows.append(row)
+            _require(accepted, f"background task {key} did not finish successfully or commit valid work")
         work = row.get("committed_work")
-        _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
+        if key == COMPETITOR_TASK and task_run_is_accepted_zero_contribution_competitor_defer(row):
+            _require(work is None, f"task {key} zero-contribution defer reported committed work")
+        else:
+            _require(isinstance(work, int) and not isinstance(work, bool) and work >= 0, f"task {key} committed-work count is invalid")
         by_key.setdefault(key, []).append(row)
+
+    for row in recoverable_competitor_rows:
+        finished = parse_time(row["actual_finished_at"])
+        _require(
+            any(
+                candidate is not row
+                and candidate.get("task_key") == COMPETITOR_TASK
+                and parse_time(candidate.get("actual_started_at")) >= finished
+                and task_run_is_accepted_competitor_chunk(candidate)
+                for candidate in rows
+            ),
+            "recoverable competitor chunk has no later successful retry",
+        )
 
     targets = [DATASETS[name]["task_key"] for name in DATASETS]
     for key in targets:
@@ -381,8 +511,19 @@ def _validate_task_runs(
 
     competitor = by_key.get(COMPETITOR_TASK, [])
     _require(competitor, "real background competitor evidence is missing")
-    competitor_work = sum(row["committed_work"] for row in competitor)
+    counted_competitor = [
+        row for row in competitor
+        if not task_run_is_accepted_zero_contribution_competitor_defer(row)
+    ]
+    competitor_work = sum(row["committed_work"] for row in counted_competitor)
     _require(competitor_work == COMPETITOR_FILE_COUNT, "background competitor did not complete the fixed 512-file workload")
+    competitor_bytes = [row.get("committed_bytes") for row in counted_competitor]
+    _require(
+        len(competitor_bytes) == len(counted_competitor)
+        and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in competitor_bytes)
+        and sum(competitor_bytes) == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+        "background competitor released an unexpected byte count",
+    )
     target_rows = [row for key in targets for row in by_key.get(key, [])]
     def interval_end(row: dict[str, Any]) -> datetime:
         return parse_time(row["actual_finished_at"] or row["observed_at"])
@@ -394,7 +535,7 @@ def _validate_task_runs(
         max(interval_start(left), interval_start(right))
         < min(interval_end(left), interval_end(right))
         for left in target_rows
-        for right in competitor
+        for right in counted_competitor
     )
     if require_competitor_overlap:
         _require(overlap, "candidate raw orphan-sweep did not overlap a retention owner run")
@@ -617,6 +758,16 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             raw_samples = trial["latency_samples_ms"]
             _require(len(raw_samples["write"]) == invocation_count, "foreground response latency sample count does not match HTTP writes")
             _require(len(raw_samples["read"]) == workload["pool_read_requests"], "foreground read latency sample count is inconsistent")
+            competitor_oracle = trial.get("competitor_file_oracle")
+            _require(
+                isinstance(competitor_oracle, dict)
+                and competitor_oracle.get("expected_count") == COMPETITOR_FILE_COUNT
+                and competitor_oracle.get("expected_bytes") == COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES
+                and competitor_oracle.get("remaining_count") == 0
+                and competitor_oracle.get("remaining_bytes") == 0
+                and competitor_oracle.get("verified_empty") is True,
+                "fixed competitor file oracle is missing or not empty",
+            )
             competitor_workloads[version].append(
                 _validate_task_runs(
                     trial,
@@ -624,7 +775,8 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     input_end,
                     cleanup_end,
                     require_competitor_overlap=version == "candidate",
-                version=version,
+                    version=version,
+                    competitor_oracle=competitor_oracle,
                 )
             )
             scrape_rows = trial.get("write_hold_samples")

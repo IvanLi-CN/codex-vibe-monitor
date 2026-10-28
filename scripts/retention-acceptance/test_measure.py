@@ -17,6 +17,8 @@ from unittest.mock import patch
 from contract import (
     AcceptanceError,
     CLEANUP_RESERVE_SECONDS,
+    COMPETITOR_FILE_BYTES,
+    COMPETITOR_FILE_COUNT,
     COMPETITOR_START_DELAY_SECONDS,
     COMPETITOR_TASK,
     CONTAINER_KIND_LABEL,
@@ -38,6 +40,7 @@ from measure import (
     run_foreground,
     start_container,
     task_runs,
+    competitor_file_oracle,
     validate_task_snapshot,
     wait_for_task_evidence,
 )
@@ -53,6 +56,131 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_competitor_chunks_and_file_phase_defers_are_counted_separately(self) -> None:
+        rows = []
+        for index, task_key in enumerate(("retention_archive", "pool_upstream_attempt_archive")):
+            rows.extend([
+                {
+                    "task_key": task_key,
+                    "trigger_kind": "schedule",
+                    "status": "success",
+                    "actual_started_at": f"2026-10-25T00:00:0{index}Z",
+                    "actual_finished_at": f"2026-10-25T00:00:1{index}Z",
+                    "committed_work": 100,
+                    "details": {},
+                },
+                {
+                    "task_key": task_key,
+                    "trigger_kind": "catchup",
+                    "status": "success",
+                    "actual_started_at": f"2026-10-25T00:00:2{index}Z",
+                    "actual_finished_at": f"2026-10-25T00:00:3{index}Z",
+                    "committed_work": 100,
+                    "details": {},
+                },
+            ])
+        rows.extend([
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "deferred",
+                "actual_started_at": "2026-10-25T00:00:04Z",
+                "actual_finished_at": "2026-10-25T00:00:05Z",
+                "committed_work": None,
+                "committed_bytes": None,
+                "error_detail": None,
+                "details": {
+                    "admissionStage": "file_phase",
+                    "waitReason": "file_phase_busy",
+                    **{field: None for field in (
+                        "filesChecked", "directoryEntriesChecked", "reconciliationRowsChecked",
+                        "filesReleased", "bytesReleased", "referencedSkipped", "quarantined", "failures",
+                    )},
+                },
+            },
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:06Z",
+                "actual_finished_at": "2026-10-25T00:00:07Z",
+                "committed_work": COMPETITOR_FILE_COUNT,
+                "committed_bytes": COMPETITOR_FILE_COUNT * COMPETITOR_FILE_BYTES,
+                "error_detail": None,
+                "details": {
+                    "filesReleased": COMPETITOR_FILE_COUNT,
+                    "filesChecked": COMPETITOR_FILE_COUNT,
+                    "failures": 0,
+                },
+            },
+        ])
+
+        validate_task_snapshot(rows)
+
+    def test_recoverable_competitor_chunk_requires_later_success(self) -> None:
+        rows = [
+            {
+                "task_key": task_key,
+                "trigger_kind": trigger_kind,
+                "status": "success",
+                "actual_started_at": f"2026-10-25T00:00:{index:02d}Z",
+                "actual_finished_at": f"2026-10-25T00:00:{index + 1:02d}Z",
+                "committed_work": 100,
+                "details": {},
+            }
+            for index, (task_key, trigger_kind) in enumerate(
+                [
+                    ("retention_archive", "schedule"),
+                    ("retention_archive", "catchup"),
+                    ("pool_upstream_attempt_archive", "schedule"),
+                    ("pool_upstream_attempt_archive", "catchup"),
+                ],
+                start=1,
+            )
+        ]
+        rows.extend([
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "skipped",
+                "completion": "partial",
+                "actual_started_at": "2026-10-25T00:00:05Z",
+                "actual_finished_at": "2026-10-25T00:00:06Z",
+                "committed_work": 1,
+                "committed_bytes": COMPETITOR_FILE_BYTES,
+                "error_detail": None,
+                "details": {"filesReleased": 1, "filesChecked": 1, "failures": 1, "hasMore": True},
+            },
+            {
+                "task_key": COMPETITOR_TASK,
+                "trigger_kind": "schedule",
+                "status": "success",
+                "actual_started_at": "2026-10-25T00:00:07Z",
+                "actual_finished_at": "2026-10-25T00:00:08Z",
+                "committed_work": COMPETITOR_FILE_COUNT - 1,
+                "committed_bytes": (COMPETITOR_FILE_COUNT - 1) * COMPETITOR_FILE_BYTES,
+                "details": {"filesReleased": COMPETITOR_FILE_COUNT - 1, "filesChecked": COMPETITOR_FILE_COUNT - 1, "failures": 0},
+            },
+        ])
+
+        with self.assertRaisesRegex(AcceptanceError, "fixed workload"):
+            validate_task_snapshot(rows)
+        validate_task_snapshot(rows, allow_recoverable_competitor_failures=True)
+
+    def test_competitor_file_oracle_counts_only_the_fixed_cohort(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_dir = Path(temporary)
+            (raw_dir / "retention-orphan-0000.bin").write_bytes(b"x" * COMPETITOR_FILE_BYTES)
+            (raw_dir / "unrelated.bin").write_bytes(b"x")
+            oracle = competitor_file_oracle(raw_dir)
+
+        self.assertEqual(oracle["expected_count"], COMPETITOR_FILE_COUNT)
+        self.assertEqual(oracle["remaining_count"], 1)
+        self.assertEqual(oracle["remaining_bytes"], COMPETITOR_FILE_BYTES)
+        self.assertFalse(oracle["verified_empty"])
+
     def test_seed_parallel_work_coverage_matches_the_retention_window(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "coverage.sqlite"
