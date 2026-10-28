@@ -222,7 +222,10 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     .await
     .expect("published staged manifest");
     assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
-    assert_eq!(staged.1, 401);
+    assert_eq!(
+        staged.1, 64,
+        "the staged monthly artifact is bound to the first write microbatch"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof",)
             .fetch_one(&pool)
@@ -239,7 +242,8 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     );
 
     // The old path would enter the injected writer pause and exhaust this budget before it could
-    // delete a source row. A proven artifact must be reused without touching the writer.
+    // delete a source row. A proven artifact must be reused without touching the writer. The
+    // microbatch is complete even though the next live tail remains for a later task invocation.
     let resumed = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(15),
         RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
@@ -249,13 +253,13 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     )
     .await;
     let resumed = resumed.expect("resume proven archive");
-    assert_eq!(resumed.0, 401);
+    assert_eq!(resumed.0, 64);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
             .await
             .expect("source rows after proven archive reuse"),
-        0
+        337
     );
     assert_eq!(
         sqlx::query_scalar::<_, String>(
