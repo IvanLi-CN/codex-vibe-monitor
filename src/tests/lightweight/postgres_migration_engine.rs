@@ -3454,7 +3454,42 @@ async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture(
         }
         source_transaction.commit().await?;
 
+        let unacknowledged = store
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .expect("local baseline checkpoint");
+        assert!(
+            unacknowledged
+                .applied_through
+                .is_some_and(|value| value < 2)
+        );
         assert_eq!(migration.catch_up("events").await?.applied_through, 2);
+
+        // Restore the pre-acknowledgement metadata to simulate a stop after the
+        // PostgreSQL replay and checkpoint commit but before local acknowledgement.
+        store.save_checkpoint(&unacknowledged).await?;
+
+        drop(migration);
+        let restarted = MigrationEngine::new(
+            Arc::clone(&source),
+            Arc::clone(&target),
+            Arc::clone(&store),
+            StorageModule::TrafficArchive,
+            "installation-test",
+            "postgres-test",
+            1,
+            MigrationLimits::default(),
+            fence,
+        )?;
+        assert_eq!(restarted.catch_up("events").await?.applied_through, 2);
+        assert_eq!(
+            store
+                .load_checkpoint("migration-engine-test", "events")
+                .await?
+                .expect("reconciled local checkpoint")
+                .applied_through,
+            Some(2)
+        );
         let rows = target
             .rows_in_range("events", &ChunkRange::new("inserted", "update-me")?)
             .await?;
@@ -3473,7 +3508,7 @@ async fn optional_postgres_migration_engine_uses_real_source_and_target_fixture(
                 .await?
                 .is_none()
         );
-        let proof = migration.verify_table_coverage_at("events", 2).await?;
+        let proof = restarted.verify_table_coverage_at("events", 2).await?;
         assert_eq!(proof.source_digest, proof.target_digest);
         assert_eq!(proof.source_row_count, 3);
         assert_eq!(proof.target_row_count, 3);
