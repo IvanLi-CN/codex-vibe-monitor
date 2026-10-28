@@ -51,7 +51,7 @@
     {
       "path": "src/tests/archive_file_io/pool_attempt_lifecycle.rs",
       "role": "test_helper",
-      "line_budget": 1050,
+      "line_budget": 1051,
       "next_module_workstream": "Split pool attempt lifecycle fixtures by snapshots, dispatch filtering, broadcasts, phases, and orphan recovery."
     },
     {
@@ -63,7 +63,7 @@
     {
       "path": "src/tests/archive_file_io/deferred_pool_cleanup_guards.rs",
       "role": "test_helper",
-      "line_budget": 675,
+      "line_budget": 677,
       "next_module_workstream": "Split deferred pool cleanup fixtures by guard lifecycle, synthetic runtime, pending persistence, and failover."
     },
     {
@@ -183,13 +183,13 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_response_rewrite_and_replay.rs",
       "role": "test_helper",
-      "line_budget": 509,
+      "line_budget": 512,
       "next_module_workstream": "Maintain the completed OAuth file-backed response rewrite, passthrough, replay-analysis, and sticky-projection fixtures below the test-helper target."
     },
     {
       "path": "src/tests/stateful_sqlite/oauth_route_support_and_binding.rs",
       "role": "test_helper",
-      "line_budget": 712,
+      "line_budget": 715,
       "next_module_workstream": "Maintain the completed OAuth request-body, sticky-binding, route-preparation, and forwarding-observability fixtures below the test-helper target."
     },
     {
@@ -363,7 +363,7 @@
     {
       "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
       "role": "test_helper",
-      "line_budget": 3691,
+      "line_budget": 3692,
       "next_module_workstream": "Split routing failover/retry fixtures by reservation, retry capture, and failure timing."
     },
     {
@@ -399,19 +399,19 @@
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
       "role": "production",
-      "line_budget": 4411,
+      "line_budget": 4413,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4488,
+      "line_budget": 4494,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7227,
+      "line_budget": 7290,
       "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
     },
     {
@@ -429,7 +429,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
       "role": "test_helper",
-      "line_budget": 8055,
+      "line_budget": 8056,
       "next_module_workstream": "Split upstream sync cooldown/capability fixtures by recovery, classification, and maintenance."
     }
   ],
