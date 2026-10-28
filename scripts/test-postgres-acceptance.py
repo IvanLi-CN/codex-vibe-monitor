@@ -200,7 +200,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for required_fragment in (
             "name: PostgreSQL Migration Acceptance",
-            "image: postgres:16.6",
+            "image: postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4",
             "POSTGRES_TEST_DATABASE_URL:",
             "workflow_dispatch:\n    inputs:\n      base_sha:",
             "candidate_sha:",

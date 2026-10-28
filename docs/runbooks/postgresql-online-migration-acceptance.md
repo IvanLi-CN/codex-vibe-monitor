@@ -14,7 +14,7 @@ Confirm all of the following before a live run:
 
 ## Acceptance command
 
-The CI workflow starts `postgres:16.6` and runs both the lightweight PostgreSQL migration tests and the archive/file-I/O PostgreSQL tests:
+The CI workflow starts PostgreSQL 18.6 with a pinned image digest and runs both the lightweight PostgreSQL migration tests and the archive/file-I/O PostgreSQL tests:
 
 ```bash
 : "${BASE_SHA:?set BASE_SHA to the exact parent commit SHA before running acceptance}"
@@ -35,14 +35,14 @@ Exit `78` means `blocked/not-run`, including a missing URL or unavailable servic
 
 These are acceptance gates, not promises that a production system has already met them:
 
-- Startup migration initialization adds no historical table scan and keeps p95 startup within 10% of the same candidate with migration work disabled.
+- Startup migration initialization adds no historical table scan. Compare startup with small and large historical datasets and against the same candidate with migration work disabled. Target at most 500 ms of added p95 startup work; repeat and investigate a noisy or materially slower measurement using the same workload and environment.
 - The pre-commit switch attempt stays within the configured three-second budget. If the budget expires before authority publication, reopen SQLite and do not publish PostgreSQL authority.
 - Catch-up remains convergent for three consecutive one-minute observation windows: applied change rate exceeds incoming change rate and the oldest pending change age decreases.
 - Capture/WAL backlog stays below 50% of its configured capacity, and free disk headroom covers at least twice the measured peak target-plus-capture growth for the planned run.
 - The same representative traffic run shows no more than a 10% p95 regression for unchanged proxy/admin endpoints. Time saved by pausing optional maintenance is reported separately.
 - A post-cutover PostgreSQL outage keeps the module in explicit recovery/error handling. It must not silently fail back to stale SQLite authority.
 
-Every measurement must include workload, duration, candidate SHA, source/target identities, sample count, raw result path and whether maintenance was held.
+Every measurement must include workload, duration, candidate SHA, source/target identities, sample count, raw result path and whether maintenance was held. Record migration hold and task-restoration periods separately. Validate backup and restore and collect a natural-traffic baseline before production cutover; neither is evidence that production cutover has already occurred.
 
 ## Backup and restore drill
 

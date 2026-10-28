@@ -27,8 +27,8 @@ The report must bind every result to the candidate SHA and contain raw stdout/st
 1. Run the `4.13.11` source fixture through real PostgreSQL copy, catch-up, coverage proof and transaction routing tests.
 2. Exercise concurrent insert, update, delete, key change and replacement with retry and restart; prove no stale overwrite, resurrection, duplicate business effect or missing fact.
 3. Exercise archive ownership and Raw-link atomicity, including release/prune recovery.
-4. Resolve crash and fault outcomes around target commit, source acknowledgement, source fence, authority publish, router publication and journal acknowledgement.
+4. Resolve crash and fault outcomes around target commit, source acknowledgement, source fence, authority publish, router publication and journal acknowledgement. Cover each boundary with deterministic fault injection and exercise representative process-termination boundaries against real PostgreSQL; document the coverage and any missing evidence.
 5. Measure startup, convergence, switch duration, ongoing traffic, source capture/WAL growth and disk headroom against the thresholds in the operations runbook.
-6. Complete the backup/restore drill for source SQLite, PostgreSQL, authority state and archive/Raw files.
+6. Before production cutover, complete the backup/restore drill for source SQLite, PostgreSQL, authority state and archive/Raw files, and collect a representative natural-traffic baseline.
 
 SQLite-only tests are contract coverage, not a substitute for the live PostgreSQL result. A missing or unavailable PostgreSQL service remains `blocked/not-run`.
