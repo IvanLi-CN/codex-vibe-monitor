@@ -1101,8 +1101,12 @@ pub(crate) fn freeze_and_finalize_retention_owner_observation(
     execution_duration_ms
 }
 
-const RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS: [u64; 6] =
-    [250, 1_000, 3_000, 7_500, 15_000, 30_000];
+// Keep the selected tail inside the same managed run long enough to cross the
+// database-pressure cooldown. The final retry is deliberately bounded, but a
+// short-lived foreground burst must not turn an otherwise recoverable tail
+// into a partial terminal result.
+const RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS: [u64; 7] =
+    [250, 1_000, 3_000, 7_500, 15_000, 30_000, 60_000];
 
 fn retention_owner_internal_retryable_reason(reason: Option<&str>) -> bool {
     matches!(
