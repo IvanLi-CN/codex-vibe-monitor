@@ -1334,10 +1334,11 @@ async fn switch_catches_up_source_writes_during_large_pre_fence_verification() -
             .await
             .is_ok()
     );
-    switching
+    let final_watermark = switching
         .await
         .expect("authority switch task")
         .expect("authority switch should include the bounded tail delta");
+    assert_eq!(final_watermark, 2);
     assert!(fence.is_fenced().await);
     assert_eq!(
         gate.current_authority().await.backend,
@@ -1353,6 +1354,13 @@ async fn switch_catches_up_source_writes_during_large_pre_fence_verification() -
         .expect("coverage checkpoint");
     assert!(checkpoint.complete);
     assert_eq!(checkpoint.source_row_count, 8);
+    assert!(matches!(
+        store
+            .load_authority_manifest(StorageModule::TrafficArchive)
+            .await?,
+        crate::storage::core::AuthorityRecoveryRecord::Manifest(manifest)
+            if manifest.source_watermark == final_watermark
+    ));
 
     fs::remove_dir_all(directory)?;
     Ok(())

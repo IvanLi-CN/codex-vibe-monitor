@@ -614,12 +614,20 @@ impl StorageMigrationWorker {
                 ..StorageMigrationProgress::default()
             })
             .await?;
-        engine
+        let final_watermark = engine
             .switch_authority(
                 &self.traffic_gate,
                 expected,
                 self.config.migration_switch_budget,
             )
+            .await?;
+        self.migration
+            .publish_progress_durable(StorageMigrationProgress {
+                phase: StorageMigrationState::Switching,
+                captured_through: Some(final_watermark),
+                applied_through: Some(final_watermark),
+                ..StorageMigrationProgress::default()
+            })
             .await?;
         let manifest = self.load_traffic_authority_manifest().await?;
         let authority = self.traffic_gate.current_authority().await;

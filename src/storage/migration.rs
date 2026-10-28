@@ -4319,7 +4319,7 @@ where
         gate: &ModuleGenerationGate,
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let migration = (*self).clone();
         let gate = gate.clone();
         tokio::spawn(async move {
@@ -4336,7 +4336,7 @@ where
         gate: &ModuleGenerationGate,
         expected: AuthorityRecoveryContext,
         switch_budget: Duration,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let _switch = self.switching.lock().await;
         self.ensure_running().await?;
         self.ensure_capture_ready().await?;
@@ -4439,7 +4439,8 @@ where
                 switch_budget,
                 metadata,
             )
-            .await
+            .await?;
+            Ok(final_watermark)
         }
         .await;
         if result.is_err() && !gate.requires_recovery() {

@@ -814,7 +814,23 @@ impl StorageMigrationRuntime {
     /// Publish worker-observed progress without deriving an ETA from a non-converging backlog.
     pub(crate) async fn publish_progress(
         &self,
+        progress: StorageMigrationProgress,
+    ) -> Result<StorageMigrationResponse> {
+        self.publish_progress_inner(progress, false).await
+    }
+
+    /// Publish a progress boundary immediately, bypassing the normal coalescing window.
+    pub(crate) async fn publish_progress_durable(
+        &self,
+        progress: StorageMigrationProgress,
+    ) -> Result<StorageMigrationResponse> {
+        self.publish_progress_inner(progress, true).await
+    }
+
+    async fn publish_progress_inner(
+        &self,
         mut progress: StorageMigrationProgress,
+        persist_immediately: bool,
     ) -> Result<StorageMigrationResponse> {
         if progress.phase == StorageMigrationState::Postgres {
             bail!(
@@ -867,9 +883,10 @@ impl StorageMigrationRuntime {
             }
 
             let monotonic_now = Instant::now();
-            let publish_now = state.last_progress_published_at.is_none_or(|last| {
-                monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
-            });
+            let publish_now = persist_immediately
+                || state.last_progress_published_at.is_none_or(|last| {
+                    monotonic_now.duration_since(last) >= STORAGE_MIGRATION_PROGRESS_INTERVAL
+                });
             if !publish_now {
                 state.progress_dirty = true;
                 state.progress_flush_deadline = state
