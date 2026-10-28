@@ -1129,10 +1129,9 @@ pub(crate) async fn save_pool_routing_settings(
         .request_compression_algorithm
         .map(|value| value.as_str().to_string())
         .or(current.request_compression_algorithm.clone());
-    let oauth_request_compression_algorithm = update
+    let oauth_request_compression_algorithm_update = update
         .oauth_request_compression_algorithm
-        .map(|value| value.as_str().to_string())
-        .or(current.oauth_request_compression_algorithm.clone());
+        .map(|value| value.as_str().to_string());
     let request_compression_level_preset = update
         .request_compression_level_preset
         .map(|value| value.as_str().to_string())
@@ -1184,7 +1183,7 @@ pub(crate) async fn save_pool_routing_settings(
             responses_stream_timeout_secs = ?10,
             compact_stream_timeout_secs = ?11,
             request_compression_algorithm = ?12,
-            oauth_request_compression_algorithm = ?13,
+            oauth_request_compression_algorithm = CASE WHEN ?13 IS NULL THEN oauth_request_compression_algorithm ELSE ?13 END,
             request_compression_level_preset = ?14,
             codex_imagegen_rewrite_mode = ?15,
             -- Model policy columns are updated below with field-local writes.
@@ -1210,7 +1209,7 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(responses_stream_timeout_secs)
     .bind(compact_stream_timeout_secs)
     .bind(request_compression_algorithm)
-    .bind(oauth_request_compression_algorithm)
+    .bind(oauth_request_compression_algorithm_update)
     .bind(request_compression_level_preset)
     .bind(codex_imagegen_rewrite_mode)
     .bind(available_models_json)

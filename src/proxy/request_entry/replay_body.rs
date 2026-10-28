@@ -334,6 +334,13 @@ impl PoolRequestBodyPreparationError {
         }
     }
 
+    fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+        }
+    }
+
     fn bad_gateway(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
@@ -655,6 +662,7 @@ pub(crate) fn observe_request_compression_from_bytes(
 async fn count_decoded_request_snapshot_bytes(
     snapshot: &PoolReplayBodySnapshot,
     encoding: RequestBodyContentEncoding,
+    max_decoded_bytes: usize,
 ) -> Result<usize, PoolRequestBodyPreparationError> {
     if matches!(encoding, RequestBodyContentEncoding::Identity) {
         return Ok(pool_request_snapshot_body_bytes(snapshot));
@@ -676,6 +684,11 @@ async fn count_decoded_request_snapshot_bytes(
                     break;
                 }
                 total = total.saturating_add(read_len);
+                if total > max_decoded_bytes {
+                    return Err(PoolRequestBodyPreparationError::payload_too_large(format!(
+                        "decoded request body exceeds {max_decoded_bytes} bytes"
+                    )));
+                }
             }
             Ok(total)
         }
@@ -686,6 +699,7 @@ pub(crate) async fn validate_pool_request_snapshot_transcode(
     snapshot: &PoolReplayBodySnapshot,
     downstream_content_encoding: Option<&str>,
     request_compression_algorithm: RequestCompressionAlgorithm,
+    max_decoded_bytes: usize,
 ) -> Result<(), PoolRequestBodyPreparationError> {
     let downstream_encoding =
         resolve_request_body_content_encoding(snapshot, downstream_content_encoding).await?;
@@ -694,7 +708,8 @@ pub(crate) async fn validate_pool_request_snapshot_transcode(
     if !matches!(downstream_encoding, RequestBodyContentEncoding::Identity)
         && target_encoding != downstream_encoding
     {
-        count_decoded_request_snapshot_bytes(snapshot, downstream_encoding).await?;
+        count_decoded_request_snapshot_bytes(snapshot, downstream_encoding, max_decoded_bytes)
+            .await?;
     }
     Ok(())
 }
@@ -904,7 +919,12 @@ pub(crate) async fn build_pool_upstream_request_body(
             ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
         } else {
             ObservedBodyBytes::Fixed(
-                count_decoded_request_snapshot_bytes(&prepared.snapshot, target_encoding).await?,
+                count_decoded_request_snapshot_bytes(
+                    &prepared.snapshot,
+                    target_encoding,
+                    usize::MAX,
+                )
+                .await?,
             )
         };
         return Ok(PreparedPoolUpstreamRequestBody {

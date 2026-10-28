@@ -1235,6 +1235,7 @@ pub(crate) async fn execute_pool_account_attempts<'a>(
                             .get(header::CONTENT_ENCODING)
                             .and_then(|value| value.to_str().ok()),
                         context.account.oauth_request_compression_algorithm,
+                        context.state.config.openai_proxy_max_request_body_bytes,
                     )
                     .await
                     .map_err(|err| {
