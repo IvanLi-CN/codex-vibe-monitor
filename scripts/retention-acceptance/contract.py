@@ -933,6 +933,10 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 )
                 if version == "candidate":
                     _require(
+                        result.get("legacy_source_artifact_duplicates_allowed") is False,
+                        f"candidate {name} oracle relaxed the source/artifact duplicate gate",
+                    )
+                    _require(
                         result.get("summary_proof_verified") is True,
                         f"candidate summary proof for {name} was not verified",
                     )
@@ -942,10 +946,20 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                     value = result.get(field)
                     _require(isinstance(value, int) and not isinstance(value, bool) and value >= 0, f"oracle {field} is invalid")
                 _require(result["lost_rows"] == 0, f"oracle found lost {name} source rows")
-                _require(result["duplicate_rows"] == 0, f"oracle found duplicate {name} conversions")
+                if version == "candidate":
+                    _require(result["duplicate_rows"] == 0, f"oracle found duplicate {name} conversions")
+                else:
+                    _require(
+                        result.get("legacy_source_artifact_duplicates_allowed") is True,
+                        f"baseline {name} duplicate allowance is not explicitly recorded",
+                    )
                 _require(result["converted_rows"] == result["distinct_archived_rows"], f"reported {name} conversion count is not proof-backed")
                 _require(
-                    result.get("row_content_rows_checked") == result["seed_rows"] + result["actual_added_rows"],
+                    (
+                        result.get("row_content_rows_checked") == result["seed_rows"] + result["actual_added_rows"]
+                        if version == "candidate"
+                        else result.get("row_content_rows_checked", 0) >= result["seed_rows"] + result["actual_added_rows"]
+                    ),
                     f"oracle {name} did not compare full source row content",
                 )
                 _require(

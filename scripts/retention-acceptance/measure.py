@@ -1476,6 +1476,7 @@ def run_trial(
             cutoff,
             root / f"oracle-{version}-{index}",
             require_summary_proof=version == "candidate",
+            allow_legacy_source_artifact_duplicates=version == "baseline",
             budget_check=lambda: remaining_budget(phase_started),
         )
     except BaseException as error:

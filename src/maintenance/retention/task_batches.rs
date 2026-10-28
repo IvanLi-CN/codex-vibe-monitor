@@ -948,7 +948,8 @@ pub(crate) async fn prune_old_invocation_details(
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    'work_unit: {
+    'work_unit: loop {
+        let rows_pruned_before = rows_pruned;
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -1014,9 +1015,19 @@ pub(crate) async fn prune_old_invocation_details(
                 break;
             }
             let group_candidate_count = group.len();
-            let group = select_archive_batch(group, |candidate| {
+            let selected_group = select_archive_batch(group, |candidate| {
                 candidate.estimated_write_bytes.max(1) as usize
             });
+            // Keep the prepared live-mirror artifact aligned with the source transaction that
+            // will delete it. Otherwise an interrupted multi-chunk delete can leave a completed
+            // artifact containing rows that are still live in the source table.
+            let mut pending_group = selected_group;
+            let group = take_retention_batch(
+                &mut pending_group,
+                config,
+                "invocation_detail_prune",
+                |candidate| candidate.estimated_write_bytes.max(1) as usize,
+            );
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
@@ -1426,6 +1437,12 @@ pub(crate) async fn prune_old_invocation_details(
         // One invocation owns the selected bounded archive window. A test-injected operation
         // deadline may stop it inside that window; production scheduling does not use a total
         // timer to split the work into hidden follow-up tasks.
+        if rows_pruned > rows_pruned_before
+            && candidate_remaining_hint
+            && !retention_run_budget_expired()
+        {
+            continue 'work_unit;
+        }
         break 'work_unit;
     }
 
@@ -1527,7 +1544,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let mut discovered_ids = HashSet::new();
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    'work_unit: {
+    'work_unit: loop {
+        let rows_archived_before = rows_archived;
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -1586,7 +1604,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             let group_candidate_count = group.len();
             let selection = select_invocation_archive_group(pool, group).await;
-            let (ids, group) = match selection {
+            let (_selected_ids, selected_group) = match selection {
                 Ok(selection) => selection,
                 Err(error) => {
                     if error
@@ -1600,6 +1618,26 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     return Err(error);
                 }
             };
+            // The archive file must contain exactly the rows covered by the next source
+            // micro-batch. Preparing a larger file and publishing it after only the first
+            // source chunk commits leaves live rows duplicated in a completed artifact when
+            // pressure or shutdown interrupts the remaining chunks.
+            let mut pending_group = selected_group;
+            let group = take_retention_batch(
+                &mut pending_group,
+                config,
+                "invocation_archive",
+                |candidate| {
+                    candidate
+                        .payload
+                        .as_deref()
+                        .map_or(256, |payload| payload.len())
+                },
+            );
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more(spec.dataset, true);
@@ -2227,6 +2265,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
         }
         // One scheduled invocation owns one selected candidate window. It completes that logical
         // work unit before returning; the next invocation reselects the remaining live rows.
+        if rows_archived > rows_archived_before
+            && candidate_remaining_hint
+            && !retention_run_budget_expired()
+        {
+            continue 'work_unit;
+        }
         break 'work_unit;
     }
 
@@ -2313,7 +2357,8 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
-    'work_unit: {
+    'work_unit: loop {
+        let rows_archived_before = rows_archived;
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -2369,9 +2414,18 @@ pub(crate) async fn archive_timestamped_dataset(
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
             let group_candidate_count = group.len();
-            let group = select_archive_batch(group, |candidate| {
+            let selected_group = select_archive_batch(group, |candidate| {
                 row_sizes.get(&candidate.id).copied().unwrap_or(512)
             });
+            // See the invocation archive path above: never publish one artifact for rows that
+            // will be deleted by multiple independent source transactions.
+            let mut pending_group = selected_group;
+            let group = take_retention_batch(
+                &mut pending_group,
+                config,
+                "timestamped_archive",
+                |candidate| row_sizes.get(&candidate.id).copied().unwrap_or(512),
+            );
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more(spec.dataset, true);
@@ -2886,6 +2940,12 @@ pub(crate) async fn archive_timestamped_dataset(
         }
         // Keep the selected timestamped candidate window as one logical work unit. Operation
         // budgets and cancellation may stop it earlier, but it is never split by a total timer.
+        if rows_archived > rows_archived_before
+            && candidate_remaining_hint
+            && !retention_run_budget_expired()
+        {
+            continue 'work_unit;
+        }
         break 'work_unit;
     }
 

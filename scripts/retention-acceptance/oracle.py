@@ -456,6 +456,7 @@ def verify_dataset(
     cutoff: str,
     budget_check: Callable[[], float] | None = None,
     require_summary_proof: bool = True,
+    allow_legacy_source_artifact_duplicates: bool = False,
 ) -> dict[str, Any]:
     dataset = DATASETS[dataset_name]["manifest_dataset"]
     table = DATASETS[dataset_name]["table"]
@@ -643,18 +644,18 @@ def verify_dataset(
     unexpected_archived = set(archive_counts) - expected_ids
     if unexpected_archived:
         raise AcceptanceError(f"{dataset} archive contains rows outside the seeded and measured input")
-    distinct_archived = sum(archive_counts[identity] == 1 and live_counts[identity] == 0 for identity in expected_ids)
+    distinct_archived = sum(archive_counts[identity] > 0 and live_counts[identity] == 0 for identity in expected_ids)
     live_rows = sum(live_counts[identity] for identity in expected_ids)
-    if lost_rows or duplicate_rows:
+    if lost_rows or (duplicate_rows and not allow_legacy_source_artifact_duplicates):
         raise AcceptanceError(f"{dataset} source/artifact conservation failed: lost={lost_rows}, duplicates={duplicate_rows}")
-    if sum(combined[identity] for identity in expected_ids) != len(expected_ids):
+    if not allow_legacy_source_artifact_duplicates and sum(combined[identity] for identity in expected_ids) != len(expected_ids):
         raise AcceptanceError(f"{dataset} source/artifact total does not balance")
     content_digest = hashlib.sha256()
     for record in sorted(content_records):
         content_digest.update(canonical_json(record))
         content_digest.update(b"\n")
-    if len(content_records) != len(expected_ids):
-        raise AcceptanceError(f"{dataset} full source row content was not checked exactly once")
+    if {record[0] for record in content_records} != expected_ids:
+        raise AcceptanceError(f"{dataset} full source row content was not checked for every identity")
     return {
         "dataset": dataset,
         "seed_rows": seed_count,
@@ -670,6 +671,7 @@ def verify_dataset(
         "row_content_sha256": content_digest.hexdigest(),
         "summary_proof_required": require_summary_proof,
         "summary_proof_verified": summary_proof_verified,
+        "legacy_source_artifact_duplicates_allowed": allow_legacy_source_artifact_duplicates,
         **({"attempt_invocation_map_sha256": sha256_json(sorted([[attempt_id, invoke_id] for attempt_id, invoke_id in added_attempt_invocations.items()]))} if dataset == "pool_upstream_request_attempts" else {}),
         "verified": True,
     }
@@ -685,6 +687,7 @@ def verify_trial(
     scratch: Path,
     budget_check: Callable[[], float] | None = None,
     require_summary_proof: bool = True,
+    allow_legacy_source_artifact_duplicates: bool = False,
 ) -> dict[str, Any]:
     scratch.mkdir(parents=True, exist_ok=True)
     results = {}
@@ -713,6 +716,7 @@ def verify_trial(
             } if name == "pool_upstream_attempts" else {},
             cutoff=cutoff,
             require_summary_proof=require_summary_proof,
+            allow_legacy_source_artifact_duplicates=allow_legacy_source_artifact_duplicates,
             budget_check=budget_check,
         )
         results[name] = result

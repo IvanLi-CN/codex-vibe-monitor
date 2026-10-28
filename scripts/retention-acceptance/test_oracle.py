@@ -149,6 +149,7 @@ class OracleTests(unittest.TestCase):
         seed_count: int = 2,
         added_count: int = 0,
         attempt_invocations: dict[str, str] | None = None,
+        allow_legacy_source_artifact_duplicates: bool = False,
     ) -> dict:
         attempt_invocations = attempt_invocations or {}
         seed_ids = expected - set(attempt_invocations)
@@ -166,6 +167,7 @@ class OracleTests(unittest.TestCase):
             seed_ids=seed_ids,
             added_attempt_invocations=attempt_invocations,
             cutoff=f"{MONTH}-01 00:00:00",
+            allow_legacy_source_artifact_duplicates=allow_legacy_source_artifact_duplicates,
         )
 
     def add_live_attempt(self, identity: str, invoke_id: str, occurred_at: str) -> None:
@@ -184,6 +186,22 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(result["converted_rows"], 1)
         self.assertEqual(result["live_rows"], 1)
         self.assertEqual(result["lost_rows"], 0)
+
+    def test_baseline_legacy_duplicate_artifact_is_reported_but_not_hidden(self) -> None:
+        path = self.make_archive([
+            ("seed-archived", f"{MONTH}-12T12:00:00Z"),
+            ("seed-archived", f"{MONTH}-12T12:00:00Z"),
+        ])
+        self.add_manifest(path, 2)
+        with self.assertRaisesRegex(AcceptanceError, "duplicates=1"):
+            self.verify({"seed-archived", "seed-live"})
+        result = self.verify(
+            {"seed-archived", "seed-live"},
+            allow_legacy_source_artifact_duplicates=True,
+        )
+        self.assertEqual(result["duplicate_rows"], 1)
+        self.assertEqual(result["converted_rows"], 1)
+        self.assertEqual(result["row_content_rows_checked"], 3)
 
     def test_container_archive_mount_path_maps_into_the_trial_volume(self) -> None:
         path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])

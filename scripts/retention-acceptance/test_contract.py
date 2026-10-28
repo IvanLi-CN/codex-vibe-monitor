@@ -186,6 +186,7 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
     for result in oracle_datasets.values():
         result["summary_proof_required"] = version == "candidate"
         result["summary_proof_verified"] = version == "candidate"
+        result["legacy_source_artifact_duplicates_allowed"] = version == "baseline"
     archive_proof_status = {
         "ready": version == "candidate",
         "reference_ready": True,
