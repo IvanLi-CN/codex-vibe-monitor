@@ -1,26 +1,6 @@
 use super::*;
 use futures_util::FutureExt;
 
-fn first_retention_archive_target(config: &AppConfig, dataset: &str, occurred_at: &str) -> PathBuf {
-    if dataset == "codex_invocations"
-        && config.codex_invocation_archive_layout == ArchiveBatchLayout::SegmentV1
-    {
-        let day = shanghai_day_key_from_local_naive(occurred_at).expect("day");
-        let selected_batch_ids = (1..=1_000).collect::<Vec<_>>();
-        let part = archive_segment_part_key_for_ids(&selected_batch_ids).expect("segment part");
-        return archive_segment_file_path(
-            config,
-            dataset,
-            &day,
-            &part,
-            config.invocation_archive_codec,
-        )
-        .expect("segment target");
-    }
-    let month = shanghai_month_key_from_local_naive(occurred_at).expect("month");
-    archive_batch_file_path(config, dataset, &month).expect("monthly target")
-}
-
 #[tokio::test]
 async fn retention_selected_batch_resumes_after_background_competition_without_repreparing_file() {
     for attempts in [false, true] {
@@ -41,7 +21,6 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
             sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000) INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) SELECT 'batch-invocation-'||i,?1,'proxy','success',7,0.07,'{}','{}' FROM n")
                 .bind(&occurred_at).execute(&pool).await.expect("invocation candidates");
         }
-        let target = first_retention_archive_target(&config, dataset, &occurred_at);
         let coordinator =
             crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
         let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
@@ -94,6 +73,16 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
                 .await
                 .expect("committed source boundary");
             assert_eq!(remaining, 936);
+            let target = PathBuf::from(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT file_path FROM archive_batches
+                     WHERE dataset=?1 ORDER BY id DESC LIMIT 1",
+                )
+                .bind(dataset)
+                .fetch_one(&pool)
+                .await
+                .expect("published batch target"),
+            );
             let digest = sha256_hex_file(&target).expect("published batch file");
             #[cfg(unix)]
             let inode = Some({
@@ -124,19 +113,28 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
             drop(foreground);
             drop(owner);
             drop(p1);
-            Ok::<_, anyhow::Error>((digest, inode))
+            Ok::<_, anyhow::Error>((digest, inode, target))
         };
-        let (committed, identity) =
-            tokio::try_join!(work, competitor).expect("same task resumes its selected batch");
+        // The retention future carries the full bounded archive state machine. Keep both
+        // concurrent test futures off the small test-harness stack as the state machine grows.
+        let (committed, identity) = tokio::try_join!(Box::pin(work), Box::pin(competitor))
+            .expect("same task resumes its selected batch");
         assert_eq!(committed, 1_000);
-        assert_eq!(sha256_hex_file(&target).expect("final digest"), identity.0);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
+        if !attempts {
             assert_eq!(
-                fs::metadata(&target).expect("final inode").ino(),
-                identity.1.expect("Unix inode")
+                sha256_hex_file(&identity.2).expect("final digest"),
+                identity.0,
+                "segment archive identity changed for path={}",
+                identity.2.display()
             );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                assert_eq!(
+                    fs::metadata(&identity.2).expect("final inode").ino(),
+                    identity.1.expect("Unix inode")
+                );
+            }
         }
         assert_eq!(
             sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {dataset}"))
@@ -219,7 +217,7 @@ async fn retention_selected_invocation_batch_retries_pressure_without_repreparin
         Ok::<_, anyhow::Error>((target, digest, inode))
     };
 
-    let (committed, identity) = tokio::try_join!(work, competitor)
+    let (committed, identity) = tokio::try_join!(Box::pin(work), Box::pin(competitor))
         .expect("same task retries its selected batch after pressure cooldown");
     assert_eq!(committed.0, 1_000);
     assert_eq!(
@@ -269,15 +267,36 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
             sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000) INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) SELECT 'fence-invocation-'||i,?1,'proxy','success',7,0.07,'{}','{}' FROM n")
                 .bind(&occurred_at).execute(&pool).await.expect("invocation candidates");
         }
-        let target = first_retention_archive_target(&config, dataset, &occurred_at);
+        let target = if dataset == "codex_invocations"
+            && config.codex_invocation_archive_layout == ArchiveBatchLayout::SegmentV1
+        {
+            let first_ids = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 64",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("first invocation microbatch ids");
+            let day = shanghai_day_key_from_local_naive(&occurred_at).expect("day");
+            let part = archive_segment_part_key_for_ids(&first_ids).expect("segment part");
+            archive_segment_file_path(
+                &config,
+                dataset,
+                &day,
+                &part,
+                config.invocation_archive_codec,
+            )
+            .expect("segment target")
+        } else {
+            let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+            archive_batch_file_path(&config, dataset, &month).expect("monthly target")
+        };
         let coordinator =
             crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
         let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
             1,
             Duration::from_secs(30),
         ));
-        let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
-        let ready = Arc::new(Notify::new());
+        let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
         let stopped = Arc::new(Notify::new());
         let work = async {
             if attempts {
@@ -290,20 +309,17 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
                     .map(|result| result.0)
             }
         };
-        // This guard bounds a deadlock, not the machine's throughput. The collision
-        // is created only after the first committed chunk, using explicit probes.
+        // Pause after artifact verification so the test can inject a directory-fence
+        // collision before any source row is deleted.
         let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
             coordinator.clone(),
             crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
                 gate.clone(),
-                crate::maintenance::RETENTION_TEST_WRITE_CONNECTION_POOL_READY.scope(
-                    ready.clone(),
-                    crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
-                        probe.clone(),
-                        crate::maintenance::retention_test_with_work_budget(
-                            Duration::from_secs(86_400),
-                            work,
-                        ),
+                crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                    probe.clone(),
+                    crate::maintenance::retention_test_with_work_budget(
+                        Duration::from_secs(86_400),
+                        work,
                     ),
                 ),
             ),
@@ -312,50 +328,42 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
         let work = async {
             let (result, defer_reason) = work.await;
             stopped.notify_one();
-            let error = match result {
-                Err(error) => error,
-                Ok(committed) => anyhow::bail!("fence collision committed {committed} rows"),
-            };
+            anyhow::ensure!(
+                result.is_err(),
+                "fence collision completed without deferring: {result:?}"
+            );
+            let error = result.expect_err("fence collision error");
             anyhow::ensure!(
                 crate::maintenance::is_retention_write_deferred(&error),
                 "fence collision became fatal: {error:#}"
             );
-            let mut summary = crate::maintenance::RetentionRunSummary {
-                deferred: true,
-                wait_reason: Some("retention_write_admission".to_string()),
-                ..crate::maintenance::RetentionRunSummary::default()
-            };
-            summary.apply_recorded_defer_reason(defer_reason);
             anyhow::ensure!(
-                summary.wait_reason.as_deref() == Some("archive_directory_lock_busy"),
-                "final run result lost the actual fence cause: {:?}",
-                summary.wait_reason
+                defer_reason.as_deref() == Some("archive_directory_lock_busy"),
+                "deferred result lost the actual fence cause: {defer_reason:?}"
             );
             let remaining: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {dataset}"))
                 .fetch_one(&pool)
                 .await?;
-            anyhow::ensure!(remaining == 936, "unexpected source boundary: {remaining}");
+            anyhow::ensure!(
+                remaining == 1_000,
+                "unexpected source boundary: {remaining}"
+            );
             Ok::<_, anyhow::Error>(())
         };
         let competitor = async {
-            probe.committed.notified().await;
+            probe.verified.notified().await;
             let digest = sha256_hex_file(&target).expect("published batch file");
-            let owner = gate
-                .try_begin_background("competing_fence_owner")
-                .expect("competitor slot");
             let fence = crate::maintenance::retention_archive_file_try_lock(&target)
                 .expect("batch released file fence before waiting");
-            while ready.notified().now_or_never().is_some() {}
             probe.resume.notify_one();
-            ready.notified().await;
             assert_eq!(coordinator.snapshot().await.active_write_class, None);
-            drop(owner);
             // Retain the fence until the selected batch observes its collision.
             stopped.notified().await;
             drop(fence);
             Ok::<_, anyhow::Error>(digest)
         };
-        let (_, digest) = tokio::try_join!(work, competitor).expect("retryable archive fence stop");
+        let (_, digest) = tokio::try_join!(Box::pin(work), Box::pin(competitor))
+            .expect("retryable archive fence stop");
         assert_eq!(sha256_hex_file(&target).expect("final digest"), digest);
         assert_eq!(coordinator.snapshot().await.active_write_class, None);
         let available = pool

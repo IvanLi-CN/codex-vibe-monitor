@@ -1797,7 +1797,7 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
     let first = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("first task");
-    assert_eq!(first.invocation_rows_archived, 1_200);
+    assert_eq!(first.invocation_rows_archived, 1_000);
     let first_invocation_batches = first
         .batches
         .iter()
@@ -1808,7 +1808,7 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
             .iter()
             .map(|batch| batch.batch_rows)
             .sum::<usize>(),
-        1_200
+        1_000
     );
     assert!(
         first_invocation_batches
@@ -1819,7 +1819,7 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
     let second = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("second task");
-    assert_eq!(second.invocation_rows_archived, 0);
+    assert_eq!(second.invocation_rows_archived, 200);
     let manifests = sqlx::query_as::<_, (String, i64, String)>("SELECT file_path,row_count,status FROM archive_batches WHERE dataset='codex_invocations' AND summary_source_kind='authoritative'")
         .fetch_all(&pool).await.expect("monthly manifests");
     assert_eq!(manifests.len(), 1);

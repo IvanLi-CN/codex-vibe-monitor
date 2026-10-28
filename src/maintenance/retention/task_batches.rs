@@ -849,6 +849,8 @@ struct RetentionBatchCommit {
 
 type InvocationDetailProofResult = (Option<(usize, usize, usize)>, usize);
 type InvocationArchiveProofResult = (bool, usize);
+type TimestampedPendingGroup = (usize, Vec<TimestampedArchiveCandidate>, HashMap<i64, usize>);
+type TimestampedPendingGroups = BTreeMap<String, TimestampedPendingGroup>;
 
 struct RetentionSqliteTransaction<'a>(&'a mut SqliteConnection);
 
@@ -947,81 +949,103 @@ pub(crate) async fn prune_old_invocation_details(
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
+    let mut pending_groups: Option<BTreeMap<String, (usize, Vec<InvocationDetailPruneCandidate>)>> =
+        None;
 
     'work_unit: loop {
-        let rows_pruned_before = rows_pruned;
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
         }
-        let sql = format!(
-            r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path,
-                   COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
-                       AS estimated_write_bytes
-            FROM codex_invocations
-            WHERE {success_like_condition}
-              AND detail_level = ?1
-              AND occurred_at < ?2
-              AND occurred_at >= ?3
-            ORDER BY occurred_at ASC, id ASC
-            LIMIT ?4
-            "#,
-            success_like_condition = success_like_condition,
-        );
-        let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
-            .bind(DETAIL_LEVEL_FULL)
-            .bind(&prune_cutoff)
-            .bind(&archive_cutoff)
-            .bind(candidate_limit.saturating_add(1) as i64)
-            .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => {
+        let (mut candidate_remaining_hint, selected_groups) = if let Some(selected_groups) =
+            pending_groups.take()
+        {
+            (true, selected_groups)
+        } else {
+            let sql = format!(
+                r#"
+                    SELECT id, occurred_at, request_raw_path, response_raw_path,
+                           COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
+                               AS estimated_write_bytes
+                    FROM codex_invocations
+                    WHERE {success_like_condition}
+                      AND detail_level = ?1
+                      AND occurred_at < ?2
+                      AND occurred_at >= ?3
+                    ORDER BY occurred_at ASC, id ASC
+                    LIMIT ?4
+                    "#,
+                success_like_condition = success_like_condition,
+            );
+            let candidate_limit = archive_candidate_limit(config);
+            let candidates_query = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
+                .bind(DETAIL_LEVEL_FULL)
+                .bind(&prune_cutoff)
+                .bind(&archive_cutoff)
+                .bind(candidate_limit.saturating_add(1) as i64)
+                .fetch_all(pool);
+            let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, candidates_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break 'work_unit;
+                    }
+                }
+            } else {
+                candidates_query.await?
+            };
+            let discovered = candidates.len();
+            let has_more = discovered > candidate_limit;
+            let mut candidates = candidates;
+            candidates.truncate(candidate_limit);
+            batch_plan::record_discovered_rows("codex_invocation_details", discovered);
+            batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
+
+            if candidates.is_empty() {
+                break 'work_unit;
+            }
+
+            let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> =
+                BTreeMap::new();
+            for candidate in candidates {
+                if retention_run_budget_expired() {
                     recovery_diagnostic.mark_budget();
-                    break 'work_unit;
+                    break;
+                }
+                let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+                by_group.entry(group_key).or_default().push(candidate);
+            }
+
+            let mut selected_groups = BTreeMap::new();
+            for (group_key, group) in by_group {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let group_candidate_count = group.len();
+                let selected_group = select_archive_batch(group, |candidate| {
+                    candidate.estimated_write_bytes.max(1) as usize
+                });
+                if selected_group.len() < group_candidate_count {
+                    batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
+                }
+                if !selected_group.is_empty() {
+                    selected_groups.insert(group_key, (group_candidate_count, selected_group));
                 }
             }
-        } else {
-            candidates_query.await?
+            (has_more, selected_groups)
         };
-        let discovered = candidates.len();
-        let has_more = discovered > candidate_limit;
-        let mut candidates = candidates;
-        candidates.truncate(candidate_limit);
-        batch_plan::record_discovered_rows("codex_invocation_details", discovered);
-        batch_plan::record_candidate_window_has_more("codex_invocation_details", has_more);
+        let mut next_pending_groups = BTreeMap::new();
 
-        if candidates.is_empty() {
-            break 'work_unit;
-        }
-
-        let mut candidate_remaining_hint = has_more;
-        let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
-        for candidate in candidates {
+        for (group_key, (group_candidate_count, mut pending_group)) in selected_groups {
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            by_group.entry(group_key).or_default().push(candidate);
-        }
-
-        for (group_key, group) in by_group {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let group_candidate_count = group.len();
-            let selected_group = select_archive_batch(group, |candidate| {
-                candidate.estimated_write_bytes.max(1) as usize
-            });
             // Keep the prepared live-mirror artifact aligned with the source transaction that
             // will delete it. Otherwise an interrupted multi-chunk delete can leave a completed
             // artifact containing rows that are still live in the source table.
-            let mut pending_group = selected_group;
             let group = take_retention_batch(
                 &mut pending_group,
                 config,
@@ -1182,10 +1206,10 @@ pub(crate) async fn prune_old_invocation_details(
                 #[cfg(test)]
                 batch_admission::pause_after_archive_artifact_verified().await;
                 let mut committed_rows = 0;
-                let mut pending_group = group;
-                while !pending_group.is_empty() {
+                let mut microbatch_group = group;
+                while !microbatch_group.is_empty() {
                     let group = take_retention_batch(
-                        &mut pending_group,
+                        &mut microbatch_group,
                         config,
                         "invocation_detail_prune",
                         |candidate| candidate.estimated_write_bytes.max(1) as usize,
@@ -1433,14 +1457,16 @@ pub(crate) async fn prune_old_invocation_details(
                 archive_batches += 1;
             }
             batch_observation.complete();
+            if !pending_group.is_empty() {
+                next_pending_groups
+                    .entry(group_key)
+                    .or_insert_with(|| (group_candidate_count, Vec::new()))
+                    .1
+                    .extend(pending_group);
+            }
         }
-        // One invocation owns the selected bounded archive window. A test-injected operation
-        // deadline may stop it inside that window; production scheduling does not use a total
-        // timer to split the work into hidden follow-up tasks.
-        if rows_pruned > rows_pruned_before
-            && candidate_remaining_hint
-            && !retention_run_budget_expired()
-        {
+        pending_groups = (!next_pending_groups.is_empty()).then_some(next_pending_groups);
+        if pending_groups.is_some() && !retention_run_budget_expired() {
             continue 'work_unit;
         }
         break 'work_unit;
@@ -1543,9 +1569,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let mut prompt_cache_keys = std::collections::HashSet::new();
     let mut discovered_ids = HashSet::new();
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
+    let mut pending_groups: Option<BTreeMap<String, (usize, Vec<InvocationArchiveCandidate>)>> =
+        None;
 
     'work_unit: loop {
-        let rows_archived_before = rows_archived;
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -1554,75 +1581,97 @@ pub(super) async fn archive_old_invocations_with_source_max(
             recovery_diagnostic.mark_budget();
             break 'work_unit;
         }
-        let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = load_invocation_archive_candidate_metadata(
-            pool,
-            cutoff,
-            source_max_invocation_id,
-            Some(candidate_limit.saturating_add(1)),
-        );
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    recovery_diagnostic.mark_budget();
-                    break 'work_unit;
-                }
-            }
+        let (mut candidate_remaining_hint, selected_groups) = if let Some(selected_groups) =
+            pending_groups.take()
+        {
+            // Continue only through the rows selected by this dispatch. A later dispatch
+            // must reselect the live tail instead of becoming a hidden catch-up loop.
+            (true, selected_groups)
         } else {
-            candidates_query.await?
-        };
-        let discovered = candidates.len();
-        let has_more = discovered > candidate_limit;
-        let mut candidates = candidates;
-        candidates.truncate(candidate_limit);
-        batch_plan::record_discovered_rows(spec.dataset, discovered);
-        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
-
-        if candidates.is_empty() {
-            break 'work_unit;
-        }
-
-        discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
-        workload::record_discovered_count(discovered_ids.len());
-
-        let mut candidate_remaining_hint = has_more;
-        let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
-        for candidate in candidates {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            by_group.entry(group_key).or_default().push(candidate);
-        }
-
-        for (group_key, group) in by_group {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let group_candidate_count = group.len();
-            let selection = select_invocation_archive_group(pool, group).await;
-            let (_selected_ids, selected_group) = match selection {
-                Ok(selection) => selection,
-                Err(error) => {
-                    if error
-                        .to_string()
-                        .contains("archive source selection changed")
-                    {
-                        recovery_diagnostic.mark_proof_unavailable();
-                    } else {
-                        mark_error(&mut recovery_diagnostic, &error);
+            let candidate_limit = archive_candidate_limit(config);
+            let candidates_query = load_invocation_archive_candidate_metadata(
+                pool,
+                cutoff,
+                source_max_invocation_id,
+                Some(candidate_limit.saturating_add(1)),
+            );
+            let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, candidates_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break 'work_unit;
                     }
-                    return Err(error);
                 }
+            } else {
+                candidates_query.await?
             };
+            let discovered = candidates.len();
+            let has_more = discovered > candidate_limit;
+            let mut candidates = candidates;
+            candidates.truncate(candidate_limit);
+            batch_plan::record_discovered_rows(spec.dataset, discovered);
+            batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+
+            if candidates.is_empty() {
+                break 'work_unit;
+            }
+
+            discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
+            workload::record_discovered_count(discovered_ids.len());
+
+            let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
+            for candidate in candidates {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+                by_group.entry(group_key).or_default().push(candidate);
+            }
+
+            let mut selected_groups = BTreeMap::new();
+            for (group_key, group) in by_group {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let group_candidate_count = group.len();
+                let selection = select_invocation_archive_group(pool, group).await;
+                let (_selected_ids, selected_group) = match selection {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        if error
+                            .to_string()
+                            .contains("archive source selection changed")
+                        {
+                            recovery_diagnostic.mark_proof_unavailable();
+                        } else {
+                            mark_error(&mut recovery_diagnostic, &error);
+                        }
+                        return Err(error);
+                    }
+                };
+                if selected_group.len() < group_candidate_count {
+                    batch_plan::record_candidate_window_has_more(spec.dataset, true);
+                }
+                if !selected_group.is_empty() {
+                    selected_groups.insert(group_key, (group_candidate_count, selected_group));
+                }
+            }
+            (has_more, selected_groups)
+        };
+        let mut next_pending_groups = BTreeMap::new();
+
+        for (group_key, (group_candidate_count, mut pending_group)) in selected_groups {
+            if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
+                break;
+            }
             // The archive file must contain exactly the rows covered by the next source
             // micro-batch. Preparing a larger file and publishing it after only the first
             // source chunk commits leaves live rows duplicated in a completed artifact when
             // pressure or shutdown interrupts the remaining chunks.
-            let mut pending_group = selected_group;
             let group = take_retention_batch(
                 &mut pending_group,
                 config,
@@ -2262,13 +2311,16 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 archive_batches += 1;
             }
             batch_observation.complete();
+            if !pending_group.is_empty() {
+                next_pending_groups
+                    .entry(group_key)
+                    .or_insert_with(|| (group_candidate_count, Vec::new()))
+                    .1
+                    .extend(pending_group);
+            }
         }
-        // One scheduled invocation owns one selected candidate window. It completes that logical
-        // work unit before returning; the next invocation reselects the remaining live rows.
-        if rows_archived > rows_archived_before
-            && candidate_remaining_hint
-            && !retention_run_budget_expired()
-        {
+        pending_groups = (!next_pending_groups.is_empty()).then_some(next_pending_groups);
+        if pending_groups.is_some() && !retention_run_budget_expired() {
             continue 'work_unit;
         }
         break 'work_unit;
@@ -2356,9 +2408,9 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
     let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
+    let mut pending_groups: Option<TimestampedPendingGroups> = None;
 
     'work_unit: loop {
-        let rows_archived_before = rows_archived;
         if retention_run_budget_expired() {
             recovery_diagnostic.mark_budget();
             break 'work_unit;
@@ -2367,59 +2419,84 @@ pub(crate) async fn archive_timestamped_dataset(
             recovery_diagnostic.mark_budget();
             break 'work_unit;
         }
-        let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
-            .bind(&cutoff)
-            .bind(candidate_limit.saturating_add(1) as i64)
-            .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => {
+        let (mut candidate_remaining_hint, selected_groups) = if let Some(selected_groups) =
+            pending_groups.take()
+        {
+            (true, selected_groups)
+        } else {
+            let candidate_limit = archive_candidate_limit(config);
+            let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
+                .bind(&cutoff)
+                .bind(candidate_limit.saturating_add(1) as i64)
+                .fetch_all(pool);
+            let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, candidates_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break 'work_unit;
+                    }
+                }
+            } else {
+                candidates_query.await?
+            };
+            let discovered = candidates.len();
+            let has_more = discovered > candidate_limit;
+            let mut candidates = candidates;
+            candidates.truncate(candidate_limit);
+            batch_plan::record_discovered_rows(spec.dataset, discovered);
+            batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+
+            if candidates.is_empty() {
+                break 'work_unit;
+            }
+
+            let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
+            for candidate in candidates {
+                if retention_run_budget_expired() {
                     recovery_diagnostic.mark_budget();
-                    break 'work_unit;
+                    break;
+                }
+                let month_key = archive_timestamped_dataset_month_key(
+                    spec.dataset,
+                    &candidate.timestamp_value,
+                )?;
+                by_month.entry(month_key).or_default().push(candidate);
+            }
+
+            let mut selected_groups = BTreeMap::new();
+            for (month_key, group) in by_month {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
+                let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
+                let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
+                let group_candidate_count = group.len();
+                let selected_group = select_archive_batch(group, |candidate| {
+                    row_sizes.get(&candidate.id).copied().unwrap_or(512)
+                });
+                if selected_group.len() < group_candidate_count {
+                    batch_plan::record_candidate_window_has_more(spec.dataset, true);
+                }
+                if !selected_group.is_empty() {
+                    selected_groups.insert(
+                        month_key,
+                        (group_candidate_count, selected_group, row_sizes),
+                    );
                 }
             }
-        } else {
-            candidates_query.await?
+            (has_more, selected_groups)
         };
-        let discovered = candidates.len();
-        let has_more = discovered > candidate_limit;
-        let mut candidates = candidates;
-        candidates.truncate(candidate_limit);
-        batch_plan::record_discovered_rows(spec.dataset, discovered);
-        batch_plan::record_candidate_window_has_more(spec.dataset, has_more);
+        let mut next_pending_groups = BTreeMap::new();
 
-        if candidates.is_empty() {
-            break 'work_unit;
-        }
-
-        let mut candidate_remaining_hint = has_more;
-        let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
-        for candidate in candidates {
+        for (month_key, (group_candidate_count, mut pending_group, row_sizes)) in selected_groups {
             if retention_run_budget_expired() {
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let month_key =
-                archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
-            by_month.entry(month_key).or_default().push(candidate);
-        }
-
-        for (month_key, group) in by_month {
-            if retention_run_budget_expired() {
-                recovery_diagnostic.mark_budget();
-                break;
-            }
-            let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
-            let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
-            let group_candidate_count = group.len();
-            let selected_group = select_archive_batch(group, |candidate| {
-                row_sizes.get(&candidate.id).copied().unwrap_or(512)
-            });
             // See the invocation archive path above: never publish one artifact for rows that
             // will be deleted by multiple independent source transactions.
-            let mut pending_group = selected_group;
             let group = take_retention_batch(
                 &mut pending_group,
                 config,
@@ -2574,10 +2651,10 @@ pub(crate) async fn archive_timestamped_dataset(
             batch_admission::pause_after_archive_artifact_verified().await;
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
-            let mut pending_group = group;
-            while !pending_group.is_empty() {
+            let mut microbatch_group = group;
+            while !microbatch_group.is_empty() {
                 let group = take_retention_batch(
-                    &mut pending_group,
+                    &mut microbatch_group,
                     config,
                     "timestamped_archive",
                     |candidate| row_sizes.get(&candidate.id).copied().unwrap_or(512),
@@ -2937,13 +3014,16 @@ pub(crate) async fn archive_timestamped_dataset(
                 archive_batches += 1;
             }
             batch_observation.complete();
+            if !pending_group.is_empty() {
+                next_pending_groups
+                    .entry(month_key)
+                    .or_insert_with(|| (group_candidate_count, Vec::new(), row_sizes.clone()))
+                    .1
+                    .extend(pending_group);
+            }
         }
-        // Keep the selected timestamped candidate window as one logical work unit. Operation
-        // budgets and cancellation may stop it earlier, but it is never split by a total timer.
-        if rows_archived > rows_archived_before
-            && candidate_remaining_hint
-            && !retention_run_budget_expired()
-        {
+        pending_groups = (!next_pending_groups.is_empty()).then_some(next_pending_groups);
+        if pending_groups.is_some() && !retention_run_budget_expired() {
             continue 'work_unit;
         }
         break 'work_unit;

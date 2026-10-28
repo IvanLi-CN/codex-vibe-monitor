@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 pub(crate) struct BatchCommitProbe {
     pub(crate) committed: Notify,
     pub(crate) resume: Notify,
+    pub(crate) paused_after_first_chunk: std::sync::atomic::AtomicBool,
     pub(crate) force_commit_busy_timeout_zero: std::sync::atomic::AtomicBool,
 }
 
@@ -61,6 +62,9 @@ tokio::task_local! {
 pub(super) async fn pause_after_first_chunk(committed_rows: usize) {
     if committed_rows == RETENTION_WRITE_MAX_ROWS
         && let Ok(probe) = RETENTION_TEST_BATCH_COMMIT.try_with(Arc::clone)
+        && !probe
+            .paused_after_first_chunk
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
     {
         probe.committed.notify_one();
         probe.resume.notified().await;
