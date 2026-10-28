@@ -852,6 +852,11 @@ type InvocationArchiveProofResult = (bool, usize);
 type TimestampedPendingGroup = (usize, Vec<TimestampedArchiveCandidate>, HashMap<i64, usize>);
 type TimestampedPendingGroups = BTreeMap<String, TimestampedPendingGroup>;
 
+fn prepend_retention_pending_group<T>(pending_group: &mut Vec<T>, mut deferred_group: Vec<T>) {
+    deferred_group.append(pending_group);
+    *pending_group = deferred_group;
+}
+
 struct RetentionSqliteTransaction<'a>(&'a mut SqliteConnection);
 
 impl RetentionSqliteTransaction<'_> {
@@ -1075,8 +1080,9 @@ pub(crate) async fn prune_old_invocation_details(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "invocation_detail_identity").await?
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
+                break;
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
@@ -1158,8 +1164,9 @@ pub(crate) async fn prune_old_invocation_details(
                     }
                 })
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
+                break;
             };
             if archive_outcome.source_identity_sha256.as_deref()
                 != Some(descriptor.source_identity_sha256.as_str())
@@ -1254,11 +1261,11 @@ pub(crate) async fn prune_old_invocation_details(
                         }
                     }) else {
                         drop(admission_wait_phase);
+                        let mut deferred_group = group;
+                        deferred_group.append(&mut microbatch_group);
+                        prepend_retention_pending_group(&mut pending_group, deferred_group);
                         recovery_diagnostic.mark_stop();
-                        return Ok((
-                            Some((rows_pruned, archive_batches, raw_files_removed)),
-                            committed_rows,
-                        ));
+                        return Ok((None, committed_rows));
                     };
                     let admission_mode = admission.admission_mode();
                     let lock_wait = admission.lock_wait();
@@ -1702,13 +1709,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "invocation_archive_identity").await?
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((
-                    rows_archived,
-                    archive_batches,
-                    raw_files_removed,
-                    prompt_cache_keys,
-                ));
+                break;
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
@@ -1968,10 +1971,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 batch_admission::pause_after_archive_artifact_verified().await;
                 let mut committed_rows = 0;
                 let mut chunk_index = 0usize;
-                let mut pending_group = group;
-                while !pending_group.is_empty() {
+                let mut microbatch_group = group;
+                while !microbatch_group.is_empty() {
                 let group = take_retention_batch(
-                    &mut pending_group,
+                    &mut microbatch_group,
                     config,
                     "invocation_archive",
                     |candidate| {
@@ -2025,8 +2028,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     }
                     }) else {
                         drop(admission_wait_phase);
+                        let mut deferred_group = group;
+                        deferred_group.append(&mut microbatch_group);
+                        prepend_retention_pending_group(&mut pending_group, deferred_group);
                         recovery_diagnostic.mark_stop();
-                        return Ok((true, committed_rows));
+                        return Ok((false, committed_rows));
                     };
                     let admission_mode = admission.admission_mode();
                     let lock_wait = admission.lock_wait();
@@ -2534,8 +2540,9 @@ pub(crate) async fn archive_timestamped_dataset(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "timestamped_archive_identity").await?
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                break;
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
@@ -2587,8 +2594,9 @@ pub(crate) async fn archive_timestamped_dataset(
                     }
                 })
             else {
+                prepend_retention_pending_group(&mut pending_group, group);
                 recovery_diagnostic.mark_stop();
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                break;
             };
             if archive_outcome.source_identity_sha256.as_deref() != Some(source_identity.as_str()) {
                 recovery_diagnostic.mark_proof_unavailable();
@@ -2710,8 +2718,11 @@ pub(crate) async fn archive_timestamped_dataset(
                     }
                 }) else {
                     drop(admission_wait_phase);
+                    let mut deferred_group = group;
+                    deferred_group.append(&mut microbatch_group);
+                    prepend_retention_pending_group(&mut pending_group, deferred_group);
                     recovery_diagnostic.mark_stop();
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    break;
                 };
                 let admission_mode = admission.admission_mode();
                 let lock_wait = admission.lock_wait();
@@ -2954,8 +2965,11 @@ pub(crate) async fn archive_timestamped_dataset(
                             "failed to return retention transaction connection to pool: {cleanup_error}"
                         ));
                     }
+                    let mut deferred_group = group;
+                    deferred_group.append(&mut microbatch_group);
+                    prepend_retention_pending_group(&mut pending_group, deferred_group);
                     recovery_diagnostic.mark_stop();
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    break;
                 };
                 let raw_deletion_plan = commit.raw_deletion_plan;
                 workload::record_owner_processed_count(

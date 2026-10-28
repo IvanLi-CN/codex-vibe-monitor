@@ -245,6 +245,73 @@ async fn retention_selected_invocation_batch_retries_pressure_without_repreparin
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[tokio::test]
+async fn retention_selected_timestamped_batch_retries_after_admission_timeout() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("timestamped-admission-timeout").await;
+    config.retention_batch_rows = 1_000;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000) INSERT INTO pool_upstream_request_attempts(id,invoke_id,occurred_at,finished_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status,proxy_binding_key_snapshot) SELECT i,'timeout-attempt-'||i,?1,?1,'/v1/responses','pool',0,0,0,'success','timeout-binding' FROM n")
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("timestamped admission timeout candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let work = archive_timestamped_dataset(
+        &pool,
+        &config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        "SELECT id,occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at,id LIMIT ?2",
+        "9999-01-01 00:00:00".to_string(),
+        false,
+        None,
+    );
+    let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate.clone(),
+            crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+                probe.clone(),
+                crate::maintenance::retention_test_with_write_admission_budget(
+                    Duration::from_millis(20),
+                    crate::maintenance::retention_test_with_work_budget(
+                        Duration::from_secs(86_400),
+                        work,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let competitor = async {
+        probe.committed.notified().await;
+        let owner = gate
+            .try_begin_background("timestamped_admission_timeout_owner")
+            .expect("occupy the background slot");
+        probe.resume.notify_one();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(owner);
+    };
+
+    let (result, ()) = tokio::join!(Box::pin(work), competitor);
+    let result = result.expect("selected timestamped batch retries after admission timeout");
+    assert_eq!(result.0, 1_000);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("timestamped source closed after admission timeout"),
+        0
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn retention_selected_batch_defers_archive_fence_collision_without_deleting_remaining_source()
