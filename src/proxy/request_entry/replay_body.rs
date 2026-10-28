@@ -661,17 +661,14 @@ async fn count_decoded_request_snapshot_bytes(
     }
     match snapshot {
         PoolReplayBodySnapshot::Empty => Ok(0),
-        PoolReplayBodySnapshot::Memory(bytes) => {
-            Ok(decode_request_payload_bytes(bytes, encoding)?.len())
-        }
-        PoolReplayBodySnapshot::File { .. } => {
+        PoolReplayBodySnapshot::Memory(_) | PoolReplayBodySnapshot::File { .. } => {
             let raw_reader = open_pool_request_snapshot_reader(snapshot).await?;
             let mut decoded_reader = decode_pool_request_reader(raw_reader, encoding).await?;
             let mut total = 0usize;
             let mut buf = [0_u8; 64 * 1024];
             loop {
                 let read_len = decoded_reader.read(&mut buf).await.map_err(|err| {
-                    PoolRequestBodyPreparationError::bad_gateway(format!(
+                    PoolRequestBodyPreparationError::bad_request(format!(
                         "failed to count decoded request body bytes: {err}"
                     ))
                 })?;

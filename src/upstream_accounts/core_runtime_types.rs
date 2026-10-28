@@ -1686,6 +1686,8 @@ pub(crate) struct GroupAccountRoutingRule {
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) request_compression_algorithm: Option<RequestCompressionAlgorithm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) oauth_request_compression_algorithm: Option<RequestCompressionAlgorithm>,
     pub(crate) concurrency_limit: i64,
     pub(crate) upstream_429_retry_enabled: bool,
     pub(crate) upstream_429_max_retries: u8,
@@ -3028,6 +3030,8 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) request_compression_algorithm: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) oauth_request_compression_algorithm: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) concurrency_limit: OptionalField<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) upstream_429_retry_enabled: OptionalField<bool>,
@@ -3074,6 +3078,13 @@ impl UpdateGroupAccountRoutingRuleRequest {
 
     pub(crate) fn request_compression_algorithm_value(&self) -> Option<&str> {
         match &self.request_compression_algorithm {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        }
+    }
+
+    pub(crate) fn oauth_request_compression_algorithm_value(&self) -> Option<&str> {
+        match &self.oauth_request_compression_algorithm {
             OptionalField::Value(value) => Some(value.as_str()),
             OptionalField::Missing | OptionalField::Null => None,
         }

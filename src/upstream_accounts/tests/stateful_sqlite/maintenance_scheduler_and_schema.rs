@@ -5110,6 +5110,7 @@ fn root_and_lower_model_policies_fail_closed_on_blank_entries() {
         None,
         None,
         None,
+        None,
         false,
         false,
         None,
@@ -5862,6 +5863,7 @@ async fn update_upstream_account_clears_individual_account_policy_override() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -5949,6 +5951,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6087,6 +6090,7 @@ async fn update_upstream_account_writes_positive_new_conversation_policy() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6166,6 +6170,7 @@ async fn update_upstream_account_preserves_priority_tier_when_omitted() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6228,6 +6233,7 @@ async fn update_upstream_account_accepts_no_new_priority_write() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6307,6 +6313,7 @@ async fn update_upstream_account_does_not_change_priority_tier_when_omitted() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6369,6 +6376,7 @@ async fn update_upstream_account_persists_empty_available_models_as_deny_all() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6429,6 +6437,7 @@ async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
                     image_tool_rewrite_mode: OptionalField::Missing,
                     codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
+                    oauth_request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -6588,7 +6597,7 @@ async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_v
 async fn load_effective_routing_rules_for_accounts_request_compression_respects_inheritance() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let root_only_id = insert_api_key_account(&state.pool, "Root Compression").await;
-    let group_only_id = insert_api_key_account(&state.pool, "Group Compression").await;
+    let group_only_id = insert_oauth_account(&state.pool, "Group Compression").await;
     let account_override_id = insert_api_key_account(&state.pool, "Account Compression").await;
     let oauth_id = insert_oauth_account(&state.pool, "OAuth Compression").await;
 
@@ -6649,6 +6658,7 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
         r#"
             UPDATE pool_upstream_account_group_notes
             SET policy_request_compression_algorithm = 'deflate',
+                policy_oauth_request_compression_algorithm = 'gzip',
                 policy_codex_imagegen_rewrite_mode = 'fill_missing'
             WHERE group_name = 'compression-mixed'
             "#,
@@ -6664,6 +6674,10 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
                 WHEN ?1 THEN 'zstd'
                 WHEN ?2 THEN 'identity'
                 ELSE policy_request_compression_algorithm
+            END,
+            policy_oauth_request_compression_algorithm = CASE id
+                WHEN ?2 THEN 'identity'
+                ELSE policy_oauth_request_compression_algorithm
             END,
             policy_codex_imagegen_rewrite_mode = CASE id
                 WHEN ?1 THEN 'force_remove'
@@ -6719,13 +6733,20 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     );
     assert_eq!(
         group_only.oauth_request_compression_algorithm,
-        RequestCompressionAlgorithm::Zstd
+        RequestCompressionAlgorithm::Gzip
+    );
+    assert_eq!(
+        group_only.field_sources.oauth_request_compression_algorithm,
+        "group"
     );
     assert_eq!(
         group_only.codex_imagegen_rewrite_mode,
-        CodexImagegenRewriteMode::ForceAdd
+        CodexImagegenRewriteMode::FillMissing
     );
-    assert_eq!(group_only.field_sources.codex_imagegen_rewrite_mode, "root");
+    assert_eq!(
+        group_only.field_sources.codex_imagegen_rewrite_mode,
+        "group"
+    );
 
     let account_override = rules
         .get(&account_override_id)

@@ -165,6 +165,7 @@ pub(crate) struct RoutingPolicyOverrideRow {
     policy_image_tool_rewrite_mode: Option<String>,
     policy_codex_imagegen_rewrite_mode: Option<String>,
     policy_request_compression_algorithm: Option<String>,
+    policy_oauth_request_compression_algorithm: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -202,6 +203,7 @@ pub(crate) struct GroupRoutingPolicyOverrideRow {
     policy_image_tool_rewrite_mode: Option<String>,
     policy_codex_imagegen_rewrite_mode: Option<String>,
     policy_request_compression_algorithm: Option<String>,
+    policy_oauth_request_compression_algorithm: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -355,6 +357,7 @@ pub(crate) fn apply_routing_policy_override(
     image_tool_rewrite_mode: Option<&str>,
     codex_imagegen_rewrite_mode: Option<&str>,
     request_compression_algorithm: Option<&str>,
+    oauth_request_compression_algorithm: Option<&str>,
     allow_api_key_request_compression_override: bool,
     allow_oauth_request_compression_override: bool,
     concurrency_limit: Option<i64>,
@@ -407,9 +410,9 @@ pub(crate) fn apply_routing_policy_override(
         rule.request_compression_algorithm = request_compression_algorithm;
     }
     if allow_oauth_request_compression_override
-        && request_compression_algorithm.is_some()
+        && oauth_request_compression_algorithm.is_some()
         && let Ok(request_compression_algorithm) =
-            normalize_request_compression_algorithm(request_compression_algorithm)
+            normalize_request_compression_algorithm(oauth_request_compression_algorithm)
     {
         rule.field_sources.oauth_request_compression_algorithm = source.to_string();
         rule.oauth_request_compression_algorithm = request_compression_algorithm;
@@ -477,6 +480,7 @@ pub(crate) async fn load_group_routing_policy_override_map(
             policy_image_tool_rewrite_mode,
             policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
+            policy_oauth_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -537,6 +541,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_image_tool_rewrite_mode,
             policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
+            policy_oauth_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -592,6 +597,7 @@ pub(crate) fn apply_group_routing_policy_override(
         row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
+        row.policy_oauth_request_compression_algorithm.as_deref(),
         allow_api_key_request_compression_override,
         allow_oauth_request_compression_override,
         row.policy_concurrency_limit,
@@ -852,6 +858,7 @@ pub(crate) fn apply_account_routing_policy_override(
         row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
+        row.policy_oauth_request_compression_algorithm.as_deref(),
         allow_api_key_request_compression_override,
         allow_oauth_request_compression_override,
         row.policy_concurrency_limit,
