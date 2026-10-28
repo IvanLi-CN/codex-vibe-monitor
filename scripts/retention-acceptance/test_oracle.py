@@ -129,7 +129,9 @@ class OracleTests(unittest.TestCase):
         ).fetchone()
         if existing is None:
             template.execute(
-                "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)",
+                "INSERT INTO pool_upstream_request_attempts "
+                "(id,attempt_public_id,invoke_id,occurred_at,status,request_summary_json) "
+                "VALUES(?,?,?,?,?,?)",
                 (identity, identity, f"invoke-{identity}", occurred_at, "success", f'{{"identity":"{identity}"}}'),
             )
         template.commit()
@@ -137,7 +139,9 @@ class OracleTests(unittest.TestCase):
         if source:
             database = sqlite3.connect(self.database)
             database.execute(
-                "INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)",
+                "INSERT INTO pool_upstream_request_attempts "
+                "(id,attempt_public_id,invoke_id,occurred_at,status,request_summary_json) "
+                "VALUES(?,?,?,?,?,?)",
                 (identity, identity, f"invoke-{identity}", occurred_at, "success", f'{{"identity":"{identity}"}}'),
             )
             database.commit()
@@ -150,6 +154,7 @@ class OracleTests(unittest.TestCase):
         added_count: int = 0,
         attempt_invocations: dict[str, str] | None = None,
         allow_legacy_source_artifact_duplicates: bool = False,
+        allow_legacy_missing_source_columns: set[str] | None = None,
     ) -> dict:
         attempt_invocations = attempt_invocations or {}
         seed_ids = expected - set(attempt_invocations)
@@ -168,6 +173,7 @@ class OracleTests(unittest.TestCase):
             added_attempt_invocations=attempt_invocations,
             cutoff=f"{MONTH}-01 00:00:00",
             allow_legacy_source_artifact_duplicates=allow_legacy_source_artifact_duplicates,
+            allow_legacy_missing_source_columns=allow_legacy_missing_source_columns,
         )
 
     def add_live_attempt(self, identity: str, invoke_id: str, occurred_at: str) -> None:
@@ -257,6 +263,26 @@ class OracleTests(unittest.TestCase):
         self.add_manifest(path, 1)
         result = self.verify({"seed-archived", "seed-live"})
         self.assertEqual(result["converted_rows"], 1)
+
+    def test_legacy_missing_source_column_requires_explicit_allowance(self) -> None:
+        for path in (self.database, self.template_database):
+            connection = sqlite3.connect(path)
+            connection.execute(
+                "ALTER TABLE pool_upstream_request_attempts ADD COLUMN occurred_epoch_ms INTEGER"
+            )
+            connection.commit()
+            connection.close()
+
+        path = self.make_archive([("seed-archived", f"{MONTH}-12T12:00:00Z")])
+        self.add_manifest(path, 1)
+        with self.assertRaisesRegex(AcceptanceError, "missing complete source row columns"):
+            self.verify({"seed-archived", "seed-live"})
+
+        result = self.verify(
+            {"seed-archived", "seed-live"},
+            allow_legacy_missing_source_columns={"occurred_epoch_ms"},
+        )
+        self.assertEqual(result["legacy_missing_source_columns"], ["occurred_epoch_ms"])
 
     def test_archive_full_row_content_must_match_the_pristine_source(self) -> None:
         path = self.make_archive(

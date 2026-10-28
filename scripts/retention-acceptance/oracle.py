@@ -457,10 +457,12 @@ def verify_dataset(
     budget_check: Callable[[], float] | None = None,
     require_summary_proof: bool = True,
     allow_legacy_source_artifact_duplicates: bool = False,
+    allow_legacy_missing_source_columns: set[str] | None = None,
 ) -> dict[str, Any]:
     dataset = DATASETS[dataset_name]["manifest_dataset"]
     table = DATASETS[dataset_name]["table"]
     identity_column = DATASETS[dataset_name]["identity_column"]
+    allowed_legacy_missing_columns = set(allow_legacy_missing_source_columns or ())
     added_ids = expected_ids - seed_ids
     if (
         seed_count < 0
@@ -482,11 +484,22 @@ def verify_dataset(
     archive_counts: Counter[str] = Counter()
     content_records: list[tuple[str, str, str]] = []
     summary_proof_verified = True
+    observed_legacy_missing_columns: set[str] = set()
     try:
         source_columns = _table_columns(connection, table)
         template_columns = _table_columns(template, table)
         if not source_columns or source_columns != template_columns:
             raise AcceptanceError(f"{dataset} pristine template schema differs from the trial source schema")
+        unknown_allowed_columns = allowed_legacy_missing_columns - set(source_columns)
+        if unknown_allowed_columns:
+            raise AcceptanceError(
+                f"{dataset} legacy missing-column allowance names unknown source columns: "
+                f"{sorted(unknown_allowed_columns)}"
+            )
+        content_columns = [
+            column for column in source_columns if column not in allowed_legacy_missing_columns
+        ]
+        content_indexes = [source_columns.index(column) for column in content_columns]
         template_column_list = ",".join(template_columns)
         identity_index = template_columns.index(identity_column)
         seed_fingerprints: dict[str, str] = {}
@@ -498,7 +511,7 @@ def verify_dataset(
                 continue
             if identity in seed_fingerprints:
                 raise AcceptanceError(f"{dataset} pristine template contains a duplicate seed identity")
-            seed_fingerprints[identity] = _row_digest(tuple(row))
+            seed_fingerprints[identity] = _row_digest(tuple(row[index] for index in content_indexes))
         if set(seed_fingerprints) != seed_ids:
             raise AcceptanceError(f"{dataset} pristine template does not contain every seed source row")
 
@@ -556,10 +569,13 @@ def verify_dataset(
             try:
                 archived_columns = _table_columns(archive, dataset)
                 missing_columns = set(source_columns) - set(archived_columns)
-                if missing_columns:
+                unexpected_missing_columns = missing_columns - allowed_legacy_missing_columns
+                if unexpected_missing_columns:
                     raise AcceptanceError(
-                        f"{dataset} archive is missing complete source row columns: {sorted(missing_columns)}"
+                        f"{dataset} archive is missing complete source row columns: "
+                        f"{sorted(unexpected_missing_columns)}"
                     )
+                observed_legacy_missing_columns.update(missing_columns)
                 if dataset == "codex_invocations":
                     if require_summary_proof:
                         _verify_summary_proof(
@@ -576,9 +592,9 @@ def verify_dataset(
                         # proof source. It may contain legacy V2 pages that predate the current
                         # semantic contract; candidate runs must still verify every page.
                         summary_proof_verified = False
-                archived_identity_index = archived_columns.index(identity_column)
-                occurred_at_index = archived_columns.index("occurred_at")
-                selected_columns = ",".join(source_columns)
+                archived_identity_index = content_columns.index(identity_column)
+                occurred_at_index = content_columns.index("occurred_at")
+                selected_columns = ",".join(content_columns)
                 rows = archive.execute(f"SELECT {selected_columns} FROM {dataset}")
                 actual_count = 0
                 for index, row in enumerate(rows):
@@ -612,6 +628,7 @@ def verify_dataset(
         live_counts: Counter[str] = Counter()
         source_identity_index = source_columns.index(identity_column)
         source_occurred_at_index = source_columns.index("occurred_at")
+        source_content_indexes = [source_columns.index(column) for column in content_columns]
         attempt_invoke_index = source_columns.index("invoke_id") if dataset == "pool_upstream_request_attempts" else None
         cutoff_at = datetime.fromisoformat(cutoff).replace(tzinfo=timezone(timedelta(hours=8)))
         selected_columns = ",".join(source_columns)
@@ -621,7 +638,7 @@ def verify_dataset(
             identity = row[source_identity_index]
             if not isinstance(identity, str) or identity not in expected_ids:
                 raise AcceptanceError(f"{dataset} live source contains an unrecognized row identity")
-            row_fingerprint = _row_digest(tuple(row))
+            row_fingerprint = _row_digest(tuple(row[index] for index in source_content_indexes))
             if identity in seed_ids and row_fingerprint != seed_fingerprints[identity]:
                 raise AcceptanceError(f"{dataset} live source changed full seed row content for {identity}")
             if identity in added_ids:
@@ -666,12 +683,13 @@ def verify_dataset(
         "lost_rows": lost_rows,
         "duplicate_rows": duplicate_rows,
         "archive_manifest_count": len(manifests),
-        "row_content_columns": len(source_columns),
+        "row_content_columns": len(content_columns),
         "row_content_rows_checked": len(content_records),
         "row_content_sha256": content_digest.hexdigest(),
         "summary_proof_required": require_summary_proof,
         "summary_proof_verified": summary_proof_verified,
         "legacy_source_artifact_duplicates_allowed": allow_legacy_source_artifact_duplicates,
+        "legacy_missing_source_columns": sorted(observed_legacy_missing_columns),
         **({"attempt_invocation_map_sha256": sha256_json(sorted([[attempt_id, invoke_id] for attempt_id, invoke_id in added_attempt_invocations.items()]))} if dataset == "pool_upstream_request_attempts" else {}),
         "verified": True,
     }
@@ -688,6 +706,7 @@ def verify_trial(
     budget_check: Callable[[], float] | None = None,
     require_summary_proof: bool = True,
     allow_legacy_source_artifact_duplicates: bool = False,
+    allow_legacy_missing_source_columns: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     scratch.mkdir(parents=True, exist_ok=True)
     results = {}
@@ -717,6 +736,7 @@ def verify_trial(
             cutoff=cutoff,
             require_summary_proof=require_summary_proof,
             allow_legacy_source_artifact_duplicates=allow_legacy_source_artifact_duplicates,
+            allow_legacy_missing_source_columns=(allow_legacy_missing_source_columns or {}).get(name),
             budget_check=budget_check,
         )
         results[name] = result

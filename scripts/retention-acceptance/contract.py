@@ -43,7 +43,7 @@ MAX_WRITE_HOLD_P95_MS = 250.0
 WRITE_TIMING_TOLERANCE_MS = 0.01
 SEED = 20261024
 RETENTION_DAYS = 1
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CONTAINER_LABEL_PREFIX = "io.github.ivanli.codex-vibe-monitor.retention."
 CONTAINER_RUN_ID_LABEL = CONTAINER_LABEL_PREFIX + "run-id"
 CONTAINER_KIND_LABEL = CONTAINER_LABEL_PREFIX + "kind"
@@ -940,6 +940,15 @@ def validate_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                         result.get("summary_proof_verified") is True,
                         f"candidate summary proof for {name} was not verified",
                     )
+                expected_legacy_missing_columns = (
+                    ["occurred_epoch_ms"]
+                    if version == "baseline" and name == "pool_upstream_attempts"
+                    else []
+                )
+                _require(
+                    result.get("legacy_missing_source_columns") == expected_legacy_missing_columns,
+                    f"{version} {name} legacy missing-column evidence is not exact",
+                )
                 _require(result.get("seed_rows") == DATASETS[name]["seed_rows"], f"oracle seed population mismatch for {name}")
                 _require(result.get("actual_added_rows") == trial["input_counts"][name], f"oracle {name} addition count is not bound to measured writes")
                 for field in ("actual_added_rows", "converted_rows", "distinct_archived_rows", "live_rows", "lost_rows", "duplicate_rows"):

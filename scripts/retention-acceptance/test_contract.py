@@ -67,6 +67,7 @@ def oracle_result(name: str, additions: int) -> dict:
         "row_content_columns": 8,
         "row_content_rows_checked": definition["seed_rows"] + additions,
         "row_content_sha256": "c" * 64,
+        "legacy_missing_source_columns": [],
         "sustained_window_input_seconds": 120.0,
         "sustained_window_seconds": 123.0,
         "sustained_convergence_factor": (converted / 123.0) / (additions / 120.0),
@@ -187,6 +188,8 @@ def trial_evidence(version: str, index: int, start: datetime, previous_end: date
         result["summary_proof_required"] = version == "candidate"
         result["summary_proof_verified"] = version == "candidate"
         result["legacy_source_artifact_duplicates_allowed"] = version == "baseline"
+    if version == "baseline":
+        oracle_datasets["pool_upstream_attempts"]["legacy_missing_source_columns"] = ["occurred_epoch_ms"]
     archive_proof_status = {
         "ready": version == "candidate",
         "reference_ready": True,

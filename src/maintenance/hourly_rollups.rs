@@ -888,6 +888,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
     )
     .await?;
     for (column, ty) in [
+        ("occurred_epoch_ms", "INTEGER"),
         ("attempt_public_id", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
@@ -953,6 +954,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         load_sqlite_table_columns_from_connection(conn, None, "pool_upstream_request_attempts")
             .await?;
     for (column, ty) in [
+        ("occurred_epoch_ms", "INTEGER"),
         ("attempt_public_id", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),

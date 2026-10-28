@@ -1477,6 +1477,11 @@ def run_trial(
             root / f"oracle-{version}-{index}",
             require_summary_proof=version == "candidate",
             allow_legacy_source_artifact_duplicates=version == "baseline",
+            allow_legacy_missing_source_columns=(
+                {"pool_upstream_attempts": {"occurred_epoch_ms"}}
+                if version == "baseline"
+                else {}
+            ),
             budget_check=lambda: remaining_budget(phase_started),
         )
     except BaseException as error:
