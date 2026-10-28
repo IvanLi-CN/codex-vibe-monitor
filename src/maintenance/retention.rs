@@ -103,6 +103,7 @@ mod ttft_retention_tests {
             invoke_id: "invoke-7".to_string(),
             occurred_at: "2026-07-25 12:00:00".to_string(),
             source: SOURCE_PROXY.to_string(),
+            model: Some("gpt-5-codex".to_string()),
             status: Some("success".to_string()),
             input_tokens: Some(10),
             output_tokens: Some(2),
@@ -110,6 +111,15 @@ mod ttft_retention_tests {
             reasoning_tokens: None,
             total_tokens: Some(12),
             cost: Some(0.01),
+            cost_input: Some(0.005),
+            cost_cache_write: None,
+            cost_cache_read: Some(0.001),
+            cost_output: Some(0.004),
+            cost_reasoning: None,
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: Some(1),
             first_token_ms: Some(321.0),
             payload: None,
             request_raw_path: None,
@@ -119,6 +129,11 @@ mod ttft_retention_tests {
         let row = invocation_archive_candidate_to_hourly_source_record(&candidate);
 
         assert_eq!(row.first_token_ms, Some(321.0));
+        assert_eq!(row.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(row.cost_input, Some(0.005));
+        assert_eq!(row.cost_cache_read, Some(0.001));
+        assert_eq!(row.cost_output, Some(0.004));
+        assert_eq!(row.is_actionable, Some(1));
     }
 }
 

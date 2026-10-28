@@ -53,6 +53,8 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) source: String,
+    #[sqlx(default)]
+    pub(crate) model: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
@@ -61,6 +63,24 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_input: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_write: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_read: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_output: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_reasoning: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) failure_kind: Option<String>,
+    #[sqlx(default)]
+    pub(crate) failure_class: Option<String>,
+    #[sqlx(default)]
+    pub(crate) is_actionable: Option<i64>,
     pub(crate) first_token_ms: Option<f64>,
     pub(crate) payload: Option<String>,
     pub(crate) request_raw_path: Option<String>,
@@ -74,9 +94,11 @@ pub(crate) async fn load_invocation_archive_candidates_by_ids(
     let ids_json = serde_json::to_string(ids)?;
     sqlx::query_as::<_, InvocationArchiveCandidate>(
         r#"
-        SELECT id, invoke_id, occurred_at, source, status, input_tokens, output_tokens,
-               cache_input_tokens, reasoning_tokens, total_tokens, cost, first_token_ms,
-               payload, request_raw_path, response_raw_path
+        SELECT id, invoke_id, occurred_at, source, model, status, input_tokens, output_tokens,
+               cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input,
+               cost_cache_write, cost_cache_read, cost_output, cost_reasoning, error_message,
+               failure_kind, failure_class, is_actionable, first_token_ms, payload,
+               request_raw_path, response_raw_path
         FROM codex_invocations
         WHERE id IN (SELECT value FROM json_each(?1))
         ORDER BY id ASC
