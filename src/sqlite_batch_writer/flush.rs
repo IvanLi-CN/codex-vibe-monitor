@@ -1091,12 +1091,14 @@ pub(crate) async fn flush_pending_batch_inner(
 
 async fn flush_sqlite_owned_p2_side_effects(
     pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
     batch: &PendingBatch,
     write_legacy_task_runs: bool,
 ) -> Result<()> {
+    let _authority_lease = traffic_authority.acquire_write_authority().await?;
     // PostgreSQL facts commit before these SQLite-owned observations. Drain the durable outbox
     // first so a process crash between those commits leaves a replayable obligation.
-    replay_account_selected_touch_outbox(pool).await?;
+    replay_account_selected_touch_outbox_under_authority(pool).await?;
     let has_derived_account_activity = batch
         .invocation_derived
         .values()
@@ -1178,7 +1180,17 @@ pub(crate) async fn persist_account_selected_touch_outbox(
 /// The account update and outbox deletion share one SQLite transaction. If the process dies
 /// after the update but before commit, the row remains; if it dies after commit, both are done.
 /// Replaying a duplicate row is safe because `last_selected_at` only moves forward.
-pub(crate) async fn replay_account_selected_touch_outbox(pool: &Pool<Sqlite>) -> Result<usize> {
+pub(crate) async fn replay_account_selected_touch_outbox(
+    pool: &Pool<Sqlite>,
+    traffic_authority: &crate::storage::traffic::TrafficFactStore,
+) -> Result<usize> {
+    let _authority_lease = traffic_authority.acquire_write_authority().await?;
+    replay_account_selected_touch_outbox_under_authority(pool).await
+}
+
+async fn replay_account_selected_touch_outbox_under_authority(
+    pool: &Pool<Sqlite>,
+) -> Result<usize> {
     let rows = sqlx::query_as::<_, (i64, i64, String)>(
         r#"
         SELECT id, account_id, selected_at
@@ -1904,7 +1916,13 @@ async fn flush_pending_batch_inner_with_authority(
     }
     traffic_tx.commit().await?;
     if traffic_backend == crate::storage::core::BackendKind::Postgres {
-        flush_sqlite_owned_p2_side_effects(pool, batch, write_legacy_task_runs).await?;
+        flush_sqlite_owned_p2_side_effects(
+            pool,
+            traffic_authority,
+            batch,
+            write_legacy_task_runs,
+        )
+        .await?;
         terminal_overlay_keys.extend(
             batch
                 .invocation_derived

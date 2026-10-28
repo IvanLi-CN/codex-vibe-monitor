@@ -129,6 +129,7 @@ impl StorageRuntimeRouter {
     }
 
     async fn recover_authority(&self) -> Result<()> {
+        self.worker.migration.validate_runtime_identity().await?;
         let status = self.worker.migration.snapshot().await;
         let record = self
             .worker
@@ -137,6 +138,11 @@ impl StorageRuntimeRouter {
             .await?;
         match record {
             AuthorityRecoveryRecord::Manifest(manifest) => {
+                validate_manifest_identity(
+                    &manifest,
+                    &status,
+                    expected_postgres_target_identity(&self.worker.config),
+                )?;
                 if manifest.authority.backend != BackendKind::Postgres {
                     bail!("durable traffic authority manifest is not PostgreSQL");
                 }
@@ -994,6 +1000,59 @@ fn recovery_context_from_record(
             bail!("module authority recovery is indeterminate")
         }
     }
+}
+
+fn expected_postgres_target_identity(config: &StorageConfig) -> &'static str {
+    if config
+        .postgres_database_url
+        .as_deref()
+        .is_some_and(|url| !url.trim().is_empty())
+    {
+        "postgres:configured"
+    } else {
+        "postgres:unconfigured"
+    }
+}
+
+fn validate_manifest_identity(
+    manifest: &ModuleAuthorityManifest,
+    status: &StorageMigrationResponse,
+    expected_target_identity: &str,
+) -> Result<()> {
+    let status_module = "traffic_archive";
+    if manifest.migration_id != MIGRATION_ID
+        || manifest.installation_id != INSTALLATION_ID
+        || manifest.module != StorageModule::TrafficArchive
+        || manifest.source_identity != SOURCE_IDENTITY
+        || manifest.target_identity != expected_target_identity
+        || status.migration_id.as_deref() != Some(MIGRATION_ID)
+        || status.module != status_module
+        || status.source.identity != SOURCE_IDENTITY
+        || status.target.identity != expected_target_identity
+        || manifest.target_identity != status.target.identity
+        || manifest.source_watermark < 0
+    {
+        bail!("durable traffic authority manifest identity does not match runtime state");
+    }
+
+    let status_watermarks = [
+        status.progress.captured_through,
+        status.progress.applied_through,
+    ];
+    if status.state == StorageMigrationState::Postgres {
+        if status.progress.captured_through != Some(manifest.source_watermark)
+            || status.progress.applied_through != Some(manifest.source_watermark)
+        {
+            bail!("durable traffic authority manifest watermark does not match PostgreSQL status");
+        }
+    } else if status_watermarks
+        .into_iter()
+        .flatten()
+        .any(|watermark| watermark > manifest.source_watermark)
+    {
+        bail!("durable traffic authority manifest watermark regresses migration progress");
+    }
+    Ok(())
 }
 
 fn module_name(module: StorageModule) -> &'static str {

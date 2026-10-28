@@ -11,7 +11,7 @@ use crate::storage::migration_status::{
 };
 use crate::storage::runtime::StorageRuntimeRouter;
 use crate::storage::traffic::TrafficFactStore;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Pool, Sqlite, sqlite::SqlitePoolOptions};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -328,4 +328,165 @@ async fn postgres_authority_does_not_consume_the_fenced_sqlite_source_lease() {
         Err(error) => error,
     };
     assert!(error.to_string().contains("without a PostgreSQL pool"));
+}
+
+#[tokio::test]
+async fn restart_rejects_every_durable_postgres_manifest_identity_mismatch() {
+    for field in [
+        "migration_id",
+        "installation_id",
+        "module",
+        "source_identity",
+        "target_identity",
+        "source_watermark",
+    ] {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("SQLite pool should open");
+        ensure_persistence_schema(&pool)
+            .await
+            .expect("migration status persistence should exist");
+        let config = StorageConfig {
+            postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+            ..StorageConfig::default()
+        };
+        let migration = Arc::new(
+            StorageMigrationRuntime::load(&config, pool.clone())
+                .await
+                .expect("migration status should load"),
+        );
+        let mut manifest = seed_postgres_authority_fixture(&pool, &config, &migration).await;
+        match field {
+            "migration_id" => manifest.migration_id = "other-migration".to_string(),
+            "installation_id" => manifest.installation_id = "other-installation".to_string(),
+            "module" => manifest.module = StorageModule::Analytics,
+            "source_identity" => manifest.source_identity = "sqlite:other".to_string(),
+            "target_identity" => manifest.target_identity = "postgres:other".to_string(),
+            "source_watermark" => manifest.source_watermark = 6,
+            _ => unreachable!("test field is listed above"),
+        }
+        sqlx::query(
+            "UPDATE storage_migration_authority
+             SET manifest_json = ?1
+             WHERE module = 'traffic_archive'",
+        )
+        .bind(serde_json::to_string(&manifest).expect("manifest should encode"))
+        .execute(&pool)
+        .await
+        .expect("corrupted manifest should persist");
+
+        let restarted_migration = Arc::new(
+            StorageMigrationRuntime::load(&config, pool.clone())
+                .await
+                .expect("durable migration status should reload"),
+        );
+        let error = StorageRuntimeRouter::initialize(
+            pool,
+            &config,
+            restarted_migration,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("corrupted manifest identity must fail closed");
+        assert!(
+            error.to_string().contains("manifest") || error.to_string().contains("watermark"),
+            "{field}: {error:#}"
+        );
+    }
+}
+
+async fn seed_postgres_authority_fixture(
+    pool: &Pool<Sqlite>,
+    config: &StorageConfig,
+    migration: &Arc<StorageMigrationRuntime>,
+) -> ModuleAuthorityManifest {
+    let router = StorageRuntimeRouter::initialize(
+        pool.clone(),
+        config,
+        migration.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("initial SQLite authority should initialize");
+    let context = AuthorityRecoveryContext {
+        migration_id: "storage-migration".to_string(),
+        installation_id: "local".to_string(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite:local".to_string(),
+        target_identity: "postgres:configured".to_string(),
+        source_watermark: 7,
+    };
+    router
+        .worker()
+        .metadata
+        .set_recovery_context(&context)
+        .await
+        .expect("authority recovery context should persist");
+    let manifest = ModuleAuthorityManifest {
+        migration_id: context.migration_id.clone(),
+        installation_id: context.installation_id.clone(),
+        source_identity: context.source_identity.clone(),
+        module: context.module,
+        authority: ModuleAuthority {
+            backend: BackendKind::Postgres,
+            generation: 2,
+        },
+        source_watermark: context.source_watermark,
+        target_identity: context.target_identity.clone(),
+    };
+    assert_eq!(
+        router
+            .worker()
+            .metadata
+            .publish_authority_manifest(&manifest, &context)
+            .await
+            .expect("authority manifest should publish"),
+        AuthorityPublication::Committed
+    );
+    migration
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("migration should start");
+    for phase in [
+        StorageMigrationState::Copying,
+        StorageMigrationState::CatchingUp,
+        StorageMigrationState::Verifying,
+        StorageMigrationState::Ready,
+        StorageMigrationState::Switching,
+    ] {
+        migration
+            .publish_progress(StorageMigrationProgress {
+                phase,
+                ..StorageMigrationProgress::default()
+            })
+            .await
+            .expect("migration phase should persist");
+    }
+    migration
+        .publish_postgres_authority(2, 7)
+        .await
+        .expect("migration status should publish PostgreSQL authority");
+    sqlx::query(
+        "CREATE TABLE migration_change_log_state (
+            migration_id TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            authority_generation INTEGER NOT NULL,
+            source_writes_fenced INTEGER NOT NULL,
+            PRIMARY KEY (migration_id, source_identity)
+        )",
+    )
+    .execute(pool)
+    .await
+    .expect("source authority state should exist");
+    sqlx::query(
+        "INSERT INTO migration_change_log_state
+            (migration_id, source_identity, authority_generation, source_writes_fenced)
+         VALUES ('storage-migration', 'sqlite:local', 2, 1)",
+    )
+    .execute(pool)
+    .await
+    .expect("source authority fence should persist");
+    manifest
 }

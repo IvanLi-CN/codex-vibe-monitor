@@ -669,6 +669,24 @@ impl StorageMigrationRuntime {
         self.state.lock().await.response.clone()
     }
 
+    pub(crate) async fn validate_runtime_identity(&self) -> Result<()> {
+        let state = self.state.lock().await;
+        let expected_target_identity = if state.target_configured {
+            TARGET_IDENTITY_CONFIGURED
+        } else {
+            TARGET_IDENTITY_UNCONFIGURED
+        };
+        if state.status.migration_id != MIGRATION_ID
+            || state.status.installation_id != INSTALLATION_ID
+            || state.status.module != StorageModule::TrafficArchive
+            || state.status.source_identity != SOURCE_IDENTITY
+            || state.status.target_identity != expected_target_identity
+        {
+            bail!("persisted storage migration status belongs to another runtime identity");
+        }
+        Ok(())
+    }
+
     pub(crate) fn subscribe(&self) -> watch::Receiver<StorageMigrationEvent> {
         self.event_receiver.clone()
     }

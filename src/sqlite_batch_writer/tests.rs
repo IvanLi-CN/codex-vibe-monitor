@@ -2102,6 +2102,7 @@ async fn account_selected_touch_batch_coalesces_by_account_id() {
 #[tokio::test]
 async fn account_selected_touch_outbox_replays_after_postgres_fact_commit_boundary() {
     let pool = test_pool().await;
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::sqlite(pool.clone());
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_accounts (
@@ -2146,7 +2147,7 @@ async fn account_selected_touch_outbox_replays_after_postgres_fact_commit_bounda
     // The in-memory batch may be gone after the PG fact commits and the process crashes here.
     drop(pending);
     assert_eq!(
-        replay_account_selected_touch_outbox(&pool)
+        replay_account_selected_touch_outbox(&pool, &traffic_authority)
             .await
             .expect("replay account-selection outbox"),
         1
@@ -2186,7 +2187,7 @@ async fn account_selected_touch_outbox_replays_after_postgres_fact_commit_bounda
     .await
     .expect("persist idempotent retry outbox");
     assert_eq!(
-        replay_account_selected_touch_outbox(&pool)
+        replay_account_selected_touch_outbox(&pool, &traffic_authority)
             .await
             .expect("replay idempotent retry outbox"),
         1
@@ -2199,5 +2200,43 @@ async fn account_selected_touch_outbox_replays_after_postgres_fact_commit_bounda
         .await
         .expect("read account after idempotent retry"),
         Some("2026-07-01T10:00:05Z".to_string())
+    );
+}
+
+#[tokio::test]
+async fn account_selected_touch_outbox_replay_respects_traffic_authority_gate() {
+    let pool = test_pool().await;
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_selected_touch_outbox (account_id, selected_at)
+         VALUES (79, '2026-07-01T10:00:05Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed outbox row");
+    let gate = crate::storage::core::ModuleGenerationGate::new(
+        crate::storage::core::StorageModule::TrafficArchive,
+        crate::storage::core::ModuleAuthority {
+            backend: crate::storage::core::BackendKind::Sqlite,
+            generation: 1,
+        },
+    );
+    gate.require_recovery();
+    let traffic_authority = crate::storage::traffic::TrafficFactStore::with_authority(
+        crate::storage::core::StoragePools::sqlite_only(pool.clone()),
+        gate,
+    );
+
+    let error = replay_account_selected_touch_outbox(&pool, &traffic_authority)
+        .await
+        .expect_err("replay must fail closed while traffic authority recovery is required");
+    assert!(error.to_string().contains("admission"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pool_upstream_account_selected_touch_outbox",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count pending outbox rows"),
+        1
     );
 }

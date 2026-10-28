@@ -7,8 +7,8 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sqlx::{PgConnection, Pool, Postgres, QueryBuilder, Sqlite, SqliteConnection};
 
 use super::core::{
-    BackendKind, ModuleAuthority, ModuleGenerationGate, StorageModule, StoragePools,
-    TrafficArchiveTransaction, TypedStorageTransaction,
+    BackendKind, ModuleAuthority, ModuleGenerationGate, ModuleGenerationLease, StorageModule,
+    StoragePools, TrafficArchiveTransaction, TypedStorageTransaction,
 };
 use super::migration::{SourceWriteFence, SourceWriteLease};
 
@@ -57,6 +57,13 @@ pub(crate) struct TrafficFactStore {
     pools: StoragePools,
     gate: ModuleGenerationGate,
     source_fence: Option<SourceWriteFence>,
+}
+
+/// Authority and source-fence lease for SQLite writes that are not part of a traffic fact
+/// transaction but still must not race a traffic-module authority switch.
+pub(crate) struct TrafficWriteAuthorityLease {
+    _generation_lease: ModuleGenerationLease,
+    _source_write_lease: Option<SourceWriteLease>,
 }
 
 impl fmt::Debug for TrafficFactStore {
@@ -109,6 +116,23 @@ impl TrafficFactStore {
 
     pub(crate) async fn authority_backend(&self) -> BackendKind {
         self.gate.current_authority().await.backend
+    }
+
+    pub(crate) async fn acquire_write_authority(&self) -> Result<TrafficWriteAuthorityLease> {
+        let generation_lease = self.gate.acquire(StorageModule::TrafficArchive).await?;
+        let source_write_lease = if generation_lease.lease.authority.backend == BackendKind::Sqlite
+        {
+            match &self.source_fence {
+                Some(source_fence) => Some(source_fence.begin_write().await?),
+                None => None,
+            }
+        } else {
+            None
+        };
+        Ok(TrafficWriteAuthorityLease {
+            _generation_lease: generation_lease,
+            _source_write_lease: source_write_lease,
+        })
     }
 
     pub(crate) async fn begin_with_pool_acquisition_duration(

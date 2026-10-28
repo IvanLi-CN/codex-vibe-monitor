@@ -1094,15 +1094,6 @@ pub(crate) async fn run() -> Result<()> {
 
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
-        match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(&pool).await {
-            Ok(replayed) if replayed > 0 => {
-                info!(replayed, "replayed account-selection observations at startup");
-            }
-            Ok(_) => {}
-            Err(error) => {
-                warn!(error = %error, "account-selection observation outbox replay deferred");
-            }
-        }
         let storage_migration = Arc::new(
             StorageMigrationRuntime::load(&config.storage, pool.clone())
                 .await
@@ -1118,6 +1109,21 @@ pub(crate) async fn run() -> Result<()> {
             )
             .await
             .context("failed to initialize storage runtime router")?;
+        let traffic_authority = storage_runtime.traffic_authority();
+        match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(
+            &pool,
+            traffic_authority.as_ref(),
+        )
+        .await
+        {
+            Ok(replayed) if replayed > 0 => {
+                info!(replayed, "replayed account-selection observations at startup");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "account-selection observation outbox replay deferred");
+            }
+        }
         initialize_invocation_identity_cleanup_state(&pool, false).await?;
         let maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
@@ -1357,7 +1363,6 @@ pub(crate) async fn run() -> Result<()> {
             pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             upstream_accounts,
         });
-        storage_runtime.start().await;
         if let Some(store) = crate::maintenance_store::global().cloned() {
             crate::task_timeline::start_recorder(store).await;
         }
@@ -1823,6 +1828,9 @@ where
         startup_recovery_fence,
         startup_recovery_connect_options,
     ));
+    if let Some(storage_runtime) = state.storage_runtime.as_ref() {
+        storage_runtime.start().await;
+    }
     // The periodic sweep is a runtime recovery path, not part of the fenced startup batch. It
     // remains available after a fence capture failure, while the shared owner gate prevents it
     // from overlapping the startup coordinator when that coordinator is still active.
