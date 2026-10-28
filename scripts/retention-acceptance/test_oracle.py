@@ -62,6 +62,7 @@ class OracleTests(unittest.TestCase):
         month_key: str = MONTH,
         stored_path: Path | None = None,
         row_overrides: dict[str, dict[str, object]] | None = None,
+        extra_columns: bool = False,
     ) -> Path:
         filename = f"{DATASET}-{month_key}.sqlite.gz"
         path = stored_path or self.archive_root / DATASET / month_key[:4] / filename
@@ -69,7 +70,11 @@ class OracleTests(unittest.TestCase):
         sqlite_path = self.root / "archive.sqlite"
         archive = sqlite3.connect(sqlite_path)
         archive.execute(
-            "CREATE TABLE pool_upstream_request_attempts(id INTEGER,attempt_public_id TEXT,invoke_id TEXT,occurred_at TEXT,status TEXT,request_summary_json TEXT)"
+            "CREATE TABLE pool_upstream_request_attempts("
+            "id INTEGER,attempt_public_id TEXT,invoke_id TEXT,occurred_at TEXT,status TEXT,"
+            "request_summary_json TEXT"
+            + (",archive_compat TEXT" if extra_columns else "")
+            + ")"
         )
         archive_rows = []
         for identity, occurred_at in rows:
@@ -85,7 +90,12 @@ class OracleTests(unittest.TestCase):
             archive_rows.append(tuple(row[column] for column in (
                 "id", "attempt_public_id", "invoke_id", "occurred_at", "status", "request_summary_json"
             )))
-        archive.executemany("INSERT INTO pool_upstream_request_attempts VALUES(?,?,?,?,?,?)", archive_rows)
+        archive.executemany(
+            "INSERT INTO pool_upstream_request_attempts "
+            "(id,attempt_public_id,invoke_id,occurred_at,status,request_summary_json) "
+            "VALUES(?,?,?,?,?,?)",
+            archive_rows,
+        )
         archive.commit()
         archive.close()
         with sqlite_path.open("rb") as source, gzip.open(path, "wb") as target:
@@ -220,6 +230,15 @@ class OracleTests(unittest.TestCase):
                 layout="segment_v1",
                 codec="gzip",
             )
+
+    def test_archive_compatibility_columns_do_not_hide_source_rows(self) -> None:
+        path = self.make_archive(
+            [("seed-archived", f"{MONTH}-12T12:00:00Z")],
+            extra_columns=True,
+        )
+        self.add_manifest(path, 1)
+        result = self.verify({"seed-archived", "seed-live"})
+        self.assertEqual(result["converted_rows"], 1)
 
     def test_archive_full_row_content_must_match_the_pristine_source(self) -> None:
         path = self.make_archive(

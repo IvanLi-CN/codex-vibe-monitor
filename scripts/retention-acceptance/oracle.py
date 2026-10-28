@@ -554,8 +554,11 @@ def verify_dataset(
             archive = sqlite3.connect(f"file:{decompressed}?mode=ro", uri=True)
             try:
                 archived_columns = _table_columns(archive, dataset)
-                if archived_columns != source_columns:
-                    raise AcceptanceError(f"{dataset} archive columns differ from the complete source row")
+                missing_columns = set(source_columns) - set(archived_columns)
+                if missing_columns:
+                    raise AcceptanceError(
+                        f"{dataset} archive is missing complete source row columns: {sorted(missing_columns)}"
+                    )
                 if dataset == "codex_invocations":
                     proof_exists = connection.execute(
                         "SELECT 1 FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id=? AND manifest_sha256=?",
