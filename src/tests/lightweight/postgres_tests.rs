@@ -10,6 +10,9 @@ use serde::Deserialize;
 use sqlx::{Connection, SqlitePool, postgres::PgPoolOptions, sqlite::SqliteConnectOptions};
 use tokio::sync::{Mutex, Semaphore};
 
+use crate::sqlite_batch_writer::{
+    BatchedTerminalInvocationWrite, SqliteBatchWrite, SqliteBatchWriter,
+};
 use crate::storage::catalog::{CatalogError, ModuleCatalog, ModuleId, RecoveryObligation};
 use crate::storage::config::StorageConfig;
 use crate::storage::core::{
@@ -1274,6 +1277,161 @@ async fn current_sqlite_schema_builds_native_traffic_analytics_catalog() {
     assert!(wide_row.values().iter().any(|(column, value)| {
         column == "payload" && value == &NativeValue::Text("{\"wide\":true}".into())
     }));
+}
+
+#[tokio::test]
+async fn sqlite_batch_writer_native_capture_is_transactional_for_replace() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    crate::schema::ensure_schema(&pool).await.unwrap();
+    crate::prompt_cache_conversations::ensure_prompt_cache_conversations_schema(&pool)
+        .await
+        .unwrap();
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+        .unwrap();
+    let migration_id = "migration-writer-capture";
+    let source_identity = "sqlite:writer-capture";
+    let source = SqliteMigrationSource::from_native_catalog(
+        pool.clone(),
+        migration_id,
+        source_identity,
+        "migration_change_log",
+        &native,
+        StorageModule::TrafficArchive,
+    )
+    .unwrap();
+    source.ensure_capture_schema().await.unwrap();
+    source.ensure_native_capture_triggers().await.unwrap();
+
+    SqliteBatchWriter::flush_for_test(
+        &pool,
+        vec![SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                enqueued_at: None,
+                diagnostic: None,
+                record: crate::tests::test_proxy_capture_record(
+                    "writer-native-capture",
+                    "2026-08-11 12:00:00",
+                ),
+                attempts: Vec::new(),
+                capture_started: None,
+                raw_capture: false,
+                dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
+            },
+        )],
+    )
+    .await;
+
+    let recursive_triggers: i64 = sqlx::query_scalar("PRAGMA recursive_triggers")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(recursive_triggers, 1);
+    let writer_capture_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM migration_change_log
+          WHERE migration_id = ?1
+            AND source_identity = ?2
+            AND table_name = 'codex_invocations'
+            AND kind = 'insert'",
+    )
+    .bind(migration_id)
+    .bind(source_identity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(writer_capture_count, 1);
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (id, invoke_id, occurred_at, raw_response)
+         VALUES (9001, 'replace-capture', '2026-08-11 12:01:00', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before_replace_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(source_version), 0)
+           FROM migration_change_log
+          WHERE migration_id = ?1 AND source_identity = ?2",
+    )
+    .bind(migration_id)
+    .bind(source_identity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO codex_invocations (id, invoke_id, occurred_at, raw_response)
+         VALUES (9002, 'replace-capture', '2026-08-11 12:01:00', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let replace_changes = sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+        "SELECT source_version, kind, stable_key, previous_key
+           FROM migration_change_log
+          WHERE migration_id = ?1
+            AND source_identity = ?2
+            AND table_name = 'codex_invocations'
+            AND source_version > ?3
+          ORDER BY source_version, capture_id",
+    )
+    .bind(migration_id)
+    .bind(source_identity)
+    .bind(before_replace_version)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(replace_changes.len(), 2);
+    assert_eq!(replace_changes[0].1, "delete");
+    assert_eq!(replace_changes[1].1, "insert");
+    assert_ne!(replace_changes[0].2, replace_changes[1].2);
+    assert_eq!(replace_changes[1].0, replace_changes[0].0 + 1);
+
+    let before_rollback_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(source_version), 0)
+           FROM migration_change_log
+          WHERE migration_id = ?1 AND source_identity = ?2",
+    )
+    .bind(migration_id)
+    .bind(source_identity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT OR REPLACE INTO codex_invocations (id, invoke_id, occurred_at, raw_response)
+         VALUES (9003, 'replace-capture', '2026-08-11 12:01:00', '{}')",
+    )
+    .execute(transaction.as_mut())
+    .await
+    .unwrap();
+    transaction.rollback().await.unwrap();
+
+    let after_rollback_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(source_version), 0)
+           FROM migration_change_log
+          WHERE migration_id = ?1 AND source_identity = ?2",
+    )
+    .bind(migration_id)
+    .bind(source_identity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_rollback_version, before_rollback_version);
+    let rolled_back_row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE id = 9003")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rolled_back_row_count, 0);
 }
 
 #[tokio::test]
