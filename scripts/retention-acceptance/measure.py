@@ -1264,7 +1264,7 @@ def mark_proof_edge_active(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             and row.get("trigger_kind") == "catchup"
             and row.get("status") == "running"
             and isinstance(row.get("progress"), dict)
-            and row["progress"].get("checkpoint") in {"admitted", "processing", "finished"}
+            and row["progress"].get("checkpoint") in {"admitted", "processing", "waiting", "finished"}
             and task_run_is_proof_edge_active(candidate)
         ):
             row["evidence_kind"] = "proof_edge_active"

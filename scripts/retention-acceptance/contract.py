@@ -345,8 +345,8 @@ def task_run_is_proof_edge_active(row: dict[str, Any]) -> bool:
         and isinstance(row.get("observed_at"), str)
         and row.get("error_detail") is None
         and isinstance(progress, dict)
-        and progress.get("phase") in {"running", "processing"}
-        and progress.get("checkpoint") in {"admitted", "processing", "finished"}
+        and progress.get("phase") in {"running", "processing", "waiting"}
+        and progress.get("checkpoint") in {"admitted", "processing", "waiting", "finished"}
         and progress.get("freshness") == "fresh"
         and (
             progress.get("checkpoint") == "finished"
