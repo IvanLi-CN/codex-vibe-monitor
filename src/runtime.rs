@@ -1181,6 +1181,13 @@ pub(crate) async fn run() -> Result<()> {
             )
             .await
             .context("failed to initialize storage runtime router")?;
+        let analytics_authority = storage_runtime.analytics_authority();
+        if storage_runtime.analytics_backend().await == crate::storage::core::BackendKind::Sqlite {
+            analytics_authority
+                .ensure_projection_checkpoint_schema()
+                .await
+                .context("failed to initialize SQLite analytics projection checkpoints")?;
+        }
         let traffic_authority = storage_runtime.traffic_authority();
         match crate::sqlite_batch_writer::replay_account_selected_touch_outbox(
             &pool,

@@ -876,6 +876,14 @@ impl AppState {
     pub(crate) fn sqlite_storage_pool(&self) -> Pool<Sqlite> {
         self.pool.clone()
     }
+
+    pub(crate) fn analytics_authority(
+        &self,
+    ) -> Option<Arc<crate::storage::analytics::AnalyticsProjectionStore>> {
+        self.storage_runtime
+            .as_ref()
+            .map(|runtime| runtime.analytics_authority())
+    }
 }
 
 #[derive(Debug, Clone)]
