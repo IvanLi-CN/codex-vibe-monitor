@@ -109,10 +109,12 @@ impl StorageRuntimeRouter {
             migration,
             shutdown,
             metadata,
-            traffic_gate.clone(),
-            analytics_gate.clone(),
-            traffic_source_fence,
-            analytics_source_fence,
+            StorageMigrationWorkerAuthorities {
+                traffic_gate: traffic_gate.clone(),
+                analytics_gate: analytics_gate.clone(),
+                traffic_source_fence,
+                analytics_source_fence,
+            },
         ));
         let router = Arc::new(Self {
             pools,
@@ -413,18 +415,22 @@ pub(crate) struct StorageMigrationWorker {
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
+#[derive(Debug, Clone)]
+struct StorageMigrationWorkerAuthorities {
+    traffic_gate: ModuleGenerationGate,
+    analytics_gate: ModuleGenerationGate,
+    traffic_source_fence: SourceWriteFence,
+    analytics_source_fence: SourceWriteFence,
+}
+
 impl StorageMigrationWorker {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         pool: Pool<Sqlite>,
         config: StorageConfig,
         migration: Arc<StorageMigrationRuntime>,
         shutdown: CancellationToken,
         metadata: Arc<SqliteMigrationMetadataStore>,
-        traffic_gate: ModuleGenerationGate,
-        analytics_gate: ModuleGenerationGate,
-        traffic_source_fence: SourceWriteFence,
-        analytics_source_fence: SourceWriteFence,
+        authorities: StorageMigrationWorkerAuthorities,
     ) -> Self {
         Self {
             pool,
@@ -432,10 +438,10 @@ impl StorageMigrationWorker {
             migration,
             shutdown,
             metadata,
-            traffic_gate,
-            analytics_gate,
-            traffic_source_fence,
-            analytics_source_fence,
+            traffic_gate: authorities.traffic_gate,
+            analytics_gate: authorities.analytics_gate,
+            traffic_source_fence: authorities.traffic_source_fence,
+            analytics_source_fence: authorities.analytics_source_fence,
             started: AtomicBool::new(false),
             notify: Arc::new(Notify::new()),
             handle: Arc::new(Mutex::new(None)),
@@ -1499,22 +1505,24 @@ mod tests {
             migration,
             CancellationToken::new(),
             metadata,
-            ModuleGenerationGate::new(
-                StorageModule::TrafficArchive,
-                super::super::core::ModuleAuthority {
-                    backend: BackendKind::Postgres,
-                    generation: 2,
-                },
-            ),
-            ModuleGenerationGate::new(
-                StorageModule::Analytics,
-                super::super::core::ModuleAuthority {
-                    backend: BackendKind::Sqlite,
-                    generation: 1,
-                },
-            ),
-            SourceWriteFence::new(1),
-            SourceWriteFence::new(1),
+            StorageMigrationWorkerAuthorities {
+                traffic_gate: ModuleGenerationGate::new(
+                    StorageModule::TrafficArchive,
+                    super::super::core::ModuleAuthority {
+                        backend: BackendKind::Postgres,
+                        generation: 2,
+                    },
+                ),
+                analytics_gate: ModuleGenerationGate::new(
+                    StorageModule::Analytics,
+                    super::super::core::ModuleAuthority {
+                        backend: BackendKind::Sqlite,
+                        generation: 1,
+                    },
+                ),
+                traffic_source_fence: SourceWriteFence::new(1),
+                analytics_source_fence: SourceWriteFence::new(1),
+            },
         );
         let error = worker
             .run_migration(status)
