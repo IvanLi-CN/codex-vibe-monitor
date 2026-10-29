@@ -665,7 +665,15 @@ class MeasurementBudgetTests(unittest.TestCase):
         }
         frozen: list[dict[str, object]] = []
         with patch("measure.task_runs", side_effect=[[active_row], [], []]), patch(
-            "measure.validate_task_snapshot"
+            "measure.validate_task_snapshot",
+            side_effect=[
+                None,
+                AcceptanceError(
+                    "production dispatcher has not completed both schedule and catch-up runs "
+                    "for pool_upstream_attempt_archive"
+                ),
+                None,
+            ],
         ), patch("measure.archive_proof_status", side_effect=[ready, incomplete, ready]), patch(
             "measure.time.sleep"
         ), patch("measure.suspend_controlled_task_scheduling") as suspend, patch(

@@ -1406,13 +1406,20 @@ def wait_for_task_evidence(
         latest = task_runs(maintenance_db)
         try:
             raw_oracle = competitor_file_oracle(competitor_raw_dir) if competitor_raw_dir is not None else None
-            validate_task_snapshot(
-                latest,
-                version,
-                allow_recoverable_competitor_failures=bool(
-                    raw_oracle is not None and raw_oracle["verified_empty"]
-                ),
-            )
+            snapshot_error: AcceptanceError | None = None
+            try:
+                validate_task_snapshot(
+                    latest,
+                    version,
+                    allow_recoverable_competitor_failures=bool(
+                        raw_oracle is not None and raw_oracle["verified_empty"]
+                    ),
+                )
+            except AcceptanceError as error:
+                # A pressure-bounded owner run may finish before its required catch-up
+                # retry is admitted. Keep waiting, but never freeze until the snapshot
+                # validates again.
+                snapshot_error = error
             # The fixed seed snapshot intentionally contains 100,000 expired rows. The legacy
             # baseline may still be draining that backlog when its 10x cohort is already proved;
             # the candidate must still complete its schedule/catch-up chain before returning.
@@ -1424,7 +1431,7 @@ def wait_for_task_evidence(
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
             active = active_controlled_task_keys(latest)
-            if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+            if snapshot_error is None and proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
                 if on_proof_ready is not None and not scheduling_suspended:
                     suspend_controlled_task_scheduling(maintenance_db, started)
                     scheduling_suspended = True
@@ -1439,7 +1446,7 @@ def wait_for_task_evidence(
                     return latest
             else:
                 if scheduling_suspended and active:
-                    last_error = AcceptanceError(
+                    last_error = snapshot_error or AcceptanceError(
                         "archive proof edge was lost while controlled owners are still active: "
                         + ",".join(active)
                     )
@@ -1447,7 +1454,9 @@ def wait_for_task_evidence(
                     if scheduling_suspended:
                         resume_controlled_task_scheduling(maintenance_db, started)
                         scheduling_suspended = False
-                    last_error = AcceptanceError("archive proofs, 10x source conversion, or fixed competitor files are still draining")
+                    last_error = snapshot_error or AcceptanceError(
+                        "archive proofs, 10x source conversion, or fixed competitor files are still draining"
+                    )
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
