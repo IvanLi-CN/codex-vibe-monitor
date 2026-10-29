@@ -103,12 +103,22 @@ jobs:
         with:
           tool: cargo-nextest@0.9.138
 
+      - name: Resolve acceptance base
+        id: acceptance_base
+        env:
+          BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          CANDIDATE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$(bash scripts/postgres-acceptance/resolve-pr-base.sh)"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
       - name: Run non-pressure PostgreSQL functional and recovery tests
         env:
           POSTGRES_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/codex_vibe_monitor_test
           POSTGRES_ACCEPTANCE_REQUIRED: '1'
           POSTGRES_ACCEPTANCE_EVIDENCE_DIR: ${{ runner.temp }}/postgres-functional-evidence
-          BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.acceptance_base.outputs.base_sha }}
           CANDIDATE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail

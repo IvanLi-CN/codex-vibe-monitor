@@ -52,6 +52,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
                 return subprocess.check_output(command, cwd=root, env=env).decode().strip()
             base = commit("base")
             candidate = commit("candidate", base)
+            advanced_target = commit("advanced-target", base)
             unrelated = commit("unrelated")
             subprocess.run(["git", "update-ref", "HEAD", candidate], cwd=root, check=True, env=env)
             def validate(base_sha: str, candidate_sha: str) -> int:
@@ -66,6 +67,14 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
                 self.assertNotEqual(validate(bad_base, bad_candidate), 0)
                 args.base_sha, args.candidate_sha = bad_base, bad_candidate
                 self.assertFalse(self.runner.validate_identity(args))
+            resolver = REPO_ROOT / "scripts/postgres-acceptance/resolve-pr-base.sh"
+            def resolve(target: str, event: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(["bash", str(resolver)], cwd=root,
+                    env=dict(env, BASE_SHA=target, CANDIDATE_SHA=candidate, GITHUB_EVENT_NAME=event),
+                    text=True, capture_output=True)
+            self.assertEqual(resolve(advanced_target, "pull_request").stdout.strip(), base)
+            self.assertEqual(resolve(advanced_target, "workflow_dispatch").stdout.strip(), advanced_target)
+            self.assertNotEqual(resolve(unrelated, "pull_request").returncode, 0)
 
     def test_audited_backend_selectors_are_explicit_and_exist(self) -> None:
         names = (REPO_ROOT / "scripts/postgres-acceptance/non-pressure-backend-tests.txt").read_text().splitlines()

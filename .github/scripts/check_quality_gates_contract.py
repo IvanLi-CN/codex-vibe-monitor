@@ -2690,7 +2690,22 @@ def validate_postgres_functional_workflow(path: Path, contract: ContractModel) -
     job = named_job_config(workflow, "postgres-migration-functional", expected, "ci-postgresql-acceptance.yml")
     require_no_if(job, "ci-postgresql-acceptance.yml.jobs.postgres-migration-functional")
     require_fail_closed(job, "ci-postgresql-acceptance.yml.jobs.postgres-migration-functional")
+    resolver = step_config(job, "Resolve acceptance base", "ci-postgresql-acceptance.yml")
+    require_no_if(resolver, "ci-postgresql-acceptance.yml Resolve acceptance base")
+    require_fail_closed(resolver, "ci-postgresql-acceptance.yml Resolve acceptance base")
+    require(resolver.get("id") == "acceptance_base", "PostgreSQL acceptance base step id drifted")
+    resolver_env = require_mapping(resolver.get("env"), "PostgreSQL acceptance base.env")
+    require(resolver_env.get("BASE_SHA") == "${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}"
+            and resolver_env.get("CANDIDATE_SHA") == "${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}",
+            "PostgreSQL acceptance base must use the event base and candidate")
+    require(shell_commands(resolver, "PostgreSQL acceptance base") == [
+        ["set", "-euo", "pipefail"],
+        ["base_sha=$(bash scripts/postgres-acceptance/resolve-pr-base.sh)"],
+        ["echo", "base_sha=$base_sha", ">>", "$GITHUB_OUTPUT"],
+    ], "PostgreSQL acceptance base resolution must fail closed")
     step = step_config(job, "Run non-pressure PostgreSQL functional and recovery tests", "ci-postgresql-acceptance.yml")
+    require(require_mapping(step.get("env"), "PostgreSQL functional step.env").get("BASE_SHA") == "${{ steps.acceptance_base.outputs.base_sha }}",
+            "PostgreSQL functional step must use the resolved base")
     require_postgres_functional_step(step, "ci-postgresql-acceptance.yml PostgreSQL functional step")
     require_nonpressure_backend_step(job, "ci-postgresql-acceptance.yml PostgreSQL functional job")
 
