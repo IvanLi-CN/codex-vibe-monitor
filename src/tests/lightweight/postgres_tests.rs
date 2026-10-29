@@ -1446,6 +1446,80 @@ async fn sqlite_batch_writer_native_capture_is_transactional_for_replace() {
 }
 
 #[tokio::test]
+async fn native_ddl_translates_only_known_id_alphabet_glob_checks() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for statement in [
+        "CREATE TABLE hourly_invoke_prefixes (utc_hour INTEGER PRIMARY KEY, prefix TEXT NOT NULL UNIQUE, CHECK (length(prefix)=6 AND prefix NOT GLOB '*[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]*'))",
+        "CREATE TABLE prompt_cache_conversations (conversation_id TEXT PRIMARY KEY, CHECK (conversation_id NOT GLOB '*[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]*'))",
+        "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, name TEXT, CHECK (name NOT\nGLOB '*[^AB ]*'))",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+        .unwrap();
+    let prefix_ddl = native
+        .table("hourly_invoke_prefixes")
+        .unwrap()
+        .postgres_create_table_sql()
+        .unwrap();
+    assert!(
+        prefix_ddl
+            .contains("length(prefix) = 6 AND prefix !~ '[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]'")
+    );
+    let conversation_ddl = native
+        .table("prompt_cache_conversations")
+        .unwrap()
+        .postgres_create_table_sql()
+        .unwrap();
+    assert!(conversation_ddl.contains("conversation_id !~ '[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]'"));
+    let error = native
+        .table("archive_batches")
+        .unwrap()
+        .postgres_create_table_sql()
+        .unwrap_err();
+    assert!(
+        matches!(error, CatalogError::NativeCatalogIncomplete { detail, .. } if detail.contains("GLOB"))
+    );
+}
+
+#[tokio::test]
+async fn native_catalog_recognizes_only_actual_check_constraints() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        r#"CREATE TABLE forward_proxy_metadata_history (
+            proxy_key TEXT PRIMARY KEY,
+            egress_ip_checked_at TEXT,
+            "CHECK(fake)" TEXT,
+            [check_bracket] TEXT,
+            `check_backtick` TEXT,
+            note TEXT DEFAULT 'CHECK (not_a_constraint)',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            -- CHECK (also_not_a_constraint)
+            CHECK /* parenthesis follows trivia */ (length(proxy_key) > 0),
+            CHECK (note != 'x)')
+        )"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let catalog = ModuleCatalog::inspect_sqlite(&pool).await.unwrap();
+    let native = catalog
+        .native_migration_catalog([ModuleId::TrafficArchive])
+        .unwrap();
+    let table = native.table("forward_proxy_metadata_history").unwrap();
+    assert_eq!(table.checks, vec!["length(proxy_key) > 0", "note != 'x)'"]);
+    let ddl = table.postgres_create_table_sql().unwrap();
+    assert!(ddl.contains("CHECK (length(proxy_key) > 0)"));
+    assert!(ddl.contains("CHECK (note != 'x)')"));
+    assert!(ddl.contains("CURRENT_TIMESTAMP"));
+    assert!(ddl.contains("DEFAULT 'CHECK (not_a_constraint)'"));
+}
+
+#[tokio::test]
 async fn native_catalog_preserves_wide_rows_and_constraints() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for statement in [

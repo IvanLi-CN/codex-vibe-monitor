@@ -224,7 +224,7 @@ impl NativeTableSpec {
             }
         }
         for check in &self.checks {
-            ensure_native_expression_supported(&self.owner.table, "CHECK", check)?;
+            let check = normalize_native_check(&self.owner.table, check)?;
             definitions.push(format!("CHECK ({check})"));
         }
         Ok(format!(
@@ -1142,22 +1142,85 @@ fn extract_check_constraints(definition: Option<&str>) -> Vec<String> {
     let Some(definition) = definition else {
         return Vec::new();
     };
-    let upper = definition.to_ascii_uppercase();
+    let bytes = definition.as_bytes();
     let mut checks = Vec::new();
-    let mut search_from = 0;
-    while let Some(relative) = upper[search_from..].find("CHECK") {
-        let start = search_from + relative;
-        let Some(open_relative) = definition[start + "CHECK".len()..].find('(') else {
-            break;
-        };
-        let open = start + "CHECK".len() + open_relative;
-        let Some(close) = matching_parenthesis(definition, open) else {
-            break;
-        };
-        checks.push(definition[open + 1..close].trim().to_owned());
-        search_from = close + 1;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                skip_quoted(definition, &mut index, bytes[index]);
+                continue;
+            }
+            b'[' => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b']' {
+                    index += 1;
+                }
+                index = (index + 1).min(bytes.len());
+                continue;
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() && &bytes[index..index + 2] != b"*/" {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+                continue;
+            }
+            _ => {}
+        }
+        if is_sql_identifier_byte(bytes[index]) {
+            let start = index;
+            while index < bytes.len() && is_sql_identifier_byte(bytes[index]) {
+                index += 1;
+            }
+            if bytes[start..index].eq_ignore_ascii_case(b"CHECK") {
+                let mut open = index;
+                skip_sql_trivia(bytes, &mut open);
+                if bytes.get(open) == Some(&b'(')
+                    && let Some(close) = matching_parenthesis(definition, open)
+                {
+                    checks.push(definition[open + 1..close].trim().to_owned());
+                    index = close + 1;
+                }
+            }
+            continue;
+        }
+        index += 1;
     }
     checks
+}
+
+fn is_sql_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || !byte.is_ascii()
+}
+
+fn skip_sql_trivia(bytes: &[u8], index: &mut usize) {
+    while *index < bytes.len() {
+        if bytes[*index].is_ascii_whitespace() {
+            *index += 1;
+        } else if bytes.get(*index..*index + 2) == Some(b"--") {
+            *index += 2;
+            while *index < bytes.len() && bytes[*index] != b'\n' {
+                *index += 1;
+            }
+        } else if bytes.get(*index..*index + 2) == Some(b"/*") {
+            *index += 2;
+            while *index + 1 < bytes.len() && &bytes[*index..*index + 2] != b"*/" {
+                *index += 1;
+            }
+            *index = (*index + 2).min(bytes.len());
+        } else {
+            break;
+        }
+    }
 }
 
 fn matching_parenthesis(value: &str, open: usize) -> Option<usize> {
@@ -1169,6 +1232,28 @@ fn matching_parenthesis(value: &str, open: usize) -> Option<usize> {
             b'\'' | b'"' | b'`' => {
                 let quote = bytes[index];
                 skip_quoted(value, &mut index, quote);
+                continue;
+            }
+            b'[' => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b']' {
+                    index += 1;
+                }
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() && &bytes[index..index + 2] != b"*/" {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+                continue;
             }
             b'(' => depth += 1,
             b')' => {
@@ -1237,6 +1322,28 @@ fn native_capture_metadata() -> NativeCaptureMetadata {
     }
 }
 
+fn normalize_native_check(table: &str, check: &str) -> Result<String, CatalogError> {
+    // These exact checks are generated by the two six-character ID schemas. SQLite GLOB's
+    // negated class rejects any character outside the literal alphabet; PostgreSQL's !~ with
+    // the equivalent negated class preserves that rule, including NULL check semantics.
+    let translated = match (table, check.trim()) {
+        (
+            "hourly_invoke_prefixes",
+            "length(prefix)=6 AND prefix NOT GLOB '*[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]*'",
+        ) => Some("length(prefix) = 6 AND prefix !~ '[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]'"),
+        (
+            "prompt_cache_conversations",
+            "conversation_id NOT GLOB '*[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]*'",
+        ) => Some("conversation_id !~ '[^ABCDEFGHJKMNPQRSTUVWXYZ23456789]'"),
+        _ => None,
+    };
+    if let Some(translated) = translated {
+        return Ok(translated.to_owned());
+    }
+    ensure_native_expression_supported(table, "CHECK", check)?;
+    Ok(check.to_owned())
+}
+
 fn ensure_native_expression_supported(
     table: &str,
     context: &str,
@@ -1259,13 +1366,18 @@ fn sqlite_expression_detail(value: &str) -> Option<&'static str> {
         ("JSON_EXTRACT(", "json_extract()"),
         ("INSTR(", "instr()"),
         ("JULIANDAY(", "julianday()"),
-        (" GLOB ", "GLOB"),
         ("INSERT OR REPLACE", "INSERT OR REPLACE"),
     ];
     let upper = value.to_ascii_uppercase();
     SQLITE_ONLY_EXPRESSIONS
         .iter()
         .find_map(|(marker, name)| upper.contains(marker).then_some(*name))
+        .or_else(|| {
+            sql_tokens(value)
+                .iter()
+                .any(|token| token == "GLOB")
+                .then_some("GLOB")
+        })
 }
 
 fn normalize_fk_action(action: &str) -> &'static str {
