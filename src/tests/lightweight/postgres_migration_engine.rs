@@ -4017,7 +4017,7 @@ async fn wait_for_child_marker(child: &mut AcceptanceChild, marker: &PathBuf) ->
 
 #[cfg(unix)]
 async fn wait_for_child_exit(child: &mut AcceptanceChild) -> Result<std::process::ExitStatus> {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    Ok(tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(status) = child.0.try_wait()? {
                 return Ok(status);
@@ -4026,7 +4026,7 @@ async fn wait_for_child_exit(child: &mut AcceptanceChild) -> Result<std::process
         }
     })
     .await
-    .context("wait for PostgreSQL acceptance child exit")??
+    .context("wait for PostgreSQL acceptance child exit")??)
 }
 
 #[cfg(unix)]
@@ -4152,9 +4152,9 @@ async fn optional_postgres_migration_engine_recovers_after_process_sigkill() -> 
                 target_checkpoint.applied_through
             );
         }
-        if local_checkpoint_before_restart.applied_through != 1 {
+        if local_checkpoint_before_restart.applied_through != Some(1) {
             bail!(
-                "local acknowledgement crossed the SIGKILL boundary unexpectedly: {}",
+                "local acknowledgement crossed the SIGKILL boundary unexpectedly: {:?}",
                 local_checkpoint_before_restart.applied_through
             );
         }
@@ -4190,7 +4190,7 @@ async fn optional_postgres_migration_engine_recovers_after_process_sigkill() -> 
             .load_coverage_checkpoint("migration-engine-test", "events")
             .await?
             .context("coverage checkpoint after restart")?;
-        if local_checkpoint_after_restart.applied_through != 2
+        if local_checkpoint_after_restart.applied_through != Some(2)
             || rows.len() != 1
             || rows[0].source_version != 2
             || rows[0].payload != b"after-crash"
