@@ -223,8 +223,8 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     .expect("published staged manifest");
     assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
     assert_eq!(
-        staged.1, 64,
-        "the staged monthly artifact is bound to the first write microbatch"
+        staged.1, 401,
+        "the staged monthly artifact is bound to the selected file window"
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof",)
@@ -243,7 +243,7 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
 
     // The old path would enter the injected writer pause and exhaust this budget before it could
     // delete a source row. A proven artifact must be reused without touching the writer. The
-    // microbatch is complete even though the next live tail remains for a later task invocation.
+    // selected file window is complete; no source rows remain in this fixture.
     let resumed = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(15),
         RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
@@ -253,13 +253,13 @@ async fn retention_task_local_reuses_proven_month_archive_after_source_budget_st
     )
     .await;
     let resumed = resumed.expect("resume proven archive");
-    assert_eq!(resumed.0, 64);
+    assert_eq!(resumed.0, 401);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
             .fetch_one(&pool)
             .await
             .expect("source rows after proven archive reuse"),
-        337
+        0
     );
     assert_eq!(
         sqlx::query_scalar::<_, String>(
@@ -1813,9 +1813,11 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
     assert!(
         first_invocation_batches
             .iter()
-            .all(|batch| batch.batch_rows <= 64),
-        "each monthly source transaction must remain within the microbatch limit"
+            .all(|batch| batch.batch_rows <= 1_000),
+        "each prepared archive window must remain within the file candidate limit"
     );
+    assert_eq!(first_invocation_batches.len(), 1);
+    assert_eq!(first_invocation_batches[0].committed_rows, 1_000);
     let second = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("second task");
@@ -1875,7 +1877,7 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
         .expect("complete the selected retention work unit");
 
     assert_eq!(summary.invocation_rows_archived, 797);
-    assert_eq!(summary.archive_batches_touched, 13);
+    assert_eq!(summary.archive_batches_touched, 1);
     assert_eq!(summary.work_budget_ms, None);
     assert_eq!(summary.timeout_count, None);
     assert!(!summary.budget_exhausted);
@@ -1895,7 +1897,7 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
     .fetch_one(&pool)
     .await
     .expect("authoritative manifest count");
-    assert_eq!(manifest_count, 13);
+    assert_eq!(manifest_count, 1);
 
     let (manifest_rows, non_completed_manifests) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT COALESCE(SUM(row_count), 0),
@@ -1919,7 +1921,7 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
     .fetch_one(&pool)
     .await
     .expect("Summary page counts");
-    assert_eq!((page_count, page_rows), (13, 797));
+    assert_eq!((page_count, page_rows), (2, 797));
     let (proof_pages, proof_rows) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT COALESCE(SUM(page_count), 0), COALESCE(SUM(row_count), 0)
          FROM summary_archive_snapshot_v2_proof
@@ -1931,10 +1933,10 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
     .fetch_one(&pool)
     .await
     .expect("Summary proof counts");
-    assert_eq!((proof_pages, proof_rows), (13, 797));
+    assert_eq!((proof_pages, proof_rows), (2, 797));
     assert_eq!(
         page_stores.load(std::sync::atomic::Ordering::Relaxed),
-        13,
+        2,
         "each newly scanned Summary page is stored once"
     );
 
@@ -1943,8 +1945,8 @@ async fn retention_task_local_complete_work_unit_proves_797_rows_once() {
         .iter()
         .find(|batch| batch.dataset == "codex_invocations")
         .expect("invocation batch metrics");
-    assert!(batch.batch_rows <= 64);
-    assert!(batch.committed_rows <= 64);
+    assert_eq!(batch.batch_rows, 797);
+    assert_eq!(batch.committed_rows, 797);
     assert!(batch.file_prepare_ms.is_some());
     assert!(batch.source_identity_ms.is_some());
     assert!(batch.archive_writer_ms.is_some());
@@ -2013,8 +2015,8 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     .expect("staged archive manifest");
     assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
     assert_eq!(
-        staged.1, 64,
-        "the staged monthly artifact is bound to the first write microbatch"
+        staged.1, 401,
+        "the staged monthly artifact is bound to the selected file window"
     );
     assert_eq!(staged.2, 1);
     assert_eq!(
@@ -2027,7 +2029,7 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
         .fetch_one(&pool)
         .await
         .expect("first durable Summary Snapshot page"),
-        64
+        400
     );
     let page_prefix_reused = Arc::new(tokio::sync::Notify::new());
     let mut resumed_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED.scope(
@@ -2060,8 +2062,8 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
     assert_eq!(settled.0, ARCHIVE_STATUS_COMPLETED);
     assert_eq!(settled.1, 401);
     assert_eq!(
-        settled.2, 8,
-        "one durable Summary Snapshot page is retained for each source microbatch"
+        settled.2, 2,
+        "the selected file window retains only its durable Summary Snapshot pages"
     );
     assert_eq!(settled.3, 1);
     assert_eq!(
@@ -2454,8 +2456,8 @@ async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
             .expect("decode committed Summary page payload");
     assert_eq!(
         records.len(),
-        64,
-        "the first Summary page is scoped to the first write microbatch"
+        400,
+        "the first Summary page is scoped to the selected file window page"
     );
     records.remove(0);
     let normalized = serde_json::to_vec(&records).expect("encode non-prefix Summary page payload");
@@ -2706,7 +2708,7 @@ pub(super) async fn archive_two_attempt_tasks(
 }
 
 #[tokio::test]
-async fn retention_task_local_archive_artifact_matches_each_source_microbatch() {
+async fn retention_task_local_archive_artifact_is_reused_across_source_microbatches() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-partial-source").await;
     config.retention_batch_rows = 1_000;
@@ -2779,15 +2781,15 @@ async fn retention_task_local_archive_artifact_matches_each_source_microbatch() 
         .expect("published artifact row count"),
         1_000
     );
-    assert!(
+    assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COALESCE(MAX(row_count), 0) FROM archive_batches
              WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
         )
         .fetch_one(&pool)
         .await
-        .expect("largest published artifact row count")
-            <= 64
+        .expect("largest published artifact row count"),
+        1_000
     );
     let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await

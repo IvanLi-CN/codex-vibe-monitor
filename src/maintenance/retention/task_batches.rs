@@ -1048,15 +1048,10 @@ pub(crate) async fn prune_old_invocation_details(
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            // Keep the prepared live-mirror artifact aligned with the source transaction that
-            // will delete it. Otherwise an interrupted multi-chunk delete can leave a completed
-            // artifact containing rows that are still live in the source table.
-            let group = take_retention_batch(
-                &mut pending_group,
-                config,
-                "invocation_detail_prune",
-                |candidate| candidate.estimated_write_bytes.max(1) as usize,
-            );
+            // The candidate window is the file-preparation boundary. Source deletion below is
+            // still split into adaptive SQL micro-batches, but the prepared live-mirror artifact
+            // must be built once for the whole selected window.
+            let group = std::mem::take(&mut pending_group);
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more("codex_invocation_details", true);
@@ -1675,21 +1670,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            // The archive file must contain exactly the rows covered by the next source
-            // micro-batch. Preparing a larger file and publishing it after only the first
-            // source chunk commits leaves live rows duplicated in a completed artifact when
-            // pressure or shutdown interrupts the remaining chunks.
-            let group = take_retention_batch(
-                &mut pending_group,
-                config,
-                "invocation_archive",
-                |candidate| {
-                    candidate
-                        .payload
-                        .as_deref()
-                        .map_or(256, |payload| payload.len())
-                },
-            );
+            // The candidate window is the file-preparation boundary. Source deletion below is
+            // still split into adaptive SQL micro-batches, while the prepared archive artifact
+            // is reused for every source chunk in this selected window.
+            let group = std::mem::take(&mut pending_group);
             let ids = group
                 .iter()
                 .map(|candidate| candidate.id)
@@ -2501,14 +2485,9 @@ pub(crate) async fn archive_timestamped_dataset(
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            // See the invocation archive path above: never publish one artifact for rows that
-            // will be deleted by multiple independent source transactions.
-            let group = take_retention_batch(
-                &mut pending_group,
-                config,
-                "timestamped_archive",
-                |candidate| row_sizes.get(&candidate.id).copied().unwrap_or(512),
-            );
+            // See the invocation archive path above: prepare the file once for the selected
+            // candidate window, then use adaptive SQL micro-batches for source conversion.
+            let group = std::mem::take(&mut pending_group);
             if group.len() < group_candidate_count {
                 candidate_remaining_hint = true;
                 batch_plan::record_candidate_window_has_more(spec.dataset, true);

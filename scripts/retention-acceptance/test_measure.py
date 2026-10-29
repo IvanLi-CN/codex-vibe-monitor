@@ -635,6 +635,7 @@ class MeasurementBudgetTests(unittest.TestCase):
         ), patch("measure.archive_proof_status", return_value=proof_status), patch(
             "measure.time.sleep"
         ) as sleep, patch("measure.suspend_controlled_task_scheduling") as suspend:
+            suspend.side_effect = lambda _database, _started: self.assertEqual(runs.call_count, 2)
             self.assertEqual(
                 wait_for_task_evidence(
                     Path("main.sqlite"),
@@ -655,7 +656,7 @@ class MeasurementBudgetTests(unittest.TestCase):
         self.assertEqual(frozen, [proof_status])
         self.assertEqual(active_controlled_task_keys([active_row]), ["pool_upstream_attempt_archive"])
 
-    def test_evidence_resumes_dispatch_when_proof_edge_is_lost(self) -> None:
+    def test_evidence_does_not_freeze_active_owner_on_transient_proof_edge(self) -> None:
         ready = {"ready": False, "reference_ready": True, "datasets": {}}
         incomplete = {"ready": False, "reference_ready": False, "datasets": {}}
         active_row = {
@@ -693,9 +694,9 @@ class MeasurementBudgetTests(unittest.TestCase):
                 [],
             )
 
-        self.assertEqual(suspend.call_count, 2)
-        suspend.assert_any_call(Path("maintenance.sqlite"), ANY)
-        resume.assert_called_once_with(Path("maintenance.sqlite"), ANY)
+        self.assertEqual(suspend.call_count, 1)
+        suspend.assert_called_once_with(Path("maintenance.sqlite"), ANY)
+        resume.assert_not_called()
         self.assertEqual(frozen, [ready])
 
     def test_suspend_controlled_task_scheduling_only_changes_controlled_rows(self) -> None:
