@@ -34,6 +34,7 @@ from measure import (
     cleanup_budget,
     cleanup_named_container,
     cleanup_path_if_safe,
+    freeze_trial_for_oracle,
     observed_attempt_states,
     remaining_budget,
     run_command,
@@ -58,6 +59,72 @@ def docker_labels(command: list[str]) -> dict[str, str]:
 
 
 class MeasurementBudgetTests(unittest.TestCase):
+    def test_oracle_freeze_snapshots_owned_state_before_force_kill(self) -> None:
+        run_id = "123456abcdef"
+        container = f"retention-{run_id}-candidate-1"
+        container_id = "a" * 64
+        with tempfile.TemporaryDirectory() as temporary, patch("measure.RUN_ID", run_id):
+            root = Path(temporary)
+            database = root / "codex_vibe_monitor.db"
+            archive_root = root / "archives"
+            archive_root.mkdir()
+            (archive_root / "artifact.sqlite.gz").write_bytes(b"archive")
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE snapshot_probe (value TEXT)")
+            connection.execute("INSERT INTO snapshot_probe VALUES ('frozen')")
+            connection.commit()
+            connection.close()
+
+            owned = OwnedContainerLedger()
+            owned.register(
+                container,
+                "application",
+                root,
+                root,
+                root,
+                version="candidate",
+                trial_index=1,
+            )
+            owned.mark_started(container, container_id)
+            labels = owned.record(container)["identity_labels"]
+            commands: list[list[str]] = []
+
+            def fake_docker(command: list[str], *_: object, **__: object) -> CompletedProcess[str]:
+                commands.append(command)
+                if command[:3] == ["docker", "inspect", "--format"]:
+                    return CompletedProcess(
+                        command,
+                        0,
+                        f"{container_id} true {json.dumps(labels)}",
+                        "",
+                    )
+                return CompletedProcess(command, 0, container_id, "")
+
+            with patch("measure.run_command", side_effect=fake_docker):
+                snapshot_database, snapshot_archives = freeze_trial_for_oracle(
+                    container,
+                    owned,
+                    database,
+                    archive_root,
+                    root,
+                    time.monotonic(),
+                    cleanup_reserve_seconds=5,
+                )
+
+            self.assertEqual(
+                [command[1] for command in commands],
+                ["inspect", "pause", "unpause", "kill"],
+            )
+            snapshot = sqlite3.connect(snapshot_database)
+            try:
+                self.assertEqual(snapshot.execute("SELECT value FROM snapshot_probe").fetchone()[0], "frozen")
+            finally:
+                snapshot.close()
+            self.assertEqual(
+                (snapshot_archives / "artifact.sqlite.gz").read_bytes(),
+                b"archive",
+            )
+
     def test_reuse_fixture_data_copies_only_controlled_fixture_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
