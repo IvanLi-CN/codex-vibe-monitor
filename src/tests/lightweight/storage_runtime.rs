@@ -193,6 +193,119 @@ async fn restart_rejects_postgres_status_without_durable_authority_manifest() {
 }
 
 #[tokio::test]
+async fn restart_rejects_durably_fenced_sqlite_without_postgres_authority() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite pool should open");
+    ensure_persistence_schema(&pool)
+        .await
+        .expect("migration status persistence should exist");
+    sqlx::query(
+        "CREATE TABLE migration_change_log_state (
+            migration_id TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            authority_generation INTEGER NOT NULL,
+            source_writes_fenced INTEGER NOT NULL,
+            PRIMARY KEY (migration_id, source_identity)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("source authority state should exist");
+    sqlx::query(
+        "INSERT INTO migration_change_log_state
+            (migration_id, source_identity, authority_generation, source_writes_fenced)
+         VALUES ('storage-migration', 'sqlite:local', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("durable source fence should persist");
+
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+        ..StorageConfig::default()
+    };
+    let migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration status should load"),
+    );
+    let error = StorageRuntimeRouter::initialize(
+        pool.clone(),
+        &config,
+        migration,
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("a durable source fence without a manifest must keep startup closed");
+    assert!(error.to_string().contains(
+        "SQLite source writes are durably fenced without a PostgreSQL authority manifest"
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT source_writes_fenced
+               FROM migration_change_log_state
+              WHERE migration_id = 'storage-migration'
+                AND source_identity = 'sqlite:local'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("source fence state should remain queryable"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn restart_rejects_indeterminate_authority_metadata() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite pool should open");
+    ensure_persistence_schema(&pool)
+        .await
+        .expect("migration status persistence should exist");
+    sqlx::query(
+        "CREATE TABLE storage_migration_authority (
+            module TEXT PRIMARY KEY,
+            recovery_json TEXT,
+            manifest_json TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("authority metadata should exist");
+    sqlx::query(
+        "INSERT INTO storage_migration_authority (module, recovery_json, manifest_json)
+         VALUES ('traffic_archive', NULL, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("indeterminate authority metadata should persist");
+
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+        ..StorageConfig::default()
+    };
+    let migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration status should load"),
+    );
+    let error =
+        StorageRuntimeRouter::initialize(pool, &config, migration, CancellationToken::new())
+            .await
+            .expect_err("indeterminate authority metadata must keep startup closed");
+    assert!(
+        error
+            .to_string()
+            .contains("traffic authority recovery is indeterminate")
+    );
+}
+
+#[tokio::test]
 async fn restart_rejects_mismatched_never_migrated_recovery_marker() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -610,6 +723,64 @@ async fn restart_recovers_durable_postgres_authority_without_capture_scan() {
         .fetch_one(&pool)
         .await
         .expect("capture table existence should be queryable"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn restart_rejects_postgres_manifest_without_matching_source_fence() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite pool should open");
+    ensure_persistence_schema(&pool)
+        .await
+        .expect("migration status persistence should exist");
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://user:pass@127.0.0.1:5432/cvm".to_string()),
+        ..StorageConfig::default()
+    };
+    let migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration status should load"),
+    );
+    let _manifest = seed_postgres_authority_fixture(&pool, &config, &migration).await;
+    sqlx::query(
+        "UPDATE migration_change_log_state
+            SET source_writes_fenced = 0
+          WHERE migration_id = 'storage-migration'
+            AND source_identity = 'sqlite:local'",
+    )
+    .execute(&pool)
+    .await
+    .expect("source fence loss should persist");
+
+    let restarted_migration = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("durable migration status should reload"),
+    );
+    let error = StorageRuntimeRouter::initialize(
+        pool.clone(),
+        &config,
+        restarted_migration,
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("a PostgreSQL manifest without its source fence must fail closed");
+    assert!(error.to_string().contains("requires SQLite source fence"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT source_writes_fenced
+               FROM migration_change_log_state
+              WHERE migration_id = 'storage-migration'
+                AND source_identity = 'sqlite:local'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("source fence state should remain queryable"),
         0
     );
 }
