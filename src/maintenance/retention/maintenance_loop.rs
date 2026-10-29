@@ -1102,11 +1102,19 @@ pub(crate) fn freeze_and_finalize_retention_owner_observation(
 }
 
 // Keep the selected tail inside the same managed run long enough to cross the
-// database-pressure cooldown. The final retry is deliberately bounded, but a
-// short-lived foreground burst must not turn an otherwise recoverable tail
-// into a partial terminal result.
+// database-pressure cooldown. These are backoff steps, not an attempt limit:
+// production retention has no fixed total work duration, so a selected tail
+// remains in this task until it completes, is cancelled, or reaches a
+// non-retryable failure.
 const RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS: [u64; 7] =
     [250, 1_000, 3_000, 7_500, 15_000, 30_000, 60_000];
+
+fn retention_owner_internal_retry_delay(retry_index: usize) -> Duration {
+    Duration::from_millis(
+        RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS
+            [retry_index.min(RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS.len() - 1)],
+    )
+}
 
 fn retention_owner_internal_retryable_reason(reason: Option<&str>) -> bool {
     matches!(
@@ -1170,9 +1178,7 @@ pub(crate) async fn run_retention_owner_task(
                                                     && retention_owner_internal_retryable_reason(
                                                         summary.wait_reason.as_deref(),
                                                     )
-                                            })
-                                            && retry_index
-                                                < RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS.len();
+                                            });
                                         if !should_retry {
                                             break result;
                                         }
@@ -1182,10 +1188,9 @@ pub(crate) async fn run_retention_owner_task(
                                         // the next attempt will select the live tail again.
                                         batch_plan::retain_committed_batch_prefixes_for_retry();
                                         retention_clear_run_defer_reason();
-                                        let delay = Duration::from_millis(
-                                            RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS[retry_index],
-                                        );
-                                        retry_index += 1;
+                                        let delay =
+                                            retention_owner_internal_retry_delay(retry_index);
+                                        retry_index = retry_index.saturating_add(1);
                                         tokio::select! {
                                             biased;
                                             _ = shutdown.cancelled() => break result,
@@ -2691,6 +2696,22 @@ mod owner_fact_tests {
             "archive_replacement_recovery"
         )));
         assert!(summary.fatal_error.is_none());
+    }
+
+    #[test]
+    fn owner_internal_pressure_backoff_has_no_attempt_ceiling() {
+        assert_eq!(
+            retention_owner_internal_retry_delay(0),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            retention_owner_internal_retry_delay(RETENTION_OWNER_INTERNAL_RETRY_DELAYS_MS.len()),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            retention_owner_internal_retry_delay(usize::MAX),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]
