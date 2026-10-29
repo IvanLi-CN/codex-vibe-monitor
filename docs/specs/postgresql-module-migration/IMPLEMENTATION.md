@@ -14,7 +14,7 @@
 
 ## Remaining Gaps
 
-- Pressure tests are not run under the owner restriction; no one-minute convergence, load or capacity result is claimed from a shorter fixture.
+- Pressure tests are not run under the owner restriction; no load, convergence or capacity result is claimed.
 - Actual PostgreSQL target capacity, WAL backlog, target data-volume headroom, backup/restore and a natural-traffic baseline remain deployment-preparation checks, not established results.
 - Archive/Raw atomicity and fence, authority, router, journal and post-cutover outage boundaries require candidate-bound evidence before their coverage can be claimed.
 - Repository and live branch-protection required checks must agree before CI gate compliance can be established.

@@ -262,13 +262,42 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             self.assertIn(required_fragment, functional_suite)
         for forbidden in ("pressure", "continuous_load", "performance"):
             self.assertNotIn(forbidden, functional_suite)
-        retained_live_suite = (REPO_ROOT / "scripts/postgres-acceptance/run-live-suite.sh").read_text()
-        live_tests = set(re.findall(r"test\(=([^)]*)\)", retained_live_suite))
-        excluded_tests = {name for name in live_tests if any(
-            forbidden in name for forbidden in ("pressure", "continuous_load", "performance")
+        engine = "tests::lightweight::postgres_migration_engine::"
+        postgres = "tests::lightweight::postgres_tests::"
+        archive = "tests::archive_file_io::archive_postgres_adapter::"
+        expected = {engine + name for name in (
+            "optional_postgres_migration_engine_uses_real_source_and_target_fixture",
+            "optional_postgres_migration_target_uses_real_pool_transactions",
+            "optional_postgres_migration_engine_recovers_after_process_sigkill",
+            "migration_source_ack_uncertainty_is_idempotent_after_commit",
+            "migration_engine_restarts_after_apply_ack_failure_without_loss_or_resurrection",
+            "migration_engine_copies_catches_up_verifies_and_publishes_authority",
+            "switch_catches_up_source_writes_during_large_pre_fence_verification",
+            "migration_switch_serializes_concurrent_authority_attempts",
+            "migration_verification_stops_when_shutdown_is_cancelled",
+            "migration_switch_keeps_source_fenced_after_indeterminate_publication",
+            "migration_switch_retries_after_recovery_with_next_authority_generation",
+            "migration_switch_abort_does_not_leave_source_fenced",
+            "migration_switch_retries_after_tail_failure_without_generation_drift",
+            "migration_switch_fails_closed_for_pre_fenced_source_authority",
+            "migration_switch_fails_closed_when_source_fence_rollback_fails",
         )}
-        self.assertEqual(len(excluded_tests), 5)
-        self.assertEqual(set(re.findall(r"test\(=([^)]*)\)", functional_suite)), live_tests - excluded_tests)
+        expected.update(postgres + name for name in (
+            "native_sqlite_capture_triggers_capture_and_fence_legacy_writes",
+            "archive_native_insert_path_uses_owner_target_columns_when_postgres_is_available",
+            "optional_postgres_storage_transaction_smoke_test",
+        ))
+        expected.update(archive + name for name in (
+            "postgres_archive_ownership_is_cross_batch_and_release_retry_monotonic",
+            "postgres_archive_release_and_prune_wait_for_live_raw_link_transactions",
+            "postgres_archive_prune_ledger_upgrade_backfills_only_recoverable_paths",
+        ))
+        expected.update({
+            "tests::lightweight::storage_migration_status::postgres_cutover_publishes_postgres_authority_and_completed_module",
+            "tests::archive_file_io::terminal_journal_recovery::valid_attempt_ack_does_not_create_a_false_interruption_after_isolation",
+            "tests::archive_file_io::shutdown_terminal_recovery::shutdown_recovery_ack_failure_keeps_obligation_without_poisoning_main_journal",
+        })
+        self.assertEqual(set(re.findall(r"test\(=([^)]*)\)", functional_suite)), expected)
         self.assertNotIn("|| true", functional_suite)
 
 

@@ -16,9 +16,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-#[cfg(test)]
-use tokio::sync::Notify;
-
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use sqlx::{
@@ -301,26 +298,6 @@ pub(crate) struct SqliteMigrationSource {
     specs: Arc<BTreeMap<String, MigrationTableSpec>>,
     #[cfg(test)]
     fail_after_release_commit: Arc<AtomicBool>,
-    #[cfg(test)]
-    watermark_barrier: Arc<std::sync::Mutex<Option<SqliteCaptureWatermarkBarrier>>>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct SqliteCaptureWatermarkBarrier {
-    reached: Arc<Notify>,
-    release: Arc<Notify>,
-}
-
-#[cfg(test)]
-impl SqliteCaptureWatermarkBarrier {
-    pub(crate) async fn wait_until_reached(&self) {
-        self.reached.notified().await;
-    }
-
-    pub(crate) fn release(&self) {
-        self.release.notify_one();
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -378,27 +355,12 @@ impl SqliteMigrationSource {
             specs: Arc::new(spec_map(specs)?),
             #[cfg(test)]
             fail_after_release_commit: Arc::new(AtomicBool::new(false)),
-            #[cfg(test)]
-            watermark_barrier: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
     #[cfg(test)]
     pub(crate) fn fail_after_release_commit_for_test(&self) {
         self.fail_after_release_commit.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn arm_capture_watermark_barrier_for_test(&self) -> SqliteCaptureWatermarkBarrier {
-        let barrier = SqliteCaptureWatermarkBarrier {
-            reached: Arc::new(Notify::new()),
-            release: Arc::new(Notify::new()),
-        };
-        *self
-            .watermark_barrier
-            .lock()
-            .expect("capture watermark barrier mutex") = Some(barrier.clone());
-        barrier
     }
 
     pub(crate) fn with_max_capture_bytes(mut self, max_capture_bytes: u64) -> Result<Self> {
@@ -2210,19 +2172,7 @@ fn parse_change_kind(kind: &str) -> Result<ChangeKind> {
 #[async_trait]
 impl MigrationSource for SqliteMigrationSource {
     async fn capture_watermark(&self) -> Result<i64> {
-        let watermark = self.capture_checkpoint().await?.next_version;
-        #[cfg(test)]
-        let barrier = self
-            .watermark_barrier
-            .lock()
-            .expect("capture watermark barrier mutex")
-            .take();
-        #[cfg(test)]
-        if let Some(barrier) = barrier {
-            barrier.reached.notify_one();
-            barrier.release.notified().await;
-        }
-        Ok(watermark)
+        Ok(self.capture_checkpoint().await?.next_version)
     }
 
     async fn capture_checkpoint(&self) -> Result<CaptureCheckpoint> {

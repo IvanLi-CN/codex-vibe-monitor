@@ -1,28 +1,5 @@
 use super::*;
 
-fn write_runtime_acceptance_evidence(file_name: &str, payload: serde_json::Value) {
-    let Some(directory) =
-        std::env::var_os("POSTGRES_ACCEPTANCE_EVIDENCE_DIR").map(std::path::PathBuf::from)
-    else {
-        if std::env::var("POSTGRES_ACCEPTANCE_REQUIRED").as_deref() == Ok("1") {
-            panic!("PostgreSQL acceptance evidence directory is not configured");
-        }
-        return;
-    };
-    std::fs::create_dir_all(&directory).expect("create PostgreSQL acceptance evidence directory");
-    std::fs::write(
-        directory.join(file_name),
-        serde_json::to_vec_pretty(&payload).expect("serialize runtime pressure evidence"),
-    )
-    .expect("write runtime pressure evidence");
-}
-
-fn runtime_acceptance_sha(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-}
-
 #[tokio::test]
 async fn runtime_terminal_append_and_confirmation_failures_preserve_recovery_fact() {
     for fail_after_append in [false, true] {
@@ -391,18 +368,15 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         .acquire()
         .await
         .expect("acquire pressure connection");
-    let write_pressure_started = Instant::now();
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut *locked_connection)
         .await
         .expect("hold SQLite write pressure lock");
-    let mut maintenance_hold_started = None;
     let mut maintenance_lock = if let Some((pool, _)) = &maintenance_pool {
         let mut connection = pool
             .acquire()
             .await
             .expect("own maintenance contention lock");
-        maintenance_hold_started = Some(Instant::now());
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *connection)
             .await
@@ -723,7 +697,6 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         .execute(&mut *locked_connection)
         .await
         .expect("release SQLite write pressure lock");
-    let write_pressure_duration_ms = write_pressure_started.elapsed().as_millis();
     locked_connection.return_to_pool().await;
     drop(pressure_admission);
     let drain_started = Instant::now();
@@ -749,17 +722,16 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             .pending_materialization_records,
         0
     );
-    let materialization_drain_ms = drain_started.elapsed().as_millis();
-    let terminal_commit_elapsed_ms = scenario_started.elapsed().as_millis();
     if performance_gate {
         assert!(
-            terminal_commit_elapsed_ms < 5_000,
+            scenario_started.elapsed() < Duration::from_secs(5),
             "request-start to durable terminal commit upper bound includes journal and materialization delay"
         );
     }
     println!(
-        "runtime_pressure mode={mode} materialization_drain_ms={materialization_drain_ms} terminal_commit_latency_upper_bound_ms={} committed={committed}",
-        terminal_commit_elapsed_ms
+        "runtime_pressure mode={mode} materialization_drain_ms={} terminal_commit_latency_upper_bound_ms={} committed={committed}",
+        drain_started.elapsed().as_millis(),
+        scenario_started.elapsed().as_millis()
     );
     if let Some(archive) = archive {
         let (archived, archive_elapsed) = tokio::time::timeout(Duration::from_secs(5), archive)
@@ -857,23 +829,16 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             all_holds < 100.0,
         );
     }
-    let mut maintenance_hold_duration_ms = None;
     if let Some(mut locked) = maintenance_lock.take() {
         sqlx::query("ROLLBACK")
             .execute(&mut *locked)
             .await
             .expect("unlock confirmations");
-        maintenance_hold_duration_ms = maintenance_hold_started
-            .take()
-            .map(|started| started.elapsed().as_millis());
         drop(locked);
     }
-    let mut task_restoration_verified = false;
-    let mut task_restoration_periods = Vec::new();
     if let Some((pool, _)) = &maintenance_pool {
         // Confirmation can remain in capped backoff after unlock; business durability
         // above was checked while the independent maintenance lock was still held.
-        let restoration_started = Instant::now();
         tokio::time::timeout(Duration::from_secs(6), async {
             loop {
                 let confirmed = sqlx::query_scalar::<_, i64>(
@@ -890,92 +855,6 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         })
         .await
         .expect("valid obligations recover after maintenance unlock");
-        task_restoration_periods.push(serde_json::json!({
-            "duration_ms": restoration_started.elapsed().as_millis(),
-            "status": "recovered",
-        }));
-        task_restoration_verified = true;
-    }
-    if performance_gate {
-        let interactive_admission_delta = coordinator_after_terminal
-            .write_admission
-            .interactive_proxy
-            .admission_count
-            .saturating_sub(
-                coordinator_before
-                    .write_admission
-                    .interactive_proxy
-                    .admission_count,
-            );
-        let attempt_progress_delta = state
-            .sqlite_batch_writer
-            .accounting_snapshot()
-            .attempt_progress_enqueued
-            .saturating_sub(progress_before);
-        write_runtime_acceptance_evidence(
-            if maintenance_contention {
-                "runtime-maintenance-pressure.json"
-            } else {
-                "runtime-pressure.json"
-            },
-            serde_json::json!({
-                "schema_version": 1,
-                "acceptance": "migration-period-representative-runtime-pressure",
-                "fixture_version": std::env::var("POSTGRES_ACCEPTANCE_FIXTURE_VERSION").unwrap_or_else(|_| "4.13.11".into()),
-                "base_sha": runtime_acceptance_sha("BASE_SHA"),
-                "candidate_sha": runtime_acceptance_sha("CANDIDATE_SHA"),
-                "source_identity": "sqlite-runtime-business-facts",
-                "target_identity": "sqlite-business-sqlite-batch-writer",
-                "storage_backend": "sqlite-source-runtime",
-                "workload": {
-                    "representative_requests": request_count,
-                    "endpoint": "/v1/responses",
-                    "upstream_first_chunk_delay_seconds": 1,
-                    "sqlite_write_lock_held_through_terminal": true,
-                    "maintenance_contention": maintenance_contention,
-                },
-                "duration_ms": terminal_commit_elapsed_ms,
-                "sample_count": request_count,
-                "request_p95_ms": p95.as_millis(),
-                "request_p95_threshold_ms_exclusive": 2_000,
-                "full_commit_ms": terminal_commit_elapsed_ms,
-                "full_commit_threshold_ms_exclusive": 5_000,
-                "terminal_confirmations": terminal_confirmations,
-                "terminal_pending_records_while_locked": held_lock_journal.pending_records,
-                "terminal_pending_materialization_while_locked": held_lock_journal.pending_materialization_records,
-                "terminal_pending_oldest_age_ms": held_lock_journal.oldest_pending_age_ms,
-                "materialization_drain_ms": materialization_drain_ms,
-                "interactive_proxy_admission_delta": interactive_admission_delta,
-                "attempt_progress_sql_write_delta": attempt_progress_delta,
-                "committed_terminal_facts": committed,
-                "maintenance_held": maintenance_contention,
-                "migration_hold_periods": [
-                    {
-                        "kind": "sqlite_write_lock",
-                        "duration_ms": write_pressure_duration_ms,
-                    }
-                ],
-                "maintenance_hold_periods": maintenance_hold_duration_ms
-                    .map(|duration_ms| {
-                        vec![serde_json::json!({
-                            "kind": "maintenance_sqlite_write_lock",
-                            "duration_ms": duration_ms,
-                        })]
-                    })
-                    .unwrap_or_default(),
-                "task_restoration_verified": task_restoration_verified,
-                "task_restoration_periods": task_restoration_periods,
-                "raw_result_paths": std::env::var_os("POSTGRES_ACCEPTANCE_EVIDENCE_DIR").map(|directory| {
-                    let directory = std::path::PathBuf::from(directory);
-                    vec![directory.join("stdout.txt"), directory.join("stderr.txt")]
-                }),
-                "command": if maintenance_contention {
-                    "cargo nextest run --profile archive-file-io --test-filter tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention"
-                } else {
-                    "cargo nextest run --profile archive-file-io --test-filter tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure"
-                },
-            }),
-        );
     }
     maintenance_cancel.cancel();
     if let Some(confirmation) = maintenance_confirmation {
