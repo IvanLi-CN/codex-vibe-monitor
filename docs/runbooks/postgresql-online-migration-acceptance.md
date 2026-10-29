@@ -31,7 +31,7 @@ python3 scripts/postgres-acceptance/run.py \
 
 Exit `78` means `blocked/not-run`, including a missing URL or unavailable service. It is an acceptance failure, not a skip. A non-zero child command is `failed`; only exit `0` is `passed`.
 
-The live suite requires PostgreSQL 18.x and writes three candidate-bound evidence files into `EVIDENCE_DIR`: `process-kill.json` proves the real-process boundary after target replay/checkpoint commit and before local acknowledgement; `startup-performance.json` compares migration-disabled and PostgreSQL-configured startup initialization over small and large SQLite histories; and `switch-performance.json` measures the real PostgreSQL authority switch for small and large copied tables. The runner also preserves redacted stdout/stderr and the exact base/candidate SHAs. These files do not close the other fault boundaries unless their own evidence is present.
+The live suite requires PostgreSQL 18.x and writes candidate-bound evidence files into `EVIDENCE_DIR`: `process-kill.json` proves the real-process boundary after target replay/checkpoint commit and before local acknowledgement; `startup-performance.json` compares migration-disabled and PostgreSQL-configured startup initialization over small and large SQLite histories; `switch-performance.json` measures the real PostgreSQL authority switch for small and large copied tables; `continuous-load.json` runs three one-minute real-capture windows with a non-empty tail and a real PostgreSQL switch; `runtime-pressure.json` and `runtime-maintenance-pressure.json` exercise the 32-request bounded runtime load with and without a held maintenance task; `fault-boundaries.json` records the deterministic target/source/fence/authority/router/journal boundary tests that passed; and `system-headroom.json` records CI disk, CPU and load observations. The runner also preserves redacted stdout/stderr and the exact base/candidate SHAs. Backup/restore and natural-traffic evidence remain deployment-preparation gates.
 
 ## Initial operating thresholds
 
@@ -41,6 +41,7 @@ These are acceptance gates, not promises that a production system has already me
 - The pre-commit switch attempt stays within the configured three-second budget. If the budget expires before authority publication, reopen SQLite and do not publish PostgreSQL authority.
 - Catch-up remains convergent for three consecutive one-minute observation windows: applied change rate exceeds incoming change rate and the oldest pending change age decreases.
 - Capture/WAL backlog stays below 50% of its configured capacity, and free disk headroom covers at least twice the measured peak target-plus-capture growth for the planned run.
+- The representative 32-request pressure run keeps request p95 strictly below two seconds, reaches exactly 32 durable terminal facts within five seconds of request start, records zero `InteractiveProxy` admission deltas and zero `AttemptProgress` SQL writes, and drains the terminal materialization backlog within five seconds after the lock is released.
 - The same representative traffic run shows no more than a 10% p95 regression for unchanged proxy/admin endpoints. Time saved by pausing optional maintenance is reported separately.
 - A post-cutover PostgreSQL outage keeps the module in explicit recovery/error handling. It must not silently fail back to stale SQLite authority.
 
@@ -71,7 +72,7 @@ Restore each owner into an isolated environment. Verify schema/inventory, stable
 | Journal acknowledgement uncertain       | Replay the stable journal identity and retain it until destination commit is acknowledged.                            |
 | Filesystem or WAL durability uncertain  | Mark the migration blocked/recovering, preserve source authority, and require an explicit repair or new generation.   |
 
-The current live process test covers only the target replay/checkpoint commit → local SQLite acknowledgement boundary. It does not claim coverage for source acknowledgement, source fencing, authority manifest publication, router generation publication, journal acknowledgement, filesystem/WAL durability or backup/restore. Those remain explicit acceptance gaps until dedicated evidence is attached.
+The live process test covers the target replay/checkpoint commit → local SQLite acknowledgement boundary and real PostgreSQL 18 process termination, while the deterministic fault suite exercises source acknowledgement after a committed release, source fencing, authority publication, router generation publication, journal acknowledgement, normal timeout/retry and recovery. The live continuous-load test exercises a non-empty source tail at the switch boundary. It does not claim coverage for filesystem/WAL crash durability beyond the committed PostgreSQL transaction, backup/restore or the production natural-traffic baseline; those remain deployment-preparation gates.
 
 ## Deployment sequence
 

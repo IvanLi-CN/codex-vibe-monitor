@@ -255,10 +255,22 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             '"${POSTGRES_ACCEPTANCE_EVIDENCE_DIR:?',
             "optional_postgres_migration_engine_recovers_after_process_sigkill",
             "optional_postgres_migration_switch_performance_is_within_budget",
+            "optional_postgres_migration_engine_handles_continuous_load_and_non_empty_switch_tail",
+            "migration_source_ack_uncertainty_is_idempotent_after_commit",
+            "migration_switch_retries_after_tail_failure_without_generation_drift",
+            "proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure",
+            "proxy_runtime_terminal_commits_survive_retention_and_backfill_contention",
+            "valid_attempt_ack_does_not_create_a_false_interruption_after_isolation",
+            "shutdown_recovery_ack_failure_keeps_obligation_without_poisoning_main_journal",
             "optional_postgres_storage_runtime_startup_performance_is_within_budget",
             "process-kill.json",
             "startup-performance.json",
             "switch-performance.json",
+            "continuous-load.json",
+            "runtime-pressure.json",
+            "runtime-maintenance-pressure.json",
+            "fault-boundaries.json",
+            "system-headroom.json",
         ):
             self.assertIn(required_fragment, live_suite)
 
