@@ -51,6 +51,7 @@ tokio::task_local! {
     pub(super) static TASK_BATCH_METRICS: RefCell<Vec<RetentionBatchMetrics>>;
     pub(super) static TASK_DISCOVERED_ROWS: RefCell<BTreeMap<String, usize>>;
     pub(super) static TASK_CANDIDATE_WINDOWS: RefCell<BTreeMap<String, bool>>;
+    pub(super) static TASK_RETRY_WINDOW_REMAINING: RefCell<Option<usize>>;
 }
 
 pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
@@ -84,10 +85,21 @@ pub(crate) fn candidate_window_has_more(dataset: &str) -> Option<bool> {
 }
 
 /// Remove the uncommitted tail of a batch before retrying it in the same owner
-/// execution. The next selection will discover that tail again, so retaining
-/// the failed attempt would double-count the logical selected scope in the
-/// persisted execution evidence.
+/// execution. Keep the remaining selected-window budget so a retry cannot
+/// silently select a fresh window after committing only a prefix.
 pub(super) fn retain_committed_batch_prefixes_for_retry() {
+    let committed_rows = TASK_BATCH_METRICS
+        .try_with(|metrics| {
+            metrics
+                .borrow()
+                .iter()
+                .map(|batch| batch.committed_rows)
+                .sum::<usize>()
+        })
+        .unwrap_or_default();
+    let _ = TASK_RETRY_WINDOW_REMAINING.try_with(|remaining| {
+        *remaining.borrow_mut() = Some(ARCHIVE_BATCH_TARGET_ROWS.saturating_sub(committed_rows));
+    });
     let _ = TASK_BATCH_METRICS.try_with(|metrics| {
         metrics.borrow_mut().retain_mut(|batch| {
             if batch.committed_rows == 0 {
@@ -267,7 +279,15 @@ pub(super) fn collect_run_metrics(summary: &mut RetentionRunSummary) {
 /// File work is amortized across a selected batch, independently of the SQL write limiter.
 /// A run selects once per dataset; another run selects the remaining live rows afresh.
 pub(crate) fn archive_candidate_limit(_config: &AppConfig) -> usize {
-    ARCHIVE_BATCH_TARGET_ROWS
+    TASK_RETRY_WINDOW_REMAINING
+        .try_with(|remaining| {
+            remaining
+                .borrow()
+                .map_or(ARCHIVE_BATCH_TARGET_ROWS, |remaining| {
+                    remaining.min(ARCHIVE_BATCH_TARGET_ROWS)
+                })
+        })
+        .unwrap_or(ARCHIVE_BATCH_TARGET_ROWS)
 }
 
 pub(crate) fn select_archive_batch<T>(rows: Vec<T>, bytes: impl Fn(&T) -> usize) -> Vec<T> {
@@ -964,5 +984,37 @@ mod tests {
             select_archive_batch(vec![1, 2, 3], |_| 9 * 1024 * 1024),
             vec![1]
         );
+    }
+
+    #[tokio::test]
+    async fn retry_window_limit_preserves_the_original_selected_scope() {
+        let config = crate::tests::test_config();
+        TASK_BATCH_METRICS
+            .scope(
+                RefCell::new(Vec::new()),
+                TASK_RETRY_WINDOW_REMAINING.scope(RefCell::new(None), async {
+                    let mut observation = BatchObservation::begin(
+                        "pool_upstream_request_attempts",
+                        "2026-08",
+                        ARCHIVE_BATCH_TARGET_ROWS,
+                    );
+                    observation.committed(64, Duration::ZERO);
+                    observation.complete();
+                    drop(observation);
+
+                    retain_committed_batch_prefixes_for_retry();
+
+                    assert_eq!(
+                        TASK_RETRY_WINDOW_REMAINING.with(|remaining| *remaining.borrow()),
+                        Some(936)
+                    );
+                    assert_eq!(archive_candidate_limit(&config), 936);
+                    let metrics = TASK_BATCH_METRICS.with(|metrics| metrics.borrow().clone());
+                    assert_eq!(metrics.len(), 1);
+                    assert_eq!(metrics[0].batch_rows, 64);
+                    assert_eq!(metrics[0].committed_rows, 64);
+                }),
+            )
+            .await;
     }
 }

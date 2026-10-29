@@ -1150,26 +1150,28 @@ pub(crate) async fn run_retention_owner_task(
                         RefCell::new(std::collections::BTreeMap::new()),
                         batch_plan::TASK_CANDIDATE_WINDOWS.scope(
                             RefCell::new(std::collections::BTreeMap::new()),
-                            batch_plan::TASK_BATCH_METRICS.scope(
-                                RefCell::new(Vec::new()),
-                                RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
-                                    let mut initial_global_total = None;
-                                    let mut initial_source_max_id = None;
-                                    let mut retry_index = 0usize;
-                                    let result = loop {
-                                        let result = run_retention_owner_task_inner(
-                                            pool, config, task_key, dry_run, shutdown,
-                                        )
-                                        .await;
-                                        if let Ok(summary) = &result {
-                                            if initial_global_total.is_none() {
-                                                initial_global_total = summary.global_total;
+                            batch_plan::TASK_RETRY_WINDOW_REMAINING.scope(
+                                RefCell::new(None),
+                                batch_plan::TASK_BATCH_METRICS.scope(
+                                    RefCell::new(Vec::new()),
+                                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                                        let mut initial_global_total = None;
+                                        let mut initial_source_max_id = None;
+                                        let mut retry_index = 0usize;
+                                        let result = loop {
+                                            let result = run_retention_owner_task_inner(
+                                                pool, config, task_key, dry_run, shutdown,
+                                            )
+                                            .await;
+                                            if let Ok(summary) = &result {
+                                                if initial_global_total.is_none() {
+                                                    initial_global_total = summary.global_total;
+                                                }
+                                                if initial_source_max_id.is_none() {
+                                                    initial_source_max_id = summary.source_max_id;
+                                                }
                                             }
-                                            if initial_source_max_id.is_none() {
-                                                initial_source_max_id = summary.source_max_id;
-                                            }
-                                        }
-                                        let should_retry = maintenance_execution_is_admitted()
+                                            let should_retry = maintenance_execution_is_admitted()
                                             && !dry_run
                                             && result.as_ref().is_ok_and(|summary| {
                                                 matches!(summary.completion, "deferred" | "partial")
@@ -1179,46 +1181,49 @@ pub(crate) async fn run_retention_owner_task(
                                                         summary.wait_reason.as_deref(),
                                                     )
                                             });
-                                        if !should_retry {
-                                            break result;
-                                        }
+                                            if !should_retry {
+                                                break result;
+                                            }
 
-                                        // The failed tail remains live in the source table. Keep
-                                        // only its committed prefix in this run's logical evidence;
-                                        // the next attempt will select the live tail again.
-                                        batch_plan::retain_committed_batch_prefixes_for_retry();
-                                        retention_clear_run_defer_reason();
-                                        let delay =
-                                            retention_owner_internal_retry_delay(retry_index);
-                                        retry_index = retry_index.saturating_add(1);
-                                        tokio::select! {
-                                            biased;
-                                            _ = shutdown.cancelled() => break result,
-                                            _ = tokio::time::sleep(delay) => {}
-                                        }
-                                    };
-                                    let result = result.map(|mut summary| {
-                                        // A retry observes the reduced live backlog, but one task
-                                        // execution must retain the original fence for its
-                                        // completion and backlog calculations.
-                                        if let Some(global_total) = initial_global_total {
-                                            summary.global_total = Some(global_total);
-                                        }
-                                        if let Some(source_max_id) = initial_source_max_id {
-                                            summary.source_max_id = Some(source_max_id);
-                                        }
-                                        summary
-                                    });
-                                    let archive_batches = batch_plan::TASK_BATCH_METRICS
-                                        .with(|metrics| metrics.borrow().clone());
-                                    let candidate_window_has_more =
-                                        batch_plan::TASK_CANDIDATE_WINDOWS.with(|windows| {
-                                            let windows = windows.borrow();
-                                            (!windows.is_empty())
-                                                .then(|| windows.values().any(|has_more| *has_more))
+                                            // The failed tail remains live in the source table. Keep
+                                            // only its committed prefix in this run's logical evidence
+                                            // and bound the next selection to the original window's
+                                            // remaining capacity.
+                                            batch_plan::retain_committed_batch_prefixes_for_retry();
+                                            retention_clear_run_defer_reason();
+                                            let delay =
+                                                retention_owner_internal_retry_delay(retry_index);
+                                            retry_index = retry_index.saturating_add(1);
+                                            tokio::select! {
+                                                biased;
+                                                _ = shutdown.cancelled() => break result,
+                                                _ = tokio::time::sleep(delay) => {}
+                                            }
+                                        };
+                                        let result = result.map(|mut summary| {
+                                            // A retry observes the reduced live backlog, but one task
+                                            // execution must retain the original fence for its
+                                            // completion and backlog calculations.
+                                            if let Some(global_total) = initial_global_total {
+                                                summary.global_total = Some(global_total);
+                                            }
+                                            if let Some(source_max_id) = initial_source_max_id {
+                                                summary.source_max_id = Some(source_max_id);
+                                            }
+                                            summary
                                         });
-                                    (result, archive_batches, candidate_window_has_more)
-                                }),
+                                        let archive_batches = batch_plan::TASK_BATCH_METRICS
+                                            .with(|metrics| metrics.borrow().clone());
+                                        let candidate_window_has_more =
+                                            batch_plan::TASK_CANDIDATE_WINDOWS.with(|windows| {
+                                                let windows = windows.borrow();
+                                                (!windows.is_empty()).then(|| {
+                                                    windows.values().any(|has_more| *has_more)
+                                                })
+                                            });
+                                        (result, archive_batches, candidate_window_has_more)
+                                    }),
+                                ),
                             ),
                         ),
                     ),

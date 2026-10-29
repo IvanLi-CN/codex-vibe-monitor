@@ -312,6 +312,61 @@ async fn retention_selected_timestamped_batch_retries_after_admission_timeout() 
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[tokio::test]
+async fn retention_timestamped_archive_stops_after_one_selected_window() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("timestamped-selected-window").await;
+    config.retention_batch_rows = 1_000;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1200) INSERT INTO pool_upstream_request_attempts(id,invoke_id,occurred_at,finished_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status,proxy_binding_key_snapshot) SELECT i,'selected-window-attempt-'||i,?1,?1,'/v1/responses','pool',0,0,0,'success','selected-window-binding' FROM n")
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("timestamped selected-window candidates");
+
+    let first = archive_timestamped_dataset(
+        &pool,
+        &config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        "SELECT id,occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at,id LIMIT ?2",
+        "9999-01-01 00:00:00".to_string(),
+        false,
+        None,
+    )
+    .await
+    .expect("archive the first timestamped selection window");
+    assert_eq!(first.0, 1_000);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("remaining timestamped rows after first window"),
+        200,
+    );
+
+    let second = archive_timestamped_dataset(
+        &pool,
+        &config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        "SELECT id,occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at,id LIMIT ?2",
+        "9999-01-01 00:00:00".to_string(),
+        false,
+        None,
+    )
+    .await
+    .expect("archive the remaining timestamped selection window");
+    assert_eq!(second.0, 200);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts",)
+            .fetch_one(&pool)
+            .await
+            .expect("remaining timestamped rows after second window"),
+        0,
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn retention_selected_batch_defers_archive_fence_collision_without_deleting_remaining_source()
