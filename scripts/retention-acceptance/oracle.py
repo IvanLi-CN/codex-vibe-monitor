@@ -658,13 +658,39 @@ def verify_dataset(
     combined = archive_counts + live_counts
     lost_rows = sum(identity not in combined for identity in expected_ids)
     duplicate_rows = sum(max(0, combined[identity] - 1) for identity in expected_ids)
+    archive_duplicate_rows = sum(max(0, archive_counts[identity] - 1) for identity in expected_ids)
+    live_duplicate_rows = sum(max(0, live_counts[identity] - 1) for identity in expected_ids)
+    source_artifact_overlap_rows = sum(
+        archive_counts[identity] > 0 and live_counts[identity] > 0 for identity in expected_ids
+    )
     unexpected_archived = set(archive_counts) - expected_ids
     if unexpected_archived:
         raise AcceptanceError(f"{dataset} archive contains rows outside the seeded and measured input")
     distinct_archived = sum(archive_counts[identity] > 0 and live_counts[identity] == 0 for identity in expected_ids)
     live_rows = sum(live_counts[identity] for identity in expected_ids)
     if lost_rows or (duplicate_rows and not allow_legacy_source_artifact_duplicates):
-        raise AcceptanceError(f"{dataset} source/artifact conservation failed: lost={lost_rows}, duplicates={duplicate_rows}")
+        archive_duplicate_sample = [
+            [identity, archive_counts[identity], live_counts[identity]]
+            for identity in sorted(expected_ids)
+            if archive_counts[identity] > 1
+        ][:8]
+        live_duplicate_sample = [
+            [identity, archive_counts[identity], live_counts[identity]]
+            for identity in sorted(expected_ids)
+            if live_counts[identity] > 1
+        ][:8]
+        overlap_sample = [
+            [identity, archive_counts[identity], live_counts[identity]]
+            for identity in sorted(expected_ids)
+            if archive_counts[identity] > 0 and live_counts[identity] > 0
+        ][:8]
+        raise AcceptanceError(
+            f"{dataset} source/artifact conservation failed: lost={lost_rows}, "
+            f"duplicates={duplicate_rows}, archive_duplicates={archive_duplicate_rows}, "
+            f"live_duplicates={live_duplicate_rows}, source_artifact_overlap={source_artifact_overlap_rows}, "
+            f"archive_duplicate_sample={archive_duplicate_sample}, "
+            f"live_duplicate_sample={live_duplicate_sample}, overlap_sample={overlap_sample}"
+        )
     if not allow_legacy_source_artifact_duplicates and sum(combined[identity] for identity in expected_ids) != len(expected_ids):
         raise AcceptanceError(f"{dataset} source/artifact total does not balance")
     content_digest = hashlib.sha256()

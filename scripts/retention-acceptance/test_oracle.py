@@ -199,7 +199,10 @@ class OracleTests(unittest.TestCase):
             ("seed-archived", f"{MONTH}-12T12:00:00Z"),
         ])
         self.add_manifest(path, 2)
-        with self.assertRaisesRegex(AcceptanceError, "duplicates=1"):
+        with self.assertRaisesRegex(
+            AcceptanceError,
+            "duplicates=1, archive_duplicates=1, live_duplicates=0, source_artifact_overlap=0",
+        ):
             self.verify({"seed-archived", "seed-live"})
         result = self.verify(
             {"seed-archived", "seed-live"},
