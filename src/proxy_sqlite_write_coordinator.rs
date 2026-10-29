@@ -398,31 +398,39 @@ impl ProxySqliteWriteCoordinator {
         requested_at: Instant,
         fairness_interval: Duration,
     ) -> ProxySqliteWritePermit {
-        let mut waiter = None;
+        if let Some(permit) = self.try_acquire_maintenance(requested_at, fairness_interval) {
+            return permit;
+        }
+        let mut waiter = self.new_maintenance_waiter();
+        self.acquire_maintenance_from_waiter(&mut waiter, requested_at, fairness_interval)
+            .await
+    }
+
+    /// Wait for and claim a previously registered FIFO ticket. The caller may retain the
+    /// waiter across bounded timeouts so a retry cannot re-enter behind newer maintenance work.
+    pub(crate) async fn acquire_maintenance_from_waiter(
+        self: &Arc<Self>,
+        waiter: &mut ProxySqliteMaintenanceWaiter,
+        requested_at: Instant,
+        fairness_interval: Duration,
+    ) -> ProxySqliteWritePermit {
+        if waiter.ticket.is_none() {
+            return self
+                .try_acquire_maintenance(requested_at, fairness_interval)
+                .expect("unclaimed maintenance waiter must be admissible");
+        }
         loop {
-            if let Some(current_waiter) = waiter.as_mut() {
-                self.wait_for_maintenance_eligibility_with_waiter(
-                    current_waiter,
-                    requested_at,
-                    fairness_interval,
-                )
-                .await;
-                if let Some(permit) = self.try_acquire_maintenance_with_waiter(
-                    requested_at,
-                    fairness_interval,
-                    current_waiter,
-                ) {
-                    return permit;
-                }
-            } else if let Some(permit) =
-                self.try_acquire_maintenance(requested_at, fairness_interval)
+            self.wait_for_maintenance_eligibility_with_waiter(
+                waiter,
+                requested_at,
+                fairness_interval,
+            )
+            .await;
+            if let Some(permit) =
+                self.try_acquire_maintenance_with_waiter(requested_at, fairness_interval, waiter)
             {
                 return permit;
             }
-            waiter = Some(
-                self.wait_for_maintenance_eligibility_with_ticket(requested_at, fairness_interval)
-                    .await,
-            );
         }
     }
 
@@ -513,21 +521,25 @@ impl ProxySqliteWriteCoordinator {
         })
     }
 
-    pub(crate) async fn wait_for_maintenance_eligibility_with_ticket(
-        self: &Arc<Self>,
-        requested_at: Instant,
-        fairness_interval: Duration,
-    ) -> ProxySqliteMaintenanceWaiter {
+    pub(crate) fn new_maintenance_waiter(self: &Arc<Self>) -> ProxySqliteMaintenanceWaiter {
         let ticket = if self.coordinated {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             Some(state.register_maintenance_waiter())
         } else {
             None
         };
-        let waiter = ProxySqliteMaintenanceWaiter {
+        ProxySqliteMaintenanceWaiter {
             coordinator: self.clone(),
             ticket,
-        };
+        }
+    }
+
+    pub(crate) async fn wait_for_maintenance_eligibility_with_ticket(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+    ) -> ProxySqliteMaintenanceWaiter {
+        let waiter = self.new_maintenance_waiter();
         self.wait_for_maintenance_eligibility_with_waiter(&waiter, requested_at, fairness_interval)
             .await;
         waiter
@@ -1113,6 +1125,61 @@ mod tests {
             .expect("queued maintenance task must be admitted")
             .expect("queued maintenance task");
         drop(queued_permit);
+    }
+
+    #[tokio::test]
+    async fn timed_out_maintenance_ticket_precedes_a_new_reentry() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+        let active = coordinator.acquire(ProxySqliteWriteClass::P2Derived).await;
+        let mut waiter = coordinator.new_maintenance_waiter();
+        let requested_at = Instant::now();
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                coordinator.acquire_maintenance_from_waiter(
+                    &mut waiter,
+                    requested_at,
+                    Duration::from_secs(60),
+                ),
+            )
+            .await
+            .is_err(),
+            "the active writer should hold the first bounded attempt"
+        );
+        assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
+
+        let reentry = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire_maintenance(Duration::from_secs(60))
+                    .await
+            }
+        });
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 2
+        })
+        .await;
+
+        drop(active);
+        let first = tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.acquire_maintenance_from_waiter(
+                &mut waiter,
+                requested_at,
+                Duration::from_secs(60),
+            ),
+        )
+        .await
+        .expect("the timed-out ticket must be admitted first");
+        drop(first);
+
+        let second = tokio::time::timeout(Duration::from_secs(1), reentry)
+            .await
+            .expect("the re-entry waiter must eventually be admitted")
+            .expect("re-entry task");
+        drop(second);
     }
 
     #[tokio::test]
