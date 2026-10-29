@@ -14,7 +14,7 @@ Confirm all of the following before a live run:
 
 ## Acceptance status
 
-CI runs a non-pressure PostgreSQL functional and recovery subset and records a candidate-bound blocked/not-run report for unavailable acceptance evidence. The backend PR profiles and representative-scale job are not run until their contents are established to exclude pressure tests. A skipped check is not acceptance evidence.
+CI runs a non-pressure PostgreSQL functional and recovery subset through the evidence runner, and records a candidate-bound blocked/not-run report for unavailable acceptance evidence. It also runs 96 individually audited non-pressure backend tests across the lightweight, stateful SQLite and archive profiles. The full backend profiles and representative-scale job remain skipped; the selected tests do not replace their complete coverage. A skipped check is not acceptance evidence.
 
 The functional suite can be run against an isolated PostgreSQL 18 database:
 

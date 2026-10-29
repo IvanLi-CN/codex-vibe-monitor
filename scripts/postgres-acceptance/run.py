@@ -133,6 +133,7 @@ def base_report(args: argparse.Namespace, database_url: str | None) -> dict[str,
     return {
         "schema_version": 1,
         "acceptance": "A9",
+        "scope": args.scope,
         "started_at": utc_now(),
         "fixture": {
             "source_version": args.fixture_version,
@@ -204,6 +205,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument("--scope", choices=("full", "functional-recovery"), default="full")
     parser.add_argument(
         "--fixture-version",
         default=DEFAULT_FIXTURE_VERSION,

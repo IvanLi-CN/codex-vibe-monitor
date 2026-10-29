@@ -30,10 +30,52 @@ def load_runner():
 
 class PostgresAcceptanceRunnerTests(unittest.TestCase):
     def test_automatic_acceptance_runs_only_the_functional_suite(self) -> None:
-        workflow = (REPO_ROOT / ".github/workflows/ci-postgresql-acceptance.yml").read_text()
-        self.assertIn("bash scripts/postgres-acceptance/run-functional-suite.sh", workflow)
-        self.assertNotIn("run-live-suite.sh", workflow)
-        self.assertIn('"result": "not-run"', workflow)
+        for filename in ("ci-postgresql-acceptance.yml", "ci-main.yml"):
+            workflow = (REPO_ROOT / ".github/workflows" / filename).read_text()
+            self.assertIn("bash scripts/postgres-acceptance/run-functional-suite.sh", workflow)
+            self.assertIn("python3 scripts/postgres-acceptance/run.py", workflow)
+            self.assertIn("bash scripts/postgres-acceptance/validate-identity.sh", workflow)
+            self.assertNotIn("run-live-suite.sh", workflow)
+
+    def test_identity_requires_existing_ancestor_and_exact_head(self) -> None:
+        validator = REPO_ROOT / "scripts/postgres-acceptance/validate-identity.sh"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            env = dict(os.environ, GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+                       GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid")
+            tree = subprocess.check_output(["git", "mktree"], cwd=root, input=b"", env=env).decode().strip()
+            def commit(message: str, parent: str | None = None) -> str:
+                command = ["git", "commit-tree", tree, "-m", message]
+                if parent:
+                    command += ["-p", parent]
+                return subprocess.check_output(command, cwd=root, env=env).decode().strip()
+            base = commit("base")
+            candidate = commit("candidate", base)
+            unrelated = commit("unrelated")
+            subprocess.run(["git", "update-ref", "HEAD", candidate], cwd=root, check=True, env=env)
+            def validate(base_sha: str, candidate_sha: str) -> int:
+                return subprocess.run(["bash", str(validator)], cwd=root,
+                    env=dict(env, BASE_SHA=base_sha, CANDIDATE_SHA=candidate_sha),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+            self.assertEqual(validate(base, candidate), 0)
+            for bad_base, bad_candidate in (("bad", candidate), ("0" * 40, candidate),
+                                             (unrelated, candidate), (base, base)):
+                self.assertNotEqual(validate(bad_base, bad_candidate), 0)
+
+    def test_audited_backend_selectors_are_explicit_and_exist(self) -> None:
+        names = (REPO_ROOT / "scripts/postgres-acceptance/non-pressure-backend-tests.txt").read_text().splitlines()
+        self.assertEqual(len(names), 96)
+        self.assertEqual(len(set(names)), len(names))
+        for name in names:
+            self.assertRegex(name, r"^(?:tests|upstream_accounts::tests)::(?:lightweight|stateful_sqlite|archive_file_io)::[a-z0-9_]+::[a-z0-9_]+$")
+            self.assertNotRegex(name, r"(?i)pressure|stress|performance|benchmark")
+            parts = name.split("::")
+            if parts[0] == "tests":
+                source = REPO_ROOT / "src/tests" / parts[1] / f"{parts[2]}.rs"
+            else:
+                source = REPO_ROOT / "src/upstream_accounts/tests" / parts[2] / f"{parts[3]}.rs"
+            self.assertRegex(source.read_text(), rf"\bfn\s+{re.escape(parts[-1])}\s*\(")
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -105,6 +147,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["result"], "passed")
+        self.assertEqual(report["scope"], "full")
         self.assertTrue(report["raw_result"]["executed"])
         self.assertIn("acceptance ok", stdout)
         self.assertNotIn("secret", json.dumps(report))

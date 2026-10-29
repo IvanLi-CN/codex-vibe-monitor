@@ -993,9 +993,15 @@ jobs:
           CANDIDATE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          mkdir -p "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR"
-          bash scripts/postgres-acceptance/run-functional-suite.sh
+          bash scripts/postgres-acceptance/validate-identity.sh
+          python3 scripts/postgres-acceptance/run.py \
+            --output "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR/report.json" \
+            --evidence-dir "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR" \
+            --scope functional-recovery \
+            --base-sha "$BASE_SHA" --candidate-sha "$CANDIDATE_SHA" \
+            -- bash scripts/postgres-acceptance/run-functional-suite.sh
+      - name: Run audited non-pressure backend tests
+        run: bash scripts/postgres-acceptance/run-non-pressure-backend.sh
       - name: Upload PostgreSQL functional evidence
         if: always()
         uses: actions/upload-artifact@v7

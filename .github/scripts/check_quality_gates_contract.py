@@ -1863,6 +1863,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require_fail_closed(postgres_functional, "ci-main.yml.jobs.postgres-functional")
     postgres_step = step_config(postgres_functional, "Run non-pressure PostgreSQL functional and recovery tests", "ci-main.yml")
     require_postgres_functional_step(postgres_step, "ci-main.yml PostgreSQL functional step")
+    require_nonpressure_backend_step(postgres_functional, "ci-main.yml PostgreSQL functional job")
     if auxiliary_jobs:
         archive_job = job_config(workflow, "backend-test-archive", "ci-main.yml")
         require(
@@ -2661,10 +2662,20 @@ def require_postgres_functional_step(step: dict[str, Any], where: str) -> None:
     )
     require(shell_commands(step, where) == [
         ["set", "-euo", "pipefail"],
-        ["test", "$(git rev-parse HEAD)", "=", "$CANDIDATE_SHA"],
-        ["mkdir", "-p", "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR"],
-        ["bash", "scripts/postgres-acceptance/run-functional-suite.sh"],
-    ], f"{where} must verify the candidate and run the non-pressure suite without masking failures")
+        ["bash", "scripts/postgres-acceptance/validate-identity.sh"],
+        ["python3", "scripts/postgres-acceptance/run.py", "--output", "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR/report.json",
+         "--evidence-dir", "$POSTGRES_ACCEPTANCE_EVIDENCE_DIR", "--scope", "functional-recovery",
+         "--base-sha", "$BASE_SHA", "--candidate-sha", "$CANDIDATE_SHA", "--",
+         "bash", "scripts/postgres-acceptance/run-functional-suite.sh"],
+    ], f"{where} must validate the identity and record non-pressure functional evidence without masking failures")
+
+
+def require_nonpressure_backend_step(job: dict[str, Any], where: str) -> None:
+    step = step_config(job, "Run audited non-pressure backend tests", where)
+    require_no_if(step, where)
+    require_fail_closed(step, where)
+    require(shell_commands(step, where) == [["bash", "scripts/postgres-acceptance/run-non-pressure-backend.sh"]],
+            f"{where} must run the audited non-pressure backend suite")
 
 
 def validate_postgres_functional_workflow(path: Path, contract: ContractModel) -> None:
@@ -2681,6 +2692,7 @@ def validate_postgres_functional_workflow(path: Path, contract: ContractModel) -
     require_fail_closed(job, "ci-postgresql-acceptance.yml.jobs.postgres-migration-functional")
     step = step_config(job, "Run non-pressure PostgreSQL functional and recovery tests", "ci-postgresql-acceptance.yml")
     require_postgres_functional_step(step, "ci-postgresql-acceptance.yml PostgreSQL functional step")
+    require_nonpressure_backend_step(job, "ci-postgresql-acceptance.yml PostgreSQL functional job")
 
 
 def main() -> int:
