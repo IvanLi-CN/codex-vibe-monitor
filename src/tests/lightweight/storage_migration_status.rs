@@ -1,5 +1,8 @@
 use crate::authorize_control_request;
 use crate::storage::config::StorageConfig;
+use crate::storage::core::StorageModule;
+use crate::storage::migration::{CapturedChange, ChangeBatchLimits, ChangeInput, MigrationSource};
+use crate::storage::migration_sqlx::{MigrationTableSpec, SqliteMigrationSource};
 use crate::storage::migration_status::{
     StorageMigrationBackend, StorageMigrationControlRequest, StorageMigrationProgress,
     StorageMigrationResponse, StorageMigrationRuntime, StorageMigrationState,
@@ -384,6 +387,227 @@ async fn durable_progress_bypasses_the_coalescing_window() {
     assert_eq!(persisted.progress.captured_through, Some(2));
     assert_eq!(persisted.progress.applied_through, Some(2));
     assert_eq!(persisted.revision, switching.revision);
+}
+
+#[tokio::test]
+async fn pg17_simulated_target_commit_with_lost_source_confirmation_is_safe_to_retry()
+-> anyhow::Result<()> {
+    let source_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            stable_key TEXT PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&source_pool)
+    .await?;
+    let source = SqliteMigrationSource::new(
+        source_pool.clone(),
+        "pg17-source-confirmation",
+        "sqlite-pg17",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+
+    let mut source_transaction = source_pool.begin().await?;
+    for (stable_key, source_version, payload) in [
+        ("applied", 1_i64, b"committed".as_slice()),
+        ("pending", 2_i64, b"still-pending".as_slice()),
+    ] {
+        sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+            .bind(stable_key)
+            .bind(source_version)
+            .bind(payload)
+            .execute(&mut *source_transaction)
+            .await?;
+        source
+            .append_captured_change_tx(
+                &mut source_transaction,
+                &CapturedChange::from_input(
+                    "pg17-source-confirmation",
+                    "sqlite-pg17",
+                    source_version,
+                    ChangeInput::insert("events", stable_key, payload.to_vec()),
+                )?,
+            )
+            .await?;
+    }
+    source_transaction.commit().await?;
+
+    // This is a deterministic SQLite model of a target transaction that committed before the
+    // caller lost the source-acknowledgement result; it is not PostgreSQL or process-restart
+    // evidence.
+    let target_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE target_events (
+            stable_key TEXT PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&target_pool)
+    .await?;
+    let mut target_transaction = target_pool.begin().await?;
+    sqlx::query("INSERT INTO target_events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+        .bind("applied")
+        .bind(1_i64)
+        .bind(b"committed".as_slice())
+        .execute(&mut *target_transaction)
+        .await?;
+    target_transaction.commit().await?;
+
+    let lost_ack: anyhow::Result<()> = async {
+        source.release_capture_through(1).await?;
+        anyhow::bail!("simulated loss of source acknowledgement after commit");
+    }
+    .await;
+    assert!(lost_ack.is_err());
+
+    // A recovery retry is harmless after either side of the source commit/ack boundary has
+    // already completed, and it must not consume the newer source version.
+    assert_eq!(source.release_capture_through(1).await?, 0);
+    let pending =
+        MigrationSource::changes_through(&source, 1, 2, ChangeBatchLimits::default()).await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].stable_key, "pending");
+
+    let source_fact_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&source_pool)
+        .await?;
+    assert_eq!(
+        source_fact_count, 2,
+        "source business facts were not deleted"
+    );
+
+    // Reapplying the committed target fact by its stable identity models the idempotent target
+    // side of recovery and must not create a second business row.
+    sqlx::query(
+        "INSERT INTO target_events (stable_key, source_version, payload) VALUES (?, ?, ?)
+         ON CONFLICT(stable_key) DO UPDATE SET
+           source_version = excluded.source_version,
+           payload = excluded.payload",
+    )
+    .bind("applied")
+    .bind(1_i64)
+    .bind(b"committed".as_slice())
+    .execute(&target_pool)
+    .await?;
+    let target_fact_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM target_events WHERE stable_key = 'applied'")
+            .fetch_one(&target_pool)
+            .await?;
+    assert_eq!(target_fact_count, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pg17_long_sqlite_connection_preserves_final_postgres_status_after_switch() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("SQLite persistence fixture should connect");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("migration persistence schema should initialize");
+
+    let runtime = Arc::new(
+        StorageMigrationRuntime::load(&config, pool.clone())
+            .await
+            .expect("migration runtime should load"),
+    );
+    runtime
+        .apply_control(StorageMigrationControlRequest { paused: false })
+        .await
+        .expect("start is accepted");
+    for phase in [
+        StorageMigrationState::Copying,
+        StorageMigrationState::CatchingUp,
+        StorageMigrationState::Verifying,
+        StorageMigrationState::Ready,
+    ] {
+        runtime
+            .publish_progress(StorageMigrationProgress {
+                phase,
+                ..StorageMigrationProgress::default()
+            })
+            .await
+            .expect("migration phase is accepted");
+    }
+
+    let held_connection = pool
+        .acquire()
+        .await
+        .expect("the long SQLite connection should be available");
+    let switching_runtime = runtime.clone();
+    let switching = tokio::spawn(async move {
+        switching_runtime
+            .publish_progress_durable(StorageMigrationProgress {
+                phase: StorageMigrationState::Switching,
+                captured_through: Some(7),
+                applied_through: Some(7),
+                ..StorageMigrationProgress::default()
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.progress_persistence_in_flight_for_test() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("switching status should be blocked by the long connection");
+
+    let postgres_runtime = runtime.clone();
+    let postgres =
+        tokio::spawn(async move { postgres_runtime.publish_postgres_authority(2, 7).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = runtime.snapshot().await;
+            if status.state == StorageMigrationState::Postgres && status.authority.generation == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("newer Postgres completion should win in memory while persistence is blocked");
+
+    drop(held_connection);
+    switching
+        .await
+        .expect("switching persistence task should join")
+        .expect("stale switching persistence should resolve to the newer snapshot");
+    postgres
+        .await
+        .expect("Postgres authority persistence task should join")
+        .expect("Postgres authority should persist after the connection is released");
+
+    let recovered = StorageMigrationRuntime::load(&config, pool)
+        .await
+        .expect("migration runtime should reload the final snapshot");
+    let status = recovered.snapshot().await;
+    assert_eq!(status.state, StorageMigrationState::Postgres);
+    assert_eq!(status.authority.generation, 2);
+    assert_eq!(status.progress.captured_through, Some(7));
+    assert_eq!(status.progress.applied_through, Some(7));
+    assert_eq!(status.switch.result.as_deref(), Some("published"));
+    assert!(!status.task_holds.held);
 }
 
 #[tokio::test]
