@@ -4019,7 +4019,7 @@ async fn wait_for_child_marker(child: &mut AcceptanceChild, marker: &Path) -> Re
 
 #[cfg(unix)]
 async fn wait_for_child_exit(child: &mut AcceptanceChild) -> Result<std::process::ExitStatus> {
-    Ok(tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(status) = child.0.try_wait()? {
                 return Ok::<std::process::ExitStatus, anyhow::Error>(status);
@@ -4028,7 +4028,7 @@ async fn wait_for_child_exit(child: &mut AcceptanceChild) -> Result<std::process
         }
     })
     .await
-    .context("wait for PostgreSQL acceptance child exit")??)
+    .context("wait for PostgreSQL acceptance child exit")?
 }
 
 #[cfg(unix)]
