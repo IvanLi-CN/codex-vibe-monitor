@@ -4831,6 +4831,34 @@ impl MaintenanceStore {
         .await
     }
 
+    pub(crate) async fn update_progress_wait_state(
+        &self,
+        task_key: &str,
+        wait_reason: Option<&str>,
+        next_retry_at: Option<&str>,
+    ) -> Result<()> {
+        let now = format_utc_iso_millis(Utc::now());
+        observe_store_write(
+            StoreOperation::Progress,
+            async {
+                sqlx::query(
+                    "UPDATE managed_task_progress
+                     SET updated_at=?, freshness='fresh', last_progress_at=?, wait_reason=?, next_retry_at=?
+                     WHERE task_key=?",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(wait_reason)
+                .bind(next_retry_at)
+                .bind(task_key)
+                .execute(&self.pool)
+                .await?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
     async fn publish_progress_inner(
         &self,
         context: PublishProgressObservationContext<'_>,
@@ -6205,6 +6233,75 @@ mod tests {
             .expect("prompt cache alias detail exists");
         assert_eq!(detail.task.task_key, "prompt_cache_materialization");
         assert_eq!(detail.recent_runs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn progress_wait_state_preserves_live_owner_checkpoint() {
+        let store = super::ownership_test_store().await;
+        let task_key = "pool_upstream_attempt_archive";
+        store
+            .publish_progress(
+                task_key,
+                Some(1_000),
+                Some(400),
+                Some("running"),
+                Some("admitted"),
+                Some("rows"),
+                Some("pool_upstream_request_attempts:retention_policy"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("publish live owner progress");
+
+        store
+            .update_progress_wait_state(
+                task_key,
+                Some("retention_write_admission"),
+                Some("2026-10-30T00:00:01.000Z"),
+            )
+            .await
+            .expect("publish live owner wait state");
+        let waiting: (
+            Option<i64>,
+            Option<i64>,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT total,completed,phase,checkpoint,wait_reason,next_retry_at
+                 FROM managed_task_progress WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_one(&store.pool)
+        .await
+        .expect("load live owner wait state");
+        assert_eq!(
+            waiting,
+            (
+                Some(1_000),
+                Some(400),
+                "running".to_string(),
+                "admitted".to_string(),
+                Some("retention_write_admission".to_string()),
+                Some("2026-10-30T00:00:01.000Z".to_string()),
+            )
+        );
+
+        store
+            .update_progress_wait_state(task_key, None, None)
+            .await
+            .expect("clear live owner wait state");
+        let cleared: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT wait_reason,next_retry_at FROM managed_task_progress WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_one(&store.pool)
+        .await
+        .expect("load cleared live owner wait state");
+        assert_eq!(cleared, (None, None));
     }
 
     #[tokio::test]

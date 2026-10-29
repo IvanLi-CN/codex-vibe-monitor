@@ -1155,10 +1155,24 @@ pub(crate) async fn run_retention_owner_task(
                                 batch_plan::TASK_BATCH_METRICS.scope(
                                     RefCell::new(Vec::new()),
                                     RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                                        let progress_store =
+                                            crate::maintenance_store::MaintenanceStore::from_pool(
+                                                pool.clone(),
+                                            );
                                         let mut initial_global_total = None;
                                         let mut initial_source_max_id = None;
                                         let mut retry_index = 0usize;
                                         let result = loop {
+                                            if let Err(error) = progress_store
+                                                .update_progress_wait_state(task_key, None, None)
+                                                .await
+                                            {
+                                                debug!(
+                                                    task = task_key,
+                                                    error = %error,
+                                                    "retention owner live progress could not clear retry wait state"
+                                                );
+                                            }
                                             let result = run_retention_owner_task_inner(
                                                 pool, config, task_key, dry_run, shutdown,
                                             )
@@ -1194,6 +1208,31 @@ pub(crate) async fn run_retention_owner_task(
                                             let delay =
                                                 retention_owner_internal_retry_delay(retry_index);
                                             retry_index = retry_index.saturating_add(1);
+                                            let wait_reason = result
+                                                .as_ref()
+                                                .ok()
+                                                .and_then(|summary| summary.wait_reason.as_deref());
+                                            let next_retry_at = format_utc_iso_millis(
+                                                Utc::now()
+                                                    + chrono::Duration::milliseconds(
+                                                        i64::try_from(delay.as_millis())
+                                                            .unwrap_or(i64::MAX),
+                                                    ),
+                                            );
+                                            if let Err(error) = progress_store
+                                                .update_progress_wait_state(
+                                                    task_key,
+                                                    wait_reason,
+                                                    Some(&next_retry_at),
+                                                )
+                                                .await
+                                            {
+                                                debug!(
+                                                    task = task_key,
+                                                    error = %error,
+                                                    "retention owner live progress could not publish retry wait state"
+                                                );
+                                            }
                                             tokio::select! {
                                                 biased;
                                                 _ = shutdown.cancelled() => break result,
