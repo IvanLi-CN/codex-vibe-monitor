@@ -48,6 +48,7 @@ from contract import (
     task_run_is_accepted_zero_contribution_competitor_defer,
     task_run_is_recoverable_competitor_chunk,
     task_run_is_accepted_terminal,
+    task_run_is_proof_edge_active,
     validate_evidence,
 )
 from fixture import (
@@ -1250,6 +1251,21 @@ def active_controlled_task_keys(rows: list[dict[str, Any]]) -> list[str]:
     )
 
 
+def mark_proof_edge_active(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark bounded catch-up work observed after selected proof became ready."""
+    for row in rows:
+        if (
+            row.get("actual_finished_at") is None
+            and row.get("task_key") in ARCHIVE_TASK_KEYS
+            and row.get("trigger_kind") == "catchup"
+            and row.get("status") == "running"
+            and isinstance(row.get("progress"), dict)
+            and row["progress"].get("checkpoint") == "finished"
+        ):
+            row["evidence_kind"] = "proof_edge_active"
+    return rows
+
+
 def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> None:
     """Stop new archive-owner dispatches after proof is ready, leaving the competitor running."""
     timeout = min(5.0, remaining_budget(started))
@@ -1466,7 +1482,7 @@ def wait_for_task_evidence(
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
             active = active_controlled_task_keys(latest)
-            if snapshot_error is None and proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+            if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
                 if on_proof_ready is not None and not scheduling_suspended:
                     # Stop new controlled dispatches as soon as the proof edge is observed. The
                     # owner already running is allowed to finish before the evidence is frozen;
@@ -1475,14 +1491,45 @@ def wait_for_task_evidence(
                     suspend_controlled_task_scheduling(maintenance_db, started)
                     scheduling_suspended = True
                 if active:
-                    last_error = AcceptanceError(
-                        "archive proofs are ready but controlled owner tasks are still active: "
-                        + ",".join(active)
-                    )
+                    proof_edge_latest = mark_proof_edge_active(latest)
+                    if not all(
+                        task_run_is_proof_edge_active(row)
+                        for row in proof_edge_latest
+                        if row.get("actual_finished_at") is None
+                        and row.get("task_key") in CONTROLLED_TASK_KEYS
+                    ):
+                        last_error = snapshot_error or AcceptanceError(
+                            "archive proofs are ready but controlled owner tasks are still active: "
+                            + ",".join(active)
+                        )
+                    else:
+                        try:
+                            validate_task_snapshot(
+                                proof_edge_latest,
+                                version,
+                                allow_recoverable_competitor_failures=bool(
+                                    raw_oracle is not None and raw_oracle["verified_empty"]
+                                ),
+                                allow_proof_edge_active=True,
+                            )
+                        except AcceptanceError as error:
+                            last_error = error
+                        else:
+                            latest = proof_edge_latest
+                            if on_proof_ready is not None:
+                                on_proof_ready(proof_status)
+                            return latest
                 else:
-                    if on_proof_ready is not None:
+                    if snapshot_error is not None:
+                        if scheduling_suspended:
+                            resume_controlled_task_scheduling(maintenance_db, started)
+                            scheduling_suspended = False
+                        last_error = snapshot_error
+                    elif on_proof_ready is not None:
                         on_proof_ready(proof_status)
-                    return latest
+                        return latest
+                    elif snapshot_error is None:
+                        return latest
             else:
                 if scheduling_suspended and active:
                     last_error = snapshot_error or AcceptanceError(
@@ -1519,6 +1566,7 @@ def validate_task_snapshot(
     version: str = "candidate",
     *,
     allow_recoverable_competitor_failures: bool = False,
+    allow_proof_edge_active: bool = False,
 ) -> None:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -1539,7 +1587,10 @@ def validate_task_snapshot(
                 )
         if accepted:
             by_key.setdefault(row["task_key"], []).append(row)
-        elif row.get("actual_finished_at") is None and task_run_is_bounded_active(row):
+        elif row.get("actual_finished_at") is None and (
+            task_run_is_bounded_active(row)
+            or (allow_proof_edge_active and task_run_is_proof_edge_active(row))
+        ):
             by_key.setdefault(row["task_key"], []).append(row)
     if allow_recoverable_competitor_failures:
         for row in rows:
@@ -1560,7 +1611,15 @@ def validate_task_snapshot(
         scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and row.get("actual_finished_at") is not None]
         catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and row.get("actual_finished_at") is not None]
         active_scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and task_run_is_bounded_active(row)]
-        active_catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and task_run_is_bounded_active(row)]
+        active_catchups = [
+            row
+            for row in runs
+            if row.get("trigger_kind") == "catchup"
+            and (
+                task_run_is_bounded_active(row)
+                or (allow_proof_edge_active and task_run_is_proof_edge_active(row))
+            )
+        ]
         completed_chain = bool(scheduled and catchups and any(
             parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"])
             for schedule in scheduled
@@ -1574,7 +1633,14 @@ def validate_task_snapshot(
         if version == "baseline":
             if not (completed_chain or bounded_chain):
                 raise AcceptanceError(f"production dispatcher has not completed both schedule and catch-up runs or produced a bounded baseline observation for {key}")
-        elif not completed_chain:
+        elif not completed_chain and not (
+            allow_proof_edge_active
+            and any(
+                row.get("evidence_kind") == "proof_edge_active"
+                for row in active_catchups
+            )
+            and any(row.get("trigger_kind") == "schedule" for row in runs)
+        ):
             raise AcceptanceError(f"production dispatcher has not completed both schedule and catch-up runs for {key}")
     competitors = by_key.get("raw_orphan_sweep", [])
     released = sum(row.get("committed_work") or 0 for row in competitors)
@@ -1730,11 +1796,20 @@ def run_trial(
             (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
             (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
             (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
-            active = active_controlled_task_keys(task_runs(maintenance_db))
-            if active:
+            active_rows = task_runs(maintenance_db)
+            unsafe_active = [
+                row
+                for row in active_rows
+                if row.get("actual_finished_at") is None
+                and row.get("task_key") in CONTROLLED_TASK_KEYS
+                and not task_run_is_proof_edge_active(
+                    {**row, "evidence_kind": "proof_edge_active"}
+                )
+            ]
+            if unsafe_active:
                 raise AcceptanceError(
                     "controlled owner tasks restarted before oracle freeze: "
-                    + ",".join(active)
+                    + ",".join(sorted({row["task_key"] for row in unsafe_active}))
                 )
             oracle_container_id = freeze_trial_for_oracle(
                 container,

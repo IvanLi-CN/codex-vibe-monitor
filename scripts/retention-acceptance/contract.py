@@ -310,6 +310,39 @@ def task_run_is_bounded_active(row: dict[str, Any]) -> bool:
     )
 
 
+def task_run_is_proof_edge_active(row: dict[str, Any]) -> bool:
+    """Accept a catch-up owner observed after selected proof is complete.
+
+    The selected cohort is proven from the source/artifact oracle and archive proof
+    before this state is recorded.  A catch-up worker may still be open while it
+    drains unrelated global backlog; only a finished progress checkpoint with
+    committed progress is eligible for this explicit proof-edge observation.
+    """
+    progress = row.get("progress")
+    completed = progress.get("completed") if isinstance(progress, dict) else None
+    total = progress.get("total") if isinstance(progress, dict) else None
+    return (
+        row.get("evidence_kind") == "proof_edge_active"
+        and row.get("task_key") in {"retention_archive", "pool_upstream_attempt_archive"}
+        and row.get("trigger_kind") == "catchup"
+        and row.get("status") == "running"
+        and row.get("actual_finished_at") is None
+        and isinstance(row.get("started_at"), str)
+        and isinstance(row.get("activity_started_at"), str)
+        and isinstance(row.get("observed_at"), str)
+        and isinstance(progress, dict)
+        and progress.get("phase") in {"running", "processing"}
+        and progress.get("checkpoint") == "finished"
+        and isinstance(completed, int)
+        and not isinstance(completed, bool)
+        and completed > 0
+        and isinstance(total, int)
+        and not isinstance(total, bool)
+        and total >= completed
+        and isinstance(progress.get("last_progress_at"), str)
+    )
+
+
 def _number(value: Any, message: str) -> float:
     _require(
         isinstance(value, (int, float))
@@ -485,10 +518,16 @@ def _validate_task_runs(
         active = row.get("actual_finished_at") is None
         if active:
             _require(
-                version == "baseline" and key in {DATASETS[name]["task_key"] for name in DATASETS},
+                (
+                    version == "baseline" and key in {DATASETS[name]["task_key"] for name in DATASETS}
+                )
+                or (version == "candidate" and task_run_is_proof_edge_active(row)),
                 f"background task {key} remained active outside the baseline observation contract",
             )
-            _require(task_run_is_bounded_active(row), f"active background task {key} lacks a bounded progress snapshot")
+            if version == "baseline":
+                _require(task_run_is_bounded_active(row), f"active background task {key} lacks a bounded progress snapshot")
+            else:
+                _require(task_run_is_proof_edge_active(row), f"active background task {key} lacks a proof-edge progress snapshot")
             requested = parse_time(row.get("started_at"))
             observed = parse_time(row.get("observed_at"))
             progress_at = parse_time(row["progress"]["last_progress_at"])
@@ -548,7 +587,12 @@ def _validate_task_runs(
         scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and row.get("actual_finished_at") is not None]
         catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and row.get("actual_finished_at") is not None]
         active_scheduled = [row for row in runs if row.get("trigger_kind") == "schedule" and task_run_is_bounded_active(row)]
-        active_catchups = [row for row in runs if row.get("trigger_kind") == "catchup" and task_run_is_bounded_active(row)]
+        active_catchups = [
+            row
+            for row in runs
+            if row.get("trigger_kind") == "catchup"
+            and (task_run_is_bounded_active(row) or task_run_is_proof_edge_active(row))
+        ]
         completed_chain = bool(scheduled and catchups and any(
             parse_time(schedule["actual_finished_at"]) <= parse_time(catchup["actual_started_at"])
             for schedule in scheduled
@@ -565,12 +609,19 @@ def _validate_task_runs(
                 f"production dispatcher did not complete both schedule and catch-up runs or provide a bounded baseline observation for {key}",
             )
         else:
-            _require(completed_chain, f"production dispatcher did not complete both schedule and catch-up runs for {key}")
+            _require(
+                completed_chain or (
+                    bool(active_catchups)
+                    and any(task_run_is_proof_edge_active(row) for row in active_catchups)
+                    and bool(scheduled)
+                ),
+                f"production dispatcher did not complete both schedule and catch-up runs for {key}",
+            )
         _require(
             any(
                 (row["committed_work"] > 0 and parse_time(row["actual_finished_at"]) <= input_end)
                 if row.get("actual_finished_at") is not None
-                else task_run_is_bounded_active(row)
+                else task_run_is_bounded_active(row) or task_run_is_proof_edge_active(row)
                 for row in runs
             ),
             f"production owner {key} made no progress during foreground input",

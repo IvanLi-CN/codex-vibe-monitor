@@ -627,6 +627,66 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AcceptanceError, "bounded progress snapshot"):
             validate_evidence(evidence)
 
+    def test_evidence_validator_accepts_candidate_proof_edge_catchup_owner(self) -> None:
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        input_start = datetime.fromisoformat(trial["window"]["input_started_at"].replace("Z", "+00:00"))
+        input_end = datetime.fromisoformat(trial["window"]["input_finished_at"].replace("Z", "+00:00"))
+        observed_at = input_end - timedelta(seconds=1)
+        progress_at = observed_at - timedelta(seconds=1)
+        active = next(
+            row
+            for row in trial["task_runs"]
+            if row["task_key"] == "pool_upstream_attempt_archive" and row["trigger_kind"] == "catchup"
+        )
+        active.update(
+            {
+                "status": "running",
+                "actual_finished_at": None,
+                "committed_work": 1000,
+                "evidence_kind": "proof_edge_active",
+                "started_at": timestamp(input_start + timedelta(seconds=5)),
+                "activity_started_at": timestamp(input_start + timedelta(seconds=6)),
+                "observed_at": timestamp(observed_at),
+                "progress": {
+                    "total": 1000,
+                    "completed": 1000,
+                    "phase": "processing",
+                    "checkpoint": "finished",
+                    "last_progress_at": timestamp(progress_at),
+                },
+            }
+        )
+
+        self.assertEqual(validate_evidence(evidence)["status"], "passed")
+
+        evidence = valid_evidence()
+        trial = evidence["versions"]["candidate"]["trials"][0]
+        active = next(
+            row
+            for row in trial["task_runs"]
+            if row["task_key"] == "pool_upstream_attempt_archive" and row["trigger_kind"] == "catchup"
+        )
+        active.update(
+            {
+                "status": "running",
+                "actual_finished_at": None,
+                "evidence_kind": "proof_edge_active",
+                "started_at": trial["window"]["input_started_at"],
+                "activity_started_at": trial["window"]["input_started_at"],
+                "observed_at": trial["window"]["cleanup_finished_at"],
+                "progress": {
+                    "total": 1000,
+                    "completed": 1000,
+                    "phase": "processing",
+                    "checkpoint": "processing",
+                    "last_progress_at": trial["window"]["input_finished_at"],
+                },
+            }
+        )
+        with self.assertRaisesRegex(AcceptanceError, "remained active"):
+            validate_evidence(evidence)
+
     def test_live_write_count_cannot_be_replaced_with_a_reported_count(self) -> None:
         evidence = valid_evidence()
         result = evidence["versions"]["candidate"]["trials"][0]["oracle"]["datasets"]["invocations"]

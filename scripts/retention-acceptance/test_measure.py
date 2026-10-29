@@ -699,6 +699,56 @@ class MeasurementBudgetTests(unittest.TestCase):
         resume.assert_not_called()
         self.assertEqual(frozen, [ready])
 
+    def test_candidate_freezes_on_proven_catchup_progress_at_proof_edge(self) -> None:
+        proof_status = {
+            "ready": True,
+            "reference_ready": True,
+            "datasets": {},
+        }
+        active_row = {
+            "task_key": "pool_upstream_attempt_archive",
+            "trigger_kind": "catchup",
+            "status": "running",
+            "started_at": "2026-10-25T00:00:00Z",
+            "actual_started_at": "2026-10-25T00:00:01Z",
+            "actual_finished_at": None,
+            "activity_started_at": "2026-10-25T00:00:01Z",
+            "observed_at": "2026-10-25T00:00:10Z",
+            "committed_work": 1000,
+            "evidence_kind": "active",
+            "progress": {
+                "total": 1000,
+                "completed": 1000,
+                "phase": "processing",
+                "checkpoint": "finished",
+                "last_progress_at": "2026-10-25T00:00:09Z",
+            },
+        }
+        frozen: list[dict[str, object]] = []
+        with patch("measure.task_runs", return_value=[active_row]), patch(
+            "measure.validate_task_snapshot",
+            side_effect=[AcceptanceError("catch-up is still active"), None],
+        ) as validate, patch(
+            "measure.archive_proof_status", return_value=proof_status
+        ), patch("measure.suspend_controlled_task_scheduling") as suspend:
+            result = wait_for_task_evidence(
+                Path("main.sqlite"),
+                Path("maintenance.sqlite"),
+                "2026-10-23 00:00:00",
+                {name: 1 for name in DATASETS},
+                time.monotonic(),
+                "candidate",
+                timeout_seconds=1,
+                on_proof_ready=lambda status: frozen.append(status),
+            )
+
+        self.assertEqual(result[0]["evidence_kind"], "proof_edge_active")
+        self.assertEqual(frozen, [proof_status])
+        suspend.assert_called_once_with(Path("maintenance.sqlite"), ANY)
+        self.assertEqual(validate.call_count, 2)
+        self.assertEqual(validate.call_args.args[0][0]["evidence_kind"], "proof_edge_active")
+        self.assertTrue(validate.call_args.kwargs["allow_proof_edge_active"])
+
     def test_suspend_controlled_task_scheduling_only_changes_controlled_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "maintenance.sqlite"
