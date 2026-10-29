@@ -20,9 +20,8 @@ from contract import (
 )
 
 
-CONTROLLED_TASK_KEYS = tuple(
-    [DATASETS[name]["task_key"] for name in DATASETS] + [COMPETITOR_TASK]
-)
+ARCHIVE_TASK_KEYS = tuple(DATASETS[name]["task_key"] for name in DATASETS)
+CONTROLLED_TASK_KEYS = ARCHIVE_TASK_KEYS + (COMPETITOR_TASK,)
 SHANGHAI = timezone(timedelta(hours=8))
 PARALLEL_WORK_COVERAGE_DAYS = 30
 

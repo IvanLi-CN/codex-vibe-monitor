@@ -28,7 +28,7 @@ from contract import (
     DATASETS,
     TRIAL_EXECUTION_ORDER,
 )
-from fixture import CONTROLLED_TASK_KEYS, prepare_competitor, seed_parallel_work_coverage
+from fixture import ARCHIVE_TASK_KEYS, CONTROLLED_TASK_KEYS, prepare_competitor, seed_parallel_work_coverage
 from measure import (
     OwnedContainerLedger,
     active_controlled_task_keys,
@@ -733,9 +733,10 @@ class MeasurementBudgetTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            for key in CONTROLLED_TASK_KEYS:
+            for key in ARCHIVE_TASK_KEYS:
                 self.assertEqual(values[key][:4], (0, None, None, None))
                 self.assertNotEqual(values[key][4], "old-updated")
+            self.assertEqual(values[COMPETITOR_TASK], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
             self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
 
             resume_controlled_task_scheduling(database, started, (COMPETITOR_TASK,))
@@ -755,11 +756,10 @@ class MeasurementBudgetTests(unittest.TestCase):
             self.assertEqual(values[COMPETITOR_TASK][0], 1)
             self.assertIsNotNone(values[COMPETITOR_TASK][1])
             self.assertEqual(values[COMPETITOR_TASK][2:4], (None, None))
-            for key in CONTROLLED_TASK_KEYS:
-                if key == COMPETITOR_TASK:
-                    continue
+            for key in ARCHIVE_TASK_KEYS:
                 self.assertEqual(values[key][:4], (0, None, None, None))
                 self.assertNotEqual(values[key][4], "old-updated")
+            self.assertNotEqual(values[COMPETITOR_TASK][4], "old-updated")
             self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
 
             resume_controlled_task_scheduling(database, started)

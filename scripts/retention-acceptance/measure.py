@@ -50,7 +50,13 @@ from contract import (
     task_run_is_accepted_terminal,
     validate_evidence,
 )
-from fixture import CONTROLLED_TASK_KEYS, populate_template, prepare_competitor, shanghai_cutoff
+from fixture import (
+    ARCHIVE_TASK_KEYS,
+    CONTROLLED_TASK_KEYS,
+    populate_template,
+    prepare_competitor,
+    shanghai_cutoff,
+)
 from oracle import verify_trial
 
 
@@ -1245,11 +1251,11 @@ def active_controlled_task_keys(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> None:
-    """Stop new controlled dispatches after proof is ready, then drain active owners."""
+    """Stop new archive-owner dispatches after proof is ready, leaving the competitor running."""
     timeout = min(5.0, remaining_budget(started))
     if timeout <= 0:
         raise AcceptanceError("no time remains to suspend controlled task scheduling")
-    placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+    placeholders = ",".join("?" for _ in ARCHIVE_TASK_KEYS)
     connection = sqlite3.connect(maintenance_db, timeout=timeout)
     try:
         connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
@@ -1257,10 +1263,10 @@ def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> 
             "UPDATE managed_tasks "
             "SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
             f"WHERE task_key IN ({placeholders})",
-            (utc_now(), *CONTROLLED_TASK_KEYS),
+            (utc_now(), *ARCHIVE_TASK_KEYS),
         )
-        if cursor.rowcount != len(CONTROLLED_TASK_KEYS):
-            raise AcceptanceError("controlled task scheduling rows are incomplete at oracle freeze")
+        if cursor.rowcount != len(ARCHIVE_TASK_KEYS):
+            raise AcceptanceError("archive task scheduling rows are incomplete at oracle freeze")
         connection.commit()
     except sqlite3.Error as error:
         connection.rollback()
@@ -1272,9 +1278,9 @@ def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> 
 def resume_controlled_task_scheduling(
     maintenance_db: Path,
     started: float,
-    task_keys: tuple[str, ...] = CONTROLLED_TASK_KEYS,
+    task_keys: tuple[str, ...] = ARCHIVE_TASK_KEYS,
 ) -> None:
-    """Resume controlled dispatch when a transient proof edge was lost."""
+    """Resume archive-owner dispatch when a transient proof edge was lost."""
     if not task_keys or not set(task_keys).issubset(CONTROLLED_TASK_KEYS):
         raise AcceptanceError("cannot resume an uncontrolled task set")
     timeout = min(5.0, remaining_budget(started))
