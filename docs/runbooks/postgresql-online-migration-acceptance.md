@@ -12,9 +12,11 @@ Confirm all of the following before a live run:
 - The source SQLite database, PostgreSQL target, authority manifest, archive files, Raw files and WAL/archive retention have independent backup and restore owners.
 - The service account can create the migration schema, constraints, indexes and bounded capture state, but the acceptance database contains no production data.
 
-## Acceptance command
+## Acceptance status
 
-The CI workflow starts PostgreSQL 18.6 with a pinned image digest and runs both the lightweight PostgreSQL migration tests and the archive/file-I/O PostgreSQL tests:
+CI runs a non-pressure PostgreSQL functional and recovery subset through the evidence runner, and records a candidate-bound blocked/not-run report for unavailable acceptance evidence. It also runs 96 individually audited non-pressure backend tests across the lightweight, stateful SQLite and archive profiles. The full backend profiles and representative-scale job remain skipped; the selected tests do not replace their complete coverage. A skipped check is not acceptance evidence.
+
+The functional suite can be run against an isolated PostgreSQL 18 database:
 
 ```bash
 : "${BASE_SHA:?set BASE_SHA to the exact parent commit SHA before running acceptance}"
@@ -25,28 +27,24 @@ python3 scripts/postgres-acceptance/run.py \
   --evidence-dir "$EVIDENCE_DIR" \
   --base-sha "$BASE_SHA" \
   --candidate-sha "$CANDIDATE_SHA" \
+  --scope functional-recovery \
   --fixture-version 4.13.11 \
-  -- bash scripts/postgres-acceptance/run-live-suite.sh
+  -- bash scripts/postgres-acceptance/run-functional-suite.sh
 ```
 
-Exit `78` means `blocked/not-run`, including a missing URL or unavailable service. It is an acceptance failure, not a skip. A non-zero child command is `failed`; only exit `0` is `passed`.
+Exit `78` means `blocked/not-run`, including a missing URL or unavailable service. A non-zero child command is `failed`; exit `0` only reports that the child command completed, and does not establish target capacity, WAL backlog, backup/restore or natural-traffic evidence.
 
-The live suite requires PostgreSQL 18.x and writes three candidate-bound evidence files into `EVIDENCE_DIR`: `process-kill.json` proves the real-process boundary after target replay/checkpoint commit and before local acknowledgement; `startup-performance.json` compares migration-disabled and PostgreSQL-configured startup initialization over small and large SQLite histories; and `switch-performance.json` measures the real PostgreSQL authority switch for small and large copied tables. The runner also preserves redacted stdout/stderr and the exact base/candidate SHAs. These files do not close the other fault boundaries unless their own evidence is present.
+The functional suite writes `process-kill.json` for the process boundary after a PostgreSQL replay/checkpoint commit and before local acknowledgement. Its runner also preserves redacted stdout/stderr and the exact base/candidate SHAs. Pressure and performance evidence is not run; backup/restore and natural-traffic evidence remain deployment-preparation gates.
 
-## Initial operating thresholds
+Performance workflows must complete in less than three minutes overall. Pressure tests remain prohibited until separately authorized.
 
-These are acceptance gates, not promises that a production system has already met them:
+## Observations and deployment requirements
 
-- Startup migration initialization adds no historical table scan. Compare startup with small and large historical datasets and against the same candidate with migration work disabled. Target at most 500 ms of added p95 startup work; repeat and investigate a noisy or materially slower measurement using the same workload and environment.
-- The pre-commit switch attempt stays within the configured three-second budget. If the budget expires before authority publication, reopen SQLite and do not publish PostgreSQL authority.
-- Catch-up remains convergent for three consecutive one-minute observation windows: applied change rate exceeds incoming change rate and the oldest pending change age decreases.
-- Capture/WAL backlog stays below 50% of its configured capacity, and free disk headroom covers at least twice the measured peak target-plus-capture growth for the planned run.
-- The same representative traffic run shows no more than a 10% p95 regression for unchanged proxy/admin endpoints. Time saved by pausing optional maintenance is reported separately.
-- A post-cutover PostgreSQL outage keeps the module in explicit recovery/error handling. It must not silently fail back to stale SQLite authority.
+Pressure and performance measurements are not current acceptance gates. Any future performance workflow must finish in strictly less than three minutes overall and must not run pressure tests while they are prohibited. The pre-commit switch attempt uses a configurable budget; if it expires before authority publication, reopen SQLite and do not publish PostgreSQL authority.
 
-Every measurement must include workload, duration, candidate SHA, source/target identities, sample count, raw result path and whether maintenance was held. Record migration hold and task-restoration periods separately. Validate backup and restore and collect a natural-traffic baseline before production cutover; neither is evidence that production cutover has already occurred.
+Before production cutover, independently verify PostgreSQL target capacity, actual WAL backlog and data-volume headroom for the planned run. A post-cutover PostgreSQL outage must keep the module in explicit recovery/error handling; it must not silently fail back to stale SQLite authority. Missing safety evidence blocks cutover.
 
-The startup measurement times `StorageRuntimeRouter::initialize` after fixture schema/history preparation and before worker start. Each sample resets the SQLite statement cache and installs a SQLite authorizer that records `SQLITE_READ` actions for `archive_batches` only during that initialization call; the evidence records the per-sample counts and requires every count to be zero. The PostgreSQL-configured case uses the lazy real target pool and a separately probed PostgreSQL 18.x service; it must not scan historical archive rows. The switch measurement prepares a real PostgreSQL target and times the complete pre-fence verification, bounded tail catch-up, fence and authority publication path against the three-second budget.
+Every measurement must include workload, duration, candidate SHA, source/target identities, sample count, raw result path and whether maintenance was held. Record migration hold and task-restoration periods separately. PostgreSQL target capacity, actual WAL backlog and the target data volume remain unverified by this fixture; verify those, backup and restore, and a natural-traffic baseline before production cutover. None establishes that production cutover has already occurred.
 
 ## Backup and restore drill
 
@@ -71,7 +69,7 @@ Restore each owner into an isolated environment. Verify schema/inventory, stable
 | Journal acknowledgement uncertain       | Replay the stable journal identity and retain it until destination commit is acknowledged.                            |
 | Filesystem or WAL durability uncertain  | Mark the migration blocked/recovering, preserve source authority, and require an explicit repair or new generation.   |
 
-The current live process test covers only the target replay/checkpoint commit → local SQLite acknowledgement boundary. It does not claim coverage for source acknowledgement, source fencing, authority manifest publication, router generation publication, journal acknowledgement, filesystem/WAL durability or backup/restore. Those remain explicit acceptance gaps until dedicated evidence is attached.
+The process test covers the target replay/checkpoint commit → local SQLite acknowledgement boundary using a real PostgreSQL 18 target and application-process termination. The deterministic fault tests exercise source acknowledgement after a committed release, source fencing, authority publication, router generation publication, journal acknowledgement, normal timeout/retry and recovery. These tests do not claim coverage for filesystem/WAL crash durability beyond the committed PostgreSQL transaction, backup/restore or the production natural-traffic baseline; those remain deployment-preparation gates.
 
 ## Deployment sequence
 

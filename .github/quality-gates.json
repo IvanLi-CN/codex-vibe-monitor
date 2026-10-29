@@ -25,12 +25,9 @@
           "Storybook Accessibility Tests": 15368,
           "Docs & Web Demo Build": 15368,
           "Records Overlay E2E": 15368,
-          "Backend Tests (Lightweight)": 15368,
-          "Backend Tests (Stateful SQLite)": 15368,
-          "Backend Tests (Archive / File I/O)": 15368,
+          "PostgreSQL Migration Functional and Recovery": 15368,
           "Build Artifacts": 15368,
-          "Review Policy Gate": 15368,
-          "Backend Tests (Representative Scale)": 15368
+          "Review Policy Gate": 15368
         }
       }
     },
@@ -61,10 +58,7 @@
     "Storybook Accessibility Tests",
     "Docs & Web Demo Build",
     "Records Overlay E2E",
-    "Backend Tests (Lightweight)",
-    "Backend Tests (Stateful SQLite)",
-    "Backend Tests (Representative Scale)",
-    "Backend Tests (Archive / File I/O)",
+    "PostgreSQL Migration Functional and Recovery",
     "Build Artifacts",
     "Review Policy Gate"
   ],
@@ -86,19 +80,28 @@
         "Storybook Accessibility Tests",
         "Docs & Web Demo Build",
         "Records Overlay E2E",
-        "Backend Tests (Lightweight)",
-        "Backend Tests (Stateful SQLite)",
-        "Backend Tests (Representative Scale)",
-        "Backend Tests (Archive / File I/O)",
         "Build Artifacts"
       ],
       "auxiliary_jobs": [
         "Backend Test Archive Producer",
+        "Backend Tests (Lightweight)",
+        "Backend Tests (Stateful SQLite)",
+        "Backend Tests (Representative Scale)",
+        "Backend Tests (Archive / File I/O)",
         "Backend Tests (Stateful SQLite shard 1/2)",
         "Backend Tests (Stateful SQLite shard 2/2)",
         "PR E2E Test Producer",
         "PR Smoke Artifact Producer",
         "Retention Migration Validation"
+      ]
+    },
+    {
+      "workflow": "PostgreSQL Migration Functional Checks",
+      "jobs": [
+        "PostgreSQL Migration Functional and Recovery"
+      ],
+      "auxiliary_jobs": [
+        "PostgreSQL Acceptance Evidence Not Run"
       ]
     },
     {
@@ -118,14 +121,15 @@
         "Storybook Accessibility Tests",
         "Docs & Web Demo Build",
         "Records Overlay E2E",
-        "Backend Tests (Lightweight)",
-        "Backend Tests (Stateful SQLite)",
-        "Backend Tests (Archive / File I/O)",
         "Release Snapshot"
       ],
       "auxiliary_jobs": [
         "Backend Test Archive Producer",
+        "Backend Tests (Lightweight)",
+        "Backend Tests (Stateful SQLite)",
+        "Backend Tests (Archive / File I/O)",
         "Candidate Image Metadata",
+        "PostgreSQL Main Functional and Recovery",
         "Build + Smoke + Push Candidate (linux/amd64)",
         "Build + Smoke + Push Candidate (linux/arm64)",
         "Backend Tests (Stateful SQLite shard 1/2)",

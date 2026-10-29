@@ -103,6 +103,7 @@
 | -     | Responses `server_error` 过载特征与同账号重试                             | active    | `responses-server-error-overload-retry/SPEC.md`            | `responses-server-error-overload-retry/IMPLEMENTATION.md`            | topic anchor: proxy / Responses / overload classification                |
 | -     | VLESS XHTTP Forward Proxy Support                                         | active    | `forward-proxy-vless-xhttp-support/SPEC.md`                | `forward-proxy-vless-xhttp-support/IMPLEMENTATION.md`                | topic anchor: forward proxy / Xray / XHTTP                               |
 | -     | 活动总览时间范围与历史活动归位                                            | active    | `dashboard-activity-range-and-history/SPEC.md`             | `dashboard-activity-range-and-history/IMPLEMENTATION.md`             | 应用实现完成；候选交付验证中                                             |
+| -     | Module-owned PostgreSQL migration                                         | active    | `postgresql-module-migration/SPEC.md`                      | `postgresql-module-migration/IMPLEMENTATION.md`                      | module authority / online migration / recovery                           |
 
 ## Archived Sources
 
