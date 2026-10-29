@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -81,6 +82,8 @@ struct CoordinatorState {
     interactive_waiters: usize,
     p2_waiters: usize,
     maintenance_waiters: usize,
+    maintenance_waiter_order: VecDeque<u64>,
+    next_maintenance_waiter_id: u64,
     maintenance_fairness_admissions: u64,
     last_maintenance_fairness_admission: Option<Instant>,
     direct_write_bypass_count: u64,
@@ -128,6 +131,31 @@ impl CoordinatorState {
             ProxySqliteWriteClass::P2Derived => self.p2_waiters -= 1,
             ProxySqliteWriteClass::MaintenanceRetention => self.maintenance_waiters -= 1,
         }
+    }
+
+    fn register_maintenance_waiter(&mut self) -> u64 {
+        let ticket = self.next_maintenance_waiter_id;
+        self.next_maintenance_waiter_id = self.next_maintenance_waiter_id.wrapping_add(1);
+        self.maintenance_waiter_order.push_back(ticket);
+        self.maintenance_waiters += 1;
+        ticket
+    }
+
+    fn remove_maintenance_waiter(&mut self, ticket: u64) -> bool {
+        let Some(index) = self
+            .maintenance_waiter_order
+            .iter()
+            .position(|queued| *queued == ticket)
+        else {
+            return false;
+        };
+        self.maintenance_waiter_order.remove(index);
+        self.maintenance_waiters = self.maintenance_waiters.saturating_sub(1);
+        true
+    }
+
+    fn maintenance_waiter_is_front(&self, ticket: u64) -> bool {
+        self.maintenance_waiter_order.front().copied() == Some(ticket)
     }
 
     fn record_admission(&mut self, class: ProxySqliteWriteClass, wait: Duration) {
@@ -185,6 +213,31 @@ pub(crate) struct ProxySqliteWriteCoordinator {
     state: crate::observability::DiagnosticMutex<CoordinatorState>,
     notify: Notify,
     observability: CoordinatorObservability,
+}
+
+#[derive(Debug)]
+pub(crate) struct ProxySqliteMaintenanceWaiter {
+    coordinator: Arc<ProxySqliteWriteCoordinator>,
+    ticket: Option<u64>,
+}
+
+impl Drop for ProxySqliteMaintenanceWaiter {
+    fn drop(&mut self) {
+        let Some(ticket) = self.ticket.take() else {
+            return;
+        };
+        let removed = {
+            let mut state = self
+                .coordinator
+                .state
+                .lock()
+                .expect("proxy sqlite coordinator state");
+            state.remove_maintenance_waiter(ticket)
+        };
+        if removed {
+            self.coordinator.notify.notify_waiters();
+        }
+    }
 }
 
 impl ProxySqliteWriteCoordinator {
@@ -336,13 +389,40 @@ impl ProxySqliteWriteCoordinator {
         self: &Arc<Self>,
         fairness_interval: Duration,
     ) -> ProxySqliteWritePermit {
-        let requested_at = Instant::now();
+        self.acquire_maintenance_from(Instant::now(), fairness_interval)
+            .await
+    }
+
+    pub(crate) async fn acquire_maintenance_from(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+    ) -> ProxySqliteWritePermit {
+        let mut waiter = None;
         loop {
-            self.wait_for_maintenance_eligibility(requested_at, fairness_interval)
+            if let Some(current_waiter) = waiter.as_mut() {
+                self.wait_for_maintenance_eligibility_with_waiter(
+                    current_waiter,
+                    requested_at,
+                    fairness_interval,
+                )
                 .await;
-            if let Some(permit) = self.try_acquire_maintenance(requested_at, fairness_interval) {
+                if let Some(permit) = self.try_acquire_maintenance_with_waiter(
+                    requested_at,
+                    fairness_interval,
+                    current_waiter,
+                ) {
+                    return permit;
+                }
+            } else if let Some(permit) =
+                self.try_acquire_maintenance(requested_at, fairness_interval)
+            {
                 return permit;
             }
+            waiter = Some(
+                self.wait_for_maintenance_eligibility_with_ticket(requested_at, fairness_interval)
+                    .await,
+            );
         }
     }
 
@@ -352,6 +432,30 @@ impl ProxySqliteWriteCoordinator {
         self: &Arc<Self>,
         requested_at: Instant,
         fairness_interval: Duration,
+    ) -> Option<ProxySqliteWritePermit> {
+        self.try_acquire_maintenance_inner(requested_at, fairness_interval, None)
+    }
+
+    pub(crate) fn try_acquire_maintenance_with_waiter(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+        waiter: &mut ProxySqliteMaintenanceWaiter,
+    ) -> Option<ProxySqliteWritePermit> {
+        let ticket = waiter.ticket?;
+        let permit =
+            self.try_acquire_maintenance_inner(requested_at, fairness_interval, Some(ticket));
+        if permit.is_some() {
+            waiter.ticket = None;
+        }
+        permit
+    }
+
+    fn try_acquire_maintenance_inner(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+        waiter_ticket: Option<u64>,
     ) -> Option<ProxySqliteWritePermit> {
         let class = ProxySqliteWriteClass::MaintenanceRetention;
         if !self.coordinated {
@@ -370,12 +474,24 @@ impl ProxySqliteWriteCoordinator {
         }
 
         let mut state = self.state.lock().expect("proxy sqlite coordinator state");
+        if let Some(ticket) = waiter_ticket {
+            if !state.maintenance_waiter_is_front(ticket) {
+                return None;
+            }
+        } else if state.maintenance_waiters != 0 {
+            // A newly re-entering owner must not bypass a maintenance task that is
+            // already queued for the shared writer.
+            return None;
+        }
         let now = Instant::now();
         let deadline = state
             .maintenance_fairness_deadline(requested_at + fairness_interval, fairness_interval);
         let fairness_admission = state.can_admit_maintenance_fairness(deadline, now);
         if !state.can_admit(class) && !fairness_admission {
             return None;
+        }
+        if let Some(ticket) = waiter_ticket {
+            state.remove_maintenance_waiter(ticket);
         }
         state.active = Some(class);
         let lock_wait = requested_at.elapsed();
@@ -397,26 +513,37 @@ impl ProxySqliteWriteCoordinator {
         })
     }
 
-    /// Wait without reserving the writer. Callers may release other resources, await this
-    /// hint, then validate them again before a non-blocking claim; readiness can race.
-    pub(crate) async fn wait_for_maintenance_eligibility(
+    pub(crate) async fn wait_for_maintenance_eligibility_with_ticket(
         self: &Arc<Self>,
         requested_at: Instant,
         fairness_interval: Duration,
+    ) -> ProxySqliteMaintenanceWaiter {
+        let ticket = if self.coordinated {
+            let mut state = self.state.lock().expect("proxy sqlite coordinator state");
+            Some(state.register_maintenance_waiter())
+        } else {
+            None
+        };
+        let waiter = ProxySqliteMaintenanceWaiter {
+            coordinator: self.clone(),
+            ticket,
+        };
+        self.wait_for_maintenance_eligibility_with_waiter(&waiter, requested_at, fairness_interval)
+            .await;
+        waiter
+    }
+
+    pub(crate) async fn wait_for_maintenance_eligibility_with_waiter(
+        &self,
+        waiter: &ProxySqliteMaintenanceWaiter,
+        requested_at: Instant,
+        fairness_interval: Duration,
     ) {
-        if !self.coordinated {
+        if !self.coordinated || waiter.ticket.is_none() {
             return;
         }
+        let ticket = waiter.ticket.expect("registered maintenance waiter ticket");
         let class = ProxySqliteWriteClass::MaintenanceRetention;
-        {
-            let mut state = self.state.lock().expect("proxy sqlite coordinator state");
-            state.increment(class);
-        }
-        let _waiter = ProxySqliteWriteWaiter {
-            coordinator: self.clone(),
-            class,
-            registered: true,
-        };
         let fairness_deadline = requested_at + fairness_interval;
         loop {
             let now = Instant::now();
@@ -429,15 +556,13 @@ impl ProxySqliteWriteCoordinator {
                     state.maintenance_fairness_deadline(fairness_deadline, fairness_interval);
                 let fairness_admission =
                     state.can_admit_maintenance_fairness(next_fairness_deadline, now);
-                if state.can_admit(class) || fairness_admission {
+                let queued_at_front = state.maintenance_waiter_is_front(ticket);
+                if queued_at_front && (state.can_admit(class) || fairness_admission) {
                     return;
                 }
                 next_fairness_deadline
             };
             if Instant::now() >= next_fairness_deadline {
-                // The fairness deadline only bypasses queued higher-priority work. An
-                // active writer remains a hard boundary, so wait for its notification
-                // instead of spinning a zero-delay timer until it releases.
                 notified.await;
             } else {
                 let until_fairness =
@@ -448,6 +573,19 @@ impl ProxySqliteWriteCoordinator {
                 }
             }
         }
+    }
+
+    /// Wait without reserving the writer. Callers may release other resources, await this
+    /// hint, then validate them again before a non-blocking claim; readiness can race.
+    pub(crate) async fn wait_for_maintenance_eligibility(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+    ) {
+        let waiter = self
+            .wait_for_maintenance_eligibility_with_ticket(requested_at, fairness_interval)
+            .await;
+        drop(waiter);
     }
 
     pub(crate) async fn acquire_maintenance_cancellable(
@@ -941,6 +1079,40 @@ mod tests {
             .expect("maintenance admitted after queued P1")
             .expect("maintenance task");
         assert!(maintenance_permit.fairness_admission());
+    }
+
+    #[tokio::test]
+    async fn queued_maintenance_work_precedes_owner_reentry() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+        let active = coordinator
+            .acquire_maintenance(Duration::from_secs(60))
+            .await;
+        let queued = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire_maintenance(Duration::from_secs(60))
+                    .await
+            }
+        });
+
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1
+        })
+        .await;
+        assert!(
+            coordinator
+                .try_acquire_maintenance(Instant::now(), Duration::from_secs(60))
+                .is_none(),
+            "a completed owner must not re-enter ahead of a queued maintenance task"
+        );
+
+        drop(active);
+        let queued_permit = tokio::time::timeout(Duration::from_secs(1), queued)
+            .await
+            .expect("queued maintenance task must be admitted")
+            .expect("queued maintenance task");
+        drop(queued_permit);
     }
 
     #[tokio::test]

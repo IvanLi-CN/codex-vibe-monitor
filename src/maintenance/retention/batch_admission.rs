@@ -384,9 +384,31 @@ async fn try_acquire_write_admission(
         return Err(RetentionWriteAdmissionRejection::BudgetExpired);
     }
     let coordinator = retention_write_coordinator_handle();
-    let mut write_permit = coordinator
-        .try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL)
-        .ok_or(RetentionWriteAdmissionRejection::CoordinatorBusy)?;
+    let mut write_permit =
+        match coordinator.try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL) {
+            Some(permit) => permit,
+            None => {
+                let (admission_budget, timeout_reason) = retention_write_admission_budget();
+                let eligibility = tokio::time::timeout(
+                    admission_budget,
+                    coordinator.acquire_maintenance_from(requested_at, RETENTION_FAIRNESS_INTERVAL),
+                );
+                let permit = if let Some(shutdown) = retention_run_shutdown_token() {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.cancelled() => None,
+                        result = eligibility => result.ok(),
+                    }
+                } else {
+                    eligibility.await.ok()
+                };
+                let Some(permit) = permit else {
+                    retention_record_defer(operation, timeout_reason);
+                    return Err(RetentionWriteAdmissionRejection::CoordinatorBusy);
+                };
+                permit
+            }
+        };
     if retention_run_budget_expired() {
         drop(write_permit);
         return Err(RetentionWriteAdmissionRejection::BudgetExpired);
