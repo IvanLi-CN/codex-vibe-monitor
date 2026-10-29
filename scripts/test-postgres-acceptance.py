@@ -102,6 +102,35 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
         self.assertIn("acceptance ok", stdout)
         self.assertNotIn("secret", json.dumps(report))
 
+    def test_success_passes_explicit_identity_and_evidence_environment(self) -> None:
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import json, os; print(json.dumps({k: os.environ[k] for k in "
+                "('BASE_SHA', 'CANDIDATE_SHA', 'POSTGRES_ACCEPTANCE_EVIDENCE_DIR', "
+                "'POSTGRES_ACCEPTANCE_FIXTURE_VERSION', 'POSTGRES_ACCEPTANCE_REQUIRED')}))"
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            exit_code, report = self.invoke(
+                root,
+                command,
+                "postgresql://postgres@",
+            )
+            stdout = Path(report["raw_result"]["stdout_file"]).read_text(encoding="utf-8")
+            values = json.loads(stdout)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(values["BASE_SHA"], "1" * 40)
+        self.assertEqual(values["CANDIDATE_SHA"], "2" * 40)
+        self.assertEqual(
+            values["POSTGRES_ACCEPTANCE_EVIDENCE_DIR"],
+            str((root / "evidence").resolve()),
+        )
+        self.assertEqual(values["POSTGRES_ACCEPTANCE_FIXTURE_VERSION"], "4.13.11")
+        self.assertEqual(values["POSTGRES_ACCEPTANCE_REQUIRED"], "1")
+
     def test_failed_command_is_failed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             exit_code, report = self.invoke(
@@ -218,6 +247,20 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             "if-no-files-found: error",
         ):
             self.assertIn(required_fragment, workflow)
+
+        live_suite = (
+            REPO_ROOT / "scripts" / "postgres-acceptance" / "run-live-suite.sh"
+        ).read_text(encoding="utf-8")
+        for required_fragment in (
+            '"${POSTGRES_ACCEPTANCE_EVIDENCE_DIR:?',
+            "optional_postgres_migration_engine_recovers_after_process_sigkill",
+            "optional_postgres_migration_switch_performance_is_within_budget",
+            "optional_postgres_storage_runtime_startup_performance_is_within_budget",
+            "process-kill.json",
+            "startup-performance.json",
+            "switch-performance.json",
+        ):
+            self.assertIn(required_fragment, live_suite)
 
 
 if __name__ == "__main__":

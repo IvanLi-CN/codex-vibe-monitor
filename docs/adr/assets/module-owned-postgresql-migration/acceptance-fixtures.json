@@ -87,7 +87,7 @@
       "id": "crash-restart-fault-matrix",
       "scope": "target commit, source acknowledgement, fence, authority and journal ambiguity",
       "status": "not-run",
-      "note": "Deterministic SQLite fault tests are supplementary and cannot close the live PostgreSQL gate."
+      "note": "The live suite now records process-kill.json for SIGKILL after real PostgreSQL target replay/checkpoint commit and before local acknowledgement; source acknowledgement, fence, authority, router, journal, filesystem/WAL and backup/restore boundaries remain open until separately evidenced. Deterministic SQLite fault tests are supplementary and cannot close the live PostgreSQL gate."
     },
     {
       "id": "startup-switch-performance",
