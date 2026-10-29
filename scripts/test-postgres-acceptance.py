@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -28,6 +29,12 @@ def load_runner():
 
 
 class PostgresAcceptanceRunnerTests(unittest.TestCase):
+    def test_automatic_acceptance_runs_only_the_functional_suite(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci-postgresql-acceptance.yml").read_text()
+        self.assertIn("bash scripts/postgres-acceptance/run-functional-suite.sh", workflow)
+        self.assertNotIn("run-live-suite.sh", workflow)
+        self.assertIn('"result": "not-run"', workflow)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.runner = load_runner()
@@ -228,51 +235,40 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             REPO_ROOT / ".github" / "workflows" / "ci-postgresql-acceptance.yml"
         ).read_text(encoding="utf-8")
         for required_fragment in (
-            "name: PostgreSQL Migration Acceptance",
+            "name: PostgreSQL Migration Functional Checks",
             "image: postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4",
             "POSTGRES_TEST_DATABASE_URL:",
             "workflow_dispatch:\n    inputs:\n      base_sha:",
             "candidate_sha:",
-            "ref: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event.pull_request.head.sha }}",
-            "github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.pull_request.base.sha",
-            "github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.event.pull_request.head.sha",
-            "--base-sha",
-            "--candidate-sha",
-            'test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"',
-            "python3 scripts/postgres-acceptance/run.py",
-            "--fixture-version 4.13.11",
-            "-- bash scripts/postgres-acceptance/run-live-suite.sh",
+            "merge_group:\n    types:\n      - checks_requested",
+            "github.event_name == 'merge_group' && github.event.merge_group.base_sha",
+            "github.event_name == 'merge_group' && github.event.merge_group.head_sha",
+            '"status": "blocked", "result": "not-run"',
+            "bash scripts/postgres-acceptance/run-functional-suite.sh",
             "actions/upload-artifact@v7",
-            "if: always()",
             "if-no-files-found: error",
         ):
             self.assertIn(required_fragment, workflow)
 
-        live_suite = (
-            REPO_ROOT / "scripts" / "postgres-acceptance" / "run-live-suite.sh"
+        functional_suite = (
+            REPO_ROOT / "scripts" / "postgres-acceptance" / "run-functional-suite.sh"
         ).read_text(encoding="utf-8")
         for required_fragment in (
-            '"${POSTGRES_ACCEPTANCE_EVIDENCE_DIR:?',
             "optional_postgres_migration_engine_recovers_after_process_sigkill",
-            "optional_postgres_migration_switch_performance_is_within_budget",
-            "optional_postgres_migration_engine_handles_continuous_load_and_non_empty_switch_tail",
+            "optional_postgres_migration_engine_uses_real_source_and_target_fixture",
+            "optional_postgres_migration_target_uses_real_pool_transactions",
             "migration_source_ack_uncertainty_is_idempotent_after_commit",
-            "migration_switch_retries_after_tail_failure_without_generation_drift",
-            "proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure",
-            "proxy_runtime_terminal_commits_survive_retention_and_backfill_contention",
-            "valid_attempt_ack_does_not_create_a_false_interruption_after_isolation",
-            "shutdown_recovery_ack_failure_keeps_obligation_without_poisoning_main_journal",
-            "optional_postgres_storage_runtime_startup_performance_is_within_budget",
-            "process-kill.json",
-            "startup-performance.json",
-            "switch-performance.json",
-            "continuous-load.json",
-            "runtime-pressure.json",
-            "runtime-maintenance-pressure.json",
-            "fault-boundaries.json",
-            "system-headroom.json",
         ):
-            self.assertIn(required_fragment, live_suite)
+            self.assertIn(required_fragment, functional_suite)
+        for forbidden in ("pressure", "continuous_load", "performance"):
+            self.assertNotIn(forbidden, functional_suite)
+        self.assertEqual(set(re.findall(r"test\(=([^)]*)\)", functional_suite)), {
+            "tests::lightweight::postgres_migration_engine::optional_postgres_migration_engine_uses_real_source_and_target_fixture",
+            "tests::lightweight::postgres_migration_engine::optional_postgres_migration_target_uses_real_pool_transactions",
+            "tests::lightweight::postgres_migration_engine::optional_postgres_migration_engine_recovers_after_process_sigkill",
+            "tests::lightweight::postgres_migration_engine::migration_source_ack_uncertainty_is_idempotent_after_commit",
+        })
+        self.assertNotIn("|| true", functional_suite)
 
 
 if __name__ == "__main__":

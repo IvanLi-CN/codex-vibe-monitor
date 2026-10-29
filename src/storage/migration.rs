@@ -4419,6 +4419,19 @@ where
         .context("migration authority switch worker failed")?
     }
 
+    #[cfg(test)]
+    pub(crate) async fn switch_authority_without_detached_worker_for_test(
+        &self,
+        gate: &ModuleGenerationGate,
+        expected: AuthorityRecoveryContext,
+        switch_budget: Duration,
+    ) -> Result<i64> {
+        // The production entry point owns a detached worker boundary. Acceptance fixtures need
+        // a directly cancellable task so timeout cleanup cannot race PostgreSQL fixture teardown.
+        self.switch_authority_inner(gate, expected, switch_budget)
+            .await
+    }
+
     async fn switch_authority_inner(
         &self,
         gate: &ModuleGenerationGate,

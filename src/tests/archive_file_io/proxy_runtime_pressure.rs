@@ -391,15 +391,18 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         .acquire()
         .await
         .expect("acquire pressure connection");
+    let write_pressure_started = Instant::now();
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut *locked_connection)
         .await
         .expect("hold SQLite write pressure lock");
+    let mut maintenance_hold_started = None;
     let mut maintenance_lock = if let Some((pool, _)) = &maintenance_pool {
         let mut connection = pool
             .acquire()
             .await
             .expect("own maintenance contention lock");
+        maintenance_hold_started = Some(Instant::now());
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *connection)
             .await
@@ -720,6 +723,7 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         .execute(&mut *locked_connection)
         .await
         .expect("release SQLite write pressure lock");
+    let write_pressure_duration_ms = write_pressure_started.elapsed().as_millis();
     locked_connection.return_to_pool().await;
     drop(pressure_admission);
     let drain_started = Instant::now();
@@ -745,6 +749,7 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             .pending_materialization_records,
         0
     );
+    let materialization_drain_ms = drain_started.elapsed().as_millis();
     let terminal_commit_elapsed_ms = scenario_started.elapsed().as_millis();
     if performance_gate {
         assert!(
@@ -753,8 +758,7 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         );
     }
     println!(
-        "runtime_pressure mode={mode} materialization_drain_ms={} terminal_commit_latency_upper_bound_ms={} committed={committed}",
-        drain_started.elapsed().as_millis(),
+        "runtime_pressure mode={mode} materialization_drain_ms={materialization_drain_ms} terminal_commit_latency_upper_bound_ms={} committed={committed}",
         terminal_commit_elapsed_ms
     );
     if let Some(archive) = archive {
@@ -853,17 +857,23 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             all_holds < 100.0,
         );
     }
+    let mut maintenance_hold_duration_ms = None;
     if let Some(mut locked) = maintenance_lock.take() {
         sqlx::query("ROLLBACK")
             .execute(&mut *locked)
             .await
             .expect("unlock confirmations");
+        maintenance_hold_duration_ms = maintenance_hold_started
+            .take()
+            .map(|started| started.elapsed().as_millis());
         drop(locked);
     }
     let mut task_restoration_verified = false;
+    let mut task_restoration_periods = Vec::new();
     if let Some((pool, _)) = &maintenance_pool {
         // Confirmation can remain in capped backoff after unlock; business durability
         // above was checked while the independent maintenance lock was still held.
+        let restoration_started = Instant::now();
         tokio::time::timeout(Duration::from_secs(6), async {
             loop {
                 let confirmed = sqlx::query_scalar::<_, i64>(
@@ -880,6 +890,10 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         })
         .await
         .expect("valid obligations recover after maintenance unlock");
+        task_restoration_periods.push(serde_json::json!({
+            "duration_ms": restoration_started.elapsed().as_millis(),
+            "status": "recovered",
+        }));
         task_restoration_verified = true;
     }
     if performance_gate {
@@ -910,6 +924,8 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
                 "fixture_version": std::env::var("POSTGRES_ACCEPTANCE_FIXTURE_VERSION").unwrap_or_else(|_| "4.13.11".into()),
                 "base_sha": runtime_acceptance_sha("BASE_SHA"),
                 "candidate_sha": runtime_acceptance_sha("CANDIDATE_SHA"),
+                "source_identity": "sqlite-runtime-business-facts",
+                "target_identity": "sqlite-business-sqlite-batch-writer",
                 "storage_backend": "sqlite-source-runtime",
                 "workload": {
                     "representative_requests": request_count,
@@ -918,6 +934,8 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
                     "sqlite_write_lock_held_through_terminal": true,
                     "maintenance_contention": maintenance_contention,
                 },
+                "duration_ms": terminal_commit_elapsed_ms,
+                "sample_count": request_count,
                 "request_p95_ms": p95.as_millis(),
                 "request_p95_threshold_ms_exclusive": 2_000,
                 "full_commit_ms": terminal_commit_elapsed_ms,
@@ -926,12 +944,27 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
                 "terminal_pending_records_while_locked": held_lock_journal.pending_records,
                 "terminal_pending_materialization_while_locked": held_lock_journal.pending_materialization_records,
                 "terminal_pending_oldest_age_ms": held_lock_journal.oldest_pending_age_ms,
-                "materialization_drain_ms": drain_started.elapsed().as_millis(),
+                "materialization_drain_ms": materialization_drain_ms,
                 "interactive_proxy_admission_delta": interactive_admission_delta,
                 "attempt_progress_sql_write_delta": attempt_progress_delta,
                 "committed_terminal_facts": committed,
                 "maintenance_held": maintenance_contention,
+                "migration_hold_periods": [
+                    {
+                        "kind": "sqlite_write_lock",
+                        "duration_ms": write_pressure_duration_ms,
+                    }
+                ],
+                "maintenance_hold_periods": maintenance_hold_duration_ms
+                    .map(|duration_ms| {
+                        vec![serde_json::json!({
+                            "kind": "maintenance_sqlite_write_lock",
+                            "duration_ms": duration_ms,
+                        })]
+                    })
+                    .unwrap_or_default(),
                 "task_restoration_verified": task_restoration_verified,
+                "task_restoration_periods": task_restoration_periods,
                 "raw_result_paths": std::env::var_os("POSTGRES_ACCEPTANCE_EVIDENCE_DIR").map(|directory| {
                     let directory = std::path::PathBuf::from(directory);
                     vec![directory.join("stdout.txt"), directory.join("stderr.txt")]

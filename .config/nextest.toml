@@ -12,6 +12,12 @@ threads-required = "num-test-threads"
 filter = 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_preserves_facts_under_current_thread_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)'
 threads-required = "num-test-threads"
 
+# This fixture measures cluster-wide PostgreSQL WAL growth, convergence and switch latency.
+# Keep the real workload isolated from other lightweight tests and their PostgreSQL writes.
+[[profile.default.overrides]]
+filter = 'test(=tests::lightweight::postgres_migration_engine::optional_postgres_migration_engine_handles_continuous_load_and_non_empty_switch_tail)'
+threads-required = "num-test-threads"
+
 # Preserve the real A6 lock-window counts without rerunning its acceptance test.
 [[profile.default.overrides]]
 filter = 'test(=tests::archive_file_io::terminal_backfill_contention::repeated_backfill_notifications_keep_actual_attempts_bounded_during_one_minute_lock)'

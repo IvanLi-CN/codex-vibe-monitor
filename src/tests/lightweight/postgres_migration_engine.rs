@@ -4469,16 +4469,32 @@ fn p95_microseconds(samples: &[u128]) -> u128 {
     sorted[index]
 }
 
+const CONTINUOUS_PAYLOAD_BYTES: usize = 4 * 1024;
+
+fn continuous_payload(operation: u64) -> Vec<u8> {
+    let marker = format!("continuous-payload-{operation}");
+    let mut payload = vec![b'x'; CONTINUOUS_PAYLOAD_BYTES];
+    payload[..marker.len()].copy_from_slice(marker.as_bytes());
+    payload
+}
+
 async fn write_continuous_source_mutation(
     source: &SqliteMigrationSource,
     source_pool: &sqlx::SqlitePool,
+    fence: &SourceWriteFence,
     operation: u64,
     pending: Option<&Arc<Mutex<BTreeMap<i64, Instant>>>>,
 ) -> Result<CapturedChange> {
+    let active_write = fence.begin_write().await?;
     let slot = (operation / 4) % 16;
     let stable_key = format!("row-{slot:02}");
-    let alias_key = format!("{stable_key}-alias-{operation}");
-    let payload = format!("continuous-payload-{operation}").into_bytes();
+    let alias_operation = if operation % 4 == 2 {
+        operation.saturating_sub(1)
+    } else {
+        operation
+    };
+    let alias_key = format!("{stable_key}-alias-{alias_operation}");
+    let payload = continuous_payload(operation);
     let input = match operation % 4 {
         0 => ChangeInput::update("events", stable_key.clone(), payload.clone()),
         1 => ChangeInput::replace(
@@ -4495,18 +4511,26 @@ async fn write_continuous_source_mutation(
     let captured = source.capture_mutation_tx(&mut transaction, input).await?;
     match operation % 4 {
         0 => {
-            sqlx::query("UPDATE events SET source_version = ?, payload = ? WHERE stable_key = ?")
-                .bind(captured.source_version)
-                .bind(captured.payload.as_deref().expect("update payload"))
-                .bind(&stable_key)
-                .execute(&mut *transaction)
-                .await?;
+            let result = sqlx::query(
+                "UPDATE events SET source_version = ?, payload = ? WHERE stable_key = ?",
+            )
+            .bind(captured.source_version)
+            .bind(captured.payload.as_deref().expect("update payload"))
+            .bind(&stable_key)
+            .execute(&mut *transaction)
+            .await?;
+            if result.rows_affected() != 1 {
+                bail!("continuous load update did not find {stable_key}");
+            }
         }
         1 => {
-            sqlx::query("DELETE FROM events WHERE stable_key = ?")
+            let result = sqlx::query("DELETE FROM events WHERE stable_key = ?")
                 .bind(&stable_key)
                 .execute(&mut *transaction)
                 .await?;
+            if result.rows_affected() != 1 {
+                bail!("continuous load replacement did not find {stable_key}");
+            }
             sqlx::query(
                 "INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)",
             )
@@ -4517,10 +4541,13 @@ async fn write_continuous_source_mutation(
             .await?;
         }
         2 => {
-            sqlx::query("DELETE FROM events WHERE stable_key = ?")
+            let result = sqlx::query("DELETE FROM events WHERE stable_key = ?")
                 .bind(&alias_key)
                 .execute(&mut *transaction)
                 .await?;
+            if result.rows_affected() != 1 {
+                bail!("continuous load delete did not find {alias_key}");
+            }
         }
         3 => {
             sqlx::query(
@@ -4549,7 +4576,71 @@ async fn write_continuous_source_mutation(
         }
         return Err(error.into());
     }
+    active_write.complete();
     Ok(captured)
+}
+
+async fn write_continuous_tail_mutation(
+    source: &SqliteMigrationSource,
+    source_pool: &sqlx::SqlitePool,
+    fence: &SourceWriteFence,
+) -> Result<CapturedChange> {
+    let active_write = fence.begin_write().await?;
+    let stable_key = "row-63";
+    let mut payload = vec![b't'; CONTINUOUS_PAYLOAD_BYTES];
+    payload[.."continuous-switch-tail".len()].copy_from_slice(b"continuous-switch-tail");
+    let mut transaction = source_pool.begin().await?;
+    let captured = source
+        .capture_mutation_tx(
+            &mut transaction,
+            ChangeInput::update("events", stable_key, payload.clone()),
+        )
+        .await?;
+    let result =
+        sqlx::query("UPDATE events SET source_version = ?, payload = ? WHERE stable_key = ?")
+            .bind(captured.source_version)
+            .bind(captured.payload.as_deref().expect("tail update payload"))
+            .bind(stable_key)
+            .execute(&mut *transaction)
+            .await?;
+    if result.rows_affected() != 1 {
+        bail!("continuous switch tail update did not find {stable_key}");
+    }
+    transaction.commit().await?;
+    active_write.complete();
+    Ok(captured)
+}
+
+async fn assert_source_target_rows_match(
+    source: &SqliteMigrationSource,
+    target: &PostgresMigrationTarget,
+    table_name: &str,
+) -> Result<()> {
+    let (source_lower, source_upper) = source.table_bounds(table_name).await?;
+    let (target_lower, target_upper) = target.table_bounds(table_name).await?;
+    let lower = match (source_lower, target_lower) {
+        (Some(source), Some(target)) => Some(source.min(target)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+    let upper = match (source_upper, target_upper) {
+        (Some(source), Some(target)) => Some(source.max(target)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+    let (Some(lower), Some(upper)) = (lower, upper) else {
+        return Ok(());
+    };
+    let range = ChunkRange::new(lower, upper)?;
+    let source_rows = source
+        .rows_in_range_snapshot(table_name, &range)
+        .await?
+        .rows;
+    let target_rows = target.rows_in_range(table_name, &range).await?;
+    if source_rows != target_rows {
+        bail!("continuous load source and PostgreSQL target rows diverged");
+    }
+    Ok(())
 }
 
 fn retire_pending_continuous_changes(
@@ -4593,6 +4684,14 @@ async fn postgres_wal_bytes_since(pool: &PgPool, start_lsn: &str) -> Result<f64>
     .await?)
 }
 
+async fn postgres_target_relation_bytes(pool: &PgPool, target_table: &str) -> Result<u64> {
+    let bytes = sqlx::query_scalar::<_, i64>("SELECT pg_total_relation_size($1::regclass)::bigint")
+        .bind(target_table)
+        .fetch_one(pool)
+        .await?;
+    u64::try_from(bytes).context("PostgreSQL target relation size is negative")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empty_switch_tail()
 -> Result<()> {
@@ -4607,7 +4706,6 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
         .connect(&database_url)
         .await?;
     let server_version = postgres_server_version(&pool).await?;
-    let wal_start_lsn = postgres_current_wal_lsn(&pool).await?;
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock is after the Unix epoch")
@@ -4618,7 +4716,11 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
     fs::create_dir_all(&directory)?;
     let source_path = directory.join("source.sqlite");
     let target_identity = postgres_target_identity(&database_url);
+    const CONTINUOUS_OBSERVATION_WINDOW: Duration = Duration::from_secs(20);
+    const CONTINUOUS_OBSERVATION_WINDOW_COUNT: u8 = 3;
+    const CONTINUOUS_ACCEPTANCE_RUNTIME_BUDGET: Duration = Duration::from_secs(150);
 
+    let acceptance_started = Instant::now();
     let result = with_postgres_migration_fixture_cleanup(&pool, &prefix, &target_table, async {
         let spec = process_fixture_spec(&target_table)?;
         let source_options = SqliteConnectOptions::new()
@@ -4677,8 +4779,10 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
             vec![spec],
         )?);
         target.ensure_schema().await?;
+        let target_size_before = postgres_target_relation_bytes(&pool, &target_table).await?;
         let context = process_context(&target_identity);
         let store = Arc::new(FileMigrationStore::new(&path, context.clone()));
+        let fence = SourceWriteFence::new(1);
         let migration = MigrationEngine::new(
             Arc::clone(&source),
             Arc::clone(&target),
@@ -4688,7 +4792,7 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
             target_identity.clone(),
             1,
             acceptance_migration_limits(),
-            SourceWriteFence::new(1),
+            fence.clone(),
         )?;
         migration.prepare(&["events".into()]).await?;
         while !migration.copy_next("events").await?.complete {}
@@ -4697,12 +4801,21 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
         migration
             .verify_table_coverage_at("events", baseline_watermark)
             .await?;
+        migration
+            .release_capture_through(baseline_watermark)
+            .await?;
+        let wal_start_lsn = postgres_current_wal_lsn(&pool).await?;
 
         let pending = Arc::new(Mutex::new(BTreeMap::new()));
         let writer_cancel = CancellationToken::new();
         let writer_source = Arc::clone(&source);
         let writer_pool = source_pool.clone();
+        let writer_fence = fence.clone();
         let writer_pending = Arc::clone(&pending);
+        let writer_progress = Arc::new(Mutex::new(0_u64));
+        let writer_progress_for_task = Arc::clone(&writer_progress);
+        let writer_error = Arc::new(Mutex::new(None::<String>));
+        let writer_error_for_task = Arc::clone(&writer_error);
         let writer_cancel_for_task = writer_cancel.clone();
         let writer = tokio::spawn(async move {
             let mut operation = 0_u64;
@@ -4711,36 +4824,62 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
                     _ = writer_cancel_for_task.cancelled() => return Ok::<u64, anyhow::Error>(operation),
                     _ = tokio::time::sleep(Duration::from_millis(250)) => {}
                 }
-                write_continuous_source_mutation(
+                if let Err(error) = write_continuous_source_mutation(
                     writer_source.as_ref(),
                     &writer_pool,
+                    &writer_fence,
                     operation,
                     Some(&writer_pending),
                 )
-                .await?;
+                .await
+                {
+                    *writer_error_for_task
+                        .lock()
+                        .expect("continuous load writer error mutex") = Some(error.to_string());
+                    return Ok::<u64, anyhow::Error>(operation);
+                }
                 operation += 1;
+                *writer_progress_for_task
+                    .lock()
+                    .expect("continuous load writer progress mutex") = operation;
             }
         });
 
-        let observation_window = Duration::from_secs(60);
+        let observation_window = CONTINUOUS_OBSERVATION_WINDOW;
         let mut windows = Vec::new();
         let mut peak_capture_bytes = 0_u64;
         let mut max_capture_bytes = 0_u64;
         let workload_result = async {
-            for window_index in 0..3_u8 {
-                let target_checkpoint = target
-                    .load_checkpoint("migration-engine-test", "events")
-                    .await?
-                    .context("continuous load target checkpoint")?;
-                let target_start = target_checkpoint.applied_through;
+            for window_index in 0..CONTINUOUS_OBSERVATION_WINDOW_COUNT {
+                if acceptance_started.elapsed() >= CONTINUOUS_ACCEPTANCE_RUNTIME_BUDGET {
+                    bail!(
+                        "continuous load acceptance exceeded its {}s runtime budget before window {window_index}",
+                        CONTINUOUS_ACCEPTANCE_RUNTIME_BUDGET.as_secs()
+                    );
+                }
                 let source_before_seed = source.capture_watermark().await?;
                 let seed_started = Instant::now();
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let source_start = source.capture_watermark().await?;
+                // The seed deliberately creates backlog without catch-up. Read the target
+                // checkpoint after that seed so applied and incoming counts share the same
+                // observation boundary.
+                let target_start = target
+                    .load_checkpoint("migration-engine-test", "events")
+                    .await?
+                    .context("continuous load target checkpoint")?
+                    .applied_through;
                 let initial_pending = source_start - target_start;
                 if initial_pending <= 0 {
+                    let writer_error = writer_error
+                        .lock()
+                        .expect("continuous load writer error mutex")
+                        .clone();
+                    let writer_progress = *writer_progress
+                        .lock()
+                        .expect("continuous load writer progress mutex");
                     bail!(
-                        "continuous load window {window_index} did not begin with a non-empty tail"
+                        "continuous load window {window_index} did not begin with a non-empty tail: source_start={source_start} target_start={target_start} writer_progress={writer_progress} writer_error={writer_error:?}"
                     );
                 }
                 let initial_pending_age_ms = oldest_pending_age_ms(&pending, target_start);
@@ -4758,6 +4897,9 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
                     )
                     .await
                     .context("continuous load catch-up deadline")??;
+                    migration
+                        .release_capture_through(progress.applied_through)
+                        .await?;
                     retire_pending_continuous_changes(&pending, progress.applied_through);
                     let checkpoint = source.capture_checkpoint().await?;
                     peak_capture_bytes = peak_capture_bytes.max(checkpoint.captured_bytes);
@@ -4777,6 +4919,9 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
                 )
                 .await
                 .context("continuous load final catch-up deadline")??;
+                migration
+                    .release_capture_through(final_progress.applied_through)
+                    .await?;
                 retire_pending_continuous_changes(&pending, final_progress.applied_through);
                 let source_end = source.capture_watermark().await?;
                 let target_end = target
@@ -4836,8 +4981,17 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
             .await
             .context("continuous load writer shutdown deadline")??;
         workload_result?;
+        if let Some(error) = writer_error
+            .lock()
+            .expect("continuous load writer error mutex")
+            .clone()
+        {
+            bail!("continuous load writer stopped unexpectedly: {error}");
+        }
         let _writes = writes;
 
+        let pre_switch_marker =
+            write_continuous_tail_mutation(source.as_ref(), &source_pool, &fence).await?;
         migration.catch_up("events").await?;
         let pre_switch_watermark = source.capture_watermark().await?;
         let pre_switch_checkpoint = target
@@ -4851,6 +5005,7 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
                 pre_switch_watermark
             );
         }
+        assert_source_target_rows_match(source.as_ref(), target.as_ref(), "events").await?;
 
         let gate = ModuleGenerationGate::new(
             StorageModule::TrafficArchive,
@@ -4868,9 +5023,9 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
         let switch_migration = migration.clone();
         let switch_gate = gate.clone();
         let switch_expected = expected.clone();
-        let switch_task = tokio::spawn(async move {
+        let mut switch_task = tokio::spawn(async move {
             switch_migration
-                .switch_authority(
+                .switch_authority_without_detached_worker_for_test(
                     &switch_gate,
                     switch_expected,
                     Duration::from_secs(3),
@@ -4885,20 +5040,72 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
         .context("wait for real PostgreSQL switch pre-fence watermark")
         {
             switch_task.abort();
+            let _ = switch_task.await;
             return Err(error);
         }
-        let tail = write_continuous_source_mutation(
-            source.as_ref(),
-            &source_pool,
-            100_000,
-            None,
+        let switch_writer_source = Arc::clone(&source);
+        let switch_writer_pool = source_pool.clone();
+        let switch_writer_fence = fence.clone();
+        let mut switch_writer = tokio::spawn(async move {
+            for operation in 200_000..200_004 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                write_continuous_source_mutation(
+                    switch_writer_source.as_ref(),
+                    &switch_writer_pool,
+                    &switch_writer_fence,
+                    operation,
+                    None,
+                )
+                .await?;
+            }
+            Ok::<u64, anyhow::Error>(4)
+        });
+        let switch_traffic_writes = match tokio::time::timeout(
+            Duration::from_secs(10),
+            &mut switch_writer,
         )
-        .await;
+        .await
+        {
+            Ok(Ok(Ok(writes))) => writes,
+            Ok(result) => {
+                watermark_barrier.release();
+                switch_task.abort();
+                let _ = switch_task.await;
+                match result {
+                    Ok(Err(error)) => return Err(error.context("continuous switch traffic failed")),
+                    Err(error) => return Err(error.into()),
+                    Ok(Ok(_)) => unreachable!("successful traffic was handled above"),
+                }
+            }
+            Err(error) => {
+                switch_writer.abort();
+                let _ = switch_writer.await;
+                watermark_barrier.release();
+                switch_task.abort();
+                let _ = switch_task.await;
+                bail!("continuous switch traffic deadline: {error}");
+            }
+        };
+        let tail = write_continuous_tail_mutation(source.as_ref(), &source_pool, &fence).await;
         watermark_barrier.release();
-        let tail = tail?;
-        let final_watermark = tokio::time::timeout(Duration::from_secs(10), switch_task)
+        let tail = match tail {
+            Ok(tail) => tail,
+            Err(error) => {
+                switch_task.abort();
+                let _ = switch_task.await;
+                return Err(error);
+            }
+        };
+        let final_watermark = match tokio::time::timeout(Duration::from_secs(10), &mut switch_task)
             .await
-            .context("real PostgreSQL switch completion deadline")???;
+        {
+            Ok(result) => result.context("real PostgreSQL switch worker failed")??,
+            Err(error) => {
+                switch_task.abort();
+                let _ = switch_task.await;
+                bail!("real PostgreSQL switch completion deadline: {error}");
+            }
+        };
         let switch_elapsed_us = switch_started.elapsed().as_micros();
         if final_watermark != tail.source_version {
             bail!(
@@ -4924,6 +5131,7 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
         {
             bail!("real PostgreSQL target does not contain the committed non-empty switch tail");
         }
+        assert_source_target_rows_match(source.as_ref(), target.as_ref(), "events").await?;
         let final_capture = source.capture_checkpoint().await?;
         if final_capture.captured_bytes > final_capture.max_capture_bytes
             || final_capture.captured_bytes.saturating_mul(2) >= final_capture.max_capture_bytes
@@ -4933,6 +5141,15 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
         peak_capture_bytes = peak_capture_bytes.max(final_capture.captured_bytes);
         max_capture_bytes = final_capture.max_capture_bytes;
         let wal_bytes = postgres_wal_bytes_since(&pool, &wal_start_lsn).await?;
+        let target_size_after = postgres_target_relation_bytes(&pool, &target_table).await?;
+        let target_growth_bytes = target_size_after.saturating_sub(target_size_before);
+        let acceptance_elapsed_ms = acceptance_started.elapsed().as_millis();
+        if acceptance_started.elapsed() >= CONTINUOUS_ACCEPTANCE_RUNTIME_BUDGET {
+            bail!(
+                "continuous load acceptance exceeded its {}s runtime budget: {acceptance_elapsed_ms}ms",
+                CONTINUOUS_ACCEPTANCE_RUNTIME_BUDGET.as_secs()
+            );
+        }
         write_acceptance_evidence(
             "continuous-load.json",
             serde_json::json!({
@@ -4949,9 +5166,13 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
                     "initial_rows": 64,
                     "writer_interval_ms": 250,
                     "operation_cycle": ["update", "key-change", "delete", "insert"],
-                    "observation_window_seconds": 60,
-                    "observation_window_count": 3,
+                    "observation_window_seconds": observation_window.as_secs(),
+                    "observation_window_count": CONTINUOUS_OBSERVATION_WINDOW_COUNT,
+                    "acceptance_runtime_budget_seconds": CONTINUOUS_ACCEPTANCE_RUNTIME_BUDGET.as_secs(),
+                    "acceptance_elapsed_ms": acceptance_elapsed_ms,
                     "non_empty_tail": true,
+                    "pre_switch_marker_source_version": pre_switch_marker.source_version,
+                    "switch_traffic_mutations": switch_traffic_writes,
                     "tail_source_version": tail.source_version,
                 },
                 "windows": windows,
@@ -4963,6 +5184,10 @@ async fn optional_postgres_migration_engine_handles_continuous_load_and_non_empt
                     "threshold_fraction": 0.5,
                 },
                 "postgres_wal_bytes": wal_bytes,
+                "postgres_wal_backlog_capacity_status": "not-verified",
+                "postgres_target_relation_bytes_before": target_size_before,
+                "postgres_target_relation_bytes_after": target_size_after,
+                "postgres_target_growth_bytes": target_growth_bytes,
                 "switch_elapsed_us": switch_elapsed_us,
                 "switch_budget_us": 3_000_000,
                 "maintenance_held": false,
