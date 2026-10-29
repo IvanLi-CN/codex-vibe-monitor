@@ -32,9 +32,10 @@ use super::{
         ModuleGenerationGate, StorageModule, StoragePools,
     },
     migration::{
-        ChangeBatchLimits, CopyLimits, MigrationEngine, MigrationLimits, MigrationSource,
-        SourceWriteAuthority, SourceWriteFence,
+        ChangeBatchLimits, CopyLimits, MigrationEngine, MigrationLimits, MigrationPressure,
+        MigrationSource, SourceWriteAuthority, SourceWriteFence,
     },
+    migration_capacity::MigrationCapacitySample,
     migration_sqlx::{PostgresMigrationTarget, SqliteMigrationSource},
     migration_status::{
         StorageMigrationProgress, StorageMigrationResponse, StorageMigrationRuntime,
@@ -406,6 +407,49 @@ impl StorageMigrationWorker {
         Ok(())
     }
 
+    async fn enforce_capacity(
+        &self,
+        source: &SqliteMigrationSource,
+        limits: MigrationLimits,
+        allow_capture_drain: bool,
+        allow_continuity_recovery: bool,
+    ) -> Result<bool> {
+        let current = self.migration.snapshot().await;
+        if matches!(
+            current.state,
+            StorageMigrationState::Paused | StorageMigrationState::Blocked
+        ) {
+            return Ok(true);
+        }
+        let sample = match source.capacity_sample().await {
+            Ok(sample) => sample,
+            Err(error) => {
+                tracing::warn!(error = %error, "SQLite migration capacity observation failed");
+                MigrationCapacitySample::unavailable(limits.max_capture_bytes)
+            }
+        };
+        let pressure = limits.should_pause(MigrationPressure {
+            source_free_bytes: sample.source_free_bytes.unwrap_or_default(),
+            capture_bytes: sample.capture_bytes,
+            p1_wait_ms: 0,
+        });
+        let mut hold_reason = sample.hold_reason(limits.min_source_free_bytes);
+        debug_assert!(!pressure || hold_reason.is_some());
+        if allow_capture_drain
+            && hold_reason == Some("capacity_capture")
+            && !sample.capture_capacity_held
+        {
+            hold_reason = None;
+        }
+        if allow_continuity_recovery && hold_reason == Some("capture_continuity_lost") {
+            hold_reason = None;
+        }
+        self.migration
+            .publish_capacity_observation(sample, hold_reason)
+            .await?;
+        Ok(hold_reason.is_some())
+    }
+
     fn clone_for_task(&self) -> Self {
         Self {
             pool: self.pool.clone(),
@@ -503,8 +547,36 @@ impl StorageMigrationWorker {
             )?
             .with_writer_generation(status.authority.generation)?,
         );
+        let migration_limits = MigrationLimits {
+            copy: CopyLimits {
+                max_rows: 128,
+                max_bytes: 2 * 1024 * 1024,
+                ..CopyLimits::default()
+            },
+            change_batch: ChangeBatchLimits::default(),
+            ..MigrationLimits::default()
+        };
+        if self
+            .enforce_capacity(source.as_ref(), migration_limits, false, false)
+            .await?
+        {
+            return Ok(());
+        }
         source.ensure_capture_schema().await?;
         source.ensure_native_capture_triggers().await?;
+        let allow_continuity_recovery = status.state == StorageMigrationState::Preparing
+            && status.controls.last_action.as_deref() == Some("resume");
+        if self
+            .enforce_capacity(
+                source.as_ref(),
+                migration_limits,
+                false,
+                allow_continuity_recovery,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         let target = Arc::new(PostgresMigrationTarget::new_native(
             postgres,
             "storage_migration",
@@ -512,6 +584,14 @@ impl StorageMigrationWorker {
             StorageModule::TrafficArchive,
         )?);
         target.ensure_schema().await?;
+        let checkpoint = source.capture_checkpoint().await?;
+        if checkpoint.continuity_lost {
+            if !allow_continuity_recovery {
+                return Ok(());
+            }
+            target.reset_attempt(MIGRATION_ID).await?;
+            source.start_new_capture_generation().await?;
+        }
         let engine = MigrationEngine::new(
             source.clone(),
             target.clone(),
@@ -520,15 +600,7 @@ impl StorageMigrationWorker {
             INSTALLATION_ID,
             status.target.identity.clone(),
             status.authority.generation,
-            MigrationLimits {
-                copy: CopyLimits {
-                    max_rows: 128,
-                    max_bytes: 2 * 1024 * 1024,
-                    ..CopyLimits::default()
-                },
-                change_batch: ChangeBatchLimits::default(),
-                ..MigrationLimits::default()
-            },
+            migration_limits,
             self.source_fence.clone(),
         )?
         .with_cancellation_token(self.shutdown.clone());
@@ -551,6 +623,12 @@ impl StorageMigrationWorker {
                     self.ensure_worker_running()?;
                     let current = self.migration.snapshot().await;
                     if matches!(current.state, StorageMigrationState::Paused) {
+                        return Ok(());
+                    }
+                    if self
+                        .enforce_capacity(source.as_ref(), migration_limits, false, false)
+                        .await?
+                    {
                         return Ok(());
                     }
                     let progress = engine.copy_next(table).await?;
@@ -582,11 +660,33 @@ impl StorageMigrationWorker {
                     ..StorageMigrationProgress::default()
                 })
                 .await?;
+            if self
+                .enforce_capacity(source.as_ref(), migration_limits, true, false)
+                .await?
+            {
+                return Ok(());
+            }
+            if matches!(resume_work, MigrationResumeWork::CopyAndCatchUp) {
+                let baseline_through = source.capture_watermark().await?;
+                engine.mark_baseline_complete(baseline_through).await?;
+            }
             let watermark = source.capture_watermark().await?;
             for table in &tables {
+                if self
+                    .enforce_capacity(source.as_ref(), migration_limits, true, false)
+                    .await?
+                {
+                    return Ok(());
+                }
                 engine.catch_up(table).await?;
             }
             engine.release_capture_through(watermark).await?;
+            if self
+                .enforce_capacity(source.as_ref(), migration_limits, false, false)
+                .await?
+            {
+                return Ok(());
+            }
             self.migration
                 .publish_progress(StorageMigrationProgress {
                     phase: StorageMigrationState::Verifying,
@@ -609,8 +709,20 @@ impl StorageMigrationWorker {
                 .await?;
             watermark
         } else {
+            if self
+                .enforce_capacity(source.as_ref(), migration_limits, false, false)
+                .await?
+            {
+                return Ok(());
+            }
             source.capture_watermark().await?
         };
+        if self
+            .enforce_capacity(source.as_ref(), migration_limits, false, false)
+            .await?
+        {
+            return Ok(());
+        }
         let expected = AuthorityRecoveryContext {
             migration_id: MIGRATION_ID.to_string(),
             installation_id: INSTALLATION_ID.to_string(),

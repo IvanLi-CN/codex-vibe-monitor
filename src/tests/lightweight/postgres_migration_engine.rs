@@ -2073,22 +2073,30 @@ async fn in_memory_capture_enforces_copy_batch_row_and_byte_boundaries() -> Resu
 
 #[tokio::test]
 async fn version_capture_is_bounded_and_requires_a_new_baseline_after_loss() -> Result<()> {
-    let capture =
-        VersionCapture::with_max_capture_bytes("migration-engine-test", "sqlite-test", 3)?;
-    assert_eq!(
-        capture
-            .capture_transaction(vec![change("events", "a", ChangeKind::Insert, b"one")])
-            .await?,
-        1
-    );
+    let first = change("events", "a", ChangeKind::Insert, b"one");
+    let second = change("events", "b", ChangeKind::Insert, b"two");
+    let third = change("events", "c", ChangeKind::Insert, b"three");
+    let first_bytes =
+        CapturedChange::from_input("migration-engine-test", "sqlite-test", 1, first.clone())?
+            .accounted_bytes()?;
+    let second_bytes =
+        CapturedChange::from_input("migration-engine-test", "sqlite-test", 2, second.clone())?
+            .accounted_bytes()?;
+    let capture = VersionCapture::with_max_capture_bytes(
+        "migration-engine-test",
+        "sqlite-test",
+        first_bytes + second_bytes,
+    )?;
+    assert_eq!(capture.capture_transaction(vec![first]).await?, 1);
+    assert_eq!(capture.capture_transaction(vec![second]).await?, 2);
     let error = capture
-        .capture_transaction(vec![change("events", "b", ChangeKind::Insert, b"two")])
+        .capture_transaction(vec![third])
         .await
         .expect_err("capture must reject writes beyond its durable capacity");
     assert!(error.to_string().contains("bounded storage capacity"));
     let checkpoint = capture.checkpoint().await?;
-    assert_eq!(checkpoint.captured_bytes, 3);
-    assert_eq!(checkpoint.next_version, 1);
+    assert_eq!(checkpoint.captured_bytes, first_bytes + second_bytes);
+    assert_eq!(checkpoint.next_version, 2);
 
     capture.mark_continuity_lost().await;
     let checkpoint = capture.checkpoint().await?;
@@ -2098,13 +2106,13 @@ async fn version_capture_is_bounded_and_requires_a_new_baseline_after_loss() -> 
 
     let new_generation = capture.start_new_capture_generation().await?;
     assert_eq!(new_generation.capture_generation, 2);
-    assert_eq!(new_generation.next_version, 1);
+    assert_eq!(new_generation.next_version, 2);
     assert_eq!(new_generation.captured_bytes, 0);
     assert!(new_generation.baseline_required);
     capture
         .capture_transaction(vec![change("events", "b", ChangeKind::Insert, b"two")])
         .await?;
-    capture.mark_baseline_complete(2, 2).await?;
+    capture.mark_baseline_complete(2, 3).await?;
     assert!(!capture.checkpoint().await?.baseline_required);
     Ok(())
 }
@@ -2833,6 +2841,14 @@ async fn sqlite_capture_persists_continuity_loss_and_requires_a_new_generation()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await?;
+    let first = change("events", "a", ChangeKind::Insert, b"one");
+    let second = change("events", "b", ChangeKind::Insert, b"two");
+    let first_bytes =
+        CapturedChange::from_input("migration-engine-test", "sqlite-test", 1, first.clone())?
+            .accounted_bytes()?;
+    let second_bytes =
+        CapturedChange::from_input("migration-engine-test", "sqlite-test", 2, second.clone())?
+            .accounted_bytes()?;
     let source = SqliteMigrationSource::new(
         pool.clone(),
         "migration-engine-test",
@@ -2843,12 +2859,13 @@ async fn sqlite_capture_persists_continuity_loss_and_requires_a_new_generation()
             "events",
         )?],
     )?
-    .with_max_capture_bytes(3)?;
+    .with_max_capture_bytes(first_bytes + second_bytes)?;
     source.ensure_capture_schema().await?;
-    source
-        .append_change(1, change("events", "a", ChangeKind::Insert, b"one"))
-        .await?;
-    assert_eq!(source.capture_checkpoint().await?.captured_bytes, 3);
+    source.append_change(1, first).await?;
+    assert_eq!(
+        source.capture_checkpoint().await?.captured_bytes,
+        first_bytes
+    );
 
     let error = source
         .append_change(3, change("events", "gap", ChangeKind::Insert, b"gap"))
@@ -2882,14 +2899,80 @@ async fn sqlite_capture_persists_continuity_loss_and_requires_a_new_generation()
     assert_eq!(new_generation.capture_generation, 2);
     assert_eq!(new_generation.next_version, 1);
     assert!(new_generation.baseline_required);
-    restarted
-        .append_change_for_generation(1, 2, change("events", "b", ChangeKind::Insert, b"two"))
-        .await?;
+    restarted.append_change_for_generation(1, 2, second).await?;
     restarted.mark_baseline_complete(2, 2).await?;
     let checkpoint = restarted.capture_checkpoint().await?;
     assert!(!checkpoint.continuity_lost);
     assert!(!checkpoint.baseline_required);
-    assert_eq!(checkpoint.captured_bytes, 3);
+    assert_eq!(checkpoint.captured_bytes, second_bytes);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_upgrade_requires_a_new_generation_for_legacy_accounting() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE migration_change_log (
+            capture_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            migration_id TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            source_version INTEGER NOT NULL,
+            table_name TEXT NOT NULL,
+            stable_key TEXT NOT NULL,
+            previous_key TEXT,
+            kind TEXT NOT NULL,
+            payload BLOB,
+            payload_digest TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE migration_change_log_state (
+            migration_id TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            capture_generation INTEGER NOT NULL,
+            next_version INTEGER NOT NULL,
+            captured_bytes INTEGER NOT NULL,
+            max_capture_bytes INTEGER NOT NULL,
+            capture_capacity_held INTEGER NOT NULL DEFAULT 0,
+            continuity_lost INTEGER NOT NULL,
+            baseline_required INTEGER NOT NULL,
+            authority_generation INTEGER NOT NULL,
+            source_writes_fenced INTEGER NOT NULL,
+            PRIMARY KEY (migration_id, source_identity)
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO migration_change_log_state
+            (migration_id, source_identity, capture_generation, next_version,
+             captured_bytes, max_capture_bytes, continuity_lost, baseline_required,
+             authority_generation, source_writes_fenced)
+         VALUES ('migration-engine-test', 'sqlite-test', 1, 1, 1, 512, 0, 0, 1, 0)",
+    )
+    .execute(&pool)
+    .await?;
+
+    let source = SqliteMigrationSource::new(
+        pool,
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![MigrationTableSpec::canonical(
+            StorageModule::TrafficArchive,
+            "events",
+        )?],
+    )?;
+    source.ensure_capture_schema().await?;
+    let checkpoint = source.capture_checkpoint().await?;
+    assert!(checkpoint.continuity_lost);
+    assert!(checkpoint.baseline_required);
+    assert!(source.capture_capacity_held().await?);
     Ok(())
 }
 
