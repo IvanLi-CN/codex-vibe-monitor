@@ -4020,7 +4020,7 @@ async fn wait_for_child_exit(child: &mut AcceptanceChild) -> Result<std::process
     Ok(tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(status) = child.0.try_wait()? {
-                return Ok(status);
+                return Ok::<std::process::ExitStatus, anyhow::Error>(status);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
