@@ -2252,6 +2252,71 @@ async fn migration_engine_restarts_after_apply_ack_failure_without_loss_or_resur
 }
 
 #[tokio::test]
+async fn migration_source_ack_uncertainty_is_idempotent_after_commit() -> Result<()> {
+    let source_pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            stable_key TEXT PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&source_pool)
+    .await?;
+    let source = SqliteMigrationSource::new(
+        source_pool.clone(),
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![process_fixture_spec("postgres_ack_source_rows")?],
+    )?;
+    source.ensure_capture_schema().await?;
+
+    let mut transaction = source_pool.begin().await?;
+    let captured = source
+        .capture_mutation_tx(
+            &mut transaction,
+            ChangeInput::insert("events", "source-ack", b"source-ack".to_vec()),
+        )
+        .await?;
+    sqlx::query("INSERT INTO events (stable_key, source_version, payload) VALUES (?, ?, ?)")
+        .bind(&captured.stable_key)
+        .bind(captured.source_version)
+        .bind(captured.payload.as_deref().expect("insert payload"))
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+
+    let through = source.capture_watermark().await?;
+    assert_eq!(through, captured.source_version);
+    source.fail_after_release_commit_for_test();
+    let error = source
+        .release_capture_through(through)
+        .await
+        .expect_err("a committed source acknowledgement can have an uncertain caller result");
+    assert!(
+        error
+            .to_string()
+            .contains("acknowledgement became uncertain")
+    );
+
+    // The first attempt committed the delete. A retry is therefore a safe no-op rather than a
+    // second acknowledgement or a continuity violation.
+    assert!(
+        source
+            .changes_through(0, through, replay_limits(32, 64 * 1024))
+            .await?
+            .is_empty()
+    );
+    assert_eq!(source.release_capture_through(through).await?, 0);
+    assert_eq!(source.capture_checkpoint().await?.captured_bytes, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn table_coverage_proof_rejects_extra_rows_empty_to_nonempty_and_bound_changes() -> Result<()>
 {
     let (directory, path) = state_path("coverage-extra-row");

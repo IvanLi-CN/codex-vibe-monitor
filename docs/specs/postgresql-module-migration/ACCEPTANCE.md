@@ -10,7 +10,7 @@ The canonical fixture record is [acceptance-fixtures.json](../../adr/assets/modu
 
 ## Runner contract
 
-Use `scripts/postgres-acceptance/run.py` around the acceptance command with explicit `--base-sha` and `--candidate-sha` values. The runner requires `POSTGRES_TEST_DATABASE_URL`, sets `POSTGRES_ACCEPTANCE_REQUIRED=1`, `BASE_SHA`, `CANDIDATE_SHA`, `POSTGRES_ACCEPTANCE_FIXTURE_VERSION` and `POSTGRES_ACCEPTANCE_EVIDENCE_DIR` for the child process, and never infers either SHA from the checked-out `HEAD`.
+Use `scripts/postgres-acceptance/run.py` around the acceptance command with explicit `--base-sha`, `--candidate-sha` and `--scope` values. Before running the command, the runner verifies that both values name commits, the base is an ancestor of the candidate, and the candidate matches the checked-out `HEAD`. The runner requires `POSTGRES_TEST_DATABASE_URL`, sets `POSTGRES_ACCEPTANCE_REQUIRED=1`, `BASE_SHA`, `CANDIDATE_SHA`, `POSTGRES_ACCEPTANCE_FIXTURE_VERSION` and `POSTGRES_ACCEPTANCE_EVIDENCE_DIR` for the child process, and never infers either SHA from the checked-out `HEAD`.
 
 | Runner result                   | Meaning                                                                       | Gate result               |
 | ------------------------------- | ----------------------------------------------------------------------------- | ------------------------- |
@@ -28,7 +28,7 @@ The report must bind every result to the candidate SHA and contain raw stdout/st
 2. Exercise concurrent insert, update, delete, key change and replacement with retry and restart; prove no stale overwrite, resurrection, duplicate business effect or missing fact.
 3. Exercise archive ownership and Raw-link atomicity, including release/prune recovery.
 4. Resolve crash and fault outcomes around target commit, source acknowledgement, source fence, authority publish, router publication and journal acknowledgement. The live suite must exercise a real process `SIGKILL` after the PostgreSQL replay/checkpoint commit and before local acknowledgement, then restart and reconcile from the target checkpoint. Cover each boundary with deterministic fault injection and document the coverage and any missing evidence.
-5. Measure startup, convergence, switch duration, ongoing traffic, source capture/WAL growth and disk headroom against the thresholds in the operations runbook. The startup evidence must include the deterministic `archive_batches` `SQLITE_READ` counts for each initialization sample and require zero reads. The live suite must emit `startup-performance.json` and `switch-performance.json`; the SIGKILL test must emit `process-kill.json`.
-6. Before production cutover, complete the backup/restore drill for source SQLite, PostgreSQL, authority state and archive/Raw files, and collect a representative natural-traffic baseline.
+5. Record the real process SIGKILL result in `process-kill.json` and report any unavailable functional or fault evidence as not run. The non-pressure PostgreSQL functional suite is separate from the disabled performance and pressure harness.
+6. Before production cutover, verify PostgreSQL target capacity, actual WAL backlog and data-volume headroom; complete the backup/restore drill for source SQLite, PostgreSQL, authority state and archive/Raw files; and collect a representative natural-traffic baseline.
 
-SQLite-only tests are contract coverage, not a substitute for the live PostgreSQL result. A missing or unavailable PostgreSQL service remains `blocked/not-run`.
+Pressure tests are prohibited and their evidence is `not-run`; neither pressure files nor continuous-load measurements are acceptance requirements. Any performance-testing workflow must complete in strictly less than three minutes overall. SQLite-only tests are contract coverage for their stated boundary, not a substitute for the live PostgreSQL result. A missing or unavailable PostgreSQL service remains `blocked/not-run`.

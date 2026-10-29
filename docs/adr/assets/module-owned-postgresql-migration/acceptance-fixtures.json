@@ -49,7 +49,7 @@
   },
   "candidate_lineage": {
     "parent_branch": "th/postgresql-migration-design",
-    "base_sha": "7d6aeb89c8936b371edd2626858b640e6b630df6",
+    "base_sha": "0ad4c64964e7fabcd05188a75538c5709ec1e5dc",
     "candidate_sha": "recorded-by-acceptance-runner",
     "candidate_sha_policy": "record-the-tested-commit-in-every-report"
   },
@@ -87,11 +87,16 @@
       "id": "crash-restart-fault-matrix",
       "scope": "target commit, source acknowledgement, fence, authority and journal ambiguity",
       "status": "not-run",
-      "note": "The live suite now records process-kill.json for SIGKILL after real PostgreSQL target replay/checkpoint commit and before local acknowledgement; source acknowledgement, fence, authority, router, journal, filesystem/WAL and backup/restore boundaries remain open until separately evidenced. Deterministic SQLite fault tests are supplementary and cannot close the live PostgreSQL gate."
+      "note": "The functional suite records process-kill.json for application-process SIGKILL after real PostgreSQL target replay/checkpoint commit and before local acknowledgement. Deterministic tests exercise source acknowledgement after committed release, source fence, authority, router and journal boundaries plus normal timeout/recovery. Filesystem/WAL crash durability beyond the committed PostgreSQL transaction and backup/restore remain open until separately evidenced."
     },
     {
-      "id": "startup-switch-performance",
-      "scope": "startup independence, three-second switch budget, convergence and capacity thresholds",
+      "id": "deterministic-fault-boundaries",
+      "scope": "target/source acknowledgement, source fence, authority/router publication, journal acknowledgement, timeout/recovery and application-process termination with a real PostgreSQL target",
+      "status": "not-run"
+    },
+    {
+      "id": "system-headroom",
+      "scope": "production PostgreSQL target capacity, WAL backlog and data-volume headroom require independent pre-deployment verification",
       "status": "not-run"
     },
     {

@@ -11,7 +11,10 @@ use std::{
 };
 
 #[cfg(test)]
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -293,6 +296,8 @@ pub(crate) struct SqliteMigrationSource {
     max_capture_bytes: u64,
     writer_generation: u64,
     specs: Arc<BTreeMap<String, MigrationTableSpec>>,
+    #[cfg(test)]
+    fail_after_release_commit: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -348,7 +353,14 @@ impl SqliteMigrationSource {
             max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
             writer_generation: INITIAL_AUTHORITY_GENERATION,
             specs: Arc::new(spec_map(specs)?),
+            #[cfg(test)]
+            fail_after_release_commit: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_after_release_commit_for_test(&self) {
+        self.fail_after_release_commit.store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn with_max_capture_bytes(mut self, max_capture_bytes: u64) -> Result<Self> {
@@ -972,6 +984,10 @@ impl SqliteMigrationSource {
             .commit()
             .await
             .context("commit SQLite migration capture release")?;
+        #[cfg(test)]
+        if self.fail_after_release_commit.swap(false, Ordering::SeqCst) {
+            bail!("SQLite migration source acknowledgement became uncertain after commit");
+        }
         Ok(deleted)
     }
 

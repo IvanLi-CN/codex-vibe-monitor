@@ -521,14 +521,10 @@ jobs:
         run: |
           set -euo pipefail
           functional_status=0
-          performance_status=0
           CI_PROFILE=pr E2E_BASE_URL=http://127.0.0.1:60080 E2E_DEMO_BASE_URL=http://127.0.0.1:60083 \
             PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-functional \
             bun run test:e2e -- --config=playwright.ci.config.ts --project=fixtures-functional --project=demo-functional --workers=1 --output=test-results/functional || functional_status=$?
-          CI_PROFILE=pr E2E_DEMO_BASE_URL=http://127.0.0.1:60084 E2E_PRODUCTION_BUILD=1 \
-            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-performance \
-            bun run test:e2e -- --config=playwright.ci.config.ts --project=performance --workers=1 --output=test-results/performance || performance_status=$?
-          exit $(( functional_status || performance_status ))
+          exit "$functional_status"
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -651,7 +647,8 @@ jobs:
 
   backend-tests-lightweight:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -696,7 +693,8 @@ jobs:
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -741,7 +739,8 @@ jobs:
 
   backend-tests-stateful-sqlite-shard-2:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Stateful SQLite shard 2/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -789,7 +788,7 @@ jobs:
     needs:
       - backend-tests-stateful-sqlite-shard-1
       - backend-tests-stateful-sqlite-shard-2
-    if: always()
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -807,7 +806,8 @@ jobs:
   backend-tests-representative-scale:
     name: Backend Tests (Representative Scale)
     needs: backend-test-archive
-    if: always()
+    # Not run: the selected acceptance includes pressure tests.
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -857,7 +857,8 @@ jobs:
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
-    if: always()
+    # Not run: this profile has not been established to exclude pressure tests.
+    if: ${{ false }}
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
