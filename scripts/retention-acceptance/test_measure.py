@@ -31,6 +31,7 @@ from contract import (
 from fixture import CONTROLLED_TASK_KEYS, prepare_competitor, seed_parallel_work_coverage
 from measure import (
     OwnedContainerLedger,
+    active_controlled_task_keys,
     cleanup_budget,
     cleanup_named_container,
     cleanup_path_if_safe,
@@ -613,6 +614,42 @@ class MeasurementBudgetTests(unittest.TestCase):
             require_summary_proof=False,
         )
         self.assertEqual(frozen, [proof_status])
+
+    def test_evidence_waits_for_controlled_owner_quiescence_before_freeze(self) -> None:
+        proof_status = {
+            "ready": False,
+            "reference_ready": True,
+            "datasets": {},
+        }
+        active_row = {
+            "task_key": "pool_upstream_attempt_archive",
+            "status": "running",
+            "actual_finished_at": None,
+        }
+        frozen: list[dict[str, object]] = []
+        with patch("measure.task_runs", side_effect=[[active_row], []]) as runs, patch(
+            "measure.validate_task_snapshot"
+        ), patch("measure.archive_proof_status", return_value=proof_status), patch(
+            "measure.time.sleep"
+        ) as sleep:
+            self.assertEqual(
+                wait_for_task_evidence(
+                    Path("main.sqlite"),
+                    Path("maintenance.sqlite"),
+                    "2026-10-23 00:00:00",
+                    {name: 1 for name in DATASETS},
+                    time.monotonic(),
+                    "baseline",
+                    timeout_seconds=1,
+                    on_proof_ready=lambda status: frozen.append(status),
+                ),
+                [],
+            )
+
+        self.assertEqual(runs.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+        self.assertEqual(frozen, [proof_status])
+        self.assertEqual(active_controlled_task_keys([active_row]), ["pool_upstream_attempt_archive"])
 
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

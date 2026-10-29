@@ -50,7 +50,7 @@ from contract import (
     task_run_is_accepted_terminal,
     validate_evidence,
 )
-from fixture import populate_template, prepare_competitor, shanghai_cutoff
+from fixture import CONTROLLED_TASK_KEYS, populate_template, prepare_competitor, shanghai_cutoff
 from oracle import verify_trial
 
 
@@ -1231,6 +1231,19 @@ def wait_for_owner_schedule_admission(maintenance_db: Path, started: float) -> N
     )
 
 
+def active_controlled_task_keys(rows: list[dict[str, Any]]) -> list[str]:
+    """Return controlled owners that can still mutate the proof snapshot."""
+    return sorted(
+        {
+            row["task_key"]
+            for row in rows
+            if row.get("task_key") in CONTROLLED_TASK_KEYS
+            and row.get("status") == "running"
+            and row.get("actual_finished_at") is None
+        }
+    )
+
+
 def archive_proof_status(
     database: Path,
     cutoff: str,
@@ -1359,10 +1372,18 @@ def wait_for_task_evidence(
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
-                if on_proof_ready is not None:
-                    on_proof_ready(proof_status)
-                return latest
-            last_error = AcceptanceError("archive proofs, 10x source conversion, or fixed competitor files are still draining")
+                active = active_controlled_task_keys(latest)
+                if active:
+                    last_error = AcceptanceError(
+                        "archive proofs are ready but controlled owner tasks are still active: "
+                        + ",".join(active)
+                    )
+                else:
+                    if on_proof_ready is not None:
+                        on_proof_ready(proof_status)
+                    return latest
+            else:
+                last_error = AcceptanceError("archive proofs, 10x source conversion, or fixed competitor files are still draining")
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
@@ -1597,6 +1618,12 @@ def run_trial(
             (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
             (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
             (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
+            active = active_controlled_task_keys(task_runs(maintenance_db))
+            if active:
+                raise AcceptanceError(
+                    "controlled owner tasks restarted before oracle freeze: "
+                    + ",".join(active)
+                )
             oracle_container_id = freeze_trial_for_oracle(
                 container,
                 containers,
