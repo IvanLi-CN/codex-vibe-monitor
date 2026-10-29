@@ -41,6 +41,7 @@ from measure import (
     run_command,
     run_foreground,
     reuse_fixture_data,
+    resume_controlled_task_scheduling,
     suspend_controlled_task_scheduling,
     terminate_frozen_container,
     sqlite_schema_fingerprint,
@@ -654,6 +655,41 @@ class MeasurementBudgetTests(unittest.TestCase):
         self.assertEqual(frozen, [proof_status])
         self.assertEqual(active_controlled_task_keys([active_row]), ["pool_upstream_attempt_archive"])
 
+    def test_evidence_resumes_dispatch_when_proof_edge_is_lost(self) -> None:
+        ready = {"ready": False, "reference_ready": True, "datasets": {}}
+        incomplete = {"ready": False, "reference_ready": False, "datasets": {}}
+        active_row = {
+            "task_key": "pool_upstream_attempt_archive",
+            "status": "running",
+            "actual_finished_at": None,
+        }
+        frozen: list[dict[str, object]] = []
+        with patch("measure.task_runs", side_effect=[[active_row], [], []]), patch(
+            "measure.validate_task_snapshot"
+        ), patch("measure.archive_proof_status", side_effect=[ready, incomplete, ready]), patch(
+            "measure.time.sleep"
+        ), patch("measure.suspend_controlled_task_scheduling") as suspend, patch(
+            "measure.resume_controlled_task_scheduling"
+        ) as resume:
+            self.assertEqual(
+                wait_for_task_evidence(
+                    Path("main.sqlite"),
+                    Path("maintenance.sqlite"),
+                    "2026-10-23 00:00:00",
+                    {name: 1 for name in DATASETS},
+                    time.monotonic(),
+                    "baseline",
+                    timeout_seconds=1,
+                    on_proof_ready=lambda status: frozen.append(status),
+                ),
+                [],
+            )
+
+        self.assertEqual(suspend.call_count, 2)
+        suspend.assert_any_call(Path("maintenance.sqlite"), ANY)
+        resume.assert_called_once_with(Path("maintenance.sqlite"), ANY)
+        self.assertEqual(frozen, [ready])
+
     def test_suspend_controlled_task_scheduling_only_changes_controlled_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "maintenance.sqlite"
@@ -673,7 +709,8 @@ class MeasurementBudgetTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            suspend_controlled_task_scheduling(database, time.monotonic())
+            started = time.monotonic()
+            suspend_controlled_task_scheduling(database, started)
 
             connection = sqlite3.connect(database)
             try:
@@ -687,10 +724,32 @@ class MeasurementBudgetTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        for key in CONTROLLED_TASK_KEYS:
-            self.assertEqual(values[key][:4], (0, None, None, None))
-            self.assertNotEqual(values[key][4], "old-updated")
-        self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
+            for key in CONTROLLED_TASK_KEYS:
+                self.assertEqual(values[key][:4], (0, None, None, None))
+                self.assertNotEqual(values[key][4], "old-updated")
+            self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
+
+            resume_controlled_task_scheduling(database, started)
+
+            connection = sqlite3.connect(database)
+            try:
+                values = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        "SELECT task_key,enabled,next_trigger_at,next_catchup_at,catchup_reason,updated_at "
+                        "FROM managed_tasks"
+                    )
+                }
+            finally:
+                connection.close()
+
+            for key in CONTROLLED_TASK_KEYS:
+                self.assertEqual(values[key][0], 1)
+                self.assertIsNotNone(values[key][1])
+                self.assertEqual(values[key][2], None)
+                self.assertEqual(values[key][3], None)
+                self.assertNotEqual(values[key][4], "old-updated")
+            self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
 
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

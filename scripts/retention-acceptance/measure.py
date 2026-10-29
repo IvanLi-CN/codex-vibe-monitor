@@ -1269,6 +1269,32 @@ def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> 
         connection.close()
 
 
+def resume_controlled_task_scheduling(maintenance_db: Path, started: float) -> None:
+    """Resume controlled dispatch when a transient proof edge was lost."""
+    timeout = min(5.0, remaining_budget(started))
+    if timeout <= 0:
+        raise AcceptanceError("no time remains to resume controlled task scheduling")
+    placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+    now = utc_now()
+    connection = sqlite3.connect(maintenance_db, timeout=timeout)
+    try:
+        connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
+        cursor = connection.execute(
+            "UPDATE managed_tasks "
+            "SET enabled=1,next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
+            f"WHERE task_key IN ({placeholders})",
+            (now, now, *CONTROLLED_TASK_KEYS),
+        )
+        if cursor.rowcount != len(CONTROLLED_TASK_KEYS):
+            raise AcceptanceError("controlled task scheduling rows are incomplete while resuming")
+        connection.commit()
+    except sqlite3.Error as error:
+        connection.rollback()
+        raise AcceptanceError(f"could not resume controlled task scheduling: {error}") from error
+    finally:
+        connection.close()
+
+
 def archive_proof_status(
     database: Path,
     cutoff: str,
@@ -1397,11 +1423,11 @@ def wait_for_task_evidence(
                 require_summary_proof=version == "candidate",
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
+            active = active_controlled_task_keys(latest)
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
                 if on_proof_ready is not None and not scheduling_suspended:
                     suspend_controlled_task_scheduling(maintenance_db, started)
                     scheduling_suspended = True
-                active = active_controlled_task_keys(latest)
                 if active:
                     last_error = AcceptanceError(
                         "archive proofs are ready but controlled owner tasks are still active: "
@@ -1412,7 +1438,16 @@ def wait_for_task_evidence(
                         on_proof_ready(proof_status)
                     return latest
             else:
-                last_error = AcceptanceError("archive proofs, 10x source conversion, or fixed competitor files are still draining")
+                if scheduling_suspended and active:
+                    last_error = AcceptanceError(
+                        "archive proof edge was lost while controlled owners are still active: "
+                        + ",".join(active)
+                    )
+                else:
+                    if scheduling_suspended:
+                        resume_controlled_task_scheduling(maintenance_db, started)
+                        scheduling_suspended = False
+                    last_error = AcceptanceError("archive proofs, 10x source conversion, or fixed competitor files are still draining")
         except AcceptanceError as error:
             last_error = error
         time.sleep(0.5)
