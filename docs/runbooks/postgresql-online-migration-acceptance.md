@@ -27,6 +27,7 @@ python3 scripts/postgres-acceptance/run.py \
   --evidence-dir "$EVIDENCE_DIR" \
   --base-sha "$BASE_SHA" \
   --candidate-sha "$CANDIDATE_SHA" \
+  --scope functional-recovery \
   --fixture-version 4.13.11 \
   -- bash scripts/postgres-acceptance/run-functional-suite.sh
 ```

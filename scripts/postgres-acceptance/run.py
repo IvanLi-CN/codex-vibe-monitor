@@ -205,7 +205,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
-    parser.add_argument("--scope", choices=("full", "functional-recovery"), default="full")
+    parser.add_argument("--scope", choices=("full", "functional-recovery"), required=True)
     parser.add_argument(
         "--fixture-version",
         default=DEFAULT_FIXTURE_VERSION,
@@ -221,11 +221,37 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def validate_identity(args: argparse.Namespace) -> bool:
+    environment = dict(os.environ, BASE_SHA=args.base_sha, CANDIDATE_SHA=args.candidate_sha)
+    try:
+        result = subprocess.run(
+            ["bash", str(Path(__file__).with_name("validate-identity.sh"))],
+            cwd=args.repo_root,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def main() -> int:
     args = parse_args()
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
     database_url = os.environ.get("POSTGRES_TEST_DATABASE_URL", "").strip() or None
     report = base_report(args, database_url)
+
+    if not validate_identity(args):
+        return finish_report(
+            report,
+            args.output,
+            "blocked",
+            "not-run",
+            {"code": "acceptance_identity_invalid", "message": "Base or candidate commit identity is invalid"},
+            {"executed": False},
+        )
 
     if not database_url:
         return finish_report(

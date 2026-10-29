@@ -10,7 +10,7 @@ The canonical fixture record is [acceptance-fixtures.json](../../adr/assets/modu
 
 ## Runner contract
 
-Use `scripts/postgres-acceptance/run.py` around the acceptance command with explicit `--base-sha` and `--candidate-sha` values. The runner requires `POSTGRES_TEST_DATABASE_URL`, sets `POSTGRES_ACCEPTANCE_REQUIRED=1`, `BASE_SHA`, `CANDIDATE_SHA`, `POSTGRES_ACCEPTANCE_FIXTURE_VERSION` and `POSTGRES_ACCEPTANCE_EVIDENCE_DIR` for the child process, and never infers either SHA from the checked-out `HEAD`.
+Use `scripts/postgres-acceptance/run.py` around the acceptance command with explicit `--base-sha`, `--candidate-sha` and `--scope` values. Before running the command, the runner verifies that both values name commits, the base is an ancestor of the candidate, and the candidate matches the checked-out `HEAD`. The runner requires `POSTGRES_TEST_DATABASE_URL`, sets `POSTGRES_ACCEPTANCE_REQUIRED=1`, `BASE_SHA`, `CANDIDATE_SHA`, `POSTGRES_ACCEPTANCE_FIXTURE_VERSION` and `POSTGRES_ACCEPTANCE_EVIDENCE_DIR` for the child process, and never infers either SHA from the checked-out `HEAD`.
 
 | Runner result                   | Meaning                                                                       | Gate result               |
 | ------------------------------- | ----------------------------------------------------------------------------- | ------------------------- |

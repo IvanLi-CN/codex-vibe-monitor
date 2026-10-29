@@ -9,7 +9,7 @@
 
 - `src/storage/` contains module routing, migration state, SQLite capture and PostgreSQL target paths for the authority and replay requirements.
 - `scripts/postgres-acceptance/` and the PostgreSQL CI workflow separate a non-pressure functional/recovery subset from unavailable pressure and performance evidence.
-- CI validates the base and candidate commit relationship before recording the functional subset's scoped report and redacted output. A separate explicit list selects audited non-pressure backend tests; it does not replace the full backend profiles.
+- The acceptance runner validates the base and candidate commit relationship for CI and manual runs, and requires an explicit report scope. CI records the functional subset's scoped report and redacted output. A separate explicit list selects audited non-pressure backend tests; it does not replace the full backend profiles.
 - The source compatibility fixture is `4.13.11` at `85b46550da5fb04b8a4c39d310a9b04c80824047`; other source versions require their own evidence.
 - The non-pressure functional subset selects real PostgreSQL source/target operations, archive/Raw ownership and transaction checks, source acknowledgement, deterministic fence and publication faults, journal recovery, and a process SIGKILL recovery boundary. Selection alone does not establish candidate-bound results for every failure boundary.
 

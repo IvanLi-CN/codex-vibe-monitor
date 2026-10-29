@@ -59,9 +59,13 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
                     env=dict(env, BASE_SHA=base_sha, CANDIDATE_SHA=candidate_sha),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
             self.assertEqual(validate(base, candidate), 0)
+            args = self.runner.argparse.Namespace(repo_root=root, base_sha=base, candidate_sha=candidate)
+            self.assertTrue(self.runner.validate_identity(args))
             for bad_base, bad_candidate in (("bad", candidate), ("0" * 40, candidate),
                                              (unrelated, candidate), (base, base)):
                 self.assertNotEqual(validate(bad_base, bad_candidate), 0)
+                args.base_sha, args.candidate_sha = bad_base, bad_candidate
+                self.assertFalse(self.runner.validate_identity(args))
 
     def test_audited_backend_selectors_are_explicit_and_exist(self) -> None:
         names = (REPO_ROOT / "scripts/postgres-acceptance/non-pressure-backend-tests.txt").read_text().splitlines()
@@ -81,7 +85,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.runner = load_runner()
 
-    def invoke(self, root: Path, command: list[str], database_url: str | None) -> tuple[int, dict]:
+    def invoke(self, root: Path, command: list[str], database_url: str | None, *, identity_valid: bool = True) -> tuple[int, dict]:
         output = root / "report.json"
         evidence = root / "evidence"
         environment = dict(os.environ)
@@ -100,12 +104,23 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             "1" * 40,
             "--candidate-sha",
             "2" * 40,
+            "--scope",
+            "functional-recovery",
             "--",
             *command,
         ]
-        with patch.dict(os.environ, environment, clear=True), patch.object(sys, "argv", argv):
+        with patch.dict(os.environ, environment, clear=True), patch.object(sys, "argv", argv), patch.object(self.runner, "validate_identity", return_value=identity_valid):
             exit_code = self.runner.main()
         return exit_code, json.loads(output.read_text(encoding="utf-8"))
+
+    def test_invalid_identity_blocks_before_running_the_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch.object(self.runner.subprocess, "Popen") as popen:
+                exit_code, report = self.invoke(Path(temporary_directory), [sys.executable, "-c", "pass"], "postgresql://postgres@", identity_valid=False)
+        self.assertEqual(exit_code, 78)
+        self.assertEqual(report["reason"]["code"], "acceptance_identity_invalid")
+        self.assertFalse(report["raw_result"]["executed"])
+        popen.assert_not_called()
 
     def test_missing_database_url_is_blocked_and_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -147,7 +162,7 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["result"], "passed")
-        self.assertEqual(report["scope"], "full")
+        self.assertEqual(report["scope"], "functional-recovery")
         self.assertTrue(report["raw_result"]["executed"])
         self.assertIn("acceptance ok", stdout)
         self.assertNotIn("secret", json.dumps(report))
