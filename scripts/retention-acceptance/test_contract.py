@@ -650,9 +650,11 @@ class ContractTests(unittest.TestCase):
                 "observed_at": timestamp(observed_at),
                 "progress": {
                     "total": 1000,
-                    "completed": 1000,
-                    "phase": "processing",
-                    "checkpoint": "finished",
+                    "completed": 0,
+                    "phase": "running",
+                    "checkpoint": "admitted",
+                    "freshness": "fresh",
+                    "wait_reason": "retention_write_admission",
                     "last_progress_at": timestamp(progress_at),
                 },
             }
@@ -679,7 +681,7 @@ class ContractTests(unittest.TestCase):
                     "total": 1000,
                     "completed": 1000,
                     "phase": "processing",
-                    "checkpoint": "processing",
+                    "checkpoint": "waiting",
                     "last_progress_at": trial["window"]["input_finished_at"],
                 },
             }

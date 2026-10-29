@@ -718,9 +718,11 @@ class MeasurementBudgetTests(unittest.TestCase):
             "evidence_kind": "active",
             "progress": {
                 "total": 1000,
-                "completed": 1000,
-                "phase": "processing",
-                "checkpoint": "finished",
+                "completed": 0,
+                "phase": "running",
+                "checkpoint": "admitted",
+                "freshness": "fresh",
+                "wait_reason": "retention_write_admission",
                 "last_progress_at": "2026-10-25T00:00:09Z",
             },
         }

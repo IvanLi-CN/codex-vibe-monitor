@@ -42,6 +42,17 @@ ACCEPTANCE_ARCHIVE_TTL_DAYS = 3650
 MIN_CONVERGENCE_FACTOR = 10.0
 MAX_WRITE_HOLD_P95_MS = 250.0
 WRITE_TIMING_TOLERANCE_MS = 0.01
+PROOF_EDGE_WAIT_REASONS = {
+    "archive_directory_lock_busy",
+    "file_phase_busy",
+    "parallel_work_minute_coverage",
+    "pressure_cooldown",
+    "retention_work_budget",
+    "retention_write_admission",
+    "sqlite_pressure",
+    "task_execution_active",
+    "writer_pressure",
+}
 SEED = 20261024
 RETENTION_DAYS = 1
 SCHEMA_VERSION = 7
@@ -315,12 +326,13 @@ def task_run_is_proof_edge_active(row: dict[str, Any]) -> bool:
 
     The selected cohort is proven from the source/artifact oracle and archive proof
     before this state is recorded.  A catch-up worker may still be open while it
-    drains unrelated global backlog; only a finished progress checkpoint with
-    committed progress is eligible for this explicit proof-edge observation.
+    drains unrelated global backlog; only a fresh live progress checkpoint without
+    a fatal wait reason is eligible for this explicit proof-edge observation.
     """
     progress = row.get("progress")
     completed = progress.get("completed") if isinstance(progress, dict) else None
     total = progress.get("total") if isinstance(progress, dict) else None
+    wait_reason = progress.get("wait_reason") if isinstance(progress, dict) else None
     return (
         row.get("evidence_kind") == "proof_edge_active"
         and row.get("task_key") in {"retention_archive", "pool_upstream_attempt_archive"}
@@ -330,15 +342,28 @@ def task_run_is_proof_edge_active(row: dict[str, Any]) -> bool:
         and isinstance(row.get("started_at"), str)
         and isinstance(row.get("activity_started_at"), str)
         and isinstance(row.get("observed_at"), str)
+        and row.get("error_detail") is None
         and isinstance(progress, dict)
         and progress.get("phase") in {"running", "processing"}
-        and progress.get("checkpoint") == "finished"
-        and isinstance(completed, int)
-        and not isinstance(completed, bool)
-        and completed > 0
-        and isinstance(total, int)
-        and not isinstance(total, bool)
-        and total >= completed
+        and progress.get("checkpoint") in {"admitted", "processing", "finished"}
+        and progress.get("freshness") == "fresh"
+        and (wait_reason is None or wait_reason in PROOF_EDGE_WAIT_REASONS)
+        and (
+            completed is None
+            or (
+                isinstance(completed, int)
+                and not isinstance(completed, bool)
+                and completed >= 0
+            )
+        )
+        and (
+            total is None
+            or (
+                isinstance(total, int)
+                and not isinstance(total, bool)
+                and (completed is None or total >= completed)
+            )
+        )
         and isinstance(progress.get("last_progress_at"), str)
     )
 

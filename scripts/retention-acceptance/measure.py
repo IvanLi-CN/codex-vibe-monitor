@@ -1260,7 +1260,7 @@ def mark_proof_edge_active(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             and row.get("trigger_kind") == "catchup"
             and row.get("status") == "running"
             and isinstance(row.get("progress"), dict)
-            and row["progress"].get("checkpoint") == "finished"
+            and row["progress"].get("checkpoint") in {"admitted", "processing", "finished"}
         ):
             row["evidence_kind"] = "proof_edge_active"
     return rows
