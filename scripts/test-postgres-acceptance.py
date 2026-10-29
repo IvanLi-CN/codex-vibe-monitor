@@ -262,12 +262,13 @@ class PostgresAcceptanceRunnerTests(unittest.TestCase):
             self.assertIn(required_fragment, functional_suite)
         for forbidden in ("pressure", "continuous_load", "performance"):
             self.assertNotIn(forbidden, functional_suite)
-        self.assertEqual(set(re.findall(r"test\(=([^)]*)\)", functional_suite)), {
-            "tests::lightweight::postgres_migration_engine::optional_postgres_migration_engine_uses_real_source_and_target_fixture",
-            "tests::lightweight::postgres_migration_engine::optional_postgres_migration_target_uses_real_pool_transactions",
-            "tests::lightweight::postgres_migration_engine::optional_postgres_migration_engine_recovers_after_process_sigkill",
-            "tests::lightweight::postgres_migration_engine::migration_source_ack_uncertainty_is_idempotent_after_commit",
-        })
+        retained_live_suite = (REPO_ROOT / "scripts/postgres-acceptance/run-live-suite.sh").read_text()
+        live_tests = set(re.findall(r"test\(=([^)]*)\)", retained_live_suite))
+        excluded_tests = {name for name in live_tests if any(
+            forbidden in name for forbidden in ("pressure", "continuous_load", "performance")
+        )}
+        self.assertEqual(len(excluded_tests), 5)
+        self.assertEqual(set(re.findall(r"test\(=([^)]*)\)", functional_suite)), live_tests - excluded_tests)
         self.assertNotIn("|| true", functional_suite)
 
 
