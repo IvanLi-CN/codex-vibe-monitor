@@ -1,7 +1,7 @@
 use std::{
     fs,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -148,7 +148,7 @@ fn process_fixture_spec(target_table: &str) -> Result<MigrationTableSpec> {
 }
 
 async fn open_process_fixture_source(
-    path: &PathBuf,
+    path: &Path,
     spec: MigrationTableSpec,
 ) -> Result<(SqliteMigrationSource, sqlx::SqlitePool)> {
     let database_url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
@@ -3813,12 +3813,12 @@ fn required_process_env(name: &str) -> Result<String> {
 #[cfg(unix)]
 async fn run_process_kill_child(
     database_url: &str,
-    source_path: &PathBuf,
-    state_path: &PathBuf,
+    source_path: &Path,
+    state_path: &Path,
     prefix: &str,
     target_table: &str,
-    committed_path: &PathBuf,
-    release_path: &PathBuf,
+    committed_path: &Path,
+    release_path: &Path,
 ) -> Result<()> {
     let spec = process_fixture_spec(target_table)?;
     let (source, source_pool) = open_process_fixture_source(source_path, spec.clone()).await?;
@@ -3904,8 +3904,8 @@ async fn run_process_kill_child(
 #[cfg(unix)]
 async fn run_process_restart_child(
     database_url: &str,
-    source_path: &PathBuf,
-    state_path: &PathBuf,
+    source_path: &Path,
+    state_path: &Path,
     prefix: &str,
     target_table: &str,
 ) -> Result<()> {
@@ -3960,36 +3960,39 @@ async fn run_process_restart_child(
 }
 
 #[cfg(unix)]
-fn spawn_acceptance_child(
-    stage: &str,
-    database_url: &str,
-    source_path: &PathBuf,
-    state_path: &PathBuf,
-    prefix: &str,
-    target_table: &str,
-    committed_path: &PathBuf,
-    release_path: &PathBuf,
-    stdout_path: &PathBuf,
-    stderr_path: &PathBuf,
-) -> Result<AcceptanceChild> {
-    let stdout = fs::File::create(stdout_path)
-        .with_context(|| format!("create child stdout log {}", stdout_path.display()))?;
-    let stderr = fs::File::create(stderr_path)
-        .with_context(|| format!("create child stderr log {}", stderr_path.display()))?;
+struct AcceptanceChildLaunch<'a> {
+    stage: &'a str,
+    database_url: &'a str,
+    source_path: &'a Path,
+    state_path: &'a Path,
+    prefix: &'a str,
+    target_table: &'a str,
+    committed_path: &'a Path,
+    release_path: &'a Path,
+    stdout_path: &'a Path,
+    stderr_path: &'a Path,
+}
+
+#[cfg(unix)]
+fn spawn_acceptance_child(launch: AcceptanceChildLaunch<'_>) -> Result<AcceptanceChild> {
+    let stdout = fs::File::create(launch.stdout_path)
+        .with_context(|| format!("create child stdout log {}", launch.stdout_path.display()))?;
+    let stderr = fs::File::create(launch.stderr_path)
+        .with_context(|| format!("create child stderr log {}", launch.stderr_path.display()))?;
     let child = Command::new(std::env::current_exe().context("locate acceptance test binary")?)
         .args([
             "--exact",
             "tests::lightweight::postgres_migration_engine::postgres_migration_engine_process_kill_child_fixture",
             "--ignored",
         ])
-        .env("CVM_PG14_PROCESS_STAGE", stage)
-        .env("CVM_PG14_PROCESS_DATABASE_URL", database_url)
-        .env("CVM_PG14_PROCESS_SOURCE", source_path)
-        .env("CVM_PG14_PROCESS_STATE", state_path)
-        .env("CVM_PG14_PROCESS_PREFIX", prefix)
-        .env("CVM_PG14_PROCESS_TARGET_TABLE", target_table)
-        .env("CVM_PG14_PROCESS_COMMITTED", committed_path)
-        .env("CVM_PG14_PROCESS_RELEASE", release_path)
+        .env("CVM_PG14_PROCESS_STAGE", launch.stage)
+        .env("CVM_PG14_PROCESS_DATABASE_URL", launch.database_url)
+        .env("CVM_PG14_PROCESS_SOURCE", launch.source_path)
+        .env("CVM_PG14_PROCESS_STATE", launch.state_path)
+        .env("CVM_PG14_PROCESS_PREFIX", launch.prefix)
+        .env("CVM_PG14_PROCESS_TARGET_TABLE", launch.target_table)
+        .env("CVM_PG14_PROCESS_COMMITTED", launch.committed_path)
+        .env("CVM_PG14_PROCESS_RELEASE", launch.release_path)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .spawn()
@@ -3998,7 +4001,7 @@ fn spawn_acceptance_child(
 }
 
 #[cfg(unix)]
-async fn wait_for_child_marker(child: &mut AcceptanceChild, marker: &PathBuf) -> Result<()> {
+async fn wait_for_child_marker(child: &mut AcceptanceChild, marker: &Path) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if marker.exists() {
@@ -4011,8 +4014,7 @@ async fn wait_for_child_marker(child: &mut AcceptanceChild, marker: &PathBuf) ->
         }
     })
     .await
-    .context("wait for PostgreSQL replay commit marker")??;
-    Ok(())
+    .context("wait for PostgreSQL replay commit marker")?
 }
 
 #[cfg(unix)]
@@ -4107,18 +4109,18 @@ async fn optional_postgres_migration_engine_recovers_after_process_sigkill() -> 
 
     let result = async {
         let started = Instant::now();
-        let mut child = spawn_acceptance_child(
-            "kill",
-            &database_url,
-            &source_path,
-            &state_path,
-            &prefix,
-            &target_table,
-            &committed_path,
-            &release_path,
-            &kill_stdout,
-            &kill_stderr,
-        )?;
+        let mut child = spawn_acceptance_child(AcceptanceChildLaunch {
+            stage: "kill",
+            database_url: &database_url,
+            source_path: &source_path,
+            state_path: &state_path,
+            prefix: &prefix,
+            target_table: &target_table,
+            committed_path: &committed_path,
+            release_path: &release_path,
+            stdout_path: &kill_stdout,
+            stderr_path: &kill_stderr,
+        })?;
         wait_for_child_marker(&mut child, &committed_path).await?;
         let child_pid = child.0.id();
         if child.0.try_wait()?.is_some() {
@@ -4159,18 +4161,18 @@ async fn optional_postgres_migration_engine_recovers_after_process_sigkill() -> 
             );
         }
 
-        let mut restart_child = spawn_acceptance_child(
-            "restart",
-            &database_url,
-            &source_path,
-            &state_path,
-            &prefix,
-            &target_table,
-            &committed_path,
-            &release_path,
-            &restart_stdout,
-            &restart_stderr,
-        )?;
+        let mut restart_child = spawn_acceptance_child(AcceptanceChildLaunch {
+            stage: "restart",
+            database_url: &database_url,
+            source_path: &source_path,
+            state_path: &state_path,
+            prefix: &prefix,
+            target_table: &target_table,
+            committed_path: &committed_path,
+            release_path: &release_path,
+            stdout_path: &restart_stdout,
+            stderr_path: &restart_stderr,
+        })?;
         let restart_status = wait_for_child_exit(&mut restart_child).await?;
         if !restart_status.success() {
             bail!("PostgreSQL restart child failed: {restart_status}");
