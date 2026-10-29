@@ -275,3 +275,81 @@ fn shutdown_recovery_ack_failure_keeps_obligation_without_poisoning_main_journal
     drop(journal);
     fs::remove_dir_all(root).expect("remove owned fixture");
 }
+
+#[test]
+fn pg17_shutdown_ack_failure_replays_after_repair_and_acknowledges_once() {
+    let root =
+        std::env::temp_dir().join(format!("pg17-shutdown-ack-recovery-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&root).expect("create owned fixture");
+    let database_path = root.join("business.sqlite");
+    let terminal = recovery_terminal("pg17-shutdown-ack");
+    TerminalJournal::quarantine_shutdown_batch_at_database_path(
+        &database_path,
+        &[&terminal],
+        &[],
+        "pg17 ACK recovery fixture",
+    )
+    .expect("persist recovery fact");
+    let path =
+        terminal_journal_directory(&database_path).join("shutdown-terminal-quarantine.jsonl");
+
+    let mut journal = TerminalJournal::open(&database_path).expect("open recovery");
+    let first_delivery = journal.take_deferred_writes(32);
+    assert_eq!(first_delivery.len(), 1);
+    let retained = path.with_extension("jsonl.retained");
+    fs::rename(&path, &retained).expect("retain source before injecting ACK failure");
+    fs::create_dir(&path).expect("make only the supplemental ACK path unavailable");
+    journal.acknowledge(
+        &terminal.record.invoke_id,
+        &terminal.record.occurred_at,
+        terminal.raw_capture,
+    );
+    assert!(journal.identity_pending(
+        &terminal.record.invoke_id,
+        &terminal.record.occurred_at,
+        terminal.raw_capture,
+    ));
+    drop(journal);
+
+    // Restore the owned source exactly as an operator repair would before restarting the reader.
+    fs::remove_dir(&path).expect("remove injected ACK failure directory");
+    fs::rename(&retained, &path).expect("restore retained recovery source");
+    let mut restarted = TerminalJournal::open(&database_path).expect("restart after repair");
+    let retry = restarted.take_deferred_writes(32);
+    assert_eq!(
+        retry.len(),
+        1,
+        "failed ACK must retain one replay obligation"
+    );
+    assert_eq!(
+        (
+            retry[0].record.invoke_id.as_str(),
+            retry[0].record.occurred_at.as_str(),
+            retry[0].raw_capture,
+        ),
+        (
+            first_delivery[0].record.invoke_id.as_str(),
+            first_delivery[0].record.occurred_at.as_str(),
+            first_delivery[0].raw_capture,
+        ),
+        "recovery must retry the same business identity"
+    );
+    restarted.acknowledge(
+        &terminal.record.invoke_id,
+        &terminal.record.occurred_at,
+        terminal.raw_capture,
+    );
+    assert!(!restarted.identity_pending(
+        &terminal.record.invoke_id,
+        &terminal.record.occurred_at,
+        terminal.raw_capture,
+    ));
+    drop(restarted);
+
+    let mut finalized = TerminalJournal::open(&database_path).expect("reopen after ACK");
+    assert!(
+        finalized.take_deferred_writes(32).is_empty(),
+        "a repaired durable ACK must not redeliver the terminal fact"
+    );
+    fs::remove_dir_all(root).expect("remove owned fixture");
+}

@@ -98,6 +98,60 @@ fn valid_attempt_ack_does_not_create_a_false_interruption_after_isolation() {
     assert_original_preserved(&fixture.segment, damaged.as_bytes());
 }
 
+#[test]
+fn pg17_terminal_confirmation_loss_replays_the_same_identity_until_ack() {
+    let fixture = Fixture::new();
+    let record =
+        crate::tests::test_proxy_capture_record("pg17-confirmation-loss", "2026-10-15T00:02:00Z");
+    {
+        let mut journal = TerminalJournal::open(&fixture.database).expect("open writer");
+        assert!(journal.append(&record, false, None).sequence.is_some());
+        journal.force_sync().expect("sync terminal fact");
+    }
+
+    // Dropping the process-local journal before its ACK models a process stop after the
+    // business consumer has observed the fact but before source confirmation became durable.
+    let mut first_process = TerminalJournal::open(&fixture.database).expect("open first reader");
+    let first_delivery = first_process.take_replay();
+    assert_eq!(first_delivery.len(), 1);
+    assert_eq!(
+        (
+            first_delivery[0].record.invoke_id.as_str(),
+            first_delivery[0].record.occurred_at.as_str(),
+            first_delivery[0].raw_capture,
+        ),
+        ("pg17-confirmation-loss", "2026-10-15T00:02:00Z", false)
+    );
+    drop(first_process);
+
+    let mut restarted = TerminalJournal::open(&fixture.database).expect("restart before ACK");
+    let retry = restarted.take_replay();
+    assert_eq!(retry.len(), 1, "an unconfirmed fact must remain replayable");
+    assert_eq!(
+        (
+            retry[0].record.invoke_id.as_str(),
+            retry[0].record.occurred_at.as_str(),
+            retry[0].raw_capture,
+        ),
+        (
+            first_delivery[0].record.invoke_id.as_str(),
+            first_delivery[0].record.occurred_at.as_str(),
+            first_delivery[0].raw_capture,
+        ),
+        "recovery must retain the stable business identity instead of creating a new fact"
+    );
+    restarted.acknowledge(&record.invoke_id, &record.occurred_at, false);
+    restarted.force_sync().expect("sync recovered ACK");
+    assert!(!restarted.identity_pending(&record.invoke_id, &record.occurred_at, false));
+    drop(restarted);
+
+    let mut finalized = TerminalJournal::open(&fixture.database).expect("reopen after ACK");
+    assert!(
+        finalized.take_replay().is_empty(),
+        "a durable ACK must prevent a second business delivery"
+    );
+}
+
 struct Fixture {
     root: PathBuf,
     database: PathBuf,
