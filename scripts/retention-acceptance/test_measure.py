@@ -751,6 +751,40 @@ class MeasurementBudgetTests(unittest.TestCase):
         self.assertEqual(validate.call_args.args[0][0]["evidence_kind"], "proof_edge_active")
         self.assertTrue(validate.call_args.kwargs["allow_proof_edge_active"])
 
+    def test_proof_edge_suspends_archive_before_competitor_files_are_empty(self) -> None:
+        proof_status = {
+            "ready": False,
+            "reference_ready": True,
+            "datasets": {},
+        }
+        frozen: list[dict[str, object]] = []
+        with patch("measure.task_runs", side_effect=[[], []]), patch(
+            "measure.validate_task_snapshot"
+        ), patch("measure.archive_proof_status", return_value=proof_status), patch(
+            "measure.competitor_file_oracle",
+            side_effect=[
+                {"verified_empty": False},
+                {"verified_empty": True},
+            ],
+        ), patch("measure.time.sleep"), patch(
+            "measure.suspend_controlled_task_scheduling"
+        ) as suspend:
+            result = wait_for_task_evidence(
+                Path("main.sqlite"),
+                Path("maintenance.sqlite"),
+                "2026-10-23 00:00:00",
+                {name: 1 for name in DATASETS},
+                time.monotonic(),
+                "baseline",
+                timeout_seconds=1,
+                competitor_raw_dir=Path("raw"),
+                on_proof_ready=lambda status: frozen.append(status),
+            )
+
+        self.assertEqual(result, [])
+        suspend.assert_called_once_with(Path("maintenance.sqlite"), ANY)
+        self.assertEqual(frozen, [proof_status])
+
     def test_suspend_controlled_task_scheduling_only_changes_controlled_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "maintenance.sqlite"

@@ -1486,15 +1486,15 @@ def wait_for_task_evidence(
                 require_summary_proof=version == "candidate",
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
+            if proof_ready and not scheduling_suspended:
+                # Stop new archive-owner dispatches as soon as the selected proof edge is
+                # observed. The file competitor must keep running, so waiting for its files to
+                # disappear before suspending archive catch-up can make the legacy baseline
+                # drain its entire global backlog before the oracle is allowed to freeze.
+                suspend_controlled_task_scheduling(maintenance_db, started)
+                scheduling_suspended = True
             active = active_controlled_task_keys(latest)
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
-                if on_proof_ready is not None and not scheduling_suspended:
-                    # Stop new controlled dispatches as soon as the proof edge is observed. The
-                    # owner already running is allowed to finish before the evidence is frozen;
-                    # waiting to suspend until it becomes idle can launch an unbounded catch-up
-                    # chain during the polling gap.
-                    suspend_controlled_task_scheduling(maintenance_db, started)
-                    scheduling_suspended = True
                 if active:
                     proof_edge_latest = mark_proof_edge_active(latest)
                     if not all(
@@ -1535,6 +1535,10 @@ def wait_for_task_evidence(
                         return latest
                     elif snapshot_error is None:
                         return latest
+            elif proof_ready and scheduling_suspended:
+                last_error = snapshot_error or AcceptanceError(
+                    "archive proof is ready; waiting for the fixed competitor file cohort to drain"
+                )
             else:
                 if scheduling_suspended and active:
                     last_error = snapshot_error or AcceptanceError(
