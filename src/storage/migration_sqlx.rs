@@ -27,14 +27,18 @@ use super::{
     catalog::{ModuleCatalog, ModuleId, NativeColumnType, NativeMigrationCatalog, NativeTableSpec},
     core::StorageModule,
     migration::{
-        CaptureCheckpoint, CapturedChange, ChangeBatchLimits, ChangeInput, ChangeKind, ChunkProof,
-        ChunkRange, CopyLimits, CoverageCheckpoint, DEFAULT_MAX_CAPTURE_BYTES, EngineCheckpoint,
-        INITIAL_AUTHORITY_GENERATION, INITIAL_CAPTURE_GENERATION, MigrationSource, MigrationTarget,
-        SourcePage, SourceRangePage, SourceRangeSnapshot, SourceWriteAuthority, TableCopyPlan,
-        TableCoverageProof, VersionedRow, select_change_batch, validate_checkpoint_progress,
+        CAPTURE_ENTRY_FIXED_OVERHEAD_BYTES, CaptureCheckpoint, CapturedChange, ChangeBatchLimits,
+        ChangeInput, ChangeKind, ChunkProof, ChunkRange, CopyLimits, CoverageCheckpoint,
+        DEFAULT_MAX_CAPTURE_BYTES, EngineCheckpoint, INITIAL_AUTHORITY_GENERATION,
+        INITIAL_CAPTURE_GENERATION, MigrationSource, MigrationTarget, SourcePage, SourceRangePage,
+        SourceRangeSnapshot, SourceWriteAuthority, TableCopyPlan, TableCoverageProof, VersionedRow,
+        change_kind_name, select_change_batch, validate_checkpoint_progress,
     },
+    migration_capacity::{MigrationCapacitySample, sample_sqlite_capacity},
     native::{NativeRow, NativeValue},
 };
+
+const CAPTURE_ACCOUNTING_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MigrationTableSpec {
@@ -480,6 +484,7 @@ impl SqliteMigrationSource {
                 captured_bytes INTEGER NOT NULL,
                 max_capture_bytes INTEGER NOT NULL,
                 capture_capacity_held INTEGER NOT NULL DEFAULT 0,
+                capture_accounting_version INTEGER NOT NULL DEFAULT 1,
                 continuity_lost INTEGER NOT NULL,
                 baseline_required INTEGER NOT NULL,
                 authority_generation INTEGER NOT NULL,
@@ -509,13 +514,71 @@ impl SqliteMigrationSource {
             .await
             .context("upgrade SQLite migration capture capacity state")?;
         }
+        let has_accounting_version_column = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info({}) WHERE name = 'capture_accounting_version'
+            )",
+            sqlite_string_literal(&self.capture_state_table_name),
+        ))
+        .fetch_one(&self.pool)
+        .await?
+            != 0;
+        if !has_accounting_version_column {
+            sqlx::query(&format!(
+                "ALTER TABLE {capture_state_table}
+                 ADD COLUMN capture_accounting_version INTEGER NOT NULL DEFAULT 0"
+            ))
+            .execute(&self.pool)
+            .await
+            .context("upgrade SQLite migration capture accounting state")?;
+        }
+        // Older checkpoints counted payload bytes only. Mark a non-empty old watermark lost
+        // without scanning historical capture rows; resume will clear the private attempt and
+        // establish a fresh bounded generation and baseline.
+        sqlx::query(&format!(
+            "UPDATE {capture_state_table}
+                SET capture_capacity_held = CASE
+                        WHEN capture_accounting_version < ? AND next_version > 0 THEN 1
+                        ELSE capture_capacity_held
+                    END,
+                    continuity_lost = CASE
+                        WHEN capture_accounting_version < ? AND next_version > 0 THEN 1
+                        ELSE continuity_lost
+                    END,
+                    baseline_required = CASE
+                        WHEN capture_accounting_version < ? AND next_version > 0 THEN 1
+                        ELSE baseline_required
+                    END,
+                    capture_accounting_version = ?
+              WHERE migration_id = ? AND source_identity = ?
+                AND capture_accounting_version < ?"
+        ))
+        .bind(CAPTURE_ACCOUNTING_VERSION)
+        .bind(CAPTURE_ACCOUNTING_VERSION)
+        .bind(CAPTURE_ACCOUNTING_VERSION)
+        .bind(CAPTURE_ACCOUNTING_VERSION)
+        .bind(&self.migration_id)
+        .bind(&self.source_identity)
+        .bind(CAPTURE_ACCOUNTING_VERSION)
+        .execute(&self.pool)
+        .await
+        .context("upgrade SQLite migration capture accounting checkpoint")?;
+        let accounted_bytes = sqlite_capture_accounted_bytes_expression(
+            "migration_id",
+            "source_identity",
+            "table_name",
+            "stable_key",
+            "previous_key",
+            "kind",
+            "payload",
+        );
         let query = format!(
             "INSERT OR IGNORE INTO {capture_state_table}
                 (migration_id, source_identity, capture_generation, next_version,
                  captured_bytes, max_capture_bytes, continuity_lost, baseline_required,
-                 authority_generation, source_writes_fenced)
+                 authority_generation, source_writes_fenced, capture_accounting_version)
              SELECT ?, ?, ?, COALESCE(MAX(source_version), 0),
-                    COALESCE(SUM(COALESCE(length(payload), 0)), 0), ?,
+                    COALESCE(SUM({accounted_bytes}), 0), ?,
                     CASE
                         WHEN COUNT(*) = 0 THEN 0
                         WHEN COUNT(DISTINCT source_version) = MAX(source_version) - MIN(source_version) + 1 THEN 0
@@ -526,7 +589,7 @@ impl SqliteMigrationSource {
                         WHEN COUNT(DISTINCT source_version) = MAX(source_version) - MIN(source_version) + 1 THEN 0
                         ELSE 1
                     END,
-                    ?, ?
+                    ?, ?, ?
                FROM {capture_table}
               WHERE migration_id = ? AND source_identity = ?"
         );
@@ -540,6 +603,7 @@ impl SqliteMigrationSource {
                     .context("authority generation overflow")?,
             )
             .bind(0_i64)
+            .bind(CAPTURE_ACCOUNTING_VERSION)
             .bind(&self.migration_id)
             .bind(&self.source_identity)
             .execute(&self.pool)
@@ -558,6 +622,7 @@ impl SqliteMigrationSource {
             &self.capture_state_table_name,
             "SQLite migration capture state table",
         )?;
+        let mut transaction = self.pool.begin().await?;
         for spec in self.specs.values().filter_map(|spec| spec.native.as_ref()) {
             let table = quote_identifier(spec.table_name(), "native SQLite source table")?;
             let trigger_prefix = format!(
@@ -590,13 +655,17 @@ impl SqliteMigrationSource {
                     &format!("{trigger_prefix}_fence_{}", operation.to_ascii_lowercase()),
                     "native SQLite fence trigger",
                 )?;
+                sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
+                    .execute(&mut *transaction)
+                    .await
+                    .with_context(|| format!("replace native SQLite {operation} fence trigger"))?;
                 let query = format!(
-                    "CREATE TRIGGER IF NOT EXISTS {trigger}
+                    "CREATE TRIGGER {trigger}
                      BEFORE {operation} ON {table}
                      FOR EACH ROW {fence_body}"
                 );
                 sqlx::query(&query)
-                    .execute(&self.pool)
+                    .execute(&mut *transaction)
                     .await
                     .with_context(|| format!("install native SQLite {operation} fence trigger"))?;
             }
@@ -668,17 +737,25 @@ impl SqliteMigrationSource {
                     &format!("{trigger_prefix}_{suffix}"),
                     "native SQLite capture trigger",
                 )?;
+                sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
+                    .execute(&mut *transaction)
+                    .await
+                    .with_context(|| format!("replace native SQLite {event} capture trigger"))?;
                 let query = format!(
-                    "CREATE TRIGGER IF NOT EXISTS {trigger}
+                    "CREATE TRIGGER {trigger}
                      AFTER {event} ON {table}
                      FOR EACH ROW{predicate} {body}"
                 );
                 sqlx::query(&query)
-                    .execute(&self.pool)
+                    .execute(&mut *transaction)
                     .await
                     .with_context(|| format!("install native SQLite {event} capture trigger"))?;
             }
         }
+        transaction
+            .commit()
+            .await
+            .context("commit native SQLite capture trigger installation")?;
         Ok(())
     }
 
@@ -700,12 +777,16 @@ impl SqliteMigrationSource {
                 Ok(())
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .context("rollback SQLite migration change capture")?;
                 if error.downcast_ref::<CaptureContinuityError>().is_some() {
-                    self.mark_continuity_lost().await?;
+                    transaction
+                        .commit()
+                        .await
+                        .context("commit SQLite migration capture continuity loss")?;
+                } else {
+                    transaction
+                        .rollback()
+                        .await
+                        .context("rollback SQLite migration change capture")?;
                 }
                 Err(error)
             }
@@ -749,12 +830,16 @@ impl SqliteMigrationSource {
                     .context("commit SQLite migration change capture")?;
             }
             Err(error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .context("rollback SQLite migration change capture")?;
                 if error.downcast_ref::<CaptureContinuityError>().is_some() {
-                    self.mark_continuity_lost().await?;
+                    transaction
+                        .commit()
+                        .await
+                        .context("commit SQLite migration capture continuity loss")?;
+                } else {
+                    transaction
+                        .rollback()
+                        .await
+                        .context("rollback SQLite migration change capture")?;
                 }
                 return Err(error);
             }
@@ -846,14 +931,14 @@ impl SqliteMigrationSource {
             self.mark_continuity_lost_tx(transaction).await?;
             return Err(anyhow!(CaptureContinuityError));
         }
-        let payload_bytes = change
-            .payload
-            .as_ref()
-            .map_or(0, |payload| payload.len() as u64);
         let captured_bytes = state
             .captured_bytes
-            .checked_add(payload_bytes)
+            .checked_add(change.accounted_bytes()?)
             .ok_or_else(|| anyhow!("SQLite migration capture byte count overflowed"))?;
+        if captured_bytes > state.max_capture_bytes {
+            self.mark_capture_capacity_lost_tx(transaction).await?;
+            return Err(anyhow!(CaptureContinuityError));
+        }
         let capture_table =
             quote_identifier(&self.capture_table_name, "SQLite migration capture table")?;
         let query = format!(
@@ -881,11 +966,7 @@ impl SqliteMigrationSource {
         )?;
         let query = format!(
             "UPDATE {state_table}
-                SET next_version = ?, captured_bytes = ?,
-                    capture_capacity_held = CASE
-                        WHEN ? > max_capture_bytes THEN 1
-                        ELSE capture_capacity_held
-                    END
+                SET next_version = ?, captured_bytes = ?
               WHERE migration_id = ?
                 AND source_identity = ?
                 AND authority_generation = ?
@@ -894,10 +975,6 @@ impl SqliteMigrationSource {
         );
         let result = sqlx::query(&query)
             .bind(state.next_version.max(change.source_version))
-            .bind(
-                i64::try_from(captured_bytes)
-                    .context("SQLite migration capture bytes overflowed")?,
-            )
             .bind(
                 i64::try_from(captured_bytes)
                     .context("SQLite migration capture bytes overflowed")?,
@@ -954,16 +1031,25 @@ impl SqliteMigrationSource {
             &self.capture_state_table_name,
             "SQLite migration capture state table",
         )?;
+        let accounted_bytes = sqlite_capture_accounted_bytes_expression(
+            "migration_id",
+            "source_identity",
+            "table_name",
+            "stable_key",
+            "previous_key",
+            "kind",
+            "payload",
+        );
         sqlx::query(&format!(
             "UPDATE {state_table}
                 SET captured_bytes = COALESCE((
-                        SELECT SUM(COALESCE(length(payload), 0))
+                        SELECT SUM({accounted_bytes})
                           FROM {capture_table}
                          WHERE migration_id = ? AND source_identity = ?
                     ), 0),
                     capture_capacity_held = CASE
                         WHEN COALESCE((
-                            SELECT SUM(COALESCE(length(payload), 0))
+                            SELECT SUM({accounted_bytes})
                               FROM {capture_table}
                              WHERE migration_id = ? AND source_identity = ?
                         ), 0) <= max_capture_bytes THEN 0
@@ -1069,6 +1155,17 @@ impl SqliteMigrationSource {
         Ok(state.capture_capacity_held)
     }
 
+    pub(crate) async fn capacity_sample(&self) -> Result<MigrationCapacitySample> {
+        sample_sqlite_capacity(
+            &self.pool,
+            &self.capture_state_table_name,
+            &self.migration_id,
+            &self.source_identity,
+            self.max_capture_bytes,
+        )
+        .await
+    }
+
     pub(crate) async fn mark_continuity_lost(&self) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
         self.mark_continuity_lost_tx(&mut transaction).await?;
@@ -1098,6 +1195,32 @@ impl SqliteMigrationSource {
             .execute(&mut **transaction)
             .await
             .context("mark SQLite migration capture continuity lost")?;
+        if result.rows_affected() != 1 {
+            bail!("SQLite migration capture checkpoint is missing");
+        }
+        Ok(())
+    }
+
+    async fn mark_capture_capacity_lost_tx(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+    ) -> Result<()> {
+        let state_table = quote_identifier(
+            &self.capture_state_table_name,
+            "SQLite migration capture state table",
+        )?;
+        let result = sqlx::query(&format!(
+            "UPDATE {state_table}
+                SET capture_capacity_held = 1,
+                    continuity_lost = 1,
+                    baseline_required = 1
+              WHERE migration_id = ? AND source_identity = ?"
+        ))
+        .bind(&self.migration_id)
+        .bind(&self.source_identity)
+        .execute(&mut **transaction)
+        .await
+        .context("mark SQLite migration capture capacity exhausted")?;
         if result.rows_affected() != 1 {
             bail!("SQLite migration capture checkpoint is missing");
         }
@@ -1551,6 +1674,31 @@ fn sqlite_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn sqlite_capture_accounted_bytes_expression(
+    migration_id: &str,
+    source_identity: &str,
+    table_name: &str,
+    stable_key: &str,
+    previous_key: &str,
+    kind: &str,
+    payload: &str,
+) -> String {
+    let variable_bytes = [
+        migration_id,
+        source_identity,
+        table_name,
+        stable_key,
+        previous_key,
+        kind,
+        payload,
+    ]
+    .into_iter()
+    .map(|expression| format!("length(CAST(COALESCE({expression}, '') AS BLOB))"))
+    .collect::<Vec<_>>()
+    .join(" + ");
+    format!("{CAPTURE_ENTRY_FIXED_OVERHEAD_BYTES} + 8 + 64 + ({variable_bytes})")
+}
+
 fn sqlite_native_capture_payload(spec: &NativeTableSpec, alias: &str) -> String {
     let fields = spec
         .columns
@@ -1588,30 +1736,63 @@ fn native_capture_trigger_body(
     let source_identity = sqlite_string_literal(source_identity);
     let table_name = sqlite_string_literal(table_name);
     let kind = sqlite_string_literal(kind);
-    let payload_length = if payload == "NULL" {
-        "0".to_string()
-    } else {
-        format!("length(CAST({payload} AS BLOB))")
-    };
+    let entry_bytes = sqlite_capture_accounted_bytes_expression(
+        &migration_id,
+        &source_identity,
+        &table_name,
+        stable_key,
+        previous_key,
+        &kind,
+        payload,
+    );
     format!(
         "BEGIN
             INSERT INTO {capture_table}
                 (migration_id, source_identity, source_version, table_name,
                  stable_key, previous_key, kind, payload, payload_digest)
-            VALUES (
+            SELECT
                 {migration_id}, {source_identity},
-                (SELECT next_version + 1 FROM {state_table}
-                  WHERE migration_id = {migration_id}
-                    AND source_identity = {source_identity}),
+                next_version + 1,
                 {table_name}, {stable_key}, {previous_key}, {kind},
                 {payload}, ''
-            );
+              FROM {state_table}
+             WHERE migration_id = {migration_id}
+               AND source_identity = {source_identity}
+               AND source_writes_fenced = 0
+               AND continuity_lost = 0
+               AND captured_bytes + ({entry_bytes}) <= max_capture_bytes;
             UPDATE {state_table}
-               SET next_version = next_version + 1,
-                   captured_bytes = captured_bytes + {payload_length},
+               SET next_version = CASE
+                       WHEN continuity_lost = 0
+                        AND source_writes_fenced = 0
+                        AND captured_bytes + ({entry_bytes}) <= max_capture_bytes
+                       THEN next_version + 1
+                       ELSE next_version
+                   END,
+                   captured_bytes = CASE
+                       WHEN continuity_lost = 0
+                        AND source_writes_fenced = 0
+                        AND captured_bytes + ({entry_bytes}) <= max_capture_bytes
+                       THEN captured_bytes + ({entry_bytes})
+                       ELSE captured_bytes
+                   END,
                    capture_capacity_held = CASE
-                       WHEN captured_bytes + {payload_length} > max_capture_bytes THEN 1
+                       WHEN continuity_lost = 0
+                        AND source_writes_fenced = 0
+                        AND captured_bytes + ({entry_bytes}) > max_capture_bytes THEN 1
                        ELSE capture_capacity_held
+                   END,
+                   continuity_lost = CASE
+                       WHEN continuity_lost = 0
+                        AND source_writes_fenced = 0
+                        AND captured_bytes + ({entry_bytes}) > max_capture_bytes THEN 1
+                       ELSE continuity_lost
+                   END,
+                   baseline_required = CASE
+                       WHEN continuity_lost = 0
+                        AND source_writes_fenced = 0
+                        AND captured_bytes + ({entry_bytes}) > max_capture_bytes THEN 1
+                       ELSE baseline_required
                    END
              WHERE migration_id = {migration_id}
                AND source_identity = {source_identity};
@@ -2148,15 +2329,6 @@ fn decode_sqlite_change(
     }
     change.validate_for(migration_id, source_identity)?;
     Ok(change)
-}
-
-fn change_kind_name(kind: ChangeKind) -> &'static str {
-    match kind {
-        ChangeKind::Insert => "insert",
-        ChangeKind::Update => "update",
-        ChangeKind::Delete => "delete",
-        ChangeKind::Replace => "replace",
-    }
 }
 
 fn parse_change_kind(kind: &str) -> Result<ChangeKind> {
@@ -2797,6 +2969,57 @@ impl PostgresMigrationTarget {
                 .await
                 .context("upgrade PostgreSQL migration metadata identity columns")?;
         }
+        Ok(())
+    }
+
+    /// Clear the private PostgreSQL staging attempt before replaying a fresh SQLite capture
+    /// generation. This is only valid while SQLite still owns authority; callers must not invoke
+    /// it after the durable authority manifest has been published.
+    pub(crate) async fn reset_attempt(&self, migration_id: &str) -> Result<()> {
+        if migration_id.trim().is_empty() {
+            bail!("PostgreSQL migration reset requires a migration identity");
+        }
+        let mut transaction = self.pool.begin().await?;
+        let module = self
+            .specs
+            .values()
+            .next()
+            .map(|spec| spec.module)
+            .ok_or_else(|| anyhow!("PostgreSQL migration reset has no target tables"))?;
+        let mut logical_tables = ordered_native_module_table_names(&self.specs, module)?;
+        logical_tables.reverse();
+        for table_name in logical_tables {
+            let spec = self.spec(&table_name)?;
+            let table =
+                quote_identifier(&spec.target_table_name, "PostgreSQL migration target table")?;
+            sqlx::query(&format!("DELETE FROM {table}"))
+                .execute(&mut *transaction)
+                .await
+                .with_context(|| {
+                    format!(
+                        "clear PostgreSQL migration staging table {}",
+                        spec.target_table_name
+                    )
+                })?;
+        }
+        for table in [
+            &self.metadata.coverage_proofs,
+            &self.metadata.coverage_checkpoints,
+            &self.metadata.chunk_proofs,
+            &self.metadata.checkpoints,
+            &self.metadata.plans,
+        ] {
+            let table = quote_identifier(table, "PostgreSQL migration metadata table")?;
+            sqlx::query(&format!("DELETE FROM {table} WHERE migration_id = $1"))
+                .bind(migration_id)
+                .execute(&mut *transaction)
+                .await
+                .context("clear PostgreSQL migration staging metadata")?;
+        }
+        transaction
+            .commit()
+            .await
+            .context("commit PostgreSQL migration staging reset")?;
         Ok(())
     }
 

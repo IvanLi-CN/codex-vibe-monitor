@@ -39,6 +39,11 @@ pub(crate) const DEFAULT_BATCH_YIELD: Duration = Duration::from_millis(25);
 pub(crate) const DEFAULT_MAX_QUEUED_OPERATIONS: usize = 128;
 pub(crate) const DEFAULT_MIN_SOURCE_FREE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_CAPTURE_BYTES: u64 = 512 * 1024 * 1024;
+/// Conservative per-row accounting for SQLite capture-table b-tree and row metadata overhead.
+///
+/// The variable part is added separately from every persisted field. Keeping a fixed reserve here
+/// makes the capture budget protect the actual source volume rather than only the business payload.
+pub(crate) const CAPTURE_ENTRY_FIXED_OVERHEAD_BYTES: u64 = 256;
 pub(crate) const INITIAL_CAPTURE_GENERATION: u64 = 1;
 pub(crate) const INITIAL_AUTHORITY_GENERATION: u64 = 1;
 pub(crate) const DEFAULT_RETRY_INITIAL: Duration = Duration::from_secs(1);
@@ -175,6 +180,36 @@ impl CapturedChange {
             bail!("captured change payload digest does not match its payload");
         }
         Ok(())
+    }
+
+    pub(crate) fn accounted_bytes(&self) -> Result<u64> {
+        let variable_bytes = [
+            self.migration_id.len(),
+            self.source_identity.len(),
+            self.table_name.len(),
+            self.stable_key.len(),
+            self.previous_key.as_deref().map_or(0, str::len),
+            change_kind_name(self.kind).len(),
+            self.payload.as_ref().map_or(0, Vec::len),
+        ]
+        .into_iter()
+        .try_fold(8_u64 + 64, |total, length| {
+            total
+                .checked_add(u64::try_from(length).expect("string lengths fit in u64"))
+                .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
+        })?;
+        CAPTURE_ENTRY_FIXED_OVERHEAD_BYTES
+            .checked_add(variable_bytes)
+            .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
+    }
+}
+
+pub(crate) fn change_kind_name(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Insert => "insert",
+        ChangeKind::Update => "update",
+        ChangeKind::Delete => "delete",
+        ChangeKind::Replace => "replace",
     }
 }
 
@@ -332,12 +367,7 @@ impl VersionCapture {
             .collect::<Result<Vec<_>>>()?;
         let transaction_bytes = captured.iter().try_fold(0_u64, |total, change| {
             total
-                .checked_add(
-                    change
-                        .payload
-                        .as_ref()
-                        .map_or(0, |payload| payload.len() as u64),
-                )
+                .checked_add(change.accounted_bytes()?)
                 .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
         })?;
         let next_bytes = state
@@ -345,6 +375,8 @@ impl VersionCapture {
             .checked_add(transaction_bytes)
             .ok_or_else(|| anyhow!("source change capture byte count overflowed"))?;
         if next_bytes > self.max_capture_bytes {
+            state.continuity_lost = true;
+            state.baseline_required = true;
             bail!("source change capture exceeds its bounded storage capacity");
         }
         state.next_version = version;
@@ -1276,6 +1308,7 @@ impl Drop for SourceWriteLease {
 pub(crate) struct InMemoryMigrationSource {
     migration_id: String,
     source_identity: String,
+    max_capture_bytes: u64,
     state: Arc<Mutex<InMemorySourceState>>,
     verification_delay: Arc<Mutex<Duration>>,
     verification_started: Arc<Notify>,
@@ -1327,10 +1360,19 @@ impl InMemoryMigrationSource {
         Self {
             migration_id: migration_id.into(),
             source_identity: source_identity.into(),
+            max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
             state: Arc::new(Mutex::new(InMemorySourceState::default())),
             verification_delay: Arc::new(Mutex::new(Duration::ZERO)),
             verification_started: Arc::new(Notify::new()),
         }
+    }
+
+    pub(crate) fn with_max_capture_bytes(mut self, max_capture_bytes: u64) -> Result<Self> {
+        if max_capture_bytes == 0 {
+            bail!("in-memory migration capture capacity must be positive");
+        }
+        self.max_capture_bytes = max_capture_bytes;
+        Ok(self)
     }
 
     pub(crate) async fn set_verification_delay_for_test(&self, delay: Duration) {
@@ -1469,18 +1511,18 @@ impl InMemoryMigrationSource {
             .collect::<Result<Vec<_>>>()?;
         let transaction_bytes = captured.iter().try_fold(0_u64, |total, change| {
             total
-                .checked_add(
-                    change
-                        .payload
-                        .as_ref()
-                        .map_or(0, |payload| payload.len() as u64),
-                )
+                .checked_add(change.accounted_bytes()?)
                 .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
         })?;
         let next_bytes = state
             .captured_bytes
             .checked_add(transaction_bytes)
             .ok_or_else(|| anyhow!("source change capture byte count overflowed"))?;
+        if next_bytes > self.max_capture_bytes {
+            state.continuity_lost = true;
+            state.baseline_required = true;
+            bail!("source change capture exceeds its bounded storage capacity");
+        }
         for change in &captured {
             state
                 .module_tables
@@ -1540,7 +1582,7 @@ impl InMemoryMigrationSource {
             capture_generation: state.capture_generation,
             next_version: state.next_version,
             captured_bytes: state.captured_bytes,
-            max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
+            max_capture_bytes: self.max_capture_bytes,
             continuity_lost: state.continuity_lost,
             baseline_required: state.baseline_required,
         };
@@ -1659,12 +1701,7 @@ impl InMemoryMigrationSource {
             .retain(|change| change.source_version > through);
         state.captured_bytes = state.changes.iter().try_fold(0_u64, |total, change| {
             total
-                .checked_add(
-                    change
-                        .payload
-                        .as_ref()
-                        .map_or(0, |payload| payload.len() as u64),
-                )
+                .checked_add(change.accounted_bytes()?)
                 .ok_or_else(|| anyhow!("source change capture byte count overflowed"))
         })?;
         Ok(())
@@ -3655,12 +3692,20 @@ where
     }
 
     async fn ensure_capture_ready(&self) -> Result<CaptureCheckpoint> {
-        let checkpoint = self.source.capture_checkpoint().await?;
-        self.bind_capture_generation(&checkpoint).await?;
-        if checkpoint.continuity_lost || checkpoint.baseline_required {
+        let checkpoint = self.ensure_capture_generation_bound().await?;
+        if checkpoint.baseline_required {
             bail!(
                 "migration capture is not baseline-complete; complete a fresh source baseline before continuing"
             );
+        }
+        Ok(checkpoint)
+    }
+
+    async fn ensure_capture_generation_bound(&self) -> Result<CaptureCheckpoint> {
+        let checkpoint = self.source.capture_checkpoint().await?;
+        self.bind_capture_generation(&checkpoint).await?;
+        if checkpoint.continuity_lost {
+            bail!("migration capture continuity has been lost; start a fresh capture generation");
         }
         Ok(checkpoint)
     }
@@ -3721,7 +3766,7 @@ where
         if table_names.is_empty() {
             bail!("migration preparation requires at least one table");
         }
-        self.ensure_capture_ready().await?;
+        self.ensure_capture_generation_bound().await?;
         let source_table_set = self
             .source
             .module_tables(self.module)
@@ -3818,7 +3863,7 @@ where
 
     pub(crate) async fn copy_next(&self, table_name: &str) -> Result<MigrationProgress> {
         self.ensure_running().await?;
-        self.ensure_capture_ready().await?;
+        self.ensure_capture_generation_bound().await?;
         let plan = self
             .target
             .load_plan(self.source.migration_id(), table_name)

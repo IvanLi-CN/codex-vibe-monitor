@@ -1092,7 +1092,7 @@ async fn archive_native_insert_path_uses_owner_target_columns_when_postgres_is_a
 }
 
 #[tokio::test]
-async fn native_capture_capacity_holds_and_releases_without_aborting_business_writes() {
+async fn native_capture_capacity_preserves_business_writes_and_records_loss() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query(
         "CREATE TABLE codex_invocations (
@@ -1126,21 +1126,32 @@ async fn native_capture_capacity_holds_and_releases_without_aborting_business_wr
         .await
         .expect("business write remains successful while capture is held");
     assert!(source.capture_capacity_held().await.unwrap());
-    let through = source.capture_watermark().await.unwrap();
-    assert!(
-        !source
-            .changes_through(0, through, ChangeBatchLimits::default())
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let checkpoint = source.capture_checkpoint().await.unwrap();
+    assert_eq!(checkpoint.next_version, 0);
+    assert!(checkpoint.continuity_lost);
+    assert!(checkpoint.baseline_required);
 
-    source.release_capture_through(through).await.unwrap();
-    assert!(!source.capture_capacity_held().await.unwrap());
+    sqlx::query("UPDATE codex_invocations SET payload = 'updated' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("UPDATE remains successful after capture capacity loss");
+    sqlx::query("INSERT OR REPLACE INTO codex_invocations (id, payload) VALUES (1, 'replaced')")
+        .execute(&pool)
+        .await
+        .expect("REPLACE remains successful after capture capacity loss");
+    sqlx::query("DELETE FROM codex_invocations WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("DELETE remains successful after capture capacity loss");
     sqlx::query("INSERT INTO codex_invocations (id, payload) VALUES (2, NULL)")
         .execute(&pool)
         .await
-        .expect("business writes resume after capture consumption");
+        .expect("subsequent business writes remain successful after capture capacity loss");
+    let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row_count, 1);
 }
 
 #[tokio::test]

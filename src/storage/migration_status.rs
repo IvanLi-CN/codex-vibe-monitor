@@ -1,5 +1,6 @@
 use super::config::StorageConfig;
 use super::core::{BackendKind, MigrationState, MigrationStatus, StorageModule};
+use super::migration_capacity::MigrationCapacitySample;
 use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1001,6 +1002,93 @@ impl StorageMigrationRuntime {
         self.publish_progress_inner(progress, true).await
     }
 
+    pub(crate) async fn publish_capacity_observation(
+        &self,
+        sample: MigrationCapacitySample,
+        hold_reason: Option<&str>,
+    ) -> Result<StorageMigrationResponse> {
+        let (previous, snapshot) = {
+            let mut state = self.state.lock().await;
+            let previous = state.clone();
+            let now = Utc::now();
+            let previous_status = state.status.clone();
+            let previous_disk_headroom = state.response.pressure.disk_headroom_bytes;
+            let previous_recovery_reason = state.response.recovery.reason.clone();
+            let previous_hold = state.status.hold_reason.clone();
+            state.status.capacity_bytes = sample.capture_limit_bytes.max(1);
+            state.status.held_bytes = sample.capture_bytes.min(state.status.capacity_bytes);
+            state.response.pressure.disk_headroom_bytes = sample.source_free_bytes;
+
+            if let Some(reason) = hold_reason {
+                if !matches!(state.status.state, MigrationState::Paused) {
+                    state.status.hold_reason = Some(reason.to_string());
+                    if state.status.state != MigrationState::Blocked {
+                        state
+                            .status
+                            .transition_to(MigrationState::Blocked, now.timestamp_millis())?;
+                    }
+                    state.response.recovery.reason = Some(reason.to_string());
+                }
+            } else if state.status.state == MigrationState::Preparing
+                && (previous_hold
+                    .as_deref()
+                    .is_some_and(is_capacity_hold_reason)
+                    || previous_recovery_reason
+                        .as_deref()
+                        .is_some_and(is_capacity_hold_reason))
+            {
+                state.status.hold_reason = None;
+                state.response.recovery.reason = Some("capacity_recovered".to_string());
+            }
+
+            if state.status == previous_status
+                && state.response.pressure.disk_headroom_bytes == previous_disk_headroom
+                && state.response.recovery.reason == previous_recovery_reason
+            {
+                return Ok(previous.response);
+            }
+
+            state.status.updated_at_epoch_ms =
+                now.timestamp_millis().max(state.status.updated_at_epoch_ms);
+            refresh_response(&mut state);
+            advance_revision(&mut state.response)?;
+            (previous, state.clone())
+        };
+
+        match persist_state_if_current(
+            &self.state,
+            self.persistence.as_ref(),
+            self.pool.as_ref(),
+            &snapshot,
+            #[cfg(test)]
+            self.progress_persisting.as_ref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                let state = self.state.lock().await;
+                if state.response.revision != snapshot.response.revision {
+                    return Ok(state.response.clone());
+                }
+                let response = state.response.clone();
+                self.events.send_replace(StorageMigrationEvent {
+                    kind: "capacity",
+                    revision: response.revision,
+                    status: response.clone(),
+                });
+                Ok(response)
+            }
+            Ok(false) => Ok(self.snapshot().await),
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision == snapshot.response.revision {
+                    *state = previous;
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn publish_progress_inner(
         &self,
         mut progress: StorageMigrationProgress,
@@ -1633,6 +1721,16 @@ fn can_pause_state(state: MigrationState) -> bool {
 
 fn can_resume_state(state: MigrationState) -> bool {
     matches!(state, MigrationState::Paused | MigrationState::Blocked)
+}
+
+fn is_capacity_hold_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "capacity_source_unavailable"
+            | "capacity_source_free"
+            | "capacity_capture"
+            | "capture_continuity_lost"
+    )
 }
 
 fn migration_hold_active(state: MigrationState) -> bool {
