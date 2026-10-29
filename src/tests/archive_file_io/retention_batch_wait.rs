@@ -392,14 +392,16 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
         let target = if dataset == "codex_invocations"
             && config.codex_invocation_archive_layout == ArchiveBatchLayout::SegmentV1
         {
-            let first_ids = sqlx::query_scalar::<_, i64>(
-                "SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 64",
+            // The segment artifact is prepared for the complete selected window, while source
+            // deletion may still be split into smaller SQL microbatches.
+            let selected_ids = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1000",
             )
             .fetch_all(&pool)
             .await
-            .expect("first invocation microbatch ids");
+            .expect("selected invocation ids");
             let day = shanghai_day_key_from_local_naive(&occurred_at).expect("day");
-            let part = archive_segment_part_key_for_ids(&first_ids).expect("segment part");
+            let part = archive_segment_part_key_for_ids(&selected_ids).expect("segment part");
             archive_segment_file_path(
                 &config,
                 dataset,
@@ -482,9 +484,9 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
             // Retain the fence until the selected batch observes its collision.
             stopped.notified().await;
             drop(fence);
-            Ok::<_, anyhow::Error>(digest)
+            Ok::<_, anyhow::Error>((digest, target))
         };
-        let (_, digest) = tokio::try_join!(Box::pin(work), Box::pin(competitor))
+        let (_, (digest, target)) = tokio::try_join!(Box::pin(work), Box::pin(competitor))
             .expect("retryable archive fence stop");
         assert_eq!(sha256_hex_file(&target).expect("final digest"), digest);
         assert_eq!(coordinator.snapshot().await.active_write_class, None);
