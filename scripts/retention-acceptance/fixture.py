@@ -24,6 +24,7 @@ ARCHIVE_TASK_KEYS = tuple(DATASETS[name]["task_key"] for name in DATASETS)
 CONTROLLED_TASK_KEYS = ARCHIVE_TASK_KEYS + (COMPETITOR_TASK,)
 SHANGHAI = timezone(timedelta(hours=8))
 PARALLEL_WORK_COVERAGE_DAYS = 30
+FIXTURE_INSERT_BATCH_SIZE = 5_000
 
 
 def shanghai_cutoff(now: datetime | None = None) -> str:
@@ -164,16 +165,21 @@ def populate_template(database: Path, cutoff: str, budget_check: Callable[[], fl
     timeout = min(30.0, budget_check()) if budget_check is not None else 30.0
     connection = sqlite3.connect(database, timeout=timeout)
     connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+    # This database is a disposable test fixture. Keep production's durable
+    # journal settings for the actual trials, but avoid paying full sync cost
+    # while constructing the one-time seed snapshot.
+    connection.execute("PRAGMA synchronous=OFF")
+    connection.execute("PRAGMA temp_store=MEMORY")
     try:
         connection.execute("BEGIN IMMEDIATE")
         for name, table in (("invocations", "codex_invocations"), ("pool_upstream_attempts", "pool_upstream_request_attempts")):
             count = DATASETS[name]["seed_rows"]
             columns = _existing_columns(connection, table)
-            for start in range(1, count + 1, 500):
+            for start in range(1, count + 1, FIXTURE_INSERT_BATCH_SIZE):
                 if budget_check is not None:
                     budget_check()
                 rows = []
-                for index in range(start, min(count + 1, start + 500)):
+                for index in range(start, min(count + 1, start + FIXTURE_INSERT_BATCH_SIZE)):
                     identity = f"retention-seed-{name}-{index:06d}"
                     occurred_at = _history_timestamp(cutoff, index - 1)
                     payload = _payload(name, index)
