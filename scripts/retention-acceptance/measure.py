@@ -1269,12 +1269,18 @@ def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> 
         connection.close()
 
 
-def resume_controlled_task_scheduling(maintenance_db: Path, started: float) -> None:
+def resume_controlled_task_scheduling(
+    maintenance_db: Path,
+    started: float,
+    task_keys: tuple[str, ...] = CONTROLLED_TASK_KEYS,
+) -> None:
     """Resume controlled dispatch when a transient proof edge was lost."""
+    if not task_keys or not set(task_keys).issubset(CONTROLLED_TASK_KEYS):
+        raise AcceptanceError("cannot resume an uncontrolled task set")
     timeout = min(5.0, remaining_budget(started))
     if timeout <= 0:
         raise AcceptanceError("no time remains to resume controlled task scheduling")
-    placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+    placeholders = ",".join("?" for _ in task_keys)
     now = utc_now()
     connection = sqlite3.connect(maintenance_db, timeout=timeout)
     try:
@@ -1283,9 +1289,9 @@ def resume_controlled_task_scheduling(maintenance_db: Path, started: float) -> N
             "UPDATE managed_tasks "
             "SET enabled=1,next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
             f"WHERE task_key IN ({placeholders})",
-            (now, now, *CONTROLLED_TASK_KEYS),
+            (now, now, *task_keys),
         )
-        if cursor.rowcount != len(CONTROLLED_TASK_KEYS):
+        if cursor.rowcount != len(task_keys):
             raise AcceptanceError("controlled task scheduling rows are incomplete while resuming")
         connection.commit()
     except sqlite3.Error as error:
@@ -1402,10 +1408,33 @@ def wait_for_task_evidence(
     latest: list[dict[str, Any]] = []
     last_error: AcceptanceError | None = None
     scheduling_suspended = False
+    rescheduled_competitor_failures: set[str] = set()
     while time.monotonic() < deadline:
         latest = task_runs(maintenance_db)
         try:
             raw_oracle = competitor_file_oracle(competitor_raw_dir) if competitor_raw_dir is not None else None
+            if raw_oracle is not None and not raw_oracle["verified_empty"]:
+                active = active_controlled_task_keys(latest)
+                if COMPETITOR_TASK not in active:
+                    recoverable = next(
+                        (
+                            row
+                            for row in latest
+                            if row.get("task_key") == COMPETITOR_TASK
+                            and task_run_is_recoverable_competitor_chunk(row)
+                            and isinstance(row.get("actual_finished_at"), str)
+                            and row["actual_finished_at"] not in rescheduled_competitor_failures
+                        ),
+                        None,
+                    )
+                    if recoverable is not None:
+                        finished_at = recoverable["actual_finished_at"]
+                        resume_controlled_task_scheduling(
+                            maintenance_db,
+                            started,
+                            (COMPETITOR_TASK,),
+                        )
+                        rescheduled_competitor_failures.add(finished_at)
             snapshot_error: AcceptanceError | None = None
             try:
                 validate_task_snapshot(

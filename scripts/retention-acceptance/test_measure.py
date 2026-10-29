@@ -737,6 +737,30 @@ class MeasurementBudgetTests(unittest.TestCase):
                 self.assertNotEqual(values[key][4], "old-updated")
             self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
 
+            resume_controlled_task_scheduling(database, started, (COMPETITOR_TASK,))
+
+            connection = sqlite3.connect(database)
+            try:
+                values = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        "SELECT task_key,enabled,next_trigger_at,next_catchup_at,catchup_reason,updated_at "
+                        "FROM managed_tasks"
+                    )
+                }
+            finally:
+                connection.close()
+
+            self.assertEqual(values[COMPETITOR_TASK][0], 1)
+            self.assertIsNotNone(values[COMPETITOR_TASK][1])
+            self.assertEqual(values[COMPETITOR_TASK][2:4], (None, None))
+            for key in CONTROLLED_TASK_KEYS:
+                if key == COMPETITOR_TASK:
+                    continue
+                self.assertEqual(values[key][:4], (0, None, None, None))
+                self.assertNotEqual(values[key][4], "old-updated")
+            self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
+
             resume_controlled_task_scheduling(database, started)
 
             connection = sqlite3.connect(database)
