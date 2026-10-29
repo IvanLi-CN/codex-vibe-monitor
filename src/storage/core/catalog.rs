@@ -1148,7 +1148,8 @@ fn extract_check_constraints(definition: Option<&str>) -> Vec<String> {
     while index < bytes.len() {
         match bytes[index] {
             b'\'' | b'"' | b'`' => {
-                skip_quoted(definition, &mut index, bytes[index]);
+                let quote = bytes[index];
+                skip_quoted(definition, &mut index, quote);
                 continue;
             }
             b'[' => {
