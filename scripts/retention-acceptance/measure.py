@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Callable
 
 from contract import (
+    ACCEPTANCE_ARCHIVE_TTL_DAYS,
     BASELINE_SHA,
     CLEANUP_RESERVE_SECONDS,
     COMPETITOR_FILE_COUNT,
@@ -328,7 +329,11 @@ def app_environment() -> dict[str, str]:
         "ARCHIVE_DIR": f"{CONTAINER_DATA}/archives",
         "PROXY_RAW_DIR": RAW_CONTAINER,
         "INVOCATION_MAX_DAYS": "1",
+        # The fixture deliberately uses prior months. Keep its newly published manifests
+        # observable until the oracle completes; production archive TTL defaults are unchanged.
+        "INVOCATION_ARCHIVE_TTL_DAYS": str(ACCEPTANCE_ARCHIVE_TTL_DAYS),
         "POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS": "1",
+        "POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS": str(ACCEPTANCE_ARCHIVE_TTL_DAYS),
         "HTTP_BIND": "0.0.0.0:8080",
         "METRICS_BIND": "127.0.0.1:9091",
         "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET": "retention-acceptance-synthetic-encryption-key",
@@ -1799,6 +1804,10 @@ def main() -> int:
             "driver_image_digest": driver_image["digest"],
             "seed": SEED,
             "retention_days": 1,
+            "archive_ttl_days": {
+                "invocations": ACCEPTANCE_ARCHIVE_TTL_DAYS,
+                "pool_upstream_attempts": ACCEPTANCE_ARCHIVE_TTL_DAYS,
+            },
             "cutoff": cutoff,
             "seed_rows": {key: value["seed_rows"] for key, value in DATASETS.items()},
             "input_fingerprint": "",
