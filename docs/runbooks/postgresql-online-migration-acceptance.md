@@ -46,7 +46,7 @@ These are acceptance gates, not promises that a production system has already me
 
 Every measurement must include workload, duration, candidate SHA, source/target identities, sample count, raw result path and whether maintenance was held. Record migration hold and task-restoration periods separately. Validate backup and restore and collect a natural-traffic baseline before production cutover; neither is evidence that production cutover has already occurred.
 
-The startup measurement times `StorageRuntimeRouter::initialize` after fixture schema/history preparation and before worker start. The PostgreSQL-configured case uses the lazy real target pool and a separately probed PostgreSQL 18.x service; it must not scan historical archive rows. The switch measurement prepares a real PostgreSQL target and times the complete pre-fence verification, bounded tail catch-up, fence and authority publication path against the three-second budget.
+The startup measurement times `StorageRuntimeRouter::initialize` after fixture schema/history preparation and before worker start. Each sample resets the SQLite statement cache and installs a SQLite authorizer that records `SQLITE_READ` actions for `archive_batches` only during that initialization call; the evidence records the per-sample counts and requires every count to be zero. The PostgreSQL-configured case uses the lazy real target pool and a separately probed PostgreSQL 18.x service; it must not scan historical archive rows. The switch measurement prepares a real PostgreSQL target and times the complete pre-fence verification, bounded tail catch-up, fence and authority publication path against the three-second budget.
 
 ## Backup and restore drill
 
