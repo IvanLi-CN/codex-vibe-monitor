@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from contract import (
     AcceptanceError,
@@ -41,6 +41,7 @@ from measure import (
     run_command,
     run_foreground,
     reuse_fixture_data,
+    suspend_controlled_task_scheduling,
     terminate_frozen_container,
     sqlite_schema_fingerprint,
     start_container,
@@ -594,19 +595,20 @@ class MeasurementBudgetTests(unittest.TestCase):
         with patch("measure.task_runs", return_value=[]), patch(
             "measure.validate_task_snapshot"
         ), patch("measure.archive_proof_status", return_value=proof_status) as proof:
-            self.assertEqual(
-                wait_for_task_evidence(
-                    Path("main.sqlite"),
-                    Path("maintenance.sqlite"),
-                    "2026-10-23 00:00:00",
-                    {name: 1 for name in DATASETS},
-                    time.monotonic(),
-                    "baseline",
-                    timeout_seconds=1,
-                    on_proof_ready=lambda status: frozen.append(status),
-                ),
-                [],
-            )
+            with patch("measure.suspend_controlled_task_scheduling"):
+                self.assertEqual(
+                    wait_for_task_evidence(
+                        Path("main.sqlite"),
+                        Path("maintenance.sqlite"),
+                        "2026-10-23 00:00:00",
+                        {name: 1 for name in DATASETS},
+                        time.monotonic(),
+                        "baseline",
+                        timeout_seconds=1,
+                        on_proof_ready=lambda status: frozen.append(status),
+                    ),
+                    [],
+                )
         proof.assert_called_once_with(
             Path("main.sqlite"),
             "2026-10-23 00:00:00",
@@ -631,7 +633,7 @@ class MeasurementBudgetTests(unittest.TestCase):
             "measure.validate_task_snapshot"
         ), patch("measure.archive_proof_status", return_value=proof_status), patch(
             "measure.time.sleep"
-        ) as sleep:
+        ) as sleep, patch("measure.suspend_controlled_task_scheduling") as suspend:
             self.assertEqual(
                 wait_for_task_evidence(
                     Path("main.sqlite"),
@@ -647,9 +649,48 @@ class MeasurementBudgetTests(unittest.TestCase):
             )
 
         self.assertEqual(runs.call_count, 2)
+        suspend.assert_called_once_with(Path("maintenance.sqlite"), ANY)
         sleep.assert_called_once_with(0.5)
         self.assertEqual(frozen, [proof_status])
         self.assertEqual(active_controlled_task_keys([active_row]), ["pool_upstream_attempt_archive"])
+
+    def test_suspend_controlled_task_scheduling_only_changes_controlled_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "maintenance.sqlite"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "CREATE TABLE managed_tasks ("
+                    "task_key TEXT PRIMARY KEY, enabled INTEGER, next_trigger_at TEXT, "
+                    "next_catchup_at TEXT, catchup_reason TEXT, updated_at TEXT)"
+                )
+                rows = [
+                    (key, 1, "old-trigger", "old-catchup", "old-reason", "old-updated")
+                    for key in (*CONTROLLED_TASK_KEYS, "unrelated_task")
+                ]
+                connection.executemany("INSERT INTO managed_tasks VALUES (?,?,?,?,?,?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            suspend_controlled_task_scheduling(database, time.monotonic())
+
+            connection = sqlite3.connect(database)
+            try:
+                values = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        "SELECT task_key,enabled,next_trigger_at,next_catchup_at,catchup_reason,updated_at "
+                        "FROM managed_tasks"
+                    )
+                }
+            finally:
+                connection.close()
+
+        for key in CONTROLLED_TASK_KEYS:
+            self.assertEqual(values[key][:4], (0, None, None, None))
+            self.assertNotEqual(values[key][4], "old-updated")
+        self.assertEqual(values["unrelated_task"], (1, "old-trigger", "old-catchup", "old-reason", "old-updated"))
 
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

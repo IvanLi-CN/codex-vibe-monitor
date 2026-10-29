@@ -1244,6 +1244,31 @@ def active_controlled_task_keys(rows: list[dict[str, Any]]) -> list[str]:
     )
 
 
+def suspend_controlled_task_scheduling(maintenance_db: Path, started: float) -> None:
+    """Stop new controlled dispatches after proof is ready, then drain active owners."""
+    timeout = min(5.0, remaining_budget(started))
+    if timeout <= 0:
+        raise AcceptanceError("no time remains to suspend controlled task scheduling")
+    placeholders = ",".join("?" for _ in CONTROLLED_TASK_KEYS)
+    connection = sqlite3.connect(maintenance_db, timeout=timeout)
+    try:
+        connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
+        cursor = connection.execute(
+            "UPDATE managed_tasks "
+            "SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL,catchup_reason=NULL,updated_at=? "
+            f"WHERE task_key IN ({placeholders})",
+            (utc_now(), *CONTROLLED_TASK_KEYS),
+        )
+        if cursor.rowcount != len(CONTROLLED_TASK_KEYS):
+            raise AcceptanceError("controlled task scheduling rows are incomplete at oracle freeze")
+        connection.commit()
+    except sqlite3.Error as error:
+        connection.rollback()
+        raise AcceptanceError(f"could not suspend controlled task scheduling: {error}") from error
+    finally:
+        connection.close()
+
+
 def archive_proof_status(
     database: Path,
     cutoff: str,
@@ -1350,6 +1375,7 @@ def wait_for_task_evidence(
     deadline = time.monotonic() + min(wait_budget, remaining_budget(started))
     latest: list[dict[str, Any]] = []
     last_error: AcceptanceError | None = None
+    scheduling_suspended = False
     while time.monotonic() < deadline:
         latest = task_runs(maintenance_db)
         try:
@@ -1372,6 +1398,9 @@ def wait_for_task_evidence(
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+                if on_proof_ready is not None and not scheduling_suspended:
+                    suspend_controlled_task_scheduling(maintenance_db, started)
+                    scheduling_suspended = True
                 active = active_controlled_task_keys(latest)
                 if active:
                     last_error = AcceptanceError(
