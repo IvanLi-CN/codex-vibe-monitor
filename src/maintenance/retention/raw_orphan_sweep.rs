@@ -498,18 +498,30 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 break;
             }
         };
-        let directory_lock =
-            match retention_try_archive_locks_scope(async { retention_archive_file_lock(&path) })
-                .await
-            {
-                Ok(lock) => lock,
-                Err(_) => {
-                    drop(inventory_admission);
-                    result.complete = false;
-                    result.failures += 1;
-                    continue;
-                }
-            };
+        let directory_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_try_lock(&path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if is_retention_write_deferred(&error) => {
+                drop(inventory_admission);
+                result.complete = false;
+                result.deferred = true;
+                result.admission_stage = Some("archive_file_phase".to_string());
+                result.admission_cause = Some("archive_directory_lock_busy".to_string());
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(_) => {
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+        };
         match retention_raw_candidate_is_referenced(
             pool,
             config,

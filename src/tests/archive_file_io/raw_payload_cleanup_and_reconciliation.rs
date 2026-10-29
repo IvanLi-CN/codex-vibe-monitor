@@ -1207,7 +1207,13 @@ async fn raw_orphan_sweep_defers_a_busy_directory_lock_without_holding_write_adm
         completed_before_lock_release,
         "a busy cross-process lock must defer without blocking"
     );
-    assert_eq!(pass.failures, 1);
+    assert_eq!(pass.failures, 0);
+    assert!(pass.deferred);
+    assert_eq!(pass.admission_stage.as_deref(), Some("archive_file_phase"));
+    assert_eq!(
+        pass.admission_cause.as_deref(),
+        Some("archive_directory_lock_busy")
+    );
     assert_eq!(pass.removed, 0);
     assert!(raw_path.exists());
     let _p1_permit = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
