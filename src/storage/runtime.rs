@@ -655,16 +655,21 @@ impl StorageMigrationWorker {
             change_batch: ChangeBatchLimits::default(),
             ..MigrationLimits::default()
         };
+        let allow_continuity_recovery = status.state == StorageMigrationState::Preparing
+            && status.controls.last_action.as_deref() == Some("resume");
         if self
-            .enforce_capacity(source.as_ref(), migration_limits, false, false)
+            .enforce_capacity(
+                source.as_ref(),
+                migration_limits,
+                false,
+                allow_continuity_recovery,
+            )
             .await?
         {
             return Ok(());
         }
         source.ensure_capture_schema().await?;
         source.ensure_native_capture_triggers().await?;
-        let allow_continuity_recovery = status.state == StorageMigrationState::Preparing
-            && status.controls.last_action.as_deref() == Some("resume");
         if self
             .enforce_capacity(
                 source.as_ref(),
@@ -1512,6 +1517,87 @@ mod tests {
             MigrationResumeWork::Switch
         );
         assert!(migration_resume_work(StorageMigrationState::Postgres).is_err());
+    }
+
+    #[tokio::test]
+    async fn worker_resume_does_not_reblock_capture_continuity_recovery() -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        crate::schema::ensure_schema(&pool).await?;
+        crate::prompt_cache_conversations::ensure_prompt_cache_conversations_schema(&pool).await?;
+        let config = StorageConfig {
+            postgres_database_url: Some(
+                "postgresql://user:pass@127.0.0.1:1/codex_vibe_monitor".to_string(),
+            ),
+            ..StorageConfig::default()
+        };
+        let migration = Arc::new(StorageMigrationRuntime::new(&config));
+        let router = StorageRuntimeRouter::initialize(
+            pool.clone(),
+            &config,
+            Arc::clone(&migration),
+            CancellationToken::new(),
+        )
+        .await?;
+        migration
+            .apply_control(
+                crate::storage::migration_status::StorageMigrationControlRequest { paused: false },
+            )
+            .await?;
+
+        let catalog = ModuleCatalog::inspect_sqlite(&pool).await?;
+        let native_catalog = catalog
+            .native_migration_catalog([ModuleId::TrafficArchive, ModuleId::Analytics])
+            .map_err(|error| anyhow!(error))?;
+        let source = SqliteMigrationSource::from_native_catalog(
+            pool.clone(),
+            MIGRATION_ID,
+            SOURCE_IDENTITY,
+            "migration_change_log",
+            &native_catalog,
+            StorageModule::TrafficArchive,
+        )?;
+        source.ensure_capture_schema().await?;
+        source.mark_continuity_lost().await?;
+
+        let migration_limits = MigrationLimits {
+            copy: CopyLimits {
+                max_rows: 128,
+                max_bytes: 2 * 1024 * 1024,
+                ..CopyLimits::default()
+            },
+            change_batch: ChangeBatchLimits::default(),
+            ..MigrationLimits::default()
+        };
+        assert!(
+            router
+                .worker()
+                .enforce_capacity(&source, migration_limits, false, false)
+                .await?
+        );
+        assert_eq!(
+            migration.snapshot().await.state,
+            StorageMigrationState::Blocked
+        );
+
+        migration
+            .apply_control(
+                crate::storage::migration_status::StorageMigrationControlRequest { paused: false },
+            )
+            .await?;
+        let resumed = migration.snapshot().await;
+        assert_eq!(resumed.state, StorageMigrationState::Preparing);
+        assert_eq!(resumed.controls.last_action.as_deref(), Some("resume"));
+
+        let _ = router.worker().run_migration(resumed).await;
+        assert_eq!(
+            migration.snapshot().await.state,
+            StorageMigrationState::Preparing,
+            "worker must pass the resumed continuity-loss check before PostgreSQL setup"
+        );
+        Ok(())
     }
 
     #[tokio::test]

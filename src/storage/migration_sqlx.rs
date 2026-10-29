@@ -571,7 +571,6 @@ impl SqliteMigrationSource {
             "previous_key",
             "kind",
             "payload",
-            "payload_digest",
         );
         let query = format!(
             "INSERT OR IGNORE INTO {capture_state_table}
@@ -1040,7 +1039,6 @@ impl SqliteMigrationSource {
             "previous_key",
             "kind",
             "payload",
-            "payload_digest",
         );
         sqlx::query(&format!(
             "UPDATE {state_table}
@@ -1684,7 +1682,6 @@ fn sqlite_capture_accounted_bytes_expression(
     previous_key: &str,
     kind: &str,
     payload: &str,
-    _payload_digest: &str,
 ) -> String {
     let variable_bytes = [
         migration_id,
@@ -1747,7 +1744,6 @@ fn native_capture_trigger_body(
         previous_key,
         &kind,
         payload,
-        "''",
     );
     format!(
         "BEGIN
