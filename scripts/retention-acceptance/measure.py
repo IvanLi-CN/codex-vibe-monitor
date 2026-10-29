@@ -1254,6 +1254,10 @@ def active_controlled_task_keys(rows: list[dict[str, Any]]) -> list[str]:
 def mark_proof_edge_active(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Mark bounded catch-up work observed after selected proof became ready."""
     for row in rows:
+        candidate = {
+            **row,
+            "evidence_kind": "proof_edge_active",
+        }
         if (
             row.get("actual_finished_at") is None
             and row.get("task_key") in ARCHIVE_TASK_KEYS
@@ -1261,6 +1265,7 @@ def mark_proof_edge_active(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             and row.get("status") == "running"
             and isinstance(row.get("progress"), dict)
             and row["progress"].get("checkpoint") in {"admitted", "processing", "finished"}
+            and task_run_is_proof_edge_active(candidate)
         ):
             row["evidence_kind"] = "proof_edge_active"
     return rows

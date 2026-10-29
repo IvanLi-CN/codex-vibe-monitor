@@ -326,8 +326,9 @@ def task_run_is_proof_edge_active(row: dict[str, Any]) -> bool:
 
     The selected cohort is proven from the source/artifact oracle and archive proof
     before this state is recorded.  A catch-up worker may still be open while it
-    drains unrelated global backlog; only a fresh live progress checkpoint without
-    a fatal wait reason is eligible for this explicit proof-edge observation.
+    drains unrelated global backlog; only a finished checkpoint or a fresh live
+    checkpoint with an explicit transient wait reason is eligible for this
+    explicit proof-edge observation.
     """
     progress = row.get("progress")
     completed = progress.get("completed") if isinstance(progress, dict) else None
@@ -347,7 +348,10 @@ def task_run_is_proof_edge_active(row: dict[str, Any]) -> bool:
         and progress.get("phase") in {"running", "processing"}
         and progress.get("checkpoint") in {"admitted", "processing", "finished"}
         and progress.get("freshness") == "fresh"
-        and (wait_reason is None or wait_reason in PROOF_EDGE_WAIT_REASONS)
+        and (
+            progress.get("checkpoint") == "finished"
+            or wait_reason in PROOF_EDGE_WAIT_REASONS
+        )
         and (
             completed is None
             or (

@@ -681,7 +681,7 @@ class ContractTests(unittest.TestCase):
                     "total": 1000,
                     "completed": 1000,
                     "phase": "processing",
-                    "checkpoint": "waiting",
+                    "checkpoint": "admitted",
                     "last_progress_at": trial["window"]["input_finished_at"],
                 },
             }
