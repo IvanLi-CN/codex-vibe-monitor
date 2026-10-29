@@ -323,6 +323,156 @@ async fn retention_selected_invocation_batch_keeps_the_prepared_file_after_pool_
 }
 
 #[tokio::test]
+async fn retention_selected_invocation_segment_keeps_one_manifest_across_large_microbatches() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("segment-large-microbatches").await;
+    config.retention_batch_rows = 1_000;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    let payload = "x".repeat(8 * 1024);
+    for index in 1..=1_000 {
+        sqlx::query(
+            "INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) VALUES (?1,?2,'proxy','success',7,0.07,?3,'{}')",
+        )
+        .bind(format!("large-microbatch-invocation-{index}"))
+        .bind(&occurred_at)
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("large microbatch invocation candidate");
+    }
+
+    let committed = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_old_invocations(&pool, &config, None, false),
+    )
+    .await
+    .expect("archive selected segment window");
+    assert_eq!(committed.0, 1_000);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("published segment manifest count"),
+        1,
+        "one selected segment must produce one active manifest across SQL microbatches",
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("published segment row count"),
+        1_000,
+        "segment manifest rows must conserve the selected window",
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source closed after large microbatches"),
+        0
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_selected_invocation_segment_reuses_completed_file_after_budget_stop() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("segment-budget-stop-reuse").await;
+    config.retention_batch_rows = 1_000;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    let payload = "x".repeat(15 * 1024);
+    for index in 1..=1_000 {
+        sqlx::query(
+            "INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) VALUES (?1,?2,'proxy','success',7,0.07,?3,'{}')",
+        )
+        .bind(format!("budget-stop-invocation-{index}"))
+        .bind(&occurred_at)
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("budget-stop invocation candidate");
+    }
+
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let first =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, None, false),
+            ));
+            tokio::select! {
+                result = &mut archive => result,
+                notification = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    probe.committed.notified(),
+                ) => {
+                    notification.expect("first segment microbatch commit notification");
+                    crate::maintenance::retention_test_expire_work_budget();
+                    probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        })
+        .await
+        .expect("budget-limited segment run");
+    assert_eq!(
+        first.0, 64,
+        "the first run must commit one microbatch before stopping"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after budget stop"),
+        936
+    );
+
+    let resumed = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(60),
+        archive_old_invocations(&pool, &config, None, false),
+    )
+    .await
+    .expect("reuse completed segment after budget stop");
+    assert_eq!(resumed.0, 936);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("single reused segment manifest"),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("reused segment row count"),
+        1_000
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after segment reuse"),
+        0
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_selected_timestamped_batch_retries_after_admission_timeout() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("timestamped-admission-timeout").await;

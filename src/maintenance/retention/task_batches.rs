@@ -604,6 +604,65 @@ impl ArchiveSourceIdentityProof {
         .await
     }
 
+    async fn has_ids(&self, ids: &[i64], expected_count: i64) -> Result<bool> {
+        let file_phase = acquire_file_phase_permit("archive_identity_proof_read").await?;
+        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
+        let resources = std::sync::Arc::clone(&self.resources);
+        let operation_deadline = retention_archive_file_operation_deadline();
+        let remaining = operation_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(retention_archive_file_operation_budget_exhausted());
+        }
+        spawn_file_phase_task(file_phase, async move {
+            let mut resources_guard = resources.lock().await;
+            let resources = resources_guard
+                .as_mut()
+                .context("archive identity proof resources are unavailable")?;
+            if resources.connection.is_none() {
+                let opened = tokio::time::timeout(remaining, async {
+                    open_archive_sqlite_connection(&resources.proof_path).await
+                })
+                .await
+                .map_err(|_| retention_archive_file_operation_budget_exhausted())??;
+                resources.connection = Some(opened);
+            }
+            let result = {
+                let connection = resources
+                    .connection
+                    .as_mut()
+                    .context("archive identity proof connection is unavailable")?;
+                let remaining = operation_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(retention_archive_file_operation_budget_exhausted())
+                } else {
+                    match tokio::time::timeout(remaining, async {
+                        let selected_count = sqlx::query_scalar::<_, i64>(
+                            "SELECT COUNT(*) FROM main.codex_invocations
+                             WHERE id IN (SELECT value FROM json_each(?1))",
+                        )
+                        .bind(ids_json)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .context("count selected rows in archive source identity proof")?;
+                        Ok::<bool, anyhow::Error>(selected_count == expected_count)
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(retention_archive_file_operation_budget_exhausted()),
+                    }
+                }
+            };
+            match result {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    Err(close_archive_identity_proof_resources(&mut resources_guard, error).await)
+                }
+            }
+        })
+        .await
+    }
+
     async fn close(self) -> Result<()> {
         let file_phase = crate::maintenance::acquire_file_phase_permit_for_cleanup().await;
         let resources = std::sync::Arc::clone(&self.resources);
@@ -681,7 +740,7 @@ async fn open_archive_identity_connection_and_close(
     .await
 }
 
-struct ReusableTaskMonthArchive {
+struct ReusableTaskArchive {
     outcome: ArchiveBatchOutcome,
     proof: crate::VerifiedSummaryArchiveSnapshot,
     identity_proof: ArchiveSourceIdentityProof,
@@ -694,7 +753,7 @@ async fn reuse_task_month_archive_if_proven(
     month_key: &str,
     ids: &[i64],
     source_identity_sha256: &str,
-) -> Result<Option<ReusableTaskMonthArchive>> {
+) -> Result<Option<ReusableTaskArchive>> {
     if spec.dataset != "codex_invocations" {
         return Ok(None);
     }
@@ -814,7 +873,7 @@ async fn reuse_task_month_archive_if_proven(
                 return Ok(None);
             }
         };
-    Ok(Some(ReusableTaskMonthArchive {
+    Ok(Some(ReusableTaskArchive {
         outcome: ArchiveBatchOutcome {
             dataset: spec.dataset,
             month_key: month_key.to_string(),
@@ -838,6 +897,140 @@ async fn reuse_task_month_archive_if_proven(
         proof,
         identity_proof,
     }))
+}
+
+async fn reuse_task_segment_archive_if_proven(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    day_key: &str,
+    ids: &[i64],
+    source_identity_sha256: &str,
+) -> Result<Option<ReusableTaskArchive>> {
+    if spec.dataset != "codex_invocations" {
+        return Ok(None);
+    }
+    let expected_row_count =
+        i64::try_from(ids.len()).context("count retention archive source ids")?;
+    let retry_hint = batch_plan::retry_archive_hint(spec.dataset, day_key, ids);
+    let manifests = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, file_path, sha256, row_count, part_key, coverage_start_at,
+                coverage_end_at, archive_expires_at
+         FROM archive_batches
+         WHERE dataset = ?1
+           AND day_key = ?2
+           AND layout = ?3
+           AND status IN (?4, ?5)
+           AND cleanup_state = ?6
+           AND superseded_by IS NULL
+           AND summary_source_kind = ?7
+           AND sha256 IS NOT NULL
+           AND TRIM(sha256) <> ''
+           AND (?8 IS NULL OR file_path = ?8)
+           AND (?9 IS NULL OR sha256 = ?9)
+         ORDER BY id DESC",
+    )
+    .bind(spec.dataset)
+    .bind(day_key)
+    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_STATUS_MATERIALIZING)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+    .bind(retry_hint.as_ref().map(|hint| hint.file_path.as_str()))
+    .bind(retry_hint.as_ref().map(|hint| hint.sha256.as_str()))
+    .fetch_all(pool)
+    .await?;
+
+    for (
+        archive_batch_id,
+        file_path,
+        sha256,
+        row_count,
+        part_key,
+        coverage_start_at,
+        coverage_end_at,
+        archive_expires_at,
+    ) in manifests
+    {
+        let final_path = PathBuf::from(&file_path);
+        if !final_path.is_file() {
+            continue;
+        }
+        let identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
+            Ok(proof) => proof,
+            Err(_) => continue,
+        };
+        let has_ids = match identity_proof.has_ids(ids, expected_row_count).await {
+            Ok(has_ids) => has_ids,
+            Err(_) => {
+                let _ = identity_proof.close().await;
+                continue;
+            }
+        };
+        if !has_ids {
+            let _ = identity_proof.close().await;
+            continue;
+        }
+        let archive_identity = match identity_proof.identity(ids).await {
+            Ok(identity) => identity,
+            Err(_) => {
+                let _ = identity_proof.close().await;
+                continue;
+            }
+        };
+        if archive_identity != source_identity_sha256 {
+            let _ = identity_proof.close().await;
+            continue;
+        }
+        let proof =
+            match crate::prepare_verified_summary_archive_snapshot(pool, archive_batch_id, &sha256)
+                .await
+            {
+                Ok(proof) => proof,
+                Err(_) => {
+                    let _ = identity_proof.close().await;
+                    continue;
+                }
+            };
+        return Ok(Some(ReusableTaskArchive {
+            outcome: ArchiveBatchOutcome {
+                dataset: spec.dataset,
+                month_key: archive_month_key_from_day_key(day_key)?,
+                day_key: Some(day_key.to_string()),
+                part_key,
+                file_path,
+                sha256,
+                source_identity_sha256: Some(source_identity_sha256.to_string()),
+                row_count,
+                upstream_last_activity: Vec::new(),
+                coverage_start_at,
+                coverage_end_at,
+                archive_expires_at,
+                summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE,
+                layout: ARCHIVE_LAYOUT_SEGMENT_V1,
+                codec: config.invocation_archive_codec.as_str(),
+                writer_version: ARCHIVE_WRITER_VERSION_SEGMENT_V1,
+                cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+                superseded_by: None,
+            },
+            proof,
+            identity_proof,
+        }));
+    }
+    Ok(None)
 }
 
 struct RetentionBatchCommit {
@@ -1751,28 +1944,49 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let prepare_started = Instant::now();
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_layout = archive_layout_for_dataset(config, spec.dataset);
-            let reusable_archive = if archive_layout == ArchiveBatchLayout::LegacyMonth {
-                let reuse_future = reuse_task_month_archive_if_proven(
-                    pool,
-                    config,
-                    spec,
-                    &group_key,
-                    &ids,
-                    &source_identity_sha256,
-                );
-                if let Some(remaining) = retention_run_remaining_budget() {
-                    match tokio::time::timeout(remaining, reuse_future).await {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            recovery_diagnostic.mark_budget();
-                            break;
+            let reusable_archive = match archive_layout {
+                ArchiveBatchLayout::LegacyMonth => {
+                    let reuse_future = reuse_task_month_archive_if_proven(
+                        pool,
+                        config,
+                        spec,
+                        &group_key,
+                        &ids,
+                        &source_identity_sha256,
+                    );
+                    if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, reuse_future).await {
+                            Ok(result) => result?,
+                            Err(_) => {
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
                         }
+                    } else {
+                        reuse_future.await?
                     }
-                } else {
-                    reuse_future.await?
                 }
-            } else {
-                None
+                ArchiveBatchLayout::SegmentV1 => {
+                    let reuse_future = reuse_task_segment_archive_if_proven(
+                        pool,
+                        config,
+                        spec,
+                        &group_key,
+                        &ids,
+                        &source_identity_sha256,
+                    );
+                    if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, reuse_future).await {
+                            Ok(result) => result?,
+                            Err(_) => {
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
+                        }
+                    } else {
+                        reuse_future.await?
+                    }
+                }
             };
             let (archive_outcome, proof, archive_identity_proof, prepare_elapsed) =
                 if let Some(reusable_archive) = reusable_archive {
@@ -1869,6 +2083,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         recovery_diagnostic.mark_proof_unavailable();
                         bail!("retention task-local archive source identity verification failed");
                     }
+                    batch_plan::record_retry_archive_hint(
+                        spec.dataset,
+                        &group_key,
+                        &ids,
+                        &archive_outcome.file_path,
+                        &archive_outcome.sha256,
+                    );
                     set_archive_batch_coverage_from_local_rows(
                         &mut archive_outcome,
                         group.iter().map(|candidate| candidate.occurred_at.as_str()),

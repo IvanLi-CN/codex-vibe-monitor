@@ -47,11 +47,21 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) summary_proof_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RetryArchiveHint {
+    pub(crate) dataset: String,
+    pub(crate) day_key: String,
+    pub(crate) source_ids: Vec<i64>,
+    pub(crate) file_path: String,
+    pub(crate) sha256: String,
+}
+
 tokio::task_local! {
     pub(super) static TASK_BATCH_METRICS: RefCell<Vec<RetentionBatchMetrics>>;
     pub(super) static TASK_DISCOVERED_ROWS: RefCell<BTreeMap<String, usize>>;
     pub(super) static TASK_CANDIDATE_WINDOWS: RefCell<BTreeMap<String, bool>>;
     pub(super) static TASK_RETRY_WINDOW_REMAINING: RefCell<Option<usize>>;
+    pub(super) static TASK_RETRY_ARCHIVE_HINTS: RefCell<Vec<RetryArchiveHint>>;
 }
 
 pub(crate) fn record_discovered_rows(dataset: &str, rows: usize) {
@@ -80,6 +90,66 @@ pub(crate) fn record_candidate_window_has_more(dataset: &str, has_more: bool) {
 pub(crate) fn candidate_window_has_more(dataset: &str) -> Option<bool> {
     TASK_CANDIDATE_WINDOWS
         .try_with(|windows| windows.borrow().get(dataset).copied())
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn record_retry_archive_hint(
+    dataset: &str,
+    day_key: &str,
+    source_ids: &[i64],
+    file_path: &str,
+    sha256: &str,
+) {
+    let mut source_ids = source_ids.to_vec();
+    source_ids.sort_unstable();
+    source_ids.dedup();
+    if source_ids.is_empty() {
+        return;
+    }
+    let _ = TASK_RETRY_ARCHIVE_HINTS.try_with(|hints| {
+        let mut hints = hints.borrow_mut();
+        if hints.iter().any(|hint| hint.file_path == file_path) {
+            return;
+        }
+        hints.push(RetryArchiveHint {
+            dataset: dataset.to_string(),
+            day_key: day_key.to_string(),
+            source_ids,
+            file_path: file_path.to_string(),
+            sha256: sha256.to_string(),
+        });
+    });
+}
+
+pub(crate) fn retry_archive_hint(
+    dataset: &str,
+    day_key: &str,
+    source_ids: &[i64],
+) -> Option<RetryArchiveHint> {
+    let retry_active = TASK_RETRY_WINDOW_REMAINING
+        .try_with(|remaining| remaining.borrow().is_some())
+        .unwrap_or(false);
+    if !retry_active {
+        return None;
+    }
+    let mut source_ids = source_ids.to_vec();
+    source_ids.sort_unstable();
+    source_ids.dedup();
+    TASK_RETRY_ARCHIVE_HINTS
+        .try_with(|hints| {
+            hints
+                .borrow()
+                .iter()
+                .find(|hint| {
+                    hint.dataset == dataset
+                        && hint.day_key == day_key
+                        && source_ids
+                            .iter()
+                            .all(|id| hint.source_ids.binary_search(id).is_ok())
+                })
+                .cloned()
+        })
         .ok()
         .flatten()
 }

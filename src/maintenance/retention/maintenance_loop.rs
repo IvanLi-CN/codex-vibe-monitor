@@ -1152,9 +1152,11 @@ pub(crate) async fn run_retention_owner_task(
                             RefCell::new(std::collections::BTreeMap::new()),
                             batch_plan::TASK_RETRY_WINDOW_REMAINING.scope(
                                 RefCell::new(None),
-                                batch_plan::TASK_BATCH_METRICS.scope(
+                                batch_plan::TASK_RETRY_ARCHIVE_HINTS.scope(
                                     RefCell::new(Vec::new()),
-                                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                                    batch_plan::TASK_BATCH_METRICS.scope(
+                                        RefCell::new(Vec::new()),
+                                        RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
                                         let progress_store =
                                             crate::maintenance_store::MaintenanceStore::from_pool(
                                                 pool.clone(),
@@ -1261,7 +1263,8 @@ pub(crate) async fn run_retention_owner_task(
                                                 })
                                             });
                                         (result, archive_batches, candidate_window_has_more)
-                                    }),
+                                        }),
+                                    ),
                                 ),
                             ),
                         ),
