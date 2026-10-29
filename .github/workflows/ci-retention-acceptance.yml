@@ -233,6 +233,12 @@ jobs:
               assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
           PY
 
+      - name: Start bounded measurement window
+        run: |
+          set -euo pipefail
+          measurement_started_at="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+          echo "RETENTION_ACCEPTANCE_MEASUREMENT_START_UTC=$measurement_started_at" >> "$GITHUB_ENV"
+
       - name: Run complete 900-second-bounded comparison
         id: measure_acceptance
         env:

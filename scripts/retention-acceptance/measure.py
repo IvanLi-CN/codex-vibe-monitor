@@ -1989,7 +1989,10 @@ def run_trial(
 def main() -> int:
     evidence_dir = Path(os.environ.get("RETENTION_ACCEPTANCE_EVIDENCE", "retention-acceptance-evidence")).resolve()
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    phase_start_iso = os.environ.get("RETENTION_ACCEPTANCE_PHASE_START_UTC", utc_now())
+    phase_start_iso = os.environ.get(
+        "RETENTION_ACCEPTANCE_MEASUREMENT_START_UTC",
+        os.environ.get("RETENTION_ACCEPTANCE_PHASE_START_UTC", utc_now()),
+    )
     phase_start = parse_time(phase_start_iso)
     preflight_elapsed = max(0.0, (datetime.now(timezone.utc) - phase_start).total_seconds())
     phase_started = time.monotonic() - preflight_elapsed

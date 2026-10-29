@@ -181,6 +181,7 @@ class PreflightEvidenceTests(unittest.TestCase):
             "ACCEPTANCE_RUN_ID: ${{ github.run_id }}",
             "ACCEPTANCE_RUN_ATTEMPT: ${{ github.run_attempt }}",
             "ACCEPTANCE_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}",
+            "RETENTION_ACCEPTANCE_MEASUREMENT_START_UTC=$measurement_started_at",
             "steps.checkout_candidate.outcome",
             "steps.download_baseline.outcome",
             "steps.download_candidate.outcome",
@@ -190,6 +191,14 @@ class PreflightEvidenceTests(unittest.TestCase):
             self.assertIn(name, workflow)
         self.assertIn("if-no-files-found: error", workflow)
         self.assertNotIn("if-no-files-found: warn", workflow)
+
+    def test_bounded_measurement_window_starts_after_immutable_image_verification(self) -> None:
+        workflow = WORKFLOW.read_text()
+        verify = workflow.index("Verify and load exact image artifacts")
+        start = workflow.index("Start bounded measurement window")
+        measure = workflow.index("Run complete 900-second-bounded comparison")
+        self.assertLess(verify, start)
+        self.assertLess(start, measure)
 
 
 if __name__ == "__main__":
