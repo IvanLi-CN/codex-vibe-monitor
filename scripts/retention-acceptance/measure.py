@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -646,61 +645,13 @@ def bounded_copy(source: Path, destination: Path, phase_started: float) -> None:
     )
 
 
-def snapshot_sqlite_database(source: Path, destination: Path, phase_started: float) -> None:
-    """Create a consistent read snapshot while the application container is paused."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    source_connection = sqlite3.connect(
-        f"file:{source}?mode=ro",
-        uri=True,
-        timeout=min(30, remaining_budget(phase_started)),
-    )
-    destination_connection = sqlite3.connect(destination)
-    try:
-        source_connection.execute("PRAGMA busy_timeout=2000")
-
-        def progress(_status: int, _remaining: int, _total: int) -> None:
-            remaining_budget(phase_started)
-
-        source_connection.backup(destination_connection, pages=128, progress=progress)
-        destination_connection.commit()
-    finally:
-        destination_connection.close()
-        source_connection.close()
-
-
-def snapshot_archive_tree(source: Path, destination: Path, phase_started: float) -> None:
-    """Copy archive artifacts without following links while the container is paused."""
-    if not source.is_dir():
-        raise AcceptanceError(f"archive root is not available for the oracle snapshot: {source}")
-    destination.mkdir(parents=True, exist_ok=True)
-    for path in sorted(source.rglob("*")):
-        remaining_budget(phase_started)
-        relative = path.relative_to(source)
-        target = destination / relative
-        if path.is_symlink():
-            raise AcceptanceError(f"archive root contains an unexpected symbolic link: {path}")
-        if path.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        if not path.is_file():
-            raise AcceptanceError(f"archive root contains an unsupported entry: {path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("rb") as source_file, target.open("wb") as target_file:
-            shutil.copyfileobj(source_file, target_file, length=1024 * 1024)
-            target_file.flush()
-        shutil.copystat(path, target, follow_symlinks=False)
-
-
 def freeze_trial_for_oracle(
     container: str,
     owned: OwnedContainerLedger,
-    main_db: Path,
-    archive_root: Path,
-    trial_dir: Path,
     phase_started: float,
     cleanup_reserve_seconds: float,
-) -> tuple[Path, Path]:
-    """Freeze an owned container and return immutable DB/archive paths for oracle reads."""
+) -> str:
+    """Pause an owned container so the oracle reads a stable publication edge."""
     record = owned.record(container)
     identity = inspect_container_identity(container, phase_started, cleanup_reserve_seconds)
     if identity is None:
@@ -721,31 +672,32 @@ def freeze_trial_for_oracle(
         cleanup=True,
         cleanup_reserve_seconds=cleanup_reserve_seconds,
     )
-    snapshot_dir = trial_dir / "oracle-snapshot"
-    snapshot_database = snapshot_dir / "codex_vibe_monitor.db"
-    snapshot_archives = snapshot_dir / "archives"
+
+    return container_id
+
+
+def terminate_frozen_container(
+    container_id: str,
+    phase_started: float,
+    cleanup_reserve_seconds: float,
+) -> None:
+    """End a paused owned container without running its graceful shutdown path."""
     try:
-        snapshot_sqlite_database(main_db, snapshot_database, phase_started)
-        snapshot_archive_tree(archive_root, snapshot_archives, phase_started)
+        run_command(
+            ["docker", "unpause", container_id],
+            5,
+            phase_started=phase_started,
+            cleanup=True,
+            cleanup_reserve_seconds=cleanup_reserve_seconds,
+        )
     finally:
-        # Do not let graceful shutdown mutate the publication edge after the snapshot.
-        try:
-            run_command(
-                ["docker", "unpause", container_id],
-                5,
-                phase_started=phase_started,
-                cleanup=True,
-                cleanup_reserve_seconds=cleanup_reserve_seconds,
-            )
-        finally:
-            run_command(
-                ["docker", "kill", "--signal", "KILL", container_id],
-                5,
-                phase_started=phase_started,
-                cleanup=True,
-                cleanup_reserve_seconds=cleanup_reserve_seconds,
-            )
-    return snapshot_database, snapshot_archives
+        run_command(
+            ["docker", "kill", "--signal", "KILL", container_id],
+            5,
+            phase_started=phase_started,
+            cleanup=True,
+            cleanup_reserve_seconds=cleanup_reserve_seconds,
+        )
 
 
 def checkpoint_and_reset_history(main_db: Path, maintenance_db: Path, phase_started: float) -> None:
@@ -1546,11 +1498,27 @@ def run_trial(
     oracle: dict[str, Any] | None = None
     competitor_oracle: dict[str, Any] | None = None
     scheduler_snapshot: dict[str, Any] | None = None
-    oracle_database = main_db
-    oracle_archive_root = trial_dir / "archives"
+    oracle_container_id: str | None = None
     input_start = input_end = cleanup_end = None
     container_stopped = False
     wall_start = time.monotonic()
+
+    def release_oracle_container() -> None:
+        nonlocal oracle_container_id, container_stopped
+        if oracle_container_id is None:
+            return
+        try:
+            terminate_frozen_container(oracle_container_id, phase_started, 15)
+        finally:
+            containers.cleanup(
+                container,
+                phase_started,
+                cleanup_reserve_seconds=15,
+                log_path=evidence_dir / "logs" / f"{version}-{index}.log",
+            )
+            oracle_container_id = None
+            container_stopped = True
+
     try:
         container_id = start_container(
             tag,
@@ -1614,8 +1582,7 @@ def run_trial(
 
         def freeze_after_proof(proof: dict[str, Any]) -> None:
             nonlocal competitor_oracle, proof_status, write_buckets
-            nonlocal container_stopped
-            nonlocal oracle_database, oracle_archive_root
+            nonlocal oracle_container_id
 
             proof_status = proof
             competitor_oracle = competitor_file_oracle(raw_dir)
@@ -1625,22 +1592,12 @@ def run_trial(
             (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
             (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
             (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
-            oracle_database, oracle_archive_root = freeze_trial_for_oracle(
+            oracle_container_id = freeze_trial_for_oracle(
                 container,
                 containers,
-                main_db,
-                trial_dir / "archives",
-                trial_dir,
                 phase_started,
                 cleanup_reserve_seconds=15,
             )
-            containers.cleanup(
-                container,
-                phase_started,
-                cleanup_reserve_seconds=15,
-                log_path=evidence_dir / "logs" / f"{version}-{index}.log",
-            )
-            container_stopped = True
 
         task_evidence = wait_for_task_evidence(
             main_db,
@@ -1654,28 +1611,36 @@ def run_trial(
         )
         if proof_status is None:
             raise AcceptanceError("proof-ready callback did not capture archive proof status")
-        oracle = verify_trial(
-            oracle_database,
-            oracle_archive_root,
-            added,
-            attempt_states,
-            template / "codex_vibe_monitor.db",
-            cutoff,
-            root / f"oracle-{version}-{index}",
-            require_summary_proof=version == "candidate",
-            allow_legacy_source_artifact_duplicates=version == "baseline",
-            allow_legacy_missing_source_columns=(
-                {"pool_upstream_attempts": {"occurred_epoch_ms"}}
-                if version == "baseline"
-                else {}
-            ),
-            budget_check=lambda: remaining_budget(phase_started),
-        )
+        try:
+            oracle = verify_trial(
+                main_db,
+                trial_dir / "archives",
+                added,
+                attempt_states,
+                template / "codex_vibe_monitor.db",
+                cutoff,
+                root / f"oracle-{version}-{index}",
+                require_summary_proof=version == "candidate",
+                allow_legacy_source_artifact_duplicates=version == "baseline",
+                allow_legacy_missing_source_columns=(
+                    {"pool_upstream_attempts": {"occurred_epoch_ms"}}
+                    if version == "baseline"
+                    else {}
+                ),
+                budget_check=lambda: remaining_budget(phase_started),
+            )
+        finally:
+            release_oracle_container()
     except BaseException as error:
         trial_error = error
     finally:
         trial_container_names = containers.names() - prior_container_names
-        if container in trial_container_names and not container_stopped:
+        if oracle_container_id is not None:
+            try:
+                release_oracle_container()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        elif container in trial_container_names and not container_stopped:
             try:
                 containers.cleanup(
                     container,
