@@ -10,9 +10,9 @@ const AUTHORITY_READ_RETRIES: usize = 2;
 
 /// API-facing authority contract for one rebuildable analytics consumer.
 ///
-/// The runtime owner can inject this value into an HTTP, SSE, or background consumer without
+/// The runtime owner injects this value into an HTTP, SSE, or background consumer without
 /// exposing a `Pool<Sqlite>` to that call site. AppState construction and router replacement stay
-/// outside this contract; pg08 owns that lifecycle wiring.
+/// outside this pure consumer contract.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AnalyticsApiProjection<'a> {
     adapter: AnalyticsProjectionAdapter<'a>,

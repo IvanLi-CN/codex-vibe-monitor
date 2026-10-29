@@ -3,8 +3,8 @@
 //! Analytics projections are rebuildable state, but their cursor is a correctness boundary. A
 //! source page is read under the traffic authority and released before the analytics transaction
 //! starts. The projection writer then commits its rows and the corresponding cursor together in
-//! one analytics transaction. This module intentionally does not install the store in `AppState`;
-//! runtime routing and cutover remain a later lifecycle concern.
+//! one analytics transaction. The runtime router owns the shared store and cutover gates, while
+//! `AppState` exposes that authority to production consumers without handing them raw pools.
 
 use std::{
     fmt,
@@ -1082,7 +1082,7 @@ impl AnalyticsProjectionStore {
 
 /// Common authority adapter used by stats, long-term, prompt-cache, and subscription consumers.
 /// It carries the projection identity through owner, cursor/quality reads, and named write
-/// transactions without installing any runtime or `AppState` routing.
+/// transactions while keeping runtime and `AppState` ownership outside each consumer.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AnalyticsProjectionAdapter<'a> {
     store: &'a AnalyticsProjectionStore,

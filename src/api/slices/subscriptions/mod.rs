@@ -31,8 +31,8 @@ pub(crate) fn subscription_analytics_api_projection<'a>(
     crate::api::AnalyticsApiProjection::from_adapter(subscription_analytics_adapter(store))
 }
 
-/// SSE topic refreshes use this seam for the subscription checkpoint/quality marker. The topic
-/// payload builder remains AppState-owned until pg08 injects the shared analytics store.
+/// SSE topic refreshes use this seam for the subscription checkpoint/quality marker. The runtime
+/// supplies the shared analytics store through AppState while the topic payload remains local.
 pub(crate) async fn read_subscription_analytics_projection(
     projection: crate::api::AnalyticsApiProjection<'_>,
 ) -> Result<crate::api::AnalyticsApiProjectionSnapshot, ApiError> {

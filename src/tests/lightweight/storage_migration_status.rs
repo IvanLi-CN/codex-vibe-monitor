@@ -51,7 +51,7 @@ async fn controls_follow_monotonic_migration_state_contract() {
     let runtime = StorageMigrationRuntime::new(&config);
     assert_eq!(
         runtime.snapshot().await.queued_modules,
-        vec!["traffic_archive"]
+        vec!["traffic_archive", "analytics"]
     );
 
     let started = runtime
@@ -82,6 +82,74 @@ async fn controls_follow_monotonic_migration_state_contract() {
     assert_eq!(resumed.progress.phase, resumed.state);
     assert!(resumed.task_holds.held);
     assert_eq!(resumed.task_holds.reason.as_deref(), Some("migration_hold"));
+}
+
+#[tokio::test]
+async fn configured_target_auto_starts_modules_in_dependency_order() {
+    let config = StorageConfig {
+        postgres_database_url: Some("postgresql://private.example/db".to_string()),
+        ..StorageConfig::default()
+    };
+    let runtime = StorageMigrationRuntime::new(&config);
+
+    runtime
+        .ensure_auto_start()
+        .await
+        .expect("configured storage should auto-start the first module");
+    let started = runtime.snapshot().await;
+    assert_eq!(started.module, "traffic_archive");
+    assert_eq!(started.state, StorageMigrationState::Preparing);
+    assert_eq!(started.queued_modules, vec!["analytics"]);
+    assert_eq!(
+        started
+            .modules
+            .iter()
+            .find(|module| module.module == "analytics")
+            .expect("analytics module should be reported")
+            .dependency_ready,
+        Some(false)
+    );
+
+    for phase in [
+        StorageMigrationState::Copying,
+        StorageMigrationState::CatchingUp,
+        StorageMigrationState::Verifying,
+        StorageMigrationState::Ready,
+        StorageMigrationState::Switching,
+    ] {
+        runtime
+            .publish_progress(StorageMigrationProgress {
+                phase,
+                ..StorageMigrationProgress::default()
+            })
+            .await
+            .expect("traffic migration phase should be accepted");
+    }
+    let traffic_complete = runtime
+        .publish_postgres_authority(2, 0)
+        .await
+        .expect("traffic authority should publish");
+    assert_eq!(traffic_complete.completed_modules, vec!["traffic_archive"]);
+    assert_eq!(traffic_complete.queued_modules, vec!["analytics"]);
+
+    runtime
+        .ensure_auto_start()
+        .await
+        .expect("analytics should auto-start after traffic authority");
+    let analytics_started = runtime.snapshot().await;
+    assert_eq!(analytics_started.module, "analytics");
+    assert_eq!(analytics_started.state, StorageMigrationState::Preparing);
+    assert!(analytics_started.queued_modules.is_empty());
+    assert_eq!(analytics_started.completed_modules, vec!["traffic_archive"]);
+    assert_eq!(
+        analytics_started
+            .modules
+            .iter()
+            .find(|module| module.module == "analytics")
+            .expect("analytics module should remain in the status response")
+            .dependency_ready,
+        Some(true)
+    );
 }
 
 #[tokio::test]
