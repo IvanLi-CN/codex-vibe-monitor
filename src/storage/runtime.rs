@@ -39,7 +39,7 @@ use super::{
     migration_sqlx::{PostgresMigrationTarget, SqliteMigrationSource},
     migration_status::{
         StorageMigrationProgress, StorageMigrationResponse, StorageMigrationRuntime,
-        StorageMigrationState,
+        StorageMigrationState, source_identity_for,
     },
     traffic::TrafficFactStore,
 };
@@ -47,6 +47,7 @@ use super::{
 const MIGRATION_ID: &str = "storage-migration";
 const INSTALLATION_ID: &str = "local";
 const SOURCE_IDENTITY: &str = "sqlite:local";
+const ANALYTICS_SOURCE_IDENTITY: &str = "sqlite:local:analytics";
 const AUTHORITY_TABLE: &str = "storage_migration_authority";
 const CHECKPOINT_TABLE: &str = "storage_migration_engine_checkpoints";
 const OUTBOX_TABLE: &str = "storage_migration_engine_outbox";
@@ -88,14 +89,15 @@ impl StorageRuntimeRouter {
                 generation: 1,
             },
         );
-        let source_fence = SourceWriteFence::new(1);
+        let traffic_source_fence = SourceWriteFence::new(1);
+        let analytics_source_fence = SourceWriteFence::new(1);
         let metadata = Arc::new(SqliteMigrationMetadataStore::new(pool.clone(), config));
         metadata.ensure_schema().await?;
 
         let traffic_authority = Arc::new(TrafficFactStore::with_authority_and_fence(
             pools.clone(),
             traffic_gate.clone(),
-            source_fence.clone(),
+            traffic_source_fence.clone(),
         ));
         let analytics_authority = Arc::new(AnalyticsProjectionStore::with_authority(
             pools.clone(),
@@ -108,8 +110,12 @@ impl StorageRuntimeRouter {
             migration,
             shutdown,
             metadata,
-            traffic_gate.clone(),
-            source_fence,
+            StorageMigrationWorkerAuthorities {
+                traffic_gate: traffic_gate.clone(),
+                analytics_gate: analytics_gate.clone(),
+                traffic_source_fence,
+                analytics_source_fence,
+            },
         ));
         let router = Arc::new(Self {
             pools,
@@ -125,106 +131,129 @@ impl StorageRuntimeRouter {
 
     async fn recover_authority(&self) -> Result<()> {
         self.worker.migration.validate_runtime_identity().await?;
-        let status = self.worker.migration.snapshot().await;
-        let record = self
-            .worker
-            .metadata
-            .load_authority_manifest(StorageModule::TrafficArchive)
+        let expected_target_identity = expected_postgres_target_identity(&self.worker.config);
+        let traffic_manifest = self
+            .recover_module_authority(
+                StorageModule::TrafficArchive,
+                &self.traffic_gate,
+                SOURCE_IDENTITY,
+                &expected_target_identity,
+            )
             .await?;
+        let analytics_manifest = self
+            .recover_module_authority(
+                StorageModule::Analytics,
+                &self.analytics_gate,
+                ANALYTICS_SOURCE_IDENTITY,
+                &expected_target_identity,
+            )
+            .await?;
+
+        let status = self.worker.migration.snapshot().await;
+        match status.module.as_str() {
+            "traffic_archive" => {
+                if let Some(manifest) = traffic_manifest.as_ref()
+                    && self.traffic_gate.current_authority().await.backend == BackendKind::Postgres
+                {
+                    self.worker
+                        .migration
+                        .recover_postgres(manifest.authority.generation, manifest.source_watermark)
+                        .await?;
+                }
+            }
+            "analytics" => {
+                if let Some(manifest) = analytics_manifest.as_ref()
+                    && self.analytics_gate.current_authority().await.backend
+                        == BackendKind::Postgres
+                {
+                    self.worker
+                        .migration
+                        .recover_postgres(manifest.authority.generation, manifest.source_watermark)
+                        .await?;
+                }
+            }
+            module => bail!("unsupported active storage migration module {module}"),
+        }
+
+        let status = self.worker.migration.snapshot().await;
+        if analytics_manifest.is_some()
+            && status.module == "traffic_archive"
+            && status.state == StorageMigrationState::Postgres
+        {
+            self.worker.advance_after_traffic().await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_module_authority(
+        &self,
+        module: StorageModule,
+        gate: &ModuleGenerationGate,
+        source_identity: &str,
+        expected_target_identity: &str,
+    ) -> Result<Option<ModuleAuthorityManifest>> {
+        let record = self.worker.metadata.load_authority_manifest(module).await?;
+        let status = self.worker.migration.snapshot().await;
         match record {
             AuthorityRecoveryRecord::Manifest(manifest) => {
-                let expected_target_identity =
-                    expected_postgres_target_identity(&self.worker.config);
-                validate_manifest_identity(&manifest, &status, &expected_target_identity)?;
-                if manifest.authority.backend != BackendKind::Postgres {
-                    bail!("durable traffic authority manifest is not PostgreSQL");
+                validate_module_manifest_identity(
+                    &manifest,
+                    module,
+                    source_identity,
+                    expected_target_identity,
+                )?;
+                if status.module == module_name(module) {
+                    validate_manifest_watermark(&manifest, &status)?;
                 }
                 self.pools
                     .require_postgres_pool()
-                    .context("recover durable PostgreSQL traffic authority")?;
-                if !matches!(
-                    status.state,
-                    StorageMigrationState::Postgres
-                        | StorageMigrationState::Preparing
-                        | StorageMigrationState::Copying
-                        | StorageMigrationState::CatchingUp
-                        | StorageMigrationState::Verifying
-                        | StorageMigrationState::Ready
-                        | StorageMigrationState::Switching
-                        | StorageMigrationState::Recovering
-                ) {
-                    bail!(
-                        "durable PostgreSQL authority manifest conflicts with migration state {:?}",
-                        status.state
-                    );
-                }
-                if status.authority.backend
-                    == super::migration_status::StorageMigrationBackend::Postgres
-                    && status.authority.generation > manifest.authority.generation
-                {
-                    bail!(
-                        "durable migration status generation {} is ahead of PostgreSQL authority manifest generation {}",
-                        status.authority.generation,
-                        manifest.authority.generation
-                    );
-                }
-                if status.state != StorageMigrationState::Postgres
-                    && manifest.authority.generation <= status.authority.generation
-                {
-                    bail!(
-                        "PostgreSQL authority manifest does not advance migration generation {}",
-                        status.authority.generation
-                    );
-                }
-                self.ensure_native_source_fenced(manifest.authority.generation)
+                    .with_context(|| format!("recover durable PostgreSQL {module:?} authority"))?;
+                self.ensure_native_source_fenced(manifest.authority.generation, source_identity)
                     .await?;
                 let expected = recovery_context_from_record(AuthorityRecoveryRecord::Manifest(
                     manifest.clone(),
                 ))?;
-                self.traffic_gate
-                    .recover_authority(self.worker.metadata.as_ref(), &expected)
+                gate.recover_authority(self.worker.metadata.as_ref(), &expected)
                     .await
-                    .context("recover traffic module authority")?;
-                self.worker
-                    .migration
-                    .recover_postgres(manifest.authority.generation, manifest.source_watermark)
-                    .await?;
+                    .with_context(|| format!("recover {module:?} module authority"))?;
+                Ok(Some(manifest))
             }
             AuthorityRecoveryRecord::NeverMigrated {
                 migration_id,
                 installation_id,
-                module,
-                source_identity,
+                module: marker_module,
+                source_identity: marker_source_identity,
                 target_identity,
                 source_watermark,
             } => {
-                let expected_target_identity =
-                    expected_postgres_target_identity(&self.worker.config);
                 if migration_id != MIGRATION_ID
                     || installation_id != INSTALLATION_ID
-                    || module != StorageModule::TrafficArchive
-                    || source_identity != SOURCE_IDENTITY
+                    || marker_module != module
+                    || marker_source_identity != source_identity
                     || target_identity != expected_target_identity
                     || source_watermark < 0
                 {
-                    bail!(
-                        "durable traffic authority recovery marker identity does not match runtime state"
-                    );
+                    bail!("durable {module:?} authority recovery marker identity is invalid");
                 }
-                if status.authority.backend
-                    == super::migration_status::StorageMigrationBackend::Postgres
+                if status.module == module_name(module)
+                    && status.authority.backend
+                        == super::migration_status::StorageMigrationBackend::Postgres
                 {
-                    bail!("PostgreSQL authority has no durable traffic manifest");
+                    if module == StorageModule::TrafficArchive {
+                        bail!("PostgreSQL authority has no durable traffic manifest");
+                    }
+                    bail!("PostgreSQL {module:?} authority has no durable manifest");
                 }
                 let source_authority =
-                    load_durable_source_write_authority(&self.worker.pool).await?;
-                let gate_authority = self.traffic_gate.current_authority().await;
-                if status.authority.backend
-                    == super::migration_status::StorageMigrationBackend::Sqlite
+                    load_durable_source_write_authority(&self.worker.pool, source_identity).await?;
+                let gate_authority = gate.current_authority().await;
+                if status.module == module_name(module)
+                    && status.authority.backend
+                        == super::migration_status::StorageMigrationBackend::Sqlite
                     && status.authority.generation != gate_authority.generation
                 {
                     bail!(
-                        "durable migration status generation {} does not match the selected SQLite generation {}",
+                        "durable migration status generation {} does not match selected {module:?} SQLite generation {}",
                         status.authority.generation,
                         gate_authority.generation
                     );
@@ -232,27 +261,46 @@ impl StorageRuntimeRouter {
                 if source_authority
                     .is_some_and(|authority| authority.generation != gate_authority.generation)
                 {
+                    if module == StorageModule::TrafficArchive {
+                        bail!(
+                            "SQLite source authority generation does not match selected generation"
+                        );
+                    }
                     bail!(
-                        "SQLite source authority generation does not match the selected SQLite generation"
+                        "SQLite {module:?} source authority generation does not match selected generation"
                     );
                 }
                 if source_authority.is_some_and(|authority| authority.fenced) {
+                    if module == StorageModule::TrafficArchive {
+                        bail!(
+                            "SQLite source writes are durably fenced without a PostgreSQL authority manifest"
+                        );
+                    }
                     bail!(
-                        "SQLite source writes are durably fenced without a PostgreSQL authority manifest"
+                        "SQLite {module:?} source writes are fenced without a PostgreSQL manifest"
                     );
                 }
+                Ok(None)
             }
             AuthorityRecoveryRecord::Indeterminate => {
-                bail!("traffic authority recovery is indeterminate");
+                if module == StorageModule::TrafficArchive {
+                    bail!("traffic authority recovery is indeterminate");
+                }
+                bail!("{module:?} authority recovery is indeterminate")
             }
         }
-        Ok(())
     }
 
-    async fn ensure_native_source_fenced(&self, expected_generation: u64) -> Result<()> {
-        let authority = load_durable_source_write_authority(&self.worker.pool)
+    async fn ensure_native_source_fenced(
+        &self,
+        expected_generation: u64,
+        source_identity: &str,
+    ) -> Result<()> {
+        let authority = load_durable_source_write_authority(&self.worker.pool, source_identity)
             .await?
-            .ok_or_else(|| anyhow!("SQLite source authority state is missing"))?;
+            .ok_or_else(|| {
+                anyhow!("SQLite source authority state is missing for {source_identity}")
+            })?;
         if !authority.fenced || authority.generation != expected_generation {
             bail!(
                 "PostgreSQL authority manifest requires SQLite source fence generation {}, found generation {} fenced={}",
@@ -277,6 +325,14 @@ impl StorageRuntimeRouter {
     }
 
     pub(crate) async fn start(&self) {
+        if let Err(error) = self.worker.migration.ensure_auto_start().await {
+            tracing::warn!(error = %error, "could not automatically start configured storage migration");
+            let _ = self
+                .worker
+                .migration
+                .publish_worker_error(error.to_string())
+                .await;
+        }
         self.worker.start().await;
     }
 
@@ -290,6 +346,10 @@ impl StorageRuntimeRouter {
 
     pub(crate) fn postgres_configured(&self) -> bool {
         self.pools.postgres_pool().is_some()
+    }
+
+    pub(crate) async fn analytics_backend(&self) -> BackendKind {
+        self.analytics_gate.current_authority().await.backend
     }
 
     #[cfg(test)]
@@ -310,6 +370,7 @@ impl StorageRuntimeRouter {
 
 async fn load_durable_source_write_authority(
     pool: &Pool<Sqlite>,
+    source_identity: &str,
 ) -> Result<Option<SourceWriteAuthority>> {
     let exists = sqlx::query_scalar::<_, i64>(&format!(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{CAPTURE_STATE_TABLE}')"
@@ -319,23 +380,24 @@ async fn load_durable_source_write_authority(
     if exists == 0 {
         return Ok(None);
     }
-    let row = sqlx::query(&format!(
+    sqlx::query(&format!(
         "SELECT authority_generation, source_writes_fenced
            FROM {CAPTURE_STATE_TABLE}
           WHERE migration_id = ? AND source_identity = ?"
     ))
     .bind(MIGRATION_ID)
-    .bind(SOURCE_IDENTITY)
+    .bind(source_identity)
     .fetch_optional(pool)
     .await?
-    .ok_or_else(|| anyhow!("SQLite source authority state row is missing"))?;
-    let authority = SourceWriteAuthority {
-        generation: u64::try_from(row.try_get::<i64, _>("authority_generation")?)
-            .context("SQLite source authority generation is invalid")?,
-        fenced: row.try_get::<i64, _>("source_writes_fenced")? != 0,
-    };
-    authority.validate()?;
-    Ok(Some(authority))
+    .map_or(Ok(None), |row| {
+        let authority = SourceWriteAuthority {
+            generation: u64::try_from(row.try_get::<i64, _>("authority_generation")?)
+                .context("SQLite source authority generation is invalid")?,
+            fenced: row.try_get::<i64, _>("source_writes_fenced")? != 0,
+        };
+        authority.validate()?;
+        Ok(Some(authority))
+    })
 }
 
 #[derive(Debug)]
@@ -346,10 +408,20 @@ pub(crate) struct StorageMigrationWorker {
     shutdown: CancellationToken,
     pub(crate) metadata: Arc<SqliteMigrationMetadataStore>,
     traffic_gate: ModuleGenerationGate,
-    source_fence: SourceWriteFence,
+    analytics_gate: ModuleGenerationGate,
+    traffic_source_fence: SourceWriteFence,
+    analytics_source_fence: SourceWriteFence,
     started: AtomicBool,
     notify: Arc<Notify>,
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone)]
+struct StorageMigrationWorkerAuthorities {
+    traffic_gate: ModuleGenerationGate,
+    analytics_gate: ModuleGenerationGate,
+    traffic_source_fence: SourceWriteFence,
+    analytics_source_fence: SourceWriteFence,
 }
 
 impl StorageMigrationWorker {
@@ -359,8 +431,7 @@ impl StorageMigrationWorker {
         migration: Arc<StorageMigrationRuntime>,
         shutdown: CancellationToken,
         metadata: Arc<SqliteMigrationMetadataStore>,
-        traffic_gate: ModuleGenerationGate,
-        source_fence: SourceWriteFence,
+        authorities: StorageMigrationWorkerAuthorities,
     ) -> Self {
         Self {
             pool,
@@ -368,8 +439,10 @@ impl StorageMigrationWorker {
             migration,
             shutdown,
             metadata,
-            traffic_gate,
-            source_fence,
+            traffic_gate: authorities.traffic_gate,
+            analytics_gate: authorities.analytics_gate,
+            traffic_source_fence: authorities.traffic_source_fence,
+            analytics_source_fence: authorities.analytics_source_fence,
             started: AtomicBool::new(false),
             notify: Arc::new(Notify::new()),
             handle: Arc::new(Mutex::new(None)),
@@ -458,7 +531,9 @@ impl StorageMigrationWorker {
             shutdown: self.shutdown.clone(),
             metadata: Arc::clone(&self.metadata),
             traffic_gate: self.traffic_gate.clone(),
-            source_fence: self.source_fence.clone(),
+            analytics_gate: self.analytics_gate.clone(),
+            traffic_source_fence: self.traffic_source_fence.clone(),
+            analytics_source_fence: self.analytics_source_fence.clone(),
             started: AtomicBool::new(true),
             notify: Arc::clone(&self.notify),
             handle: Arc::clone(&self.handle),
@@ -470,7 +545,7 @@ impl StorageMigrationWorker {
             if self.shutdown.is_cancelled() {
                 return;
             }
-            if self.traffic_gate.requires_recovery() {
+            if self.traffic_gate.requires_recovery() || self.analytics_gate.requires_recovery() {
                 return;
             }
             let status = self.migration.snapshot().await;
@@ -503,28 +578,52 @@ impl StorageMigrationWorker {
 
     async fn run_migration(&self, status: StorageMigrationResponse) -> Result<()> {
         self.migration.validate_runtime_identity().await?;
-        let authority = self.traffic_gate.current_authority().await;
+        let module = storage_module_from_name(&status.module)?;
+        let (gate, source_identity, source_fence) = match module {
+            StorageModule::TrafficArchive => (
+                &self.traffic_gate,
+                SOURCE_IDENTITY,
+                &self.traffic_source_fence,
+            ),
+            StorageModule::Analytics => (
+                &self.analytics_gate,
+                ANALYTICS_SOURCE_IDENTITY,
+                &self.analytics_source_fence,
+            ),
+            _ => bail!("storage migration worker cannot run module {module:?}"),
+        };
+        let authority = gate.current_authority().await;
         if authority.backend == BackendKind::Postgres {
-            let manifest = self.load_traffic_authority_manifest().await?;
+            let manifest = self.load_authority_manifest(module).await?;
             let expected_target_identity = expected_postgres_target_identity(&self.config);
-            validate_manifest_identity(&manifest, &status, &expected_target_identity)?;
+            validate_active_manifest_identity(
+                &manifest,
+                &status,
+                module,
+                source_identity,
+                &expected_target_identity,
+            )?;
             if manifest.authority != authority {
                 bail!(
-                    "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
+                    "PostgreSQL authority does not match the durable {module:?} manifest: gate={authority:?} manifest={:?}",
                     manifest.authority
                 );
             }
             self.migration
                 .recover_postgres(authority.generation, manifest.source_watermark)
                 .await?;
+            if module == StorageModule::TrafficArchive {
+                self.advance_after_traffic().await?;
+            }
             return Ok(());
         }
-        if let Some(source_authority) = load_durable_source_write_authority(&self.pool).await?
+        if let Some(source_authority) =
+            load_durable_source_write_authority(&self.pool, source_identity).await?
             && source_authority.generation != authority.generation
         {
-            self.traffic_gate.require_recovery();
+            gate.require_recovery();
             bail!(
-                "SQLite source authority generation {} does not match the selected SQLite generation {}",
+                "SQLite {module:?} source authority generation {} does not match the selected SQLite generation {}",
                 source_authority.generation,
                 authority.generation
             );
@@ -540,10 +639,10 @@ impl StorageMigrationWorker {
             SqliteMigrationSource::from_native_catalog(
                 self.pool.clone(),
                 MIGRATION_ID,
-                SOURCE_IDENTITY,
+                source_identity,
                 "migration_change_log",
                 &native_catalog,
-                StorageModule::TrafficArchive,
+                module,
             )?
             .with_writer_generation(status.authority.generation)?,
         );
@@ -581,7 +680,7 @@ impl StorageMigrationWorker {
             postgres,
             "storage_migration",
             native_catalog,
-            StorageModule::TrafficArchive,
+            module,
         )?);
         target.ensure_schema().await?;
         let checkpoint = source.capture_checkpoint().await?;
@@ -596,15 +695,15 @@ impl StorageMigrationWorker {
             source.clone(),
             target.clone(),
             Arc::clone(&self.metadata),
-            StorageModule::TrafficArchive,
+            module,
             INSTALLATION_ID,
             status.target.identity.clone(),
             status.authority.generation,
             migration_limits,
-            self.source_fence.clone(),
+            source_fence.clone(),
         )?
         .with_cancellation_token(self.shutdown.clone());
-        let tables = source.module_tables(StorageModule::TrafficArchive).await?;
+        let tables = source.module_tables(module).await?;
         // Plans and checkpoints are durable engine state. Re-loading them is safe for every
         // resumable phase and does not change the persisted migration phase.
         engine.prepare(&tables).await?;
@@ -726,8 +825,8 @@ impl StorageMigrationWorker {
         let expected = AuthorityRecoveryContext {
             migration_id: MIGRATION_ID.to_string(),
             installation_id: INSTALLATION_ID.to_string(),
-            module: StorageModule::TrafficArchive,
-            source_identity: SOURCE_IDENTITY.to_string(),
+            module,
+            source_identity: source_identity.to_string(),
             target_identity: status.target.identity,
             source_watermark: watermark,
         };
@@ -740,11 +839,7 @@ impl StorageMigrationWorker {
             })
             .await?;
         let final_watermark = engine
-            .switch_authority(
-                &self.traffic_gate,
-                expected,
-                self.config.migration_switch_budget,
-            )
+            .switch_authority(gate, expected, self.config.migration_switch_budget)
             .await?;
         self.migration
             .publish_progress_durable(StorageMigrationProgress {
@@ -754,37 +849,88 @@ impl StorageMigrationWorker {
                 ..StorageMigrationProgress::default()
             })
             .await?;
-        let manifest = self.load_traffic_authority_manifest().await?;
-        let authority = self.traffic_gate.current_authority().await;
+        let manifest = self.load_authority_manifest(module).await?;
+        let authority = gate.current_authority().await;
         let status = self.migration.snapshot().await;
         let expected_target_identity = expected_postgres_target_identity(&self.config);
-        validate_manifest_identity(&manifest, &status, &expected_target_identity)?;
+        validate_active_manifest_identity(
+            &manifest,
+            &status,
+            module,
+            source_identity,
+            &expected_target_identity,
+        )?;
         if manifest.authority != authority {
             bail!(
-                "PostgreSQL authority does not match the durable traffic manifest: gate={authority:?} manifest={:?}",
+                "PostgreSQL authority does not match the durable {module:?} manifest: gate={authority:?} manifest={:?}",
                 manifest.authority
             );
         }
         self.migration
             .publish_postgres_authority(authority.generation, manifest.source_watermark)
             .await?;
+        if module == StorageModule::TrafficArchive {
+            self.advance_after_traffic().await?;
+        }
         Ok(())
     }
 
-    async fn load_traffic_authority_manifest(&self) -> Result<ModuleAuthorityManifest> {
-        match self
-            .metadata
-            .load_authority_manifest(StorageModule::TrafficArchive)
-            .await?
-        {
+    async fn load_authority_manifest(
+        &self,
+        module: StorageModule,
+    ) -> Result<ModuleAuthorityManifest> {
+        match self.metadata.load_authority_manifest(module).await? {
             AuthorityRecoveryRecord::Manifest(manifest) => Ok(manifest),
             AuthorityRecoveryRecord::NeverMigrated { .. } => {
-                bail!("PostgreSQL authority has no durable traffic manifest")
+                bail!("PostgreSQL authority has no durable {module:?} manifest")
             }
             AuthorityRecoveryRecord::Indeterminate => {
-                bail!("traffic authority recovery is indeterminate")
+                bail!("{module:?} authority recovery is indeterminate")
             }
         }
+    }
+
+    async fn advance_after_traffic(&self) -> Result<()> {
+        let status = self.migration.snapshot().await;
+        if status.module != "traffic_archive" || status.state != StorageMigrationState::Postgres {
+            return Ok(());
+        }
+        let record = self
+            .metadata
+            .load_authority_manifest(StorageModule::Analytics)
+            .await?;
+        match record {
+            AuthorityRecoveryRecord::Manifest(manifest) => {
+                validate_module_manifest_identity(
+                    &manifest,
+                    StorageModule::Analytics,
+                    ANALYTICS_SOURCE_IDENTITY,
+                    &expected_postgres_target_identity(&self.config),
+                )?;
+                let authority = self.analytics_gate.current_authority().await;
+                if authority.backend != BackendKind::Postgres {
+                    bail!(
+                        "analytics authority manifest exists while the analytics gate selects SQLite"
+                    );
+                }
+                self.migration
+                    .activate_module_for_recovery(StorageModule::Analytics)
+                    .await?;
+                self.migration
+                    .recover_postgres(authority.generation, manifest.source_watermark)
+                    .await?;
+            }
+            AuthorityRecoveryRecord::NeverMigrated { .. } => {
+                self.migration
+                    .activate_module(StorageModule::Analytics)
+                    .await?;
+                self.migration.ensure_auto_start().await?;
+            }
+            AuthorityRecoveryRecord::Indeterminate => {
+                bail!("analytics authority recovery is indeterminate")
+            }
+        }
+        Ok(())
     }
 }
 
@@ -905,7 +1051,7 @@ impl AuthorityManifestStore for SqliteMigrationMetadataStore {
                 migration_id: MIGRATION_ID.to_string(),
                 installation_id: INSTALLATION_ID.to_string(),
                 module,
-                source_identity: SOURCE_IDENTITY.to_string(),
+                source_identity: source_identity_for(module).to_string(),
                 target_identity: self.target_identity.clone(),
                 source_watermark: 0,
             });
@@ -1146,32 +1292,79 @@ fn expected_postgres_target_identity(config: &StorageConfig) -> String {
     config.postgres_target_identity()
 }
 
+fn validate_module_manifest_identity(
+    manifest: &ModuleAuthorityManifest,
+    module: StorageModule,
+    source_identity: &str,
+    expected_target_identity: &str,
+) -> Result<()> {
+    if manifest.migration_id != MIGRATION_ID
+        || manifest.installation_id != INSTALLATION_ID
+        || manifest.module != module
+        || manifest.source_identity != source_identity
+        || manifest.target_identity != expected_target_identity
+        || manifest.authority.backend != BackendKind::Postgres
+        || manifest.source_watermark < 0
+    {
+        let module_label = match module {
+            StorageModule::TrafficArchive => "traffic",
+            StorageModule::Analytics => "analytics",
+            _ => module_name(module),
+        };
+        bail!("durable {module_label} authority manifest identity does not match runtime state");
+    }
+    Ok(())
+}
+
+fn validate_active_manifest_identity(
+    manifest: &ModuleAuthorityManifest,
+    status: &StorageMigrationResponse,
+    module: StorageModule,
+    source_identity: &str,
+    expected_target_identity: &str,
+) -> Result<()> {
+    validate_module_manifest_identity(manifest, module, source_identity, expected_target_identity)?;
+    if status.migration_id.as_deref() != Some(MIGRATION_ID)
+        || status.module != module_name(module)
+        || status.source.identity != source_identity
+        || status.target.identity != expected_target_identity
+    {
+        let module_label = match module {
+            StorageModule::TrafficArchive => "traffic",
+            StorageModule::Analytics => "analytics",
+            _ => module_name(module),
+        };
+        bail!("durable {module_label} migration status identity does not match runtime state");
+    }
+    validate_manifest_watermark(manifest, status)
+}
+
 fn validate_manifest_identity(
     manifest: &ModuleAuthorityManifest,
     status: &StorageMigrationResponse,
     expected_target_identity: &str,
 ) -> Result<()> {
-    let status_module = "traffic_archive";
-    if manifest.migration_id != MIGRATION_ID
-        || manifest.installation_id != INSTALLATION_ID
-        || manifest.module != StorageModule::TrafficArchive
-        || manifest.source_identity != SOURCE_IDENTITY
-        || manifest.target_identity != expected_target_identity
-        || status.migration_id.as_deref() != Some(MIGRATION_ID)
-        || status.module != status_module
-        || status.source.identity != SOURCE_IDENTITY
-        || status.target.identity != expected_target_identity
-        || manifest.target_identity != status.target.identity
-        || manifest.source_watermark < 0
-    {
-        bail!("durable traffic authority manifest identity does not match runtime state");
-    }
+    validate_active_manifest_identity(
+        manifest,
+        status,
+        StorageModule::TrafficArchive,
+        SOURCE_IDENTITY,
+        expected_target_identity,
+    )
+}
 
+fn validate_manifest_watermark(
+    manifest: &ModuleAuthorityManifest,
+    status: &StorageMigrationResponse,
+) -> Result<()> {
     if status.state == StorageMigrationState::Postgres {
         if status.progress.captured_through != Some(manifest.source_watermark)
             || status.progress.applied_through != Some(manifest.source_watermark)
         {
-            bail!("durable traffic authority manifest watermark does not match migration status");
+            bail!(
+                "durable {} authority manifest watermark does not match migration status",
+                module_name(manifest.module)
+            );
         }
     } else if matches!(
         status.state,
@@ -1190,7 +1383,10 @@ fn validate_manifest_identity(
             .flatten()
             .any(|watermark| watermark > manifest.source_watermark)
         {
-            bail!("durable traffic authority manifest watermark regresses migration progress");
+            bail!(
+                "durable {} authority manifest watermark regresses migration progress",
+                module_name(manifest.module)
+            );
         }
     } else {
         let status_watermarks = [
@@ -1202,7 +1398,10 @@ fn validate_manifest_identity(
             .flatten()
             .any(|watermark| watermark > manifest.source_watermark)
         {
-            bail!("durable traffic authority manifest watermark regresses migration progress");
+            bail!(
+                "durable {} authority manifest watermark regresses migration progress",
+                module_name(manifest.module)
+            );
         }
     }
     Ok(())
@@ -1215,6 +1414,17 @@ fn module_name(module: StorageModule) -> &'static str {
         StorageModule::AccountRouting => "account_routing",
         StorageModule::TaskOperations => "task_operations",
         StorageModule::Performance => "performance",
+    }
+}
+
+fn storage_module_from_name(name: &str) -> Result<StorageModule> {
+    match name {
+        "traffic_archive" => Ok(StorageModule::TrafficArchive),
+        "analytics" => Ok(StorageModule::Analytics),
+        "account_routing" => Ok(StorageModule::AccountRouting),
+        "task_operations" => Ok(StorageModule::TaskOperations),
+        "performance" => Ok(StorageModule::Performance),
+        _ => bail!("unsupported storage migration module {name}"),
     }
 }
 
@@ -1407,14 +1617,24 @@ mod tests {
             migration,
             CancellationToken::new(),
             metadata,
-            ModuleGenerationGate::new(
-                StorageModule::TrafficArchive,
-                super::super::core::ModuleAuthority {
-                    backend: BackendKind::Postgres,
-                    generation: 2,
-                },
-            ),
-            SourceWriteFence::new(1),
+            StorageMigrationWorkerAuthorities {
+                traffic_gate: ModuleGenerationGate::new(
+                    StorageModule::TrafficArchive,
+                    super::super::core::ModuleAuthority {
+                        backend: BackendKind::Postgres,
+                        generation: 2,
+                    },
+                ),
+                analytics_gate: ModuleGenerationGate::new(
+                    StorageModule::Analytics,
+                    super::super::core::ModuleAuthority {
+                        backend: BackendKind::Sqlite,
+                        generation: 1,
+                    },
+                ),
+                traffic_source_fence: SourceWriteFence::new(1),
+                analytics_source_fence: SourceWriteFence::new(1),
+            },
         );
         let error = worker
             .run_migration(status)

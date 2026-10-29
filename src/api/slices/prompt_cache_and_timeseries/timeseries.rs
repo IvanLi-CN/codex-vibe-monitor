@@ -62,8 +62,8 @@ pub(crate) async fn fetch_timeseries(
     queries::fetch_timeseries_query(state, params).await
 }
 
-/// SSE/topic and HTTP timeseries consumers use the same authority-aware read contract. The
-/// existing AppState wrapper remains a compatibility path until pg08 injects this dependency.
+/// SSE/topic and HTTP timeseries consumers use the same authority-aware read contract. Runtime
+/// wiring supplies the shared store through AppState rather than a consumer-owned pool.
 pub(crate) async fn read_timeseries_analytics_projection(
     projection: AnalyticsApiProjection<'_>,
     start_epoch: i64,

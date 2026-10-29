@@ -8,6 +8,7 @@ use sqlx::{Pool, Row, Sqlite};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -22,6 +23,7 @@ use tokio::{
 const MIGRATION_ID: &str = "storage-migration";
 const INSTALLATION_ID: &str = "local";
 const SOURCE_IDENTITY: &str = "sqlite:local";
+const ANALYTICS_SOURCE_IDENTITY: &str = "sqlite:local:analytics";
 const STORAGE_MIGRATION_RUNTIME_TABLE: &str = "storage_migration_runtime";
 const STORAGE_MIGRATION_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -332,6 +334,7 @@ pub(crate) struct StorageMigrationEvent {
 #[derive(Debug, Clone)]
 struct StorageMigrationRuntimeState {
     status: MigrationStatus,
+    module_statuses: BTreeMap<StorageModule, MigrationStatus>,
     response: StorageMigrationResponse,
     target_configured: bool,
     last_action: Option<String>,
@@ -339,6 +342,12 @@ struct StorageMigrationRuntimeState {
     last_progress_published_at: Option<Instant>,
     progress_flush_deadline: Option<Instant>,
     progress_dirty: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedStorageMigrationState {
+    active: MigrationStatus,
+    modules: BTreeMap<StorageModule, MigrationStatus>,
 }
 
 #[derive(Debug)]
@@ -449,11 +458,25 @@ impl StorageMigrationRuntime {
         .map_err(|error| anyhow::anyhow!("failed to load storage migration status: {error}"))?;
 
         if let Some(row) = row {
-            let status: MigrationStatus =
-                serde_json::from_str(row.try_get::<String, _>("status_json")?.as_str()).map_err(
-                    |error| anyhow::anyhow!("invalid persisted storage migration status: {error}"),
-                )?;
-            status.validate()?;
+            let status_json = row.try_get::<String, _>("status_json")?;
+            let persisted = serde_json::from_str::<PersistedStorageMigrationState>(&status_json)
+                .or_else(|_| {
+                    serde_json::from_str::<MigrationStatus>(&status_json).map(|status| {
+                        let mut modules = BTreeMap::new();
+                        modules.insert(status.module, status.clone());
+                        PersistedStorageMigrationState {
+                            active: status,
+                            modules,
+                        }
+                    })
+                })
+                .map_err(|error| {
+                    anyhow::anyhow!("invalid persisted storage migration status: {error}")
+                })?;
+            persisted.active.validate()?;
+            for status in persisted.modules.values() {
+                status.validate()?;
+            }
             let response: StorageMigrationResponse = serde_json::from_str(
                 row.try_get::<String, _>("response_json")?.as_str(),
             )
@@ -462,8 +485,17 @@ impl StorageMigrationRuntime {
             })?;
             let last_action = row.try_get::<Option<String>, _>("last_action")?;
             let last_action_at = row.try_get::<Option<String>, _>("last_action_at")?;
+            let mut module_statuses = persisted.modules;
+            module_statuses.insert(persisted.active.module, persisted.active.clone());
+            ensure_module_statuses(
+                &mut module_statuses,
+                runtime.target_configured(config),
+                &persisted.active,
+                &runtime.target_identity,
+            );
             let mut state = StorageMigrationRuntimeState {
-                status,
+                status: persisted.active,
+                module_statuses,
                 response,
                 target_configured: runtime.target_configured(config),
                 last_action,
@@ -510,8 +542,20 @@ impl StorageMigrationRuntime {
         status
             .validate()
             .expect("default storage migration status must be valid");
+        let mut module_statuses = BTreeMap::new();
+        module_statuses.insert(StorageModule::TrafficArchive, status.clone());
+        if target_configured {
+            let analytics = module_status_for(
+                StorageModule::Analytics,
+                MigrationState::Pending,
+                &target_identity,
+                now.timestamp_millis(),
+            );
+            module_statuses.insert(StorageModule::Analytics, analytics);
+        }
         let response = build_response(
             &status,
+            &module_statuses,
             target_configured,
             config.migration_switch_budget.as_millis() as u64,
             None,
@@ -525,6 +569,7 @@ impl StorageMigrationRuntime {
         Self {
             state: Arc::new(Mutex::new(StorageMigrationRuntimeState {
                 status,
+                module_statuses,
                 response,
                 target_configured,
                 last_action: None,
@@ -668,13 +713,14 @@ impl StorageMigrationRuntime {
 
     pub(crate) async fn validate_runtime_identity(&self) -> Result<()> {
         let state = self.state.lock().await;
-        if state.status.migration_id != MIGRATION_ID
-            || state.status.installation_id != INSTALLATION_ID
-            || state.status.module != StorageModule::TrafficArchive
-            || state.status.source_identity != SOURCE_IDENTITY
-            || state.status.target_identity != self.target_identity
-        {
-            bail!("persisted storage migration status belongs to another runtime identity");
+        for status in std::iter::once(&state.status).chain(state.module_statuses.values()) {
+            if status.migration_id != MIGRATION_ID
+                || status.installation_id != INSTALLATION_ID
+                || status.source_identity != source_identity_for(status.module)
+                || status.target_identity != self.target_identity
+            {
+                bail!("persisted storage migration status belongs to another runtime identity");
+            }
         }
         Ok(())
     }
@@ -698,6 +744,143 @@ impl StorageMigrationRuntime {
             .iter()
             .map(|key| (*key).to_string())
             .collect()
+    }
+
+    /// Start the first pending module without requiring an operator control request. A configured
+    /// target is an opt-in deployment setting; once present, the migration is a background
+    /// lifecycle concern and must not remain indefinitely in the UI-only Pending state.
+    pub(crate) async fn ensure_auto_start(&self) -> Result<()> {
+        if !self.state.lock().await.target_configured {
+            return Ok(());
+        }
+        loop {
+            let status = self.snapshot().await;
+            if status.state == StorageMigrationState::Postgres {
+                let next = {
+                    let state = self.state.lock().await;
+                    state
+                        .module_statuses
+                        .iter()
+                        .filter(|(module, module_status)| {
+                            **module != state.status.module
+                                && module_status.state == MigrationState::Pending
+                        })
+                        .map(|(module, _)| *module)
+                        .next()
+                };
+                let Some(next) = next else {
+                    return Ok(());
+                };
+                self.activate_module(next).await?;
+                continue;
+            }
+            if status.state == StorageMigrationState::Pending {
+                self.apply_control(StorageMigrationControlRequest { paused: false })
+                    .await?;
+            }
+            return Ok(());
+        }
+    }
+
+    /// Make the next module's status the active worker status after the previous module has
+    /// durably published PostgreSQL authority. The old module remains in `module_statuses` so the
+    /// status endpoint reports its completed state after a restart.
+    pub(crate) async fn activate_module(
+        &self,
+        module: StorageModule,
+    ) -> Result<StorageMigrationResponse> {
+        self.activate_module_with_state(module, None).await
+    }
+
+    /// Activate a module whose PostgreSQL manifest was already committed before a restart. The
+    /// durable manifest is the authority proof; `Recovering` gives the status state a legal path
+    /// to the final PostgreSQL state without pretending that a new copy has started.
+    pub(crate) async fn activate_module_for_recovery(
+        &self,
+        module: StorageModule,
+    ) -> Result<StorageMigrationResponse> {
+        self.activate_module_with_state(module, Some(MigrationState::Recovering))
+            .await
+    }
+
+    async fn activate_module_with_state(
+        &self,
+        module: StorageModule,
+        recovery_state: Option<MigrationState>,
+    ) -> Result<StorageMigrationResponse> {
+        let (previous, snapshot) = {
+            let mut state = self.state.lock().await;
+            let previous = state.clone();
+            sync_active_status(&mut state);
+            if state.status.module == module && recovery_state.is_none() {
+                return Ok(state.response.clone());
+            }
+            if state.status.module != module && state.status.state != MigrationState::Postgres {
+                bail!(
+                    "cannot activate {module:?} before {:?} reaches PostgreSQL authority",
+                    state.status.module
+                );
+            }
+            let next = state
+                .module_statuses
+                .get(&module)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("migration module {module:?} is not queued"))?;
+            if next.state == MigrationState::Postgres && recovery_state.is_none() {
+                bail!("migration module {module:?} is already complete");
+            }
+            let now = Utc::now();
+            let now_epoch_ms = now.timestamp_millis().max(next.updated_at_epoch_ms);
+            let mut next = next;
+            if let Some(recovery_state) = recovery_state
+                && next.state == MigrationState::Pending
+            {
+                next.state = recovery_state;
+                next.hold_reason = None;
+                next.updated_at_epoch_ms = now_epoch_ms;
+            }
+            state.status = next;
+            state.last_action = Some(format!("activate_{}", module_name(module)));
+            state.last_action_at = Some(now.to_rfc3339());
+            advance_revision(&mut state.response)?;
+            refresh_response(&mut state);
+            state.progress_dirty = false;
+            state.progress_flush_deadline = None;
+            (previous, state.clone())
+        };
+
+        match persist_state_if_current(
+            &self.state,
+            self.persistence.as_ref(),
+            self.pool.as_ref(),
+            &snapshot,
+            #[cfg(test)]
+            self.progress_persisting.as_ref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                let state = self.state.lock().await;
+                if state.response.revision != snapshot.response.revision {
+                    return Ok(state.response.clone());
+                }
+                let response = state.response.clone();
+                self.events.send_replace(StorageMigrationEvent {
+                    kind: "module",
+                    revision: response.revision,
+                    status: response.clone(),
+                });
+                Ok(response)
+            }
+            Ok(false) => Ok(self.snapshot().await),
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                if state.response.revision == snapshot.response.revision {
+                    *state = previous;
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) async fn apply_control(
@@ -1213,8 +1396,13 @@ async fn persist_state_to_pool(
     let Some(pool) = pool else {
         return Ok(());
     };
-    let status_json = serde_json::to_string(&state.status)
-        .map_err(|error| anyhow::anyhow!("failed to encode storage migration status: {error}"))?;
+    let mut modules = state.module_statuses.clone();
+    modules.insert(state.status.module, state.status.clone());
+    let status_json = serde_json::to_string(&PersistedStorageMigrationState {
+        active: state.status.clone(),
+        modules,
+    })
+    .map_err(|error| anyhow::anyhow!("failed to encode storage migration status: {error}"))?;
     let response_json = serde_json::to_string(&state.response)
         .map_err(|error| anyhow::anyhow!("failed to encode storage migration response: {error}"))?;
     sqlx::query(&format!(
@@ -1241,6 +1429,7 @@ async fn persist_state_to_pool(
 
 fn build_response(
     status: &MigrationStatus,
+    module_statuses: &BTreeMap<StorageModule, MigrationStatus>,
     target_configured: bool,
     switch_budget_ms: u64,
     last_action: Option<String>,
@@ -1248,11 +1437,20 @@ fn build_response(
 ) -> StorageMigrationResponse {
     let state = StorageMigrationState::from(status.state);
     let authority_backend = authority_backend(status.state);
-    let queued_modules = if target_configured && status.state == MigrationState::Pending {
-        vec![module_name(status.module).to_string()]
+    let queued_modules = if target_configured {
+        module_statuses
+            .values()
+            .filter(|module_status| module_status.state == MigrationState::Pending)
+            .map(|module_status| module_name(module_status.module).to_string())
+            .collect()
     } else {
         Vec::new()
     };
+    let completed_modules = module_statuses
+        .values()
+        .filter(|module_status| module_status.state == MigrationState::Postgres)
+        .map(|module_status| module_name(module_status.module).to_string())
+        .collect::<Vec<_>>();
     let task_hold_active = migration_hold_active(status.state);
     let task_hold_reason = if task_hold_active {
         Some(
@@ -1264,13 +1462,23 @@ fn build_response(
     } else {
         status.hold_reason.clone()
     };
+    let active = if target_configured {
+        module_statuses.values().any(|module_status| {
+            !matches!(
+                module_status.state,
+                MigrationState::Pending | MigrationState::Postgres
+            )
+        })
+    } else {
+        !matches!(
+            status.state,
+            MigrationState::Pending | MigrationState::Postgres
+        )
+    };
     StorageMigrationResponse {
         revision: 0,
         migration_id: Some(status.migration_id.clone()),
-        active: !matches!(
-            status.state,
-            MigrationState::Pending | MigrationState::Postgres
-        ),
+        active,
         module: module_name(status.module).to_string(),
         state,
         source: StorageMigrationEndpoint {
@@ -1288,11 +1496,7 @@ fn build_response(
             generation: status.authority_generation,
         },
         queued_modules,
-        completed_modules: if status.state == MigrationState::Postgres {
-            vec![module_name(status.module).to_string()]
-        } else {
-            Vec::new()
-        },
+        completed_modules,
         heartbeat: StorageMigrationHeartbeat {
             at: epoch_ms_to_rfc3339(status.updated_at_epoch_ms),
             healthy: true,
@@ -1302,19 +1506,37 @@ fn build_response(
             ..StorageMigrationProgress::default()
         },
         tables: Vec::new(),
-        modules: vec![StorageMigrationModuleProgress {
-            module: module_name(status.module).to_string(),
-            state,
-            dependency_ready: None,
-            unapplied_changes: None,
-            final_proof_coverage: None,
-            task_hold: task_hold_reason.clone(),
-            drain_state: StorageMigrationDrainState::Unknown,
-            switch_attempt_count: 0,
-            switch_duration_ms: None,
-            switch_result: None,
-            failure_reason: None,
-        }],
+        modules: module_statuses
+            .values()
+            .map(|module_status| StorageMigrationModuleProgress {
+                module: module_name(module_status.module).to_string(),
+                state: StorageMigrationState::from(module_status.state),
+                dependency_ready: match module_status.module {
+                    StorageModule::TrafficArchive => target_configured.then_some(true),
+                    StorageModule::Analytics => module_statuses
+                        .get(&StorageModule::TrafficArchive)
+                        .map(|traffic| traffic.state == MigrationState::Postgres),
+                    _ => None,
+                },
+                unapplied_changes: match module_status.state {
+                    MigrationState::Postgres => Some(0),
+                    _ if module_status.module == status.module => None,
+                    _ => None,
+                },
+                final_proof_coverage: None,
+                task_hold: migration_hold_active(module_status.state).then(|| {
+                    module_status
+                        .hold_reason
+                        .clone()
+                        .unwrap_or_else(|| "migration_hold".to_string())
+                }),
+                drain_state: StorageMigrationDrainState::Unknown,
+                switch_attempt_count: 0,
+                switch_duration_ms: None,
+                switch_result: None,
+                failure_reason: None,
+            })
+            .collect(),
         backlog: StorageMigrationBacklog::default(),
         verification: StorageMigrationVerification::default(),
         task_holds: StorageMigrationTaskHolds {
@@ -1362,10 +1584,10 @@ fn build_response(
 }
 
 fn refresh_response(state: &mut StorageMigrationRuntimeState) {
+    sync_active_status(state);
     let revision = state.response.revision;
     let progress = state.response.progress.clone();
     let tables = state.response.tables.clone();
-    let modules = state.response.modules.clone();
     let backlog = state.response.backlog.clone();
     let verification = state.response.verification.clone();
     let pressure = state.response.pressure.clone();
@@ -1373,6 +1595,7 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
     let recovery_reason = state.response.recovery.reason.clone();
     let mut response = build_response(
         &state.status,
+        &state.module_statuses,
         state.target_configured,
         switch.budget_ms,
         state.last_action.clone(),
@@ -1382,9 +1605,6 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
     response.progress = progress;
     response.progress.phase = response.state;
     response.tables = tables;
-    if !modules.is_empty() {
-        response.modules = modules;
-    }
     response.backlog = backlog;
     response.verification = verification;
     response.pressure = pressure;
@@ -1406,6 +1626,78 @@ fn refresh_response(state: &mut StorageMigrationRuntimeState) {
         module.failure_reason = response.switch.failure_reason.clone();
     }
     state.response = response;
+}
+
+fn sync_active_status(state: &mut StorageMigrationRuntimeState) {
+    state
+        .module_statuses
+        .insert(state.status.module, state.status.clone());
+}
+
+pub(crate) fn source_identity_for(module: StorageModule) -> &'static str {
+    match module {
+        StorageModule::TrafficArchive => SOURCE_IDENTITY,
+        StorageModule::Analytics => ANALYTICS_SOURCE_IDENTITY,
+        StorageModule::AccountRouting => "sqlite:local:account_routing",
+        StorageModule::TaskOperations => "sqlite:local:task_operations",
+        StorageModule::Performance => "sqlite:local:performance",
+    }
+}
+
+fn module_status_for(
+    module: StorageModule,
+    state: MigrationState,
+    target_identity: &str,
+    updated_at_epoch_ms: i64,
+) -> MigrationStatus {
+    MigrationStatus {
+        migration_id: MIGRATION_ID.to_string(),
+        installation_id: INSTALLATION_ID.to_string(),
+        module,
+        state,
+        source_identity: source_identity_for(module).to_string(),
+        target_identity: target_identity.to_string(),
+        authority_generation: 1,
+        capacity_bytes: 0,
+        held_bytes: 0,
+        hold_reason: None,
+        updated_at_epoch_ms,
+    }
+}
+
+fn ensure_module_statuses(
+    modules: &mut BTreeMap<StorageModule, MigrationStatus>,
+    target_configured: bool,
+    active: &MigrationStatus,
+    target_identity: &str,
+) {
+    modules.insert(active.module, active.clone());
+    if !target_configured && active.module == StorageModule::TrafficArchive {
+        return;
+    }
+    modules
+        .entry(StorageModule::TrafficArchive)
+        .or_insert_with(|| {
+            let state = if active.module == StorageModule::Analytics {
+                MigrationState::Postgres
+            } else {
+                MigrationState::Pending
+            };
+            module_status_for(
+                StorageModule::TrafficArchive,
+                state,
+                target_identity,
+                active.updated_at_epoch_ms,
+            )
+        });
+    modules.entry(StorageModule::Analytics).or_insert_with(|| {
+        module_status_for(
+            StorageModule::Analytics,
+            MigrationState::Pending,
+            target_identity,
+            active.updated_at_epoch_ms,
+        )
+    });
 }
 
 fn advance_revision(response: &mut StorageMigrationResponse) -> Result<()> {

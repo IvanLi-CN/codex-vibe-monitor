@@ -60,8 +60,8 @@ pub(crate) use summary_observability::{
     summary_projection_pending_source_gaps,
 };
 
-/// Route-facing contract for the summary handler. AppState injection is intentionally deferred to
-/// pg08; once injected, this seam is the only analytics dependency the handler needs.
+/// Route-facing contract for the summary handler. The runtime supplies the shared authority at
+/// the AppState boundary; this seam keeps the handler independent of backend pools.
 pub(crate) async fn read_summary_analytics_projection(
     projection: AnalyticsApiProjection<'_>,
     start_epoch: i64,
