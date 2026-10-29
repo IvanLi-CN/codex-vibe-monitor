@@ -1461,18 +1461,19 @@ def wait_for_task_evidence(
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
             active = active_controlled_task_keys(latest)
             if snapshot_error is None and proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+                if on_proof_ready is not None and not scheduling_suspended:
+                    # Stop new controlled dispatches as soon as the proof edge is observed. The
+                    # owner already running is allowed to finish before the evidence is frozen;
+                    # waiting to suspend until it becomes idle can launch an unbounded catch-up
+                    # chain during the polling gap.
+                    suspend_controlled_task_scheduling(maintenance_db, started)
+                    scheduling_suspended = True
                 if active:
                     last_error = AcceptanceError(
                         "archive proofs are ready but controlled owner tasks are still active: "
                         + ",".join(active)
                     )
                 else:
-                    if on_proof_ready is not None and not scheduling_suspended:
-                        # Freeze only after every controlled owner has quiesced. Suspending
-                        # dispatch while an owner is still materializing can strand a transient
-                        # proof edge and make the final oracle observe an active task forever.
-                        suspend_controlled_task_scheduling(maintenance_db, started)
-                        scheduling_suspended = True
                     if on_proof_ready is not None:
                         on_proof_ready(proof_status)
                     return latest

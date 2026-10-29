@@ -635,7 +635,7 @@ class MeasurementBudgetTests(unittest.TestCase):
         ), patch("measure.archive_proof_status", return_value=proof_status), patch(
             "measure.time.sleep"
         ) as sleep, patch("measure.suspend_controlled_task_scheduling") as suspend:
-            suspend.side_effect = lambda _database, _started: self.assertEqual(runs.call_count, 2)
+            suspend.side_effect = lambda _database, _started: self.assertEqual(runs.call_count, 1)
             self.assertEqual(
                 wait_for_task_evidence(
                     Path("main.sqlite"),
@@ -665,7 +665,7 @@ class MeasurementBudgetTests(unittest.TestCase):
             "actual_finished_at": None,
         }
         frozen: list[dict[str, object]] = []
-        with patch("measure.task_runs", side_effect=[[active_row], [], []]), patch(
+        with patch("measure.task_runs", side_effect=[[active_row], [active_row], []]), patch(
             "measure.validate_task_snapshot",
             side_effect=[
                 None,
