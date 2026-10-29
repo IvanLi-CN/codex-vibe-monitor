@@ -88,13 +88,14 @@ jobs:
           image="retention-acceptance:$SOURCE_SHA"
           output="$RUNNER_TEMP/retention-image"
           mkdir -p "$output"
-          docker save "$image" | gzip -1 > "$output/$VERSION.tar.gz"
+          zstd --version
+          docker save "$image" | zstd -q -T0 -3 > "$output/$VERSION.tar.zst"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           version = os.environ["VERSION"]
           source = os.environ["SOURCE_SHA"]
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "retention-image"
-          archive = root / f"{version}.tar.gz"
+          archive = root / f"{version}.tar.zst"
           image = json.loads(subprocess.check_output(["docker", "image", "inspect", f"retention-acceptance:{source}"], text=True))[0]
           assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
           metadata = {
@@ -102,6 +103,8 @@ jobs:
               "sourceSha": source,
               "imageId": image["Id"],
               "tag": f"retention-acceptance:{source}",
+              "archive": archive.name,
+              "compression": "zstd",
               "archiveSha256": hashlib.file_digest(archive.open("rb"), "sha256").hexdigest(),
           }
           (root / f"{version}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
@@ -113,6 +116,7 @@ jobs:
           name: retention-image-${{ github.run_id }}-${{ matrix.version }}
           path: ${{ runner.temp }}/retention-image/
           if-no-files-found: error
+          compression-level: 0
           retention-days: 14
 
   measurement:
@@ -204,12 +208,26 @@ jobs:
           for version, source in expected.items():
               directory = root / version
               metadata = json.loads((directory / f"{version}.json").read_text())
-              archive = directory / f"{version}.tar.gz"
+              archive = directory / metadata.get("archive", f"{version}.tar.gz")
               assert metadata["version"] == version
               assert metadata["sourceSha"] == source
               assert metadata["tag"] == f"retention-acceptance:{source}"
               assert hashlib.file_digest(archive.open("rb"), "sha256").hexdigest() == metadata["archiveSha256"]
-              subprocess.run(["docker", "load", "--input", str(archive)], check=True)
+              if metadata.get("compression") == "zstd":
+                  with archive.open("rb") as compressed:
+                      decoder = subprocess.Popen(
+                          ["zstd", "-q", "-d", "-c"],
+                          stdin=compressed,
+                          stdout=subprocess.PIPE,
+                      )
+                      assert decoder.stdout is not None
+                      try:
+                          subprocess.run(["docker", "load"], stdin=decoder.stdout, check=True)
+                      finally:
+                          decoder.stdout.close()
+                      assert decoder.wait() == 0
+              else:
+                  subprocess.run(["docker", "load", "--input", str(archive)], check=True)
               image = json.loads(subprocess.check_output(["docker", "image", "inspect", metadata["tag"]], text=True))[0]
               assert image["Id"] == metadata["imageId"]
               assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == source
