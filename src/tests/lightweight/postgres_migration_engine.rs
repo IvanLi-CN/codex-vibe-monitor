@@ -1,15 +1,18 @@
 use std::{
     fs,
     future::Future,
+    path::PathBuf,
+    process::{Command, Stdio},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use sqlx::{PgPool, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::{
+    config::StorageConfig,
     core::{
         AuthorityRecoveryContext, BackendKind, MigrationCheckpoint, MigrationMetadataStore,
         MigrationOutboxItem, ModuleAuthority, ModuleAuthorityManifest, ModuleGenerationGate,
@@ -67,6 +70,126 @@ fn state_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (directory.clone(), directory.join("migration-state.json"))
 }
 
+fn acceptance_evidence_dir() -> Option<PathBuf> {
+    std::env::var_os("POSTGRES_ACCEPTANCE_EVIDENCE_DIR").map(PathBuf::from)
+}
+
+fn acceptance_sha(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn write_acceptance_evidence(file_name: &str, payload: serde_json::Value) -> Result<()> {
+    let Some(directory) = acceptance_evidence_dir() else {
+        if std::env::var("POSTGRES_ACCEPTANCE_REQUIRED").as_deref() == Ok("1") {
+            bail!("PostgreSQL acceptance evidence directory is not configured")
+        }
+        return Ok(());
+    };
+    fs::create_dir_all(&directory).with_context(|| {
+        format!(
+            "create PostgreSQL acceptance evidence directory {}",
+            directory.display()
+        )
+    })?;
+    let path = directory.join(file_name);
+    fs::write(&path, serde_json::to_vec_pretty(&payload)?)
+        .with_context(|| format!("write PostgreSQL acceptance evidence {}", path.display()))?;
+    Ok(())
+}
+
+async fn postgres_server_version(pool: &PgPool) -> Result<String> {
+    let version = sqlx::query_scalar::<_, String>("SHOW server_version")
+        .fetch_one(pool)
+        .await
+        .context("read PostgreSQL server version")?;
+    if !version.starts_with("18.") {
+        bail!("PostgreSQL acceptance requires pinned major version 18, found {version}");
+    }
+    Ok(version)
+}
+
+fn postgres_target_identity(database_url: &str) -> String {
+    StorageConfig {
+        postgres_database_url: Some(database_url.to_owned()),
+        ..StorageConfig::default()
+    }
+    .postgres_target_identity()
+}
+
+fn acceptance_migration_limits() -> MigrationLimits {
+    MigrationLimits {
+        max_queued_operations: 4,
+        copy: CopyLimits {
+            max_rows: 32,
+            max_bytes: 64 * 1024,
+            source_read_budget: Duration::from_secs(2),
+            batch_yield: Duration::ZERO,
+        },
+        change_batch: replay_limits(32, 64 * 1024),
+        ..MigrationLimits::default()
+    }
+}
+
+fn process_fixture_spec(target_table: &str) -> Result<MigrationTableSpec> {
+    MigrationTableSpec::new(
+        StorageModule::TrafficArchive,
+        "events",
+        "events",
+        target_table,
+        "stable_key",
+        "source_version",
+        "payload",
+        "stable_key",
+        "source_version",
+        "payload",
+    )
+}
+
+async fn open_process_fixture_source(
+    path: &PathBuf,
+    spec: MigrationTableSpec,
+) -> Result<(SqliteMigrationSource, sqlx::SqlitePool)> {
+    let database_url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .with_context(|| format!("open process fixture SQLite source {}", path.display()))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS events (
+            stable_key TEXT PRIMARY KEY,
+            source_version INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("create process fixture SQLite events table")?;
+    let source_pool = pool.clone();
+    let source = SqliteMigrationSource::new(
+        pool,
+        "migration-engine-test",
+        "sqlite-test",
+        "migration_change_log",
+        vec![spec],
+    )?;
+    source.ensure_capture_schema().await?;
+    Ok((source, source_pool))
+}
+
+fn process_context(target_identity: &str) -> AuthorityRecoveryContext {
+    AuthorityRecoveryContext {
+        migration_id: "migration-engine-test".into(),
+        installation_id: "installation-test".into(),
+        module: StorageModule::TrafficArchive,
+        source_identity: "sqlite-test".into(),
+        target_identity: target_identity.into(),
+        source_watermark: 1,
+    }
+}
+
 async fn cleanup_postgres_migration_fixture(
     pool: &PgPool,
     prefix: &str,
@@ -87,19 +210,22 @@ async fn cleanup_postgres_migration_fixture(
     Ok(())
 }
 
-async fn with_postgres_migration_fixture_cleanup<F>(
+async fn with_postgres_migration_fixture_cleanup<F, T>(
     pool: &PgPool,
     prefix: &str,
     target_table: &str,
     operation: F,
-) -> Result<()>
+) -> Result<T>
 where
-    F: Future<Output = Result<()>>,
+    F: Future<Output = Result<T>>,
 {
     let result = operation.await;
     let cleanup = cleanup_postgres_migration_fixture(pool, prefix, target_table).await;
-    result?;
-    cleanup
+    match (result, cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
 }
 
 fn engine(
@@ -3666,4 +3792,663 @@ async fn optional_postgres_migration_target_uses_real_pool_transactions() -> Res
         Ok(())
     })
     .await
+}
+
+#[cfg(unix)]
+struct AcceptanceChild(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for AcceptanceChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(unix)]
+fn required_process_env(name: &str) -> Result<String> {
+    std::env::var(name).with_context(|| format!("process fixture requires {name}"))
+}
+
+#[cfg(unix)]
+async fn run_process_kill_child(
+    database_url: &str,
+    source_path: &PathBuf,
+    state_path: &PathBuf,
+    prefix: &str,
+    target_table: &str,
+    committed_path: &PathBuf,
+    release_path: &PathBuf,
+) -> Result<()> {
+    let spec = process_fixture_spec(target_table)?;
+    let (source, source_pool) = open_process_fixture_source(source_path, spec.clone()).await?;
+    let mut source_transaction = source_pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO events (stable_key, source_version, payload)
+         VALUES (?, ?, ?)",
+    )
+    .bind("crash-row")
+    .bind(1_i64)
+    .bind(b"before-crash".as_slice())
+    .execute(&mut *source_transaction)
+    .await?;
+    source
+        .append_captured_change_tx(
+            &mut source_transaction,
+            &CapturedChange::from_input(
+                "migration-engine-test",
+                "sqlite-test",
+                1,
+                change("events", "crash-row", ChangeKind::Insert, b"before-crash"),
+            )?,
+        )
+        .await?;
+    source_transaction.commit().await?;
+
+    let target_identity = postgres_target_identity(database_url);
+    let target = Arc::new(
+        PostgresMigrationTarget::new(
+            PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(10))
+                .connect(database_url)
+                .await?,
+            prefix,
+            vec![spec],
+        )?
+        .with_test_replay_commit_barrier(committed_path, release_path),
+    );
+    target.ensure_schema().await?;
+    let context = process_context(&target_identity);
+    let store = Arc::new(FileMigrationStore::new(state_path, context));
+    let source = Arc::new(source);
+    let migration = MigrationEngine::new(
+        Arc::clone(&source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        StorageModule::TrafficArchive,
+        "installation-test",
+        target_identity,
+        1,
+        acceptance_migration_limits(),
+        SourceWriteFence::new(1),
+    )?;
+    migration.prepare(&["events".into()]).await?;
+    while !migration.copy_next("events").await?.complete {}
+
+    let mut source_transaction = source_pool.begin().await?;
+    sqlx::query("UPDATE events SET source_version = 2, payload = ? WHERE stable_key = ?")
+        .bind(b"after-crash".as_slice())
+        .bind("crash-row")
+        .execute(&mut *source_transaction)
+        .await?;
+    source
+        .append_captured_change_tx(
+            &mut source_transaction,
+            &CapturedChange::from_input(
+                "migration-engine-test",
+                "sqlite-test",
+                2,
+                change("events", "crash-row", ChangeKind::Update, b"after-crash"),
+            )?,
+        )
+        .await?;
+    source_transaction.commit().await?;
+
+    // The parent terminates this process while the real PostgreSQL transaction has committed and
+    // before FileMigrationStore receives its local acknowledgement.
+    migration.catch_up("events").await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_process_restart_child(
+    database_url: &str,
+    source_path: &PathBuf,
+    state_path: &PathBuf,
+    prefix: &str,
+    target_table: &str,
+) -> Result<()> {
+    let spec = process_fixture_spec(target_table)?;
+    let (source, source_pool) = open_process_fixture_source(source_path, spec.clone()).await?;
+    let target_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(database_url)
+        .await?;
+    let target = Arc::new(PostgresMigrationTarget::new(
+        target_pool,
+        prefix,
+        vec![spec],
+    )?);
+    target.ensure_schema().await?;
+    let target_identity = postgres_target_identity(database_url);
+    let store = Arc::new(FileMigrationStore::new(
+        state_path,
+        process_context(&target_identity),
+    ));
+    let migration = MigrationEngine::new(
+        Arc::new(source),
+        Arc::clone(&target),
+        Arc::clone(&store),
+        StorageModule::TrafficArchive,
+        "installation-test",
+        target_identity,
+        1,
+        acceptance_migration_limits(),
+        SourceWriteFence::new(1),
+    )?;
+    let progress = migration.catch_up("events").await?;
+    if progress.applied_through != 2 {
+        bail!(
+            "restart child reconciled the wrong migration watermark: {}",
+            progress.applied_through
+        );
+    }
+    let proof = migration.verify_table_coverage_at("events", 2).await?;
+    if proof.source_digest != proof.target_digest || proof.source_row_count != 1 {
+        bail!("restart child did not prove the committed target state");
+    }
+    let rows = target
+        .rows_in_range("events", &ChunkRange::new("crash-row", "crash-row")?)
+        .await?;
+    if rows.len() != 1 || rows[0].source_version != 2 || rows[0].payload != b"after-crash" {
+        bail!("restart child observed an incorrect PostgreSQL replay row");
+    }
+    source_pool.close().await;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn spawn_acceptance_child(
+    stage: &str,
+    database_url: &str,
+    source_path: &PathBuf,
+    state_path: &PathBuf,
+    prefix: &str,
+    target_table: &str,
+    committed_path: &PathBuf,
+    release_path: &PathBuf,
+    stdout_path: &PathBuf,
+    stderr_path: &PathBuf,
+) -> Result<AcceptanceChild> {
+    let stdout = fs::File::create(stdout_path)
+        .with_context(|| format!("create child stdout log {}", stdout_path.display()))?;
+    let stderr = fs::File::create(stderr_path)
+        .with_context(|| format!("create child stderr log {}", stderr_path.display()))?;
+    let child = Command::new(std::env::current_exe().context("locate acceptance test binary")?)
+        .args([
+            "--exact",
+            "tests::lightweight::postgres_migration_engine::postgres_migration_engine_process_kill_child_fixture",
+            "--ignored",
+        ])
+        .env("CVM_PG14_PROCESS_STAGE", stage)
+        .env("CVM_PG14_PROCESS_DATABASE_URL", database_url)
+        .env("CVM_PG14_PROCESS_SOURCE", source_path)
+        .env("CVM_PG14_PROCESS_STATE", state_path)
+        .env("CVM_PG14_PROCESS_PREFIX", prefix)
+        .env("CVM_PG14_PROCESS_TARGET_TABLE", target_table)
+        .env("CVM_PG14_PROCESS_COMMITTED", committed_path)
+        .env("CVM_PG14_PROCESS_RELEASE", release_path)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .context("spawn PostgreSQL process acceptance child")?;
+    Ok(AcceptanceChild(child))
+}
+
+#[cfg(unix)]
+async fn wait_for_child_marker(child: &mut AcceptanceChild, marker: &PathBuf) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if marker.exists() {
+                return Ok(());
+            }
+            if let Some(status) = child.0.try_wait()? {
+                bail!("process acceptance child exited before marker: {status}");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("wait for PostgreSQL replay commit marker")??;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_for_child_exit(child: &mut AcceptanceChild) -> Result<std::process::ExitStatus> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(status) = child.0.try_wait()? {
+                return Ok(status);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("wait for PostgreSQL acceptance child exit")??
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "child fixture for the PostgreSQL process SIGKILL acceptance"]
+async fn postgres_migration_engine_process_kill_child_fixture() -> Result<()> {
+    let stage = required_process_env("CVM_PG14_PROCESS_STAGE")?;
+    let database_url = required_process_env("CVM_PG14_PROCESS_DATABASE_URL")?;
+    let source_path = PathBuf::from(required_process_env("CVM_PG14_PROCESS_SOURCE")?);
+    let state_path = PathBuf::from(required_process_env("CVM_PG14_PROCESS_STATE")?);
+    let prefix = required_process_env("CVM_PG14_PROCESS_PREFIX")?;
+    let target_table = required_process_env("CVM_PG14_PROCESS_TARGET_TABLE")?;
+    fs::create_dir_all(source_path.parent().context("process source parent")?)?;
+    match stage.as_str() {
+        "kill" => {
+            let committed_path = PathBuf::from(required_process_env("CVM_PG14_PROCESS_COMMITTED")?);
+            let release_path = PathBuf::from(required_process_env("CVM_PG14_PROCESS_RELEASE")?);
+            run_process_kill_child(
+                &database_url,
+                &source_path,
+                &state_path,
+                &prefix,
+                &target_table,
+                &committed_path,
+                &release_path,
+            )
+            .await
+        }
+        "restart" => {
+            run_process_restart_child(
+                &database_url,
+                &source_path,
+                &state_path,
+                &prefix,
+                &target_table,
+            )
+            .await
+        }
+        _ => bail!("unknown PostgreSQL process acceptance stage {stage}"),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn optional_postgres_migration_engine_recovers_after_process_sigkill() -> Result<()> {
+    use std::os::unix::process::ExitStatusExt;
+
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "optional_postgres_migration_engine_recovers_after_process_sigkill",
+    ) else {
+        return Ok(());
+    };
+    let parent_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&database_url)
+        .await?;
+    let server_version = postgres_server_version(&parent_pool).await?;
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    let prefix = format!("pg14_process_kill_{suffix}");
+    let target_table = format!("{prefix}_rows");
+    let (directory, state_path) = state_path("postgres-process-kill");
+    fs::create_dir_all(&directory)?;
+    let source_path = directory.join("source.sqlite");
+    let committed_path = directory.join("postgres-commit.marker");
+    let release_path = directory.join("postgres-commit.release");
+    let log_directory = acceptance_evidence_dir().unwrap_or_else(|| directory.clone());
+    fs::create_dir_all(&log_directory)?;
+    let kill_stdout = log_directory.join("process-kill-child.stdout.log");
+    let kill_stderr = log_directory.join("process-kill-child.stderr.log");
+    let restart_stdout = log_directory.join("process-restart-child.stdout.log");
+    let restart_stderr = log_directory.join("process-restart-child.stderr.log");
+    let spec = process_fixture_spec(&target_table)?;
+    let target_identity = postgres_target_identity(&database_url);
+
+    let result = async {
+        let started = Instant::now();
+        let mut child = spawn_acceptance_child(
+            "kill",
+            &database_url,
+            &source_path,
+            &state_path,
+            &prefix,
+            &target_table,
+            &committed_path,
+            &release_path,
+            &kill_stdout,
+            &kill_stderr,
+        )?;
+        wait_for_child_marker(&mut child, &committed_path).await?;
+        let child_pid = child.0.id();
+        if child.0.try_wait()?.is_some() {
+            bail!("process acceptance child exited after committing PostgreSQL replay");
+        }
+        child.0.kill().context("SIGKILL PostgreSQL process acceptance child")?;
+        let kill_status = child.0.wait().context("reap SIGKILL acceptance child")?;
+        if kill_status.signal() != Some(libc::SIGKILL) {
+            bail!("acceptance child did not terminate with SIGKILL: {kill_status}");
+        }
+
+        let target = PostgresMigrationTarget::new(
+            parent_pool.clone(),
+            &prefix,
+            vec![spec.clone()],
+        )?;
+        let target_checkpoint = target
+            .load_checkpoint("migration-engine-test", "events")
+            .await?
+            .context("target checkpoint after SIGKILL")?;
+        let local_checkpoint_before_restart = FileMigrationStore::new(
+            &state_path,
+            process_context(&target_identity),
+        )
+        .load_checkpoint("migration-engine-test", "events")
+        .await?
+        .context("local checkpoint after SIGKILL")?;
+        if target_checkpoint.applied_through != 2 {
+            bail!(
+                "target checkpoint did not retain committed replay: {}",
+                target_checkpoint.applied_through
+            );
+        }
+        if local_checkpoint_before_restart.applied_through != 1 {
+            bail!(
+                "local acknowledgement crossed the SIGKILL boundary unexpectedly: {}",
+                local_checkpoint_before_restart.applied_through
+            );
+        }
+
+        let mut restart_child = spawn_acceptance_child(
+            "restart",
+            &database_url,
+            &source_path,
+            &state_path,
+            &prefix,
+            &target_table,
+            &committed_path,
+            &release_path,
+            &restart_stdout,
+            &restart_stderr,
+        )?;
+        let restart_status = wait_for_child_exit(&mut restart_child).await?;
+        if !restart_status.success() {
+            bail!("PostgreSQL restart child failed: {restart_status}");
+        }
+
+        let local_checkpoint_after_restart = FileMigrationStore::new(
+            &state_path,
+            process_context(&target_identity),
+        )
+        .load_checkpoint("migration-engine-test", "events")
+        .await?
+        .context("local checkpoint after restart")?;
+        let rows = target
+            .rows_in_range("events", &ChunkRange::new("crash-row", "crash-row")?)
+            .await?;
+        let coverage = target
+            .load_coverage_checkpoint("migration-engine-test", "events")
+            .await?
+            .context("coverage checkpoint after restart")?;
+        if local_checkpoint_after_restart.applied_through != 2
+            || rows.len() != 1
+            || rows[0].source_version != 2
+            || rows[0].payload != b"after-crash"
+            || !coverage.complete
+        {
+            bail!("restart did not reconcile the committed PostgreSQL state");
+        }
+
+        write_acceptance_evidence(
+            "process-kill.json",
+            serde_json::json!({
+                "schema_version": 1,
+                "acceptance": "postgres-process-kill-recovery",
+                "fixture_version": std::env::var("POSTGRES_ACCEPTANCE_FIXTURE_VERSION").unwrap_or_else(|_| "4.13.11".into()),
+                "base_sha": acceptance_sha("BASE_SHA"),
+                "candidate_sha": acceptance_sha("CANDIDATE_SHA"),
+                "server_version": server_version,
+                "source_identity": "sqlite-test",
+                "target_identity": target_identity,
+                "workload": "one SQLite source row, one committed baseline replay, one update replay",
+                "duration_seconds": started.elapsed().as_secs_f64(),
+                "sample_count": 1,
+                "maintenance_held": false,
+                "fault_boundary": "SIGKILL after the PostgreSQL replay/checkpoint transaction commit and before the local FileMigrationStore acknowledgement",
+                "covered_boundaries": [
+                    "real process termination by SIGKILL",
+                    "durable PostgreSQL checkpoint survives process death",
+                    "restart reconciles the local acknowledgement from the target checkpoint",
+                    "coverage proof and target row remain consistent after restart"
+                ],
+                "not_covered_boundaries": [
+                    "source acknowledgement uncertainty",
+                    "source fence uncertainty",
+                    "authority manifest publication uncertainty",
+                    "router generation publication uncertainty",
+                    "journal acknowledgement uncertainty",
+                    "filesystem or WAL durability uncertainty",
+                    "backup and restore drill"
+                ],
+                "child_pid": child_pid,
+                "termination_signal": kill_status.signal(),
+                "target_checkpoint_after_kill": target_checkpoint,
+                "local_checkpoint_before_restart": local_checkpoint_before_restart,
+                "local_checkpoint_after_restart": local_checkpoint_after_restart,
+                "raw_result_paths": [
+                    kill_stdout,
+                    kill_stderr,
+                    restart_stdout,
+                    restart_stderr
+                ],
+                "command": "cargo nextest run --profile lightweight --test-filter tests::lightweight::postgres_migration_engine::optional_postgres_migration_engine_recovers_after_process_sigkill"
+            }),
+        )?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let fixture_cleanup =
+        cleanup_postgres_migration_fixture(&parent_pool, &prefix, &target_table).await;
+    let directory_cleanup = if directory.exists() {
+        fs::remove_dir_all(&directory).map_err(Into::into)
+    } else {
+        Ok(())
+    };
+    parent_pool.close().await;
+    match (result, fixture_cleanup, directory_cleanup) {
+        (Err(error), _, _) => Err(error),
+        (Ok(()), Err(error), _) => Err(error),
+        (Ok(()), Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+async fn run_postgres_switch_sample(database_url: &str, row_count: usize) -> Result<u128> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(database_url)
+        .await?;
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    let prefix = format!("pg14_switch_{suffix}");
+    let target_table = format!("{prefix}_rows");
+    let (directory, path) = state_path(&format!("postgres-switch-{row_count}"));
+    let target_identity = postgres_target_identity(database_url);
+    let result = with_postgres_migration_fixture_cleanup(&pool, &prefix, &target_table, async {
+        let spec = process_fixture_spec(&target_table)?;
+        let source_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::query(
+            "CREATE TABLE events (
+                    stable_key TEXT PRIMARY KEY,
+                    source_version INTEGER NOT NULL,
+                    payload BLOB NOT NULL
+                )",
+        )
+        .execute(&source_pool)
+        .await?;
+        let source = SqliteMigrationSource::new(
+            source_pool.clone(),
+            "migration-engine-test",
+            "sqlite-test",
+            "migration_change_log",
+            vec![spec.clone()],
+        )?;
+        source.ensure_capture_schema().await?;
+        let mut source_transaction = source_pool.begin().await?;
+        for index in 0..row_count {
+            let stable_key = format!("row-{index:06}");
+            let payload = format!("payload-{index:06}").into_bytes();
+            sqlx::query(
+                "INSERT INTO events (stable_key, source_version, payload)
+                     VALUES (?, ?, ?)",
+            )
+            .bind(&stable_key)
+            .bind(1_i64)
+            .bind(&payload)
+            .execute(&mut *source_transaction)
+            .await?;
+            source
+                .append_captured_change_tx(
+                    &mut source_transaction,
+                    &CapturedChange::from_input(
+                        "migration-engine-test",
+                        "sqlite-test",
+                        1,
+                        change("events", &stable_key, ChangeKind::Insert, &payload),
+                    )?,
+                )
+                .await?;
+        }
+        source_transaction.commit().await?;
+
+        let target = Arc::new(PostgresMigrationTarget::new(
+            pool.clone(),
+            &prefix,
+            vec![spec],
+        )?);
+        target.ensure_schema().await?;
+        let context = AuthorityRecoveryContext {
+            source_watermark: 1,
+            ..process_context(&target_identity)
+        };
+        let store = Arc::new(FileMigrationStore::new(&path, context.clone()));
+        let migration = MigrationEngine::new(
+            Arc::new(source),
+            Arc::clone(&target),
+            Arc::clone(&store),
+            StorageModule::TrafficArchive,
+            "installation-test",
+            target_identity.clone(),
+            1,
+            acceptance_migration_limits(),
+            SourceWriteFence::new(1),
+        )?;
+        migration.prepare(&["events".into()]).await?;
+        while !migration.copy_next("events").await?.complete {}
+        let gate = ModuleGenerationGate::new(
+            StorageModule::TrafficArchive,
+            ModuleAuthority {
+                backend: BackendKind::Sqlite,
+                generation: 1,
+            },
+        );
+        let started = Instant::now();
+        migration
+            .switch_authority(&gate, context, Duration::from_secs(3))
+            .await?;
+        let elapsed = started.elapsed().as_micros();
+        if elapsed > 3_000_000 {
+            bail!("PostgreSQL switch exceeded the three-second budget: {elapsed}us");
+        }
+        if gate.current_authority().await.backend != BackendKind::Postgres {
+            bail!("PostgreSQL switch did not publish target authority");
+        }
+        source_pool.close().await;
+        Ok::<u128, anyhow::Error>(elapsed)
+    })
+    .await;
+    let directory_cleanup = if directory.exists() {
+        fs::remove_dir_all(&directory).map_err(Into::into)
+    } else {
+        Ok(())
+    };
+    pool.close().await;
+    match (result, directory_cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(elapsed), Ok(())) => Ok(elapsed),
+    }
+}
+
+fn p95_microseconds(samples: &[u128]) -> u128 {
+    assert!(
+        !samples.is_empty(),
+        "a performance measurement needs samples"
+    );
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let index = (sorted.len() * 95).div_ceil(100).saturating_sub(1);
+    sorted[index]
+}
+
+#[tokio::test]
+async fn optional_postgres_migration_switch_performance_is_within_budget() -> Result<()> {
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "optional_postgres_migration_switch_performance_is_within_budget",
+    ) else {
+        return Ok(());
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&database_url)
+        .await?;
+    let server_version = postgres_server_version(&pool).await?;
+    pool.close().await;
+
+    let mut measurements = Vec::new();
+    for row_count in [32_usize, 512_usize] {
+        let mut samples = Vec::new();
+        for _ in 0..3 {
+            samples.push(run_postgres_switch_sample(&database_url, row_count).await?);
+        }
+        let p95 = p95_microseconds(&samples);
+        if p95 > 3_000_000 {
+            bail!("PostgreSQL switch p95 exceeded the three-second budget: {p95}us");
+        }
+        measurements.push(serde_json::json!({
+            "row_count": row_count,
+            "sample_count": samples.len(),
+            "samples_us": samples,
+            "p95_us": p95,
+            "threshold_us": 3_000_000,
+        }));
+    }
+    write_acceptance_evidence(
+        "switch-performance.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "acceptance": "postgres-switch-performance",
+            "fixture_version": std::env::var("POSTGRES_ACCEPTANCE_FIXTURE_VERSION").unwrap_or_else(|_| "4.13.11".into()),
+            "base_sha": acceptance_sha("BASE_SHA"),
+            "candidate_sha": acceptance_sha("CANDIDATE_SHA"),
+            "server_version": server_version,
+            "source_identity": "sqlite-test",
+            "target_identity": postgres_target_identity(&database_url),
+            "workload": "real SQLite source copy and real PostgreSQL target with 32-row and 512-row tables",
+            "duration_unit": "microseconds",
+            "maintenance_held": false,
+            "switch_budget_us": 3_000_000,
+            "measurements": measurements,
+            "raw_result_path": acceptance_evidence_dir().map(|path| path.join("stdout.txt")),
+            "command": "cargo nextest run --profile lightweight --test-filter tests::lightweight::postgres_migration_engine::optional_postgres_migration_switch_performance_is_within_budget"
+        }),
+    )?;
+    Ok(())
 }

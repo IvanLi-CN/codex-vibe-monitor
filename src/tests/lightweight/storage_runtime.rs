@@ -11,8 +11,13 @@ use crate::storage::migration_status::{
 };
 use crate::storage::runtime::StorageRuntimeRouter;
 use crate::storage::traffic::TrafficFactStore;
-use sqlx::{Pool, Sqlite, sqlite::SqlitePoolOptions};
-use std::sync::Arc;
+use anyhow::{Context, Result, bail};
+use sqlx::{Pool, Sqlite, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -758,4 +763,213 @@ async fn seed_postgres_authority_fixture(
     .await
     .expect("source authority fence should persist");
     manifest
+}
+
+fn startup_acceptance_evidence_dir() -> Option<PathBuf> {
+    std::env::var_os("POSTGRES_ACCEPTANCE_EVIDENCE_DIR").map(PathBuf::from)
+}
+
+fn startup_acceptance_sha(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn write_startup_acceptance_evidence(payload: serde_json::Value) -> Result<()> {
+    let Some(directory) = startup_acceptance_evidence_dir() else {
+        if std::env::var("POSTGRES_ACCEPTANCE_REQUIRED").as_deref() == Ok("1") {
+            bail!("PostgreSQL acceptance evidence directory is not configured")
+        }
+        return Ok(());
+    };
+    std::fs::create_dir_all(&directory).with_context(|| {
+        format!(
+            "create PostgreSQL startup evidence directory {}",
+            directory.display()
+        )
+    })?;
+    let path = directory.join("startup-performance.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&payload)?)
+        .with_context(|| format!("write PostgreSQL startup evidence {}", path.display()))?;
+    Ok(())
+}
+
+async fn startup_postgres_server_version(database_url: &str) -> Result<String> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(database_url)
+        .await
+        .context("connect PostgreSQL startup acceptance probe")?;
+    let version = sqlx::query_scalar::<_, String>("SHOW server_version")
+        .fetch_one(&pool)
+        .await
+        .context("read PostgreSQL startup acceptance server version")?;
+    pool.close().await;
+    if !version.starts_with("18.") {
+        bail!("PostgreSQL acceptance requires pinned major version 18, found {version}");
+    }
+    Ok(version)
+}
+
+async fn seed_startup_history(pool: &Pool<Sqlite>, row_count: usize) -> Result<()> {
+    ensure_persistence_schema(pool).await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS archive_batches (
+            archive_batch_id INTEGER PRIMARY KEY,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            source_identity_sha256 TEXT NOT NULL,
+            row_count INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            layout TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            cleanup_state TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .context("create startup performance archive history fixture")?;
+    for index in 0..row_count {
+        sqlx::query(
+            "INSERT INTO archive_batches
+                (archive_batch_id, dataset, month_key, file_path, sha256,
+                 source_identity_sha256, row_count, status, layout, codec, cleanup_state)
+             VALUES (?, 'codex_invocations', ?, ?, ?, ?, 1, 'completed', 'legacy_month', 'gzip', 'active')",
+        )
+        .bind(i64::try_from(index + 1).context("startup fixture row id overflow")?)
+        .bind(format!("2026-{month:02}", month = (index % 12) + 1))
+        .bind(format!("archive-{index:06}.db"))
+        .bind(format!("sha-{index:064x}"))
+        .bind(format!("source-{index:064x}"))
+        .execute(pool)
+        .await
+        .with_context(|| format!("seed startup history row {index}"))?;
+    }
+    Ok(())
+}
+
+async fn measure_startup_initialization(
+    database_url: Option<&str>,
+    row_count: usize,
+) -> Result<Vec<u128>> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .context("open startup performance SQLite fixture")?;
+    seed_startup_history(&pool, row_count).await?;
+    let config = StorageConfig {
+        postgres_database_url: database_url.map(str::to_owned),
+        ..StorageConfig::default()
+    };
+
+    // Warm metadata creation so samples measure the production initialization path rather than
+    // one-time SQLite DDL. The historical archive rows remain present for every sample.
+    let warmup_migration = Arc::new(StorageMigrationRuntime::new(&config));
+    let warmup = StorageRuntimeRouter::initialize(
+        pool.clone(),
+        &config,
+        warmup_migration,
+        CancellationToken::new(),
+    )
+    .await?;
+    warmup.stop().await;
+
+    let mut samples = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let migration = Arc::new(StorageMigrationRuntime::new(&config));
+        let started = Instant::now();
+        let router = StorageRuntimeRouter::initialize(
+            pool.clone(),
+            &config,
+            migration,
+            CancellationToken::new(),
+        )
+        .await?;
+        let elapsed = started.elapsed().as_micros();
+        if database_url.is_some() && !router.postgres_configured() {
+            bail!("configured PostgreSQL startup fixture did not build a lazy target pool");
+        }
+        router.stop().await;
+        samples.push(elapsed);
+    }
+    pool.close().await;
+    Ok(samples)
+}
+
+fn startup_p95_microseconds(samples: &[u128]) -> u128 {
+    assert!(!samples.is_empty(), "startup performance needs samples");
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let index = (sorted.len() * 95).div_ceil(100).saturating_sub(1);
+    sorted[index]
+}
+
+#[tokio::test]
+async fn optional_postgres_storage_runtime_startup_performance_is_within_budget() -> Result<()> {
+    let Some(database_url) = crate::tests::optional_postgres_test_database_url(
+        "optional_postgres_storage_runtime_startup_performance_is_within_budget",
+    ) else {
+        return Ok(());
+    };
+    let server_version = startup_postgres_server_version(&database_url).await?;
+    let target_identity = StorageConfig {
+        postgres_database_url: Some(database_url.clone()),
+        ..StorageConfig::default()
+    }
+    .postgres_target_identity();
+    let mut measurements = Vec::new();
+    for row_count in [32_usize, 4096_usize] {
+        let control = measure_startup_initialization(None, row_count).await?;
+        let enabled = measure_startup_initialization(Some(&database_url), row_count).await?;
+        let control_p95 = startup_p95_microseconds(&control);
+        let enabled_p95 = startup_p95_microseconds(&enabled);
+        let added_p95 = enabled_p95.saturating_sub(control_p95);
+        if added_p95 > 500_000 {
+            bail!(
+                "configured PostgreSQL startup added {added_p95}us p95 for {row_count} historical rows"
+            );
+        }
+        measurements.push(serde_json::json!({
+            "historical_rows": row_count,
+            "control": {
+                "migration_enabled": false,
+                "sample_count": control.len(),
+                "samples_us": control,
+                "p95_us": control_p95,
+            },
+            "postgres_configured": {
+                "migration_enabled": true,
+                "sample_count": enabled.len(),
+                "samples_us": enabled,
+                "p95_us": enabled_p95,
+            },
+            "added_p95_us": added_p95,
+            "threshold_us": 500_000,
+        }));
+    }
+    write_startup_acceptance_evidence(serde_json::json!({
+        "schema_version": 1,
+        "acceptance": "postgres-startup-performance",
+        "fixture_version": std::env::var("POSTGRES_ACCEPTANCE_FIXTURE_VERSION").unwrap_or_else(|_| "4.13.11".into()),
+        "base_sha": startup_acceptance_sha("BASE_SHA"),
+        "candidate_sha": startup_acceptance_sha("CANDIDATE_SHA"),
+        "server_version": server_version,
+        "source_identity": "sqlite:local",
+        "target_identity": target_identity,
+        "workload": "StorageRuntimeRouter::initialize with 32-row and 4096-row archive_batches history fixtures",
+        "measured_path": "StorageRuntimeRouter::initialize; worker start and historical migration scan are excluded",
+        "duration_unit": "microseconds",
+        "maintenance_held": false,
+        "sample_count_per_scenario": 5,
+        "threshold_us": 500_000,
+        "historical_scan_expected": false,
+        "measurements": measurements,
+        "raw_result_path": startup_acceptance_evidence_dir().map(|path| path.join("stdout.txt")),
+        "command": "cargo nextest run --profile lightweight --test-filter tests::lightweight::storage_runtime::optional_postgres_storage_runtime_startup_performance_is_within_budget"
+    }))?;
+    Ok(())
 }

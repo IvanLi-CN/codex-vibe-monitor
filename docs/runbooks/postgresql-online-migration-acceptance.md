@@ -31,6 +31,8 @@ python3 scripts/postgres-acceptance/run.py \
 
 Exit `78` means `blocked/not-run`, including a missing URL or unavailable service. It is an acceptance failure, not a skip. A non-zero child command is `failed`; only exit `0` is `passed`.
 
+The live suite requires PostgreSQL 18.x and writes three candidate-bound evidence files into `EVIDENCE_DIR`: `process-kill.json` proves the real-process boundary after target replay/checkpoint commit and before local acknowledgement; `startup-performance.json` compares migration-disabled and PostgreSQL-configured startup initialization over small and large SQLite histories; and `switch-performance.json` measures the real PostgreSQL authority switch for small and large copied tables. The runner also preserves redacted stdout/stderr and the exact base/candidate SHAs. These files do not close the other fault boundaries unless their own evidence is present.
+
 ## Initial operating thresholds
 
 These are acceptance gates, not promises that a production system has already met them:
@@ -43,6 +45,8 @@ These are acceptance gates, not promises that a production system has already me
 - A post-cutover PostgreSQL outage keeps the module in explicit recovery/error handling. It must not silently fail back to stale SQLite authority.
 
 Every measurement must include workload, duration, candidate SHA, source/target identities, sample count, raw result path and whether maintenance was held. Record migration hold and task-restoration periods separately. Validate backup and restore and collect a natural-traffic baseline before production cutover; neither is evidence that production cutover has already occurred.
+
+The startup measurement times `StorageRuntimeRouter::initialize` after fixture schema/history preparation and before worker start. The PostgreSQL-configured case uses the lazy real target pool and a separately probed PostgreSQL 18.x service; it must not scan historical archive rows. The switch measurement prepares a real PostgreSQL target and times the complete pre-fence verification, bounded tail catch-up, fence and authority publication path against the three-second budget.
 
 ## Backup and restore drill
 
@@ -66,6 +70,8 @@ Restore each owner into an isolated environment. Verify schema/inventory, stable
 | Router generation publication uncertain | Reconcile the router with the durable authority generation before admitting new work.                                 |
 | Journal acknowledgement uncertain       | Replay the stable journal identity and retain it until destination commit is acknowledged.                            |
 | Filesystem or WAL durability uncertain  | Mark the migration blocked/recovering, preserve source authority, and require an explicit repair or new generation.   |
+
+The current live process test covers only the target replay/checkpoint commit → local SQLite acknowledgement boundary. It does not claim coverage for source acknowledgement, source fencing, authority manifest publication, router generation publication, journal acknowledgement, filesystem/WAL durability or backup/restore. Those remain explicit acceptance gaps until dedicated evidence is attached.
 
 ## Deployment sequence
 

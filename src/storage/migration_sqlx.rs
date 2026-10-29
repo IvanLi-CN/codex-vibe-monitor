@@ -10,6 +10,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use sqlx::{
@@ -2444,6 +2447,8 @@ pub(crate) struct PostgresMigrationTarget {
     metadata: PostgresMigrationMetadataTables,
     specs: Arc<BTreeMap<String, MigrationTableSpec>>,
     native_catalog: Option<NativeMigrationCatalog>,
+    #[cfg(test)]
+    replay_commit_barrier: Option<Arc<TestReplayCommitBarrier>>,
 }
 
 #[derive(Debug, Clone)]
@@ -2453,6 +2458,29 @@ struct PostgresMigrationMetadataTables {
     chunk_proofs: String,
     coverage_checkpoints: String,
     coverage_proofs: String,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct TestReplayCommitBarrier {
+    committed_path: PathBuf,
+    release_path: PathBuf,
+}
+
+#[cfg(test)]
+impl TestReplayCommitBarrier {
+    async fn wait_until_released(&self) -> Result<()> {
+        std::fs::write(&self.committed_path, b"postgres-replay-commit\n").with_context(|| {
+            format!(
+                "write PostgreSQL replay commit barrier {}",
+                self.committed_path.display()
+            )
+        })?;
+        while !self.release_path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        Ok(())
+    }
 }
 
 impl PostgresMigrationMetadataTables {
@@ -2479,6 +2507,8 @@ impl PostgresMigrationTarget {
             metadata: PostgresMigrationMetadataTables::new(metadata_prefix.as_ref())?,
             specs: Arc::new(spec_map(specs)?),
             native_catalog: None,
+            #[cfg(test)]
+            replay_commit_barrier: None,
         })
     }
 
@@ -2511,7 +2541,22 @@ impl PostgresMigrationTarget {
             metadata: PostgresMigrationMetadataTables::new(metadata_prefix.as_ref())?,
             specs: Arc::new(spec_map(specs)?),
             native_catalog: Some(catalog),
+            #[cfg(test)]
+            replay_commit_barrier: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_replay_commit_barrier(
+        mut self,
+        committed_path: impl Into<PathBuf>,
+        release_path: impl Into<PathBuf>,
+    ) -> Self {
+        self.replay_commit_barrier = Some(Arc::new(TestReplayCommitBarrier {
+            committed_path: committed_path.into(),
+            release_path: release_path.into(),
+        }));
+        self
     }
 
     async fn ensure_target_table_schema(&self, spec: &MigrationTableSpec) -> Result<()> {
@@ -3167,6 +3212,10 @@ impl MigrationTarget for PostgresMigrationTarget {
             .commit()
             .await
             .context("commit PostgreSQL migration replay batch")?;
+        #[cfg(test)]
+        if let Some(barrier) = &self.replay_commit_barrier {
+            barrier.wait_until_released().await?;
+        }
         Ok(())
     }
 

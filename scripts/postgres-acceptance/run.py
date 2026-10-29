@@ -262,6 +262,10 @@ def main() -> int:
     )
     command_env = os.environ.copy()
     command_env["POSTGRES_ACCEPTANCE_REQUIRED"] = "1"
+    command_env["POSTGRES_ACCEPTANCE_EVIDENCE_DIR"] = str(args.evidence_dir.resolve())
+    command_env["POSTGRES_ACCEPTANCE_FIXTURE_VERSION"] = args.fixture_version
+    command_env["BASE_SHA"] = args.base_sha
+    command_env["CANDIDATE_SHA"] = args.candidate_sha
     started = time.monotonic()
     try:
         process = subprocess.Popen(
