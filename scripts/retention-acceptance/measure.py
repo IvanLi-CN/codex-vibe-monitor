@@ -16,7 +16,7 @@ import tempfile
 import time
 import traceback
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from contract import (
     BASELINE_SHA,
@@ -1271,6 +1271,7 @@ def wait_for_task_evidence(
     version: str,
     timeout_seconds: float | None = None,
     competitor_raw_dir: Path | None = None,
+    on_proof_ready: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     wait_budget = MAX_TEST_PHASE_SECONDS if timeout_seconds is None else timeout_seconds
     deadline = time.monotonic() + min(wait_budget, remaining_budget(started))
@@ -1298,6 +1299,8 @@ def wait_for_task_evidence(
             )
             proof_ready = proof_status["ready"] if version == "candidate" else proof_status["reference_ready"]
             if proof_ready and (raw_oracle is None or raw_oracle["verified_empty"]):
+                if on_proof_ready is not None:
+                    on_proof_ready(proof_status)
                 return latest
             last_error = AcceptanceError("archive proofs, 10x source conversion, or fixed competitor files are still draining")
         except AcceptanceError as error:
@@ -1503,6 +1506,31 @@ def run_trial(
         added["pool_upstream_attempts"] = [row["attempt_public_id"] for row in attempt_states]
         if len(added["pool_upstream_attempts"]) != expected_counts["pool_upstream_attempts"]:
             raise AcceptanceError("production upstream attempt count did not match the configured rate")
+
+        def freeze_after_proof(proof: dict[str, Any]) -> None:
+            nonlocal competitor_oracle, proof_status, write_buckets
+            nonlocal container_stopped
+
+            proof_status = proof
+            competitor_oracle = competitor_file_oracle(raw_dir)
+            post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
+            write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
+            write_buckets = histogram_delta(pre_buckets, post_buckets)
+            (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
+            (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
+            (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
+            # Freeze the database before the independent oracle reads it. Once the
+            # proof gate is satisfied, another catch-up can supersede the only active
+            # manifest while its replacement is still being published, leaving a
+            # publication-edge snapshot with no active completed manifest.
+            containers.cleanup(
+                container,
+                phase_started,
+                cleanup_reserve_seconds=15,
+                log_path=evidence_dir / "logs" / f"{version}-{index}.log",
+            )
+            container_stopped = True
+
         task_evidence = wait_for_task_evidence(
             main_db,
             maintenance_db,
@@ -1511,47 +1539,10 @@ def run_trial(
             phase_started,
             version,
             competitor_raw_dir=raw_dir,
+            on_proof_ready=freeze_after_proof,
         )
-        proof_status = archive_proof_status(
-            main_db,
-            cutoff,
-            {name: len(added[name]) for name in DATASETS},
-            require_summary_proof=version == "candidate",
-        )
-        if version == "candidate" and not proof_status["ready"]:
-            # A catch-up owner can publish the next manifest immediately after the
-            # first ready poll. Re-sample the strict candidate proof before the
-            # oracle so that a publication-edge snapshot cannot become a false
-            # trial failure.
-            task_evidence = wait_for_task_evidence(
-                main_db,
-                maintenance_db,
-                cutoff,
-                {name: len(added[name]) for name in DATASETS},
-                phase_started,
-                version,
-                competitor_raw_dir=raw_dir,
-            )
-            proof_status = archive_proof_status(
-                main_db,
-                cutoff,
-                {name: len(added[name]) for name in DATASETS},
-                require_summary_proof=True,
-            )
-        competitor_oracle = competitor_file_oracle(raw_dir)
-        post_buckets, post_text, post_time = scrape_metrics(container, phase_started)
-        write_scrapes.append({"observed_at": post_time, "scope": "after-drain", "bucket_counts": post_buckets})
-        write_buckets = histogram_delta(pre_buckets, post_buckets)
-        (evidence_dir / "metrics").mkdir(parents=True, exist_ok=True)
-        (evidence_dir / "metrics" / f"{version}-{index}-pre.prom").write_text(pre_text)
-        (evidence_dir / "metrics" / f"{version}-{index}-post.prom").write_text(post_text)
-        containers.cleanup(
-            container,
-            phase_started,
-            cleanup_reserve_seconds=15,
-            log_path=evidence_dir / "logs" / f"{version}-{index}.log",
-        )
-        container_stopped = True
+        if proof_status is None:
+            raise AcceptanceError("proof-ready callback did not capture archive proof status")
         oracle = verify_trial(
             main_db,
             trial_dir / "archives",

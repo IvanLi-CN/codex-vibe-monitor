@@ -541,6 +541,7 @@ class MeasurementBudgetTests(unittest.TestCase):
             "reference_ready": True,
             "datasets": {},
         }
+        frozen: list[dict[str, object]] = []
         with patch("measure.task_runs", return_value=[]), patch(
             "measure.validate_task_snapshot"
         ), patch("measure.archive_proof_status", return_value=proof_status) as proof:
@@ -553,6 +554,7 @@ class MeasurementBudgetTests(unittest.TestCase):
                     time.monotonic(),
                     "baseline",
                     timeout_seconds=1,
+                    on_proof_ready=lambda status: frozen.append(status),
                 ),
                 [],
             )
@@ -562,6 +564,7 @@ class MeasurementBudgetTests(unittest.TestCase):
             {name: 1 for name in DATASETS},
             require_summary_proof=False,
         )
+        self.assertEqual(frozen, [proof_status])
 
     def test_prepare_competitor_isolates_the_controlled_task_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
