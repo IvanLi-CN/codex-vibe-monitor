@@ -246,6 +246,83 @@ async fn retention_selected_invocation_batch_retries_pressure_without_repreparin
 }
 
 #[tokio::test]
+async fn retention_selected_invocation_batch_keeps_the_prepared_file_after_pool_defer() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("batch-pool-defer-after-prefix").await;
+    config.retention_batch_rows = 1_000;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000) INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) SELECT 'pool-defer-invocation-'||i,?1,'proxy','success',7,0.07,'{}','{}' FROM n")
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("pool-defer invocation candidates");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    let work = archive_old_invocations(&pool, &config, None, false);
+    let work = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+                probe.clone(),
+                crate::maintenance::retention_test_with_write_admission_budget(
+                    Duration::from_millis(20),
+                    crate::maintenance::retention_test_with_work_budget(
+                        Duration::from_secs(60),
+                        work,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let competitor = async {
+        probe.committed.notified().await;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+                .fetch_one(&pool)
+                .await
+                .expect("committed source boundary"),
+            936
+        );
+        let first = pool.acquire().await.expect("first pool slot");
+        let second = pool.acquire().await.expect("second pool slot");
+        probe.resume.notify_one();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(second);
+        drop(first);
+    };
+
+    let (result, ()) = tokio::join!(Box::pin(work), competitor);
+    let result = result.expect("selected batch completes after pool defer");
+    assert_eq!(result.0, 1_000);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(row_count), 0) FROM archive_batches
+             WHERE dataset='codex_invocations' AND status='completed' AND cleanup_state='active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("published archive rows"),
+        1_000,
+        "the prepared selected-window artifact must not be duplicated after an admission defer"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source closed after pool defer"),
+        0
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_selected_timestamped_batch_retries_after_admission_timeout() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("timestamped-admission-timeout").await;

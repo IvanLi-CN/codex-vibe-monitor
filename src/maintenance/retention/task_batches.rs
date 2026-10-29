@@ -857,6 +857,23 @@ fn prepend_retention_pending_group<T>(pending_group: &mut Vec<T>, mut deferred_g
     *pending_group = deferred_group;
 }
 
+fn retry_prepared_archive_tail_in_place(committed_rows: usize) -> bool {
+    committed_rows > 0
+        && !retention_run_budget_expired()
+        && !retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+        && !matches!(
+            retention_run_defer_reason().as_deref(),
+            Some("retention_work_budget") | Some("shutdown")
+        )
+}
+
+async fn wait_before_retrying_prepared_archive_tail() {
+    // A failed admission already waited through its bounded pressure/coordinator budget. Keep
+    // the prepared artifact alive, but yield before probing the pool again so a transient pool
+    // shortage cannot become a tight loop.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+}
+
 struct RetentionSqliteTransaction<'a>(&'a mut SqliteConnection);
 
 impl RetentionSqliteTransaction<'_> {
@@ -1258,6 +1275,11 @@ pub(crate) async fn prune_old_invocation_details(
                         drop(admission_wait_phase);
                         let mut deferred_group = group;
                         deferred_group.append(&mut microbatch_group);
+                        if retry_prepared_archive_tail_in_place(committed_rows) {
+                            microbatch_group = deferred_group;
+                            wait_before_retrying_prepared_archive_tail().await;
+                            continue;
+                        }
                         prepend_retention_pending_group(&mut pending_group, deferred_group);
                         recovery_diagnostic.mark_stop();
                         return Ok((None, committed_rows));
@@ -2014,6 +2036,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         drop(admission_wait_phase);
                         let mut deferred_group = group;
                         deferred_group.append(&mut microbatch_group);
+                        if retry_prepared_archive_tail_in_place(committed_rows) {
+                            microbatch_group = deferred_group;
+                            wait_before_retrying_prepared_archive_tail().await;
+                            continue;
+                        }
                         prepend_retention_pending_group(&mut pending_group, deferred_group);
                         recovery_diagnostic.mark_stop();
                         return Ok((false, committed_rows));
@@ -2699,6 +2726,11 @@ pub(crate) async fn archive_timestamped_dataset(
                     drop(admission_wait_phase);
                     let mut deferred_group = group;
                     deferred_group.append(&mut microbatch_group);
+                    if retry_prepared_archive_tail_in_place(committed_rows) {
+                        microbatch_group = deferred_group;
+                        wait_before_retrying_prepared_archive_tail().await;
+                        continue;
+                    }
                     prepend_retention_pending_group(&mut pending_group, deferred_group);
                     recovery_diagnostic.mark_stop();
                     break;
