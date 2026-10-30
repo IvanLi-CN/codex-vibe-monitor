@@ -358,16 +358,39 @@ async fn changing_subscription_sources_clears_the_cached_snapshot() {
         .expect("save subscription snapshot")
     );
 
-    save_forward_proxy_settings(
-        &state.pool,
-        ForwardProxySettings {
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(original_settings.clone());
+        manager.restore_subscription_urls(vec!["http://127.0.0.1:7890".to_string()]);
+    }
+    assert_eq!(
+        snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await)
+            .into_iter()
+            .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .count(),
+        1,
+        "the original subscription node should be active before source removal"
+    );
+
+    let Json(_) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: Vec::new(),
             subscription_urls: Vec::new(),
-            ..original_settings.clone()
-        },
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
     )
     .await
     .expect("remove subscription source");
 
+    assert!(
+        snapshot_active_forward_proxy_endpoints(&*state.forward_proxy.lock().await)
+            .into_iter()
+            .all(|endpoint| endpoint.source != FORWARD_PROXY_SOURCE_SUBSCRIPTION),
+        "changing subscription sources must clear active derived nodes"
+    );
     assert!(
         load_forward_proxy_subscription_snapshot(&state.pool, &original_settings.subscription_urls)
             .await
