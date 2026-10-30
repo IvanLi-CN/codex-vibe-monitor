@@ -450,11 +450,11 @@ async fn publish_startup_recovery_batch(state: &AppState, batch: &StartupRecover
 
 async fn run_startup_recovery(
     state: Arc<AppState>,
-    fence: StartupRecoveryFence,
+    mut fence: StartupRecoveryFence,
     readiness_at: Instant,
     recovery_connect_options: Arc<SqliteConnectOptions>,
 ) {
-    let Some(active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
+    let Some(_active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
         warn!("startup recovery coordinator stopped while waiting for the recovery path");
         return;
     };
@@ -473,14 +473,10 @@ async fn run_startup_recovery(
     let _ = state.sqlite_batch_writer.start_terminal_journal_recovery();
     if !fence.captured {
         warn!(
-            "startup recovery fence was unavailable before HTTP readiness; deferring database row recovery to the next start"
+            "startup recovery fence was unavailable before HTTP readiness; retrying in the background"
         );
         observe_startup_recovery_state(&state, "invocations", 0, Duration::ZERO, "unavailable");
         observe_startup_recovery_state(&state, "pool_attempts", 0, Duration::ZERO, "unavailable");
-        // Only terminal-journal dispatch remains in this path. Release the database recovery
-        // owner so the independent runtime orphan sweep can continue while fenced row recovery
-        // is deferred to the next start.
-        drop(active_guard);
     }
 
     loop {
@@ -499,10 +495,17 @@ async fn run_startup_recovery(
                 Duration::from_millis(journal.oldest_pending_age_ms),
                 "unavailable",
             );
-            warn!(
-                "startup recovery stopped because terminal journal recovery is unavailable; durable obligations remain for the next start"
-            );
-            return;
+            warn!("startup recovery is waiting for the terminal journal before continuing");
+            if !wait_for_startup_recovery_retry(
+                &state.shutdown,
+                STARTUP_RECOVERY_RETRY_DELAYS[retry_index],
+            )
+            .await
+            {
+                return;
+            }
+            retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+            continue;
         }
         if !fence.captured {
             observe_startup_recovery_state(
@@ -519,10 +522,12 @@ async fn run_startup_recovery(
                 },
             );
             if journal.pending_materialization_records == 0 {
-                info!(
-                    "startup recovery deferred fenced database rows because the pre-readiness fence was unavailable"
-                );
-                return;
+                fence =
+                    capture_startup_recovery_fence_bounded(recovery_connect_options.as_ref()).await;
+                if fence.captured {
+                    retry_index = 0;
+                    continue;
+                }
             }
             if retry_index > 0
                 && !wait_for_startup_recovery_retry(

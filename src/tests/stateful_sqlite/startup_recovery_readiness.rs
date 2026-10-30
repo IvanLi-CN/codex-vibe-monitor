@@ -1,7 +1,66 @@
 use super::*;
 
 #[tokio::test]
+async fn unavailable_journal_keeps_storage_start_barrier_closed() {
+    let (mut state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-recovery-unavailable-journal",
+        Duration::from_millis(200),
+    )
+    .await;
+    Arc::get_mut(&mut state)
+        .expect("fixture must be uniquely owned")
+        .sqlite_batch_writer = SqliteBatchWriter::spawn_for_test();
+    assert!(
+        state
+            .sqlite_batch_writer
+            .terminal_journal_stats()
+            .unavailable
+    );
+    let options = build_sqlite_connect_options(&db_url, Duration::from_millis(200))
+        .expect("build recovery options");
+    state.startup_ready.store(false, Ordering::Release);
+    let app = build_app_router(state.clone());
+    let (handle, completion) = publish_http_readiness_and_spawn_recovery_for_test(
+        state.clone(),
+        Instant::now(),
+        startup_recovery_fence_for_test(1, 1),
+        options,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("build health request"),
+        )
+        .await
+        .expect("serve health");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(600), completion.wait(&state.shutdown),)
+            .await
+            .is_err()
+    );
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("recovery should stop on shutdown")
+        .expect("recovery should join");
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn missing_startup_fence_is_retried_before_storage_can_start() {
+    check_health_and_locked_recovery(false).await;
+}
+
+#[tokio::test]
 async fn health_is_ready_while_locked_recovery_resumes_after_release() {
+    check_health_and_locked_recovery(true).await;
+}
+
+async fn check_health_and_locked_recovery(fence_captured: bool) {
     let (mut state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
         "startup-recovery-coordinator-readiness",
         Duration::from_millis(200),
@@ -56,7 +115,11 @@ async fn health_is_ready_while_locked_recovery_resumes_after_release() {
     let (recovery_handle, recovery_completion) = publish_http_readiness_and_spawn_recovery_for_test(
         state.clone(),
         Instant::now(),
-        startup_recovery_fence_for_test(invocation_id, 0),
+        if fence_captured {
+            startup_recovery_fence_for_test(invocation_id, 0)
+        } else {
+            StartupRecoveryFence::default()
+        },
         recovery_options,
     );
     let health_response = app
