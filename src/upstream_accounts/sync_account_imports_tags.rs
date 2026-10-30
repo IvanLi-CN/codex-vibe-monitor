@@ -4380,16 +4380,20 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries(
             .chain(live_missing_full_hour_bucket_epochs.iter().copied())
             .collect::<HashSet<_>>();
         if !live_exact_fallback_bucket_epochs.is_empty() {
-            // Exact fallback is restricted to uncovered buckets and the same
-            // snapshot as the tail query, so concurrent inserts are handled by
-            // one bounded high-watermark pass rather than a second broad scan.
+            // Exact fallback covers the materialized prefix in uncovered
+            // buckets; the separate tail owns every post-cursor row so the two
+            // paths cannot count the same invocation twice.
             let live_rows = load_window_actual_usage_rows_for_bucket_sets_from_pool(
                 &state.pool,
                 &account_ids,
                 &live_partial_minute_bucket_epochs,
                 &live_partial_hour_bucket_epochs,
                 None,
-                live_snapshot_id,
+                if live_rollup_cursor > 0 {
+                    Some(live_rollup_cursor)
+                } else {
+                    live_snapshot_id
+                },
             )
             .await?;
             let live_rows = filter_account_window_usage_rows_for_exact_fallback(
